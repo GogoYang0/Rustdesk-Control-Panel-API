@@ -1,0 +1,24 @@
+# binaries
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+server
+
+# test / coverage
+*.test
+*.out
+coverage.*
+
+# tooling
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# local config overrides
+configs/config.local.yaml
+.env
