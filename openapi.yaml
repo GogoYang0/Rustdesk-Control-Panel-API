@@ -1,0 +1,44 @@
+openapi: 3.1.0
+info:
+  title: Rustdesk-Control-Panel API
+  version: 0.1.0
+  description: |
+    Rustdesk-Control-Panel 控制平面 API。
+
+    本文件是系列唯一契约事实源：WEB 与 APP 的客户端类型由此生成。
+    破坏性变更需升主版本（见设计文档 C10）。
+servers:
+  - url: http://localhost:8080
+    description: 本地开发
+tags:
+  - name: system
+    description: 运维与自检接口
+paths:
+  /healthz:
+    get:
+      operationId: getHealthz
+      summary: 存活探针
+      description: 返回进程存活状态，不需要认证。
+      tags:
+        - system
+      security: []
+      responses:
+        "200":
+          description: 进程存活
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - ok
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
