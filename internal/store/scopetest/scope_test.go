@@ -19,7 +19,6 @@ func newDB(t *testing.T) (*gorm.DB, func()) {
 	require.NoError(t, s.DB.AutoMigrate(
 		&model.Organization{}, &model.Membership{},
 	))
-	store.RegisterScopedModel(&model.Membership{})
 	return s.DB, func() { _ = s.Close() }
 }
 

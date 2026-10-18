@@ -79,6 +79,7 @@ func Open(cfg config.DatabaseConfig) (*Store, error) {
 	}
 
 	// Tenant scoping is enforced for every query on registered models.
+	registerDefaultScopedModels()
 	if err := registerTenantPlugin(db); err != nil {
 		return nil, fmt.Errorf("register tenant plugin: %w", err)
 	}
