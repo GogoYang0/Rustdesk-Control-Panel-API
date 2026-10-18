@@ -12,9 +12,9 @@ import (
 // Guarantees:
 //  1. No tenant context on a scoped table fails closed (WHERE 1 = 0), so a
 //     forgotten ScopedByOrg call cannot read every tenant's rows.
-//  2. A top-level OR written by the caller cannot escape the tenant boundary:
-//     GORM flattens chained WHERE/OR clauses and offers no grouping primitive,
-//     so such a statement fails closed instead of guessing at syntax.
+//  2. Caller conditions are rendered inside an explicit parenthesis group and
+//     the tenant condition is ANDed outside of it. Chained .Or(...) calls and
+//     raw SQL fragments containing OR therefore cannot widen the result set.
 func registerTenantPlugin(db *gorm.DB) error {
 	inject := func(tx *gorm.DB) {
 		if tx.Statement == nil || tx.Statement.Schema == nil {
@@ -33,26 +33,22 @@ func registerTenantPlugin(db *gorm.DB) error {
 			}
 		}
 
-		var exprs []clause.Expression
+		var caller []clause.Expression
 		if w, ok := tx.Statement.Clauses["WHERE"].Expression.(clause.Where); ok {
-			exprs = append(exprs, w.Exprs...)
+			caller = append(caller, w.Exprs...)
 		}
 
-		var tenantExpr clause.Expression
-		switch {
-		case !hasCtx || orgID == 0:
+		var exprs []clause.Expression
+		if !hasCtx || orgID == 0 {
 			// Missing tenant context: match nothing, ignore caller conditions.
-			tenantExpr = clause.Expr{SQL: "1 = 0"}
-			exprs = nil
-		case hasTopLevelOr(exprs):
-			// Cannot be grouped safely; fail closed rather than leak rows.
-			tenantExpr = clause.Expr{SQL: "1 = 0"}
-			exprs = nil
-		default:
-			tenantExpr = clause.Expr{SQL: "organization_id = ?", Vars: []any{orgID}}
+			exprs = []clause.Expression{clause.Expr{SQL: "1 = 0"}}
+		} else {
+			if len(caller) > 0 {
+				exprs = append(exprs, parenGroup{exprs: caller})
+			}
+			exprs = append(exprs, clause.Expr{SQL: "organization_id = ?", Vars: []any{orgID}})
 		}
 
-		exprs = append(exprs, tenantExpr)
 		tx.Statement.Clauses["WHERE"] = clause.Clause{
 			Name:       "WHERE",
 			Expression: clause.Where{Exprs: []clause.Expression{clause.AndConditions{Exprs: exprs}}},
@@ -75,18 +71,17 @@ func registerTenantPlugin(db *gorm.DB) error {
 	return nil
 }
 
-// hasTopLevelOr reports whether the caller's conditions contain a disjunction
-// that GORM would flatten into the shared WHERE clause.
-func hasTopLevelOr(exprs []clause.Expression) bool {
-	for _, e := range exprs {
-		switch v := e.(type) {
-		case clause.OrConditions:
-			return true
-		case clause.AndConditions:
-			if hasTopLevelOr(v.Exprs) {
-				return true
-			}
-		}
-	}
-	return false
+// parenGroup renders the wrapped expressions inside one pair of parentheses.
+// GORM has no grouping clause type, but a custom clause.Expression may render
+// whatever it likes, and reusing clause.Where.Build keeps GORM's OR handling
+// (single OrConditions joins with OR) intact.
+type parenGroup struct {
+	exprs []clause.Expression
+}
+
+// Build implements clause.Expression.
+func (g parenGroup) Build(builder clause.Builder) {
+	builder.WriteByte('(')
+	clause.Where{Exprs: g.exprs}.Build(builder)
+	builder.WriteByte(')')
 }

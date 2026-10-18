@@ -109,12 +109,17 @@ func TestScopedByOrg_OrCannotEscapeTenant(t *testing.T) {
 	require.NoError(t, store.ScopedByOrg(db, 0).Or("user_id = ?", 20).Find(&zero).Error)
 	require.Empty(t, zero, ".Or must not escape fail-closed zero org")
 
-	// Top-level OR is rejected for every org (fail closed): silently returning
-	// nothing is preferable to a cross-tenant leak. Callers that need
-	// disjunction must pass a nested group.
-	var orgOr []model.Membership
-	require.NoError(t, store.ScopedByOrg(db, orgA.ID).Or("user_id = ?", 10).Find(&orgOr).Error)
-	require.Empty(t, orgOr, "top-level OR must fail closed even inside the tenant")
+	// A disjunction inside the tenant still works: caller conditions are grouped.
+	var inTenant []model.Membership
+	require.NoError(t, store.ScopedByOrg(db, orgA.ID).Or("user_id = ?", 10).Find(&inTenant).Error)
+	require.Len(t, inTenant, 1, "in-tenant OR must keep working")
+
+	// OR smuggled inside a raw SQL fragment must not escape the tenant either.
+	var embedded []model.Membership
+	require.NoError(t, store.ScopedByOrg(db, orgA.ID).
+		Where("user_id = ? OR(user_id = ?)", 20, 32).
+		Find(&embedded).Error)
+	require.Empty(t, embedded, "OR inside a raw SQL fragment must not escape the tenant")
 }
 
 // Scan/Row go through the Row callback chain and must be scoped too.
