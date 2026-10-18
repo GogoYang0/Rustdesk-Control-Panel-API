@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Rustdesk-Control-Panel API
-  version: 0.1.0
+  version: 0.2.0
   contact:
     name: Rustdesk-Control-Panel
     url: https://github.com/GogoYang0/Rustdesk-Control-Panel-API
@@ -10,12 +10,21 @@ info:
 
     本文件是系列唯一契约事实源：WEB 与 APP 的客户端类型由此生成。
     破坏性变更需升主版本（见设计文档 C10）。
+
+    统一响应包：所有业务响应为 `{code, message, data}`。
+    `code` 为机器可读错误码（见 ErrorCode），成功时为 `ok`。
 servers:
   - url: http://localhost:8080
     description: 本地开发
 tags:
   - name: system
     description: 运维与自检接口
+  - name: auth
+    description: 认证与令牌
+  - name: orgs
+    description: 组织与成员
+  - name: devices
+    description: 设备与心跳
 paths:
   /healthz:
     get:
@@ -39,9 +48,649 @@ paths:
                     type: string
                     enum:
                       - ok
+
+  /api/v1/auth/login:
+    post:
+      operationId: login
+      summary: 邮箱密码登录
+      description: 校验邮箱与密码，返回 access/refresh 令牌对。受 IP 与账号双轨限流（429）。
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /api/v1/auth/refresh:
+    post:
+      operationId: refreshTokens
+      summary: 轮换 refresh 令牌
+      description: |
+        校验 refresh 令牌并轮换：旧令牌立即撤销，返回新的令牌对。
+        重放已撤销令牌会撤销该用户全部 refresh 令牌，需重新登录。
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "200":
+          description: 轮换成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/orgs:
+    get:
+      operationId: listOrgs
+      summary: 列出当前用户所属组织
+      description: 返回调用者已加入的全部组织，按组织 id 升序。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 组织列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createOrg
+      summary: 创建组织
+      description: 创建组织并将调用者设为 owner。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgCreateRequest"
+      responses:
+        "201":
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/members:
+    get:
+      operationId: listMembers
+      summary: 列出组织成员
+      description: 返回指定组织的成员及其组织内角色；调用者必须是该组织成员。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 成员列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/invitations:
+    post:
+      operationId: createInvitation
+      summary: 邀请成员加入组织
+      description: 生成邀请令牌（服务端只存哈希），有效期 7 天。需要 member.manage 权限。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InvitationCreateRequest"
+      responses:
+        "201":
+          description: 邀请已创建
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvitationResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/invitations/accept:
+    post:
+      operationId: acceptInvitation
+      summary: 接受邀请
+      description: 使用邀请令牌加入组织；令牌过期或已使用返回 409。
+      tags:
+        - orgs
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InvitationAcceptRequest"
+      responses:
+        "200":
+          description: 已加入组织
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/devices:
+    post:
+      operationId: createDevice
+      summary: 注册设备
+      description: 在当前组织下登记一台 RustDesk 设备。需要 device.write 权限。
+      tags:
+        - devices
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceCreateRequest"
+      responses:
+        "201":
+          description: 设备已登记
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/devices/{deviceId}/heartbeat:
+    post:
+      operationId: deviceHeartbeat
+      summary: 设备心跳
+      description: 上报设备在线心跳，刷新 last_seen_at。需要 device.write 权限。
+      tags:
+        - devices
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: deviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 心跳已记录
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
       bearerFormat: JWT
+
+  responses:
+    BadRequest:
+      description: 请求参数不合法
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: 未认证或令牌无效
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: 权限不足
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: 资源不存在
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Conflict:
+      description: 状态冲突（重复、过期或已使用）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    TooManyRequests:
+      description: 触发限流
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    ErrorCode:
+      type: string
+      description: |
+        机器可读错误码：
+        - ok：成功
+        - invalid_request：参数校验失败
+        - unauthorized：未认证或令牌无效
+        - forbidden：权限不足
+        - not_found：资源不存在
+        - conflict：状态冲突（重复创建、邀请过期或已使用）
+        - rate_limited：触发限流
+        - internal：服务端错误
+      enum:
+        - ok
+        - invalid_request
+        - unauthorized
+        - forbidden
+        - not_found
+        - conflict
+        - rate_limited
+        - internal
+
+    ErrorResponse:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          type: object
+          nullable: true
+          additionalProperties: true
+
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 255
+        password:
+          type: string
+          minLength: 8
+          maxLength: 128
+
+    RefreshRequest:
+      type: object
+      required:
+        - refresh_token
+      properties:
+        refresh_token:
+          type: string
+          minLength: 16
+
+    TokenPair:
+      type: object
+      required:
+        - access_token
+        - refresh_token
+        - expires_in
+      properties:
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+        expires_in:
+          type: integer
+          format: int64
+          description: access 令牌剩余有效秒数
+
+    TokenResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/TokenPair"
+
+    Org:
+      type: object
+      required:
+        - id
+        - name
+        - created_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          maxLength: 128
+        created_at:
+          type: string
+          format: date-time
+
+    OrgCreateRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+
+    OrgResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/Org"
+
+    OrgListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Org"
+
+    Member:
+      type: object
+      required:
+        - id
+        - user_id
+        - email
+        - role
+        - created_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        user_id:
+          type: integer
+          format: int64
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum:
+            - owner
+            - admin
+            - member
+        created_at:
+          type: string
+          format: date-time
+
+    MemberResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/Member"
+
+    MemberListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Member"
+
+    InvitationCreateRequest:
+      type: object
+      required:
+        - email
+        - role
+      properties:
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum:
+            - admin
+            - member
+
+    Invitation:
+      type: object
+      required:
+        - id
+        - email
+        - role
+        - expires_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum:
+            - admin
+            - member
+        expires_at:
+          type: string
+          format: date-time
+
+    InvitationResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/Invitation"
+
+    InvitationAcceptRequest:
+      type: object
+      required:
+        - token
+        - password
+      properties:
+        token:
+          type: string
+          minLength: 16
+        password:
+          type: string
+          minLength: 8
+          maxLength: 128
+
+    Device:
+      type: object
+      required:
+        - id
+        - name
+        - rustdesk_id
+        - status
+        - last_seen_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          maxLength: 128
+        rustdesk_id:
+          type: string
+          maxLength: 64
+        status:
+          type: string
+          enum:
+            - online
+            - offline
+        last_seen_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+
+    DeviceCreateRequest:
+      type: object
+      required:
+        - name
+        - rustdesk_id
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        rustdesk_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+
+    DeviceResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/Device"
