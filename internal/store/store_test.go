@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -34,6 +35,18 @@ func TestOpen_SqliteMemory(t *testing.T) {
 func TestOpen_UnsupportedDriver(t *testing.T) {
 	_, err := store.Open(config.DatabaseConfig{Driver: "oracle", DSN: "x"})
 	require.Error(t, err)
+}
+
+func TestOpen_SqliteCreatesDir(t *testing.T) {
+	dir := t.TempDir()
+	dsn := "file:" + filepath.Join(dir, "nested", "sub", "test.db")
+
+	s, err := store.Open(config.DatabaseConfig{Driver: "sqlite", DSN: dsn})
+	require.NoError(t, err)
+	require.NoError(t, s.DB.AutoMigrate(&probeModel{}))
+
+	_, err = os.Stat(filepath.Join(dir, "nested", "sub", "test.db"))
+	require.NoError(t, err)
 }
 
 func TestOpen_Postgres(t *testing.T) {

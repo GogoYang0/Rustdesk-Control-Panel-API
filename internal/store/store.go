@@ -28,11 +28,17 @@ func Open(cfg config.DatabaseConfig) (*Store, error) {
 
 	switch cfg.Driver {
 	case "sqlite":
+		// 文件型 SQLite 必须在打开前确保父目录存在，否则建库直接失败
+		if !strings.Contains(cfg.DSN, ":memory:") {
+			if err := ensureDir(cfg.DSN); err != nil {
+				return nil, fmt.Errorf("prepare sqlite directory: %w", err)
+			}
+		}
 		dial = sqlite.Open(cfg.DSN)
 	case "postgres":
-		dial = postgres.Open(cfg.DSN)
+		dial = postgres.Open(applyDialTimeouts(cfg.Driver, cfg.DSN))
 	case "mysql":
-		dial = mysql.Open(cfg.DSN)
+		dial = mysql.Open(applyDialTimeouts(cfg.Driver, cfg.DSN))
 	default:
 		return nil, fmt.Errorf("unsupported database driver %q", cfg.Driver)
 	}
@@ -47,12 +53,9 @@ func Open(cfg config.DatabaseConfig) (*Store, error) {
 		return nil, fmt.Errorf("wrap database handle: %w", err)
 	}
 
-	// 单文件 SQLite 用单连接避免锁问题；内存库跳过目录创建
+	// 单文件 SQLite 用单连接避免锁问题
 	if cfg.Driver == "sqlite" {
 		sqlDB.SetMaxOpenConns(1)
-		if !strings.Contains(cfg.DSN, ":memory:") {
-			ensureDir(cfg.DSN)
-		}
 	} else {
 		sqlDB.SetMaxOpenConns(10)
 		sqlDB.SetMaxIdleConns(2)
@@ -68,9 +71,35 @@ func Open(cfg config.DatabaseConfig) (*Store, error) {
 	return &Store{DB: db}, nil
 }
 
-func ensureDir(dsn string) {
+// applyDialTimeouts 为驱动 DSN 补充拨号/读写超时，限制 gorm.Open 初始化阶段的耗时。
+func applyDialTimeouts(driver, dsn string) string {
+	switch driver {
+	case "postgres":
+		if !strings.Contains(dsn, "connect_timeout") {
+			if strings.Contains(dsn, "?") {
+				dsn += "&connect_timeout=5"
+			} else if strings.Contains(dsn, "=") {
+				dsn += " connect_timeout=5"
+			} else {
+				dsn += "?connect_timeout=5"
+			}
+		}
+	case "mysql":
+		if !strings.Contains(dsn, "timeout=") {
+			if strings.Contains(dsn, "?") {
+				dsn += "&timeout=5s&readTimeout=10s&writeTimeout=10s"
+			} else {
+				dsn += "?timeout=5s&readTimeout=10s&writeTimeout=10s"
+			}
+		}
+	}
+	return dsn
+}
+
+func ensureDir(dsn string) error {
 	p := strings.TrimPrefix(dsn, "file:")
 	if dir := filepath.Dir(p); dir != "." && dir != "" {
-		_ = os.MkdirAll(dir, 0o755)
+		return os.MkdirAll(dir, 0o755)
 	}
+	return nil
 }
