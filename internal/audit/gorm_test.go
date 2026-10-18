@@ -86,7 +86,9 @@ func TestRecord_NoOrg_IsSkipped(t *testing.T) {
 	defer cleanup()
 
 	require.NoError(t, a.Record(context.Background(), audit.Entry{Action: "login"}))
+	// Count through raw SQL: a model-based query would be tenant scoped and
+	// fail closed, hiding a regression where Record wrongly persists a row.
 	var count int64
-	require.NoError(t, st.DB.Model(&model.AuditLog{}).Count(&count).Error)
+	require.NoError(t, st.DB.Raw("SELECT COUNT(*) FROM audit_logs").Scan(&count).Error)
 	require.Zero(t, count)
 }
