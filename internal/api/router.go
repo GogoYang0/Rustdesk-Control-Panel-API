@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/gen"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 )
 
@@ -20,6 +21,10 @@ var publicPaths = map[string]bool{
 // NewRouter mounts the generated handlers behind the fixed middleware chain:
 // audit log -> JWT auth (except public paths) -> handlers.
 func NewRouter(d Deps) *gin.Engine {
+	if d.Auditor == nil {
+		d.Auditor = audit.Nop{}
+	}
+
 	r := gin.New()
 	// No reverse proxy is assumed; trusting all proxies would let clients spoof
 	// X-Forwarded-For and dodge the per-IP login limits.

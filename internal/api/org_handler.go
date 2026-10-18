@@ -228,6 +228,19 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 		return
 	}
 
+	// This route is public and verifies a password for existing accounts, so it
+	// shares the login guard: otherwise the invitation token would become an
+	// unlimited password oracle (CWE-307).
+	ip := c.ClientIP()
+	if !a.guard.allowIP(ip) {
+		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "too many attempts")
+		return
+	}
+	if a.guard.locked(inv.Email, ip) {
+		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "account temporarily locked")
+		return
+	}
+
 	var member model.Membership
 	err = a.deps.DB.Transaction(func(tx *gorm.DB) error {
 		var user model.User
@@ -265,6 +278,7 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 			Updates(map[string]any{"accepted_at": now, "accepted_by": user.ID}).Error
 	})
 	if errors.Is(err, errInvitationCredentials) {
+		a.guard.recordFailure(inv.Email, ip)
 		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "invalid credentials for this email")
 		return
 	}
@@ -272,6 +286,7 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "could not accept invitation")
 		return
 	}
+	a.guard.reset(inv.Email, ip)
 
 	c.JSON(http.StatusOK, gen.MemberResponse{
 		Code:    gen.ErrorCodeOk,

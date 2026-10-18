@@ -72,6 +72,25 @@ func (h *harness) do(t *testing.T, method, path string, body any, token string) 
 	return w
 }
 
+// doFrom issues the request from a specific client address so per-IP limits
+// can be exercised independently of the other calls in a test.
+func (h *harness) doFrom(t *testing.T, ip, method, path string, body any, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	var buf bytes.Buffer
+	if body != nil {
+		require.NoError(t, json.NewEncoder(&buf).Encode(body))
+	}
+	req := httptest.NewRequest(method, path, &buf)
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = ip + ":4321"
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	w := httptest.NewRecorder()
+	h.router.ServeHTTP(w, req)
+	return w
+}
+
 func (h *harness) seedUser(t *testing.T, email, password string) model.User {
 	t.Helper()
 	hash, err := auth.HashPassword(password)
@@ -300,4 +319,43 @@ func TestAcceptInvitation_ExistingUserWrongPassword_401(t *testing.T) {
 	w = h.do(t, http.MethodPost, "/api/v1/invitations/accept",
 		map[string]string{"token": invResp.Data.Token, "password": "originalpass1"}, "")
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+}
+
+// Accepting an invitation must share the login guard, otherwise the public
+// route becomes an unlimited password oracle.
+func TestAcceptInvitation_PasswordGuessing_IsRateLimited(t *testing.T) {
+	h := newHarness(t)
+	h.seedUser(t, "owner3@example.com", "password123")
+	h.seedUser(t, "victim@example.com", "correct-pass1")
+	ownerToken := h.login(t, "owner3@example.com", "password123")
+
+	w := h.do(t, http.MethodPost, "/api/v1/orgs", map[string]string{"name": "oracle-org"}, ownerToken)
+	require.Equal(t, http.StatusCreated, w.Code)
+	var orgResp struct {
+		Data struct {
+			Id int64 `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &orgResp))
+
+	w = h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgResp.Data.Id)+"/invitations",
+		map[string]string{"email": "victim@example.com", "role": "member"}, ownerToken)
+	require.Equal(t, http.StatusCreated, w.Code)
+	var invResp struct {
+		Data struct {
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &invResp))
+
+	body := map[string]string{"token": invResp.Data.Token, "password": "guess-guess1"}
+	const attackerIP = "198.51.100.77"
+	for i := 0; i < 5; i++ {
+		w = h.doFrom(t, attackerIP, http.MethodPost, "/api/v1/invitations/accept", body, "")
+		require.Equal(t, http.StatusUnauthorized, w.Code, "attempt %d", i+1)
+	}
+
+	// The sixth attempt from the same IP is throttled before verification runs.
+	w = h.doFrom(t, attackerIP, http.MethodPost, "/api/v1/invitations/accept", body, "")
+	require.Equal(t, http.StatusTooManyRequests, w.Code, w.Body.String())
 }
