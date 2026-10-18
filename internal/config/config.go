@@ -36,7 +36,8 @@ func Load(path string) (*Config, error) {
 	v := viper.New()
 	v.SetConfigFile(path)
 	v.SetDefault("database.driver", "sqlite")
-	v.SetDefault("database.dsn", "file::memory:")
+	// cache=shared：内存库下 database/sql 连接池的多个连接共享同一库
+	v.SetDefault("database.dsn", "file::memory:?cache=shared")
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)

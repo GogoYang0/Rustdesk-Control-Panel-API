@@ -19,7 +19,7 @@ type probeModel struct {
 func (probeModel) TableName() string { return "probe_models" }
 
 func TestOpen_SqliteMemory(t *testing.T) {
-	s, err := store.Open(config.DatabaseConfig{Driver: "sqlite", DSN: "file::memory:"})
+	s, err := store.Open(config.DatabaseConfig{Driver: "sqlite", DSN: "file::memory:?cache=shared"})
 	require.NoError(t, err)
 	require.NotNil(t, s)
 
