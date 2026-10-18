@@ -224,3 +224,40 @@ func TestScopedByOrg_DerivedTableRejected(t *testing.T) {
 	require.Error(t, err, "derived tables must be rejected under a tenant context")
 	require.Empty(t, rows)
 }
+
+// A derived table must be rejected even without a tenant context.
+func TestDerivedTable_RejectedWithoutContext(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	org := model.Organization{Name: "org-derived-noctx"}
+	require.NoError(t, db.Create(&org).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: org.ID, UserID: 72, Role: model.RoleOwner}).Error)
+
+	var rows []map[string]any
+	err := db.Table("(SELECT * FROM memberships) AS m").Find(&rows).Error
+	require.Error(t, err, "derived tables must be rejected regardless of tenant context")
+	require.Empty(t, rows)
+}
+
+// Joining a scoped table must be rejected: the tenant condition cannot be
+// attached reliably to the joined side.
+func TestScopedByOrg_JoinOnScopedTableRejected(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	orgA := model.Organization{Name: "org-a-join"}
+	orgB := model.Organization{Name: "org-b-join"}
+	require.NoError(t, db.Create(&orgA).Error)
+	require.NoError(t, db.Create(&orgB).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgA.ID, UserID: 81, Role: model.RoleOwner}).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgB.ID, UserID: 82, Role: model.RoleMember}).Error)
+
+	var rows []map[string]any
+	err := store.ScopedByOrg(db, orgA.ID).
+		Table("organizations").
+		Joins("JOIN memberships ON memberships.organization_id = organizations.id").
+		Find(&rows).Error
+	require.Error(t, err, "joins touching a scoped table must be rejected")
+	require.Empty(t, rows)
+}

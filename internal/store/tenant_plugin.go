@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
 	"gorm.io/gorm"
@@ -36,12 +37,33 @@ func registerTenantPlugin(db *gorm.DB) error {
 		// schema, and aliases ("memberships AS m") must map back to the real name.
 		table, resolved := resolveTable(tx.Statement)
 		if !resolved {
-			if hasCtx {
-				// A derived table cannot be scoped; reject instead of guessing at
-				// the subquery semantics.
-				_ = tx.AddError(errDerivedTableNotScopable)
-			}
+			// A derived table cannot be scoped. Reject it unconditionally: a
+			// missing tenant context must not turn into a full-table read.
+			_ = tx.AddError(errDerivedTableNotScopable)
 			return
+		}
+		// A JOIN that touches a scoped table cannot be scoped reliably (aliases,
+		// ON clauses); reject instead of guessing.
+		for _, j := range tx.Statement.Joins {
+			// GORM keeps the raw clause in Name for string joins and in
+			// Expression for structured ones; Conds may hold extra fragments.
+			parts := []string{j.Name, expressionSQL(j.Expression)}
+			for _, c := range j.Conds {
+				if str, ok := c.(string); ok {
+					parts = append(parts, str)
+				}
+			}
+			sql := strings.Join(parts, " ")
+			if strings.TrimSpace(sql) == "" {
+				continue
+			}
+			lower := strings.ToLower(sql)
+			for _, scoped := range scopedTableNames() {
+				if containsWord(lower, strings.ToLower(scoped)) {
+					_ = tx.AddError(fmt.Errorf("tenant scope: join on scoped table %q is not supported", scoped))
+					return
+				}
+			}
 		}
 		if table == "" || !tableIsScoped(table) {
 			return
@@ -141,4 +163,68 @@ func normalizeTableName(raw string) string {
 		s = s[i+1:]
 	}
 	return strings.Trim(s, "\"`[]")
+}
+
+// joinedScopedTable reports the first registered scoped table referenced by a
+// JOIN expression, or an empty string.
+func joinedScopedTable(joins []clause.Expression) string {
+	for _, j := range joins {
+		sql := expressionSQL(j)
+		if sql == "" {
+			continue
+		}
+		lower := strings.ToLower(sql)
+		for _, table := range scopedTableNames() {
+			if containsWord(lower, strings.ToLower(table)) {
+				return table
+			}
+		}
+	}
+	return ""
+}
+
+func expressionSQL(expr clause.Expression) string {
+	switch v := expr.(type) {
+	case clause.Expr:
+		return v.SQL
+	case clause.Join:
+		return expressionSQL(v.Expression)
+	}
+	return ""
+}
+
+func scopedTableNames() []string {
+	businessModelsMu.RLock()
+	defer businessModelsMu.RUnlock()
+	names := make([]string, 0, len(scopedTables))
+	for name := range scopedTables {
+		names = append(names, name)
+	}
+	return names
+}
+
+// containsWord reports whether word appears in s delimited by non-identifier
+// characters, so "memberships" does not match "memberships_audit".
+func containsWord(s, word string) bool {
+	for i := 0; ; i++ {
+		idx := strings.Index(s[i:], word)
+		if idx < 0 {
+			return false
+		}
+		start := i + idx
+		end := start + len(word)
+		beforeOK := start == 0 || !isIdentChar(s[start-1])
+		afterOK := end == len(s) || !isIdentChar(s[end])
+		if beforeOK && afterOK {
+			return true
+		}
+		i = start + 1
+		if i >= len(s) {
+			return false
+		}
+	}
+}
+
+func isIdentChar(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
