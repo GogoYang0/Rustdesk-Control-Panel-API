@@ -21,6 +21,9 @@ var publicPaths = map[string]bool{
 // audit log -> JWT auth (except public paths) -> handlers.
 func NewRouter(d Deps) *gin.Engine {
 	r := gin.New()
+	// No reverse proxy is assumed; trusting all proxies would let clients spoof
+	// X-Forwarded-For and dodge the per-IP login limits.
+	_ = r.SetTrustedProxies(nil)
 	r.Use(gin.Recovery())
 	r.Use(newAuditMiddleware(d.Auditor))
 	r.Use(requireJWTUnlessPublic(d.Issuer))

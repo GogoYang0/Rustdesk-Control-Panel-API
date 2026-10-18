@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,8 +29,12 @@ func newHarness(t *testing.T) *harness {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
-	st, err := store.Open(config.DatabaseConfig{Driver: "sqlite", DSN: "file::memory:?cache=shared"})
+	// One named in-memory database per test keeps runs independent, so
+	// go test -count=2 does not collide on unique indexes.
+	dsn := "file:apitest_" + sanitize(t.Name()) + "?mode=memory&cache=shared"
+	st, err := store.Open(config.DatabaseConfig{Driver: "sqlite", DSN: dsn})
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.DB.AutoMigrate(
 		&model.User{}, &model.RefreshToken{},
 		&model.Organization{}, &model.Membership{}, &model.Invitation{},
@@ -251,4 +256,48 @@ func itoa(v int64) string {
 		b, _ := json.Marshal(v)
 		return string(b)
 	}()).String()
+}
+
+// sanitize turns a test name into a safe sqlite database suffix.
+func sanitize(name string) string {
+	r := strings.NewReplacer("/", "_", " ", "_", "-", "_")
+	return r.Replace(name)
+}
+
+// Accepting an invitation for an email that already has an account requires
+// that account's password (no pre-hijack of the mailbox).
+func TestAcceptInvitation_ExistingUserWrongPassword_401(t *testing.T) {
+	h := newHarness(t)
+	h.seedUser(t, "owner2@example.com", "password123")
+	h.seedUser(t, "existing@example.com", "originalpass1")
+	ownerToken := h.login(t, "owner2@example.com", "password123")
+
+	w := h.do(t, http.MethodPost, "/api/v1/orgs", map[string]string{"name": "hijack-org"}, ownerToken)
+	require.Equal(t, http.StatusCreated, w.Code)
+	var orgResp struct {
+		Data struct {
+			Id int64 `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &orgResp))
+
+	w = h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgResp.Data.Id)+"/invitations",
+		map[string]string{"email": "existing@example.com", "role": "member"}, ownerToken)
+	require.Equal(t, http.StatusCreated, w.Code)
+	var invResp struct {
+		Data struct {
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &invResp))
+
+	// Wrong password for an existing account must be rejected.
+	w = h.do(t, http.MethodPost, "/api/v1/invitations/accept",
+		map[string]string{"token": invResp.Data.Token, "password": "attacker-pass1"}, "")
+	require.Equal(t, http.StatusUnauthorized, w.Code, w.Body.String())
+
+	// The real password still works.
+	w = h.do(t, http.MethodPost, "/api/v1/invitations/accept",
+		map[string]string{"token": invResp.Data.Token, "password": "originalpass1"}, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 }

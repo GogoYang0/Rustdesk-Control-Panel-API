@@ -228,23 +228,29 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 		return
 	}
 
-	hash, err := auth.HashPassword(req.Password)
-	if err != nil {
-		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not accept invitation")
-		return
-	}
-
 	var member model.Membership
 	err = a.deps.DB.Transaction(func(tx *gorm.DB) error {
 		var user model.User
-		if err := tx.Where("email = ?", inv.Email).First(&user).Error; err != nil {
-			if !errors.Is(err, gorm.ErrRecordNotFound) {
-				return err
+		err := tx.Where("email = ?", inv.Email).First(&user).Error
+		switch {
+		case err == nil:
+			// The mailbox already has an account: the invitation must not be
+			// accepted without proving ownership of the account (CWE-287).
+			ok, verr := auth.VerifyPassword(user.PasswordHash, req.Password)
+			if verr != nil || !ok {
+				return errInvitationCredentials
+			}
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			hash, herr := auth.HashPassword(req.Password)
+			if herr != nil {
+				return herr
 			}
 			user = model.User{Email: inv.Email, PasswordHash: hash}
-			if err := tx.Create(&user).Error; err != nil {
-				return err
+			if cerr := tx.Create(&user).Error; cerr != nil {
+				return cerr
 			}
+		default:
+			return err
 		}
 
 		member = model.Membership{OrganizationID: inv.OrganizationID, UserID: user.ID, Role: inv.Role}
@@ -258,6 +264,10 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 			Where("id = ? AND accepted_at IS NULL", inv.ID).
 			Updates(map[string]any{"accepted_at": now, "accepted_by": user.ID}).Error
 	})
+	if errors.Is(err, errInvitationCredentials) {
+		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "invalid credentials for this email")
+		return
+	}
 	if err != nil {
 		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "could not accept invitation")
 		return
@@ -290,3 +300,7 @@ func hashInvitationToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
 }
+
+// errInvitationCredentials signals that the email already has an account and
+// the supplied password did not match it.
+var errInvitationCredentials = errors.New("invalid credentials for invitation email")

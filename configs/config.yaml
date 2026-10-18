@@ -2,7 +2,7 @@ server:
   addr: ":8080"
 
 auth:
-  secret: "dev-only-change-me"
+  secret: "local-development-secret-override-me-32"
   accessTTL: 15m
   refreshTTL: 168h
 

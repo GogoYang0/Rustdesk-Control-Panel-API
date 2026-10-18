@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -33,17 +34,23 @@ func (a *AdminAPI) Login(c *gin.Context) {
 		return
 	}
 
+	// Always run one Argon2id verification so the response time does not reveal
+	// whether the email exists (CWE-208).
+	dummyHash := dummyPasswordHash()
+
 	var user model.User
 	err := a.deps.DB.Where("email = ?", email).First(&user).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "login failed")
 		return
 	}
-	valid := false
+	hashToCheck := dummyHash
 	if err == nil {
-		if ok, verr := auth.VerifyPassword(user.PasswordHash, req.Password); verr == nil {
-			valid = ok
-		}
+		hashToCheck = user.PasswordHash
+	}
+	valid := false
+	if ok, verr := auth.VerifyPassword(hashToCheck, req.Password); verr == nil && err == nil {
+		valid = ok
 	}
 	if !valid {
 		a.guard.recordFailure(email, ip)
@@ -96,3 +103,12 @@ func (a *AdminAPI) RefreshTokens(c *gin.Context) {
 		},
 	})
 }
+
+// dummyPasswordHash is verified for unknown accounts to keep login timing flat.
+var dummyPasswordHash = sync.OnceValue(func() string {
+	hash, err := auth.HashPassword("dummy-password-for-timing")
+	if err != nil {
+		return ""
+	}
+	return hash
+})
