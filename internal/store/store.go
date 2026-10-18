@@ -4,6 +4,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,28 +82,50 @@ func Open(cfg config.DatabaseConfig) (*Store, error) {
 }
 
 // applyDialTimeouts 为驱动 DSN 补充拨号/读写超时，限制 gorm.Open 初始化阶段的耗时。
+// 必须按各自 DSN 格式精确插入参数，避免改写密码等含特殊字符的字段。
 func applyDialTimeouts(driver, dsn string) string {
 	switch driver {
 	case "postgres":
-		if !strings.Contains(dsn, "connect_timeout") {
-			if strings.Contains(dsn, "?") {
-				dsn += "&connect_timeout=5"
-			} else if strings.Contains(dsn, "=") {
-				dsn += " connect_timeout=5"
-			} else {
-				dsn += "?connect_timeout=5"
-			}
-		}
+		return applyPostgresTimeouts(dsn)
 	case "mysql":
-		if !strings.Contains(dsn, "timeout=") {
-			if strings.Contains(dsn, "?") {
-				dsn += "&timeout=5s&readTimeout=10s&writeTimeout=10s"
-			} else {
-				dsn += "?timeout=5s&readTimeout=10s&writeTimeout=10s"
-			}
-		}
+		return applyMySQLTimeouts(dsn)
 	}
 	return dsn
+}
+
+func applyPostgresTimeouts(dsn string) string {
+	if strings.Contains(dsn, "connect_timeout") {
+		return dsn
+	}
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			return dsn
+		}
+		q := u.Query()
+		q.Set("connect_timeout", "5")
+		u.RawQuery = q.Encode()
+		return u.String()
+	}
+	if strings.Contains(dsn, "=") {
+		// 键值风格 DSN：空格分隔，密码中的任何字符都不受影响
+		return dsn + " connect_timeout=5"
+	}
+	return dsn
+}
+
+func applyMySQLTimeouts(dsn string) string {
+	if strings.Contains(dsn, "timeout=") {
+		return dsn
+	}
+	// go-sql-driver 以最后一个 '?' 之后的部分为参数区，且仅当该 '?' 在
+	// 地址段（最后一个 '/'）之后时才是参数分隔符；密码中的 '?' 位于 '/' 之前
+	slash := strings.LastIndex(dsn, "/")
+	qmark := strings.LastIndex(dsn, "?")
+	if qmark > slash {
+		return dsn + "&timeout=5s&readTimeout=10s&writeTimeout=10s"
+	}
+	return dsn + "?timeout=5s&readTimeout=10s&writeTimeout=10s"
 }
 
 func ensureDir(dsn string) error {
