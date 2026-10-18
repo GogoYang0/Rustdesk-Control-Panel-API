@@ -1,0 +1,73 @@
+package scopetest
+
+import (
+	"reflect"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
+
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
+)
+
+func newDB(t *testing.T) (*gorm.DB, func()) {
+	t.Helper()
+	s, err := store.Open(config.DatabaseConfig{Driver: "sqlite", DSN: "file::memory:?cache=shared"})
+	require.NoError(t, err)
+	require.NoError(t, s.DB.AutoMigrate(
+		&model.Organization{}, &model.Membership{},
+	))
+	store.RegisterScopedModel(&model.Membership{})
+	return s.DB, func() { _ = s.Close() }
+}
+
+// Review Focus #1: two organizations must never see each other's rows.
+func TestTenantIsolation_TwoOrgs(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	orgA := model.Organization{Name: "org-a"}
+	orgB := model.Organization{Name: "org-b"}
+	require.NoError(t, db.Create(&orgA).Error)
+	require.NoError(t, db.Create(&orgB).Error)
+
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgA.ID, UserID: 1, Role: model.RoleOwner}).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgB.ID, UserID: 2, Role: model.RoleMember}).Error)
+
+	var fromA []model.Membership
+	require.NoError(t, store.ScopedByOrg(db, orgA.ID).Find(&fromA).Error)
+	require.Len(t, fromA, 1)
+	require.EqualValues(t, 1, fromA[0].UserID, "org A must only see its own member")
+
+	var crossOrg []model.Membership
+	require.NoError(t, store.ScopedByOrg(db, orgA.ID).Where("user_id = ?", 2).Find(&crossOrg).Error)
+	require.Empty(t, crossOrg, "org A must not see org B rows even with explicit filters")
+
+	var fromB []model.Membership
+	require.NoError(t, store.ScopedByOrg(db, orgB.ID).Find(&fromB).Error)
+	require.Len(t, fromB, 1)
+	require.EqualValues(t, 2, fromB[0].UserID)
+}
+
+func TestRequireOrgID(t *testing.T) {
+	require.Error(t, store.RequireOrgID(0))
+	require.NoError(t, store.RequireOrgID(7))
+}
+
+// Every registered scoped model must expose an OrganizationID field.
+func TestScopedModels_HaveOrgIDField(t *testing.T) {
+	_, cleanup := newDB(t)
+	defer cleanup()
+
+	models := store.ScopedModels()
+	require.NotEmpty(t, models, "at least one scoped model must be registered")
+
+	for _, m := range models {
+		typ := reflect.TypeOf(m).Elem()
+		f, ok := typ.FieldByName("OrganizationID")
+		require.True(t, ok, "%s must carry an OrganizationID field", typ.Name())
+		require.Equal(t, reflect.TypeOf(uint(0)), f.Type)
+	}
+}
