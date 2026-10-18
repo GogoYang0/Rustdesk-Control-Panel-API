@@ -156,3 +156,26 @@ func TestUnscopedQuery_FailsClosed(t *testing.T) {
 	require.NoError(t, db.Find(&rows).Error)
 	require.Empty(t, rows, "a missing tenant context must return no rows")
 }
+
+// Querying a scoped table through .Table(...) into maps leaves Schema nil; the
+// tenant condition must still be applied.
+func TestScopedByOrg_TableQueryIsScoped(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	orgA := model.Organization{Name: "org-a-table"}
+	orgB := model.Organization{Name: "org-b-table"}
+	require.NoError(t, db.Create(&orgA).Error)
+	require.NoError(t, db.Create(&orgB).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgA.ID, UserID: 51, Role: model.RoleOwner}).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgB.ID, UserID: 52, Role: model.RoleMember}).Error)
+
+	var rows []map[string]any
+	require.NoError(t, store.ScopedByOrg(db, orgA.ID).Table("memberships").Find(&rows).Error)
+	require.Len(t, rows, 1, ".Table(...) into maps must stay inside the tenant")
+
+	// A non-scoped table must not receive the tenant condition.
+	var orgs []map[string]any
+	require.NoError(t, store.ScopedByOrg(db, orgA.ID).Table("organizations").Find(&orgs).Error)
+	require.Len(t, orgs, 2, "unregistered tables must be left untouched")
+}

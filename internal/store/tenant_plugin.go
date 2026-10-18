@@ -17,10 +17,16 @@ import (
 //     raw SQL fragments containing OR therefore cannot widen the result set.
 func registerTenantPlugin(db *gorm.DB) error {
 	inject := func(tx *gorm.DB) {
-		if tx.Statement == nil || tx.Statement.Schema == nil {
+		if tx.Statement == nil {
 			return
 		}
-		if !tableIsScoped(tx.Statement.Schema.Table) {
+		// Querying via .Table(...) into maps leaves Schema nil but keeps Table set,
+		// so the table name must be resolved from both sources.
+		table := tx.Statement.Table
+		if tx.Statement.Schema != nil && tx.Statement.Schema.Table != "" {
+			table = tx.Statement.Schema.Table
+		}
+		if table == "" || !tableIsScoped(table) {
 			return
 		}
 
