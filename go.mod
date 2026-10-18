@@ -5,6 +5,7 @@ go 1.27
 toolchain go1.27.2
 
 require (
+	github.com/alexedwards/argon2id v1.0.0
 	github.com/gin-gonic/gin v1.12.0
 	github.com/glebarez/sqlite v1.11.0
 	github.com/spf13/viper v1.21.0
