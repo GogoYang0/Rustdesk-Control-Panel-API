@@ -1,0 +1,9 @@
+# CodeRabbit 评审配置：develop 与 main 基分支均启用评审（项目约定：PR 必须经 CodeRabbit 评审 + 人工审核）
+language: zh-CN
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  base_branches:
+    - "^main$"
+    - "^develop$"
