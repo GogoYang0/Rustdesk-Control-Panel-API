@@ -208,3 +208,19 @@ func TestScopedByOrg_TableAliasAndExplicitTable(t *testing.T) {
 	require.NoError(t, store.ScopedByOrg(db, orgA.ID).Find(&orgs).Error)
 	require.Len(t, orgs, 2, "non-scoped models must not receive the tenant condition")
 }
+
+// A derived table cannot be scoped; with a tenant context the query must be
+// rejected instead of silently reading every tenant.
+func TestScopedByOrg_DerivedTableRejected(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	org := model.Organization{Name: "org-derived"}
+	require.NoError(t, db.Create(&org).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: org.ID, UserID: 71, Role: model.RoleOwner}).Error)
+
+	var rows []map[string]any
+	err := store.ScopedByOrg(db, org.ID).Table("(SELECT * FROM memberships) AS m").Find(&rows).Error
+	require.Error(t, err, "derived tables must be rejected under a tenant context")
+	require.Empty(t, rows)
+}

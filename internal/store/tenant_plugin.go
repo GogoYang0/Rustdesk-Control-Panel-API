@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"strings"
 
 	"gorm.io/gorm"
@@ -22,13 +23,6 @@ func registerTenantPlugin(db *gorm.DB) error {
 		if tx.Statement == nil {
 			return
 		}
-		// Resolve the queried table: an explicit .Table(...) wins over the model
-		// schema, and aliases ("memberships AS m") must map back to the real name.
-		table := resolveTable(tx.Statement)
-		if table == "" || !tableIsScoped(table) {
-			return
-		}
-
 		var orgID uint
 		hasCtx := false
 		if tx.Statement.Context != nil {
@@ -36,6 +30,21 @@ func registerTenantPlugin(db *gorm.DB) error {
 				orgID, _ = raw.(uint)
 				hasCtx = true
 			}
+		}
+
+		// Resolve the queried table: an explicit .Table(...) wins over the model
+		// schema, and aliases ("memberships AS m") must map back to the real name.
+		table, resolved := resolveTable(tx.Statement)
+		if !resolved {
+			if hasCtx {
+				// A derived table cannot be scoped; reject instead of guessing at
+				// the subquery semantics.
+				_ = tx.AddError(errDerivedTableNotScopable)
+			}
+			return
+		}
+		if table == "" || !tableIsScoped(table) {
+			return
 		}
 
 		var caller []clause.Expression
@@ -93,20 +102,27 @@ func (g parenGroup) Build(builder clause.Builder) {
 
 // resolveTable returns the underlying table name of the current statement.
 // Precedence: explicit table expression, explicit table name, model schema.
-func resolveTable(stmt *gorm.Statement) string {
+func resolveTable(stmt *gorm.Statement) (string, bool) {
 	if stmt.TableExpr != nil {
-		if name := normalizeTableName(stmt.TableExpr.SQL); name != "" {
-			return name
+		raw := stmt.TableExpr.SQL
+		if strings.HasPrefix(strings.TrimSpace(raw), "(") {
+			return "", false
+		}
+		if name := normalizeTableName(raw); name != "" {
+			return name, true
 		}
 	}
 	if name := normalizeTableName(stmt.Table); name != "" {
-		return name
+		return name, true
 	}
 	if stmt.Schema != nil {
-		return stmt.Schema.Table
+		return stmt.Schema.Table, true
 	}
-	return ""
+	return "", true
 }
+
+// errDerivedTableNotScopable rejects statements whose table cannot be resolved.
+var errDerivedTableNotScopable = errors.New("tenant scope: derived table expressions are not supported on scoped tables")
 
 // normalizeTableName strips aliases and quoting from a table reference.
 func normalizeTableName(raw string) string {
