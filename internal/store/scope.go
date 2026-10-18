@@ -72,6 +72,33 @@ func ScopedByOrg(db *gorm.DB, orgID uint) *gorm.DB {
 	return db.WithContext(context.WithValue(parent, orgContextKey, orgID))
 }
 
+// crossTenantKeyT marks a query as an intentional cross-tenant lookup.
+type crossTenantKeyT struct{}
+
+var crossTenantKey = crossTenantKeyT{}
+
+// WithoutTenantScope disables tenant filtering for a single query chain.
+//
+// It exists only for lookups that are inherently cross-org: resolving the
+// current user's memberships and accepting an invitation token. Every use
+// must be obvious at the call site; business data must never use it.
+func WithoutTenantScope(db *gorm.DB) *gorm.DB {
+	parent := context.Background()
+	if db.Statement != nil && db.Statement.Context != nil {
+		parent = db.Statement.Context
+	}
+	return db.WithContext(context.WithValue(parent, crossTenantKey, true))
+}
+
+// isCrossTenant reports whether the statement opted out of tenant filtering.
+func isCrossTenant(stmt *gorm.Statement) bool {
+	if stmt.Context == nil {
+		return false
+	}
+	v, _ := stmt.Context.Value(crossTenantKey).(bool)
+	return v
+}
+
 // RequireOrgID fails fast when an org-scoped call has no organization.
 func RequireOrgID(orgID uint) error {
 	if orgID == 0 {

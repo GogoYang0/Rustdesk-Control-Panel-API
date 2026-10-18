@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -12,6 +13,7 @@ type Config struct {
 	Server   ServerConfig   `mapstructure:"server"`
 	Log      LogConfig      `mapstructure:"log"`
 	Database DatabaseConfig `mapstructure:"database"`
+	Auth     AuthConfig     `mapstructure:"auth"`
 }
 
 // ServerConfig holds HTTP server settings.
@@ -23,6 +25,13 @@ type ServerConfig struct {
 type LogConfig struct {
 	Level  string `mapstructure:"level"`
 	Format string `mapstructure:"format"`
+}
+
+// AuthConfig holds JWT and token lifetime settings.
+type AuthConfig struct {
+	Secret     string        `mapstructure:"secret"`
+	AccessTTL  time.Duration `mapstructure:"accessTTL"`
+	RefreshTTL time.Duration `mapstructure:"refreshTTL"`
 }
 
 // DatabaseConfig holds database connection settings.
@@ -38,9 +47,19 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("database.driver", "sqlite")
 	// cache=shared: all pooled database/sql connections share one in-memory database
 	v.SetDefault("database.dsn", "file::memory:?cache=shared")
+	v.SetDefault("auth.accessTTL", "15m")
+	v.SetDefault("auth.refreshTTL", "168h")
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
+	}
+
+	if err := validateAuth(
+		v.GetString("auth.secret"),
+		v.GetDuration("auth.accessTTL"),
+		v.GetDuration("auth.refreshTTL"),
+	); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 
 	var cfg Config
@@ -49,4 +68,24 @@ func Load(path string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// devSecretPlaceholder is rejected so a shipped config cannot become production.
+const devSecretPlaceholder = "dev-only-change-me"
+
+// validateAuth refuses secrets that would make token signatures predictable.
+func validateAuth(secret string, accessTTL, refreshTTL time.Duration) error {
+	if secret == "" {
+		return fmt.Errorf("auth.secret must be configured")
+	}
+	if secret == devSecretPlaceholder {
+		return fmt.Errorf("auth.secret still uses the development placeholder")
+	}
+	if len(secret) < 32 {
+		return fmt.Errorf("auth.secret must be at least 32 bytes")
+	}
+	if accessTTL <= 0 || refreshTTL <= 0 {
+		return fmt.Errorf("auth token lifetimes must be positive")
+	}
+	return nil
 }

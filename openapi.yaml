@@ -608,6 +608,9 @@ components:
         expires_at:
           type: string
           format: date-time
+        token:
+          type: string
+          description: 邀请令牌明文，仅在创建响应中返回一次，服务端只存哈希。
 
     InvitationResponse:
       type: object

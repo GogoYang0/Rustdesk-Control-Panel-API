@@ -206,6 +206,9 @@ type Invitation struct {
 	ExpiresAt time.Time           `json:"expires_at"`
 	Id        int64               `json:"id"`
 	Role      InvitationRole      `json:"role"`
+
+	// Token 邀请令牌明文，仅在创建响应中返回一次，服务端只存哈希。
+	Token *string `json:"token,omitempty"`
 }
 
 // InvitationRole defines model for Invitation.Role.
