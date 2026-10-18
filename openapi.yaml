@@ -70,6 +70,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "429":
@@ -98,6 +100,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
 
@@ -177,7 +181,7 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
-  /api/v1/invitations:
+  /api/v1/orgs/{orgId}/invitations:
     post:
       operationId: createInvitation
       summary: 邀请成员加入组织
@@ -186,6 +190,13 @@ paths:
         - orgs
       security:
         - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
       requestBody:
         required: true
         content:
@@ -205,6 +216,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /api/v1/invitations/accept:
     post:
@@ -232,7 +245,7 @@ paths:
         "409":
           $ref: "#/components/responses/Conflict"
 
-  /api/v1/devices:
+  /api/v1/orgs/{orgId}/devices:
     post:
       operationId: createDevice
       summary: 注册设备
@@ -241,6 +254,13 @@ paths:
         - devices
       security:
         - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
       requestBody:
         required: true
         content:
@@ -260,8 +280,10 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
-  /api/v1/devices/{deviceId}/heartbeat:
+  /api/v1/orgs/{orgId}/devices/{deviceId}/heartbeat:
     post:
       operationId: deviceHeartbeat
       summary: 设备心跳
@@ -271,6 +293,12 @@ paths:
       security:
         - bearerAuth: []
       parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
         - name: deviceId
           in: path
           required: true
@@ -633,7 +661,9 @@ components:
             - online
             - offline
         last_seen_at:
-          type: string
+          type:
+            - string
+            - "null"
           format: date-time
 
     DeviceCreateRequest:

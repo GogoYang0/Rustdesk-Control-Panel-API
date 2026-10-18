@@ -142,7 +142,7 @@ func (e GetHealthz200JSONResponseBodyStatus) Valid() bool {
 // Device defines model for Device.
 type Device struct {
 	Id         int64        `json:"id"`
-	LastSeenAt time.Time    `json:"last_seen_at"`
+	LastSeenAt *time.Time   `json:"last_seen_at"`
 	Name       string       `json:"name"`
 	RustdeskId string       `json:"rustdesk_id"`
 	Status     DeviceStatus `json:"status"`
@@ -393,17 +393,17 @@ type LoginJSONRequestBody = LoginRequest
 // RefreshTokensJSONRequestBody defines body for RefreshTokens for application/json ContentType.
 type RefreshTokensJSONRequestBody = RefreshRequest
 
-// CreateDeviceJSONRequestBody defines body for CreateDevice for application/json ContentType.
-type CreateDeviceJSONRequestBody = DeviceCreateRequest
-
-// CreateInvitationJSONRequestBody defines body for CreateInvitation for application/json ContentType.
-type CreateInvitationJSONRequestBody = InvitationCreateRequest
-
 // AcceptInvitationJSONRequestBody defines body for AcceptInvitation for application/json ContentType.
 type AcceptInvitationJSONRequestBody = InvitationAcceptRequest
 
 // CreateOrgJSONRequestBody defines body for CreateOrg for application/json ContentType.
 type CreateOrgJSONRequestBody = OrgCreateRequest
+
+// CreateDeviceJSONRequestBody defines body for CreateDevice for application/json ContentType.
+type CreateDeviceJSONRequestBody = DeviceCreateRequest
+
+// CreateInvitationJSONRequestBody defines body for CreateInvitation for application/json ContentType.
+type CreateInvitationJSONRequestBody = InvitationCreateRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -413,15 +413,6 @@ type ServerInterface interface {
 	// RefreshTokens 轮换 refresh 令牌
 	// (POST /api/v1/auth/refresh)
 	RefreshTokens(c *gin.Context)
-	// CreateDevice 注册设备
-	// (POST /api/v1/devices)
-	CreateDevice(c *gin.Context)
-	// DeviceHeartbeat 设备心跳
-	// (POST /api/v1/devices/{deviceId}/heartbeat)
-	DeviceHeartbeat(c *gin.Context, deviceId int64)
-	// CreateInvitation 邀请成员加入组织
-	// (POST /api/v1/invitations)
-	CreateInvitation(c *gin.Context)
 	// AcceptInvitation 接受邀请
 	// (POST /api/v1/invitations/accept)
 	AcceptInvitation(c *gin.Context)
@@ -431,6 +422,15 @@ type ServerInterface interface {
 	// CreateOrg 创建组织
 	// (POST /api/v1/orgs)
 	CreateOrg(c *gin.Context)
+	// CreateDevice 注册设备
+	// (POST /api/v1/orgs/{orgId}/devices)
+	CreateDevice(c *gin.Context, orgId int64)
+	// DeviceHeartbeat 设备心跳
+	// (POST /api/v1/orgs/{orgId}/devices/{deviceId}/heartbeat)
+	DeviceHeartbeat(c *gin.Context, orgId int64, deviceId int64)
+	// CreateInvitation 邀请成员加入组织
+	// (POST /api/v1/orgs/{orgId}/invitations)
+	CreateInvitation(c *gin.Context, orgId int64)
 	// ListMembers 列出组织成员
 	// (GET /api/v1/orgs/{orgId}/members)
 	ListMembers(c *gin.Context, orgId int64)
@@ -474,57 +474,6 @@ func (siw *ServerInterfaceWrapper) RefreshTokens(c *gin.Context) {
 	siw.Handler.RefreshTokens(c)
 }
 
-// CreateDevice operation middleware
-func (siw *ServerInterfaceWrapper) CreateDevice(c *gin.Context) {
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		middleware(c)
-		if c.IsAborted() {
-			return
-		}
-	}
-
-	siw.Handler.CreateDevice(c)
-}
-
-// DeviceHeartbeat operation middleware
-func (siw *ServerInterfaceWrapper) DeviceHeartbeat(c *gin.Context) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "deviceId" -------------
-	var deviceId int64
-
-	err = runtime.BindStyledParameterWithOptions("simple", "deviceId", c.Param("deviceId"), &deviceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
-	if err != nil {
-		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
-		return
-	}
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		middleware(c)
-		if c.IsAborted() {
-			return
-		}
-	}
-
-	siw.Handler.DeviceHeartbeat(c, deviceId)
-}
-
-// CreateInvitation operation middleware
-func (siw *ServerInterfaceWrapper) CreateInvitation(c *gin.Context) {
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		middleware(c)
-		if c.IsAborted() {
-			return
-		}
-	}
-
-	siw.Handler.CreateInvitation(c)
-}
-
 // AcceptInvitation operation middleware
 func (siw *ServerInterfaceWrapper) AcceptInvitation(c *gin.Context) {
 
@@ -562,6 +511,90 @@ func (siw *ServerInterfaceWrapper) CreateOrg(c *gin.Context) {
 	}
 
 	siw.Handler.CreateOrg(c)
+}
+
+// CreateDevice operation middleware
+func (siw *ServerInterfaceWrapper) CreateDevice(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateDevice(c, orgId)
+}
+
+// DeviceHeartbeat operation middleware
+func (siw *ServerInterfaceWrapper) DeviceHeartbeat(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "deviceId" -------------
+	var deviceId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "deviceId", c.Param("deviceId"), &deviceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeviceHeartbeat(c, orgId, deviceId)
+}
+
+// CreateInvitation operation middleware
+func (siw *ServerInterfaceWrapper) CreateInvitation(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateInvitation(c, orgId)
 }
 
 // ListMembers operation middleware
@@ -635,8 +668,8 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/v1/orgs", wrapper.ListOrgs)
 	router.POST(options.BaseURL+"/api/v1/orgs", wrapper.CreateOrg)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/members", wrapper.ListMembers)
-	router.POST(options.BaseURL+"/api/v1/invitations", wrapper.CreateInvitation)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/invitations", wrapper.CreateInvitation)
 	router.POST(options.BaseURL+"/api/v1/invitations/accept", wrapper.AcceptInvitation)
-	router.POST(options.BaseURL+"/api/v1/devices", wrapper.CreateDevice)
-	router.POST(options.BaseURL+"/api/v1/devices/:deviceId/heartbeat", wrapper.DeviceHeartbeat)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices", wrapper.CreateDevice)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/heartbeat", wrapper.DeviceHeartbeat)
 }
