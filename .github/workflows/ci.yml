@@ -49,6 +49,46 @@ jobs:
       - name: go test
         run: go test -race ./...
 
+  test-db:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: panel_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      mysql:
+        image: mysql:9
+        env:
+          MYSQL_ROOT_PASSWORD: mysql
+          MYSQL_DATABASE: panel_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -pmysql"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_POSTGRES_DSN: "host=localhost user=postgres password=postgres dbname=panel_test port=5432 sslmode=disable"
+      TEST_MYSQL_DSN: "root:mysql@tcp(localhost:3306)/panel_test?parseTime=true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.x"
+      - name: wait for databases
+        run: sleep 10
+      - name: go test (postgres + mysql)
+        run: go test ./...
+
   contract:
     runs-on: ubuntu-latest
     steps:

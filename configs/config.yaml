@@ -1,6 +1,10 @@
 server:
   addr: ":8080"
 
+database:
+  driver: sqlite
+  dsn: "file:data/panel.db"
+
 log:
   level: info
   format: json
