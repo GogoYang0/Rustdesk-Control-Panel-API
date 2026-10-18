@@ -179,3 +179,32 @@ func TestScopedByOrg_TableQueryIsScoped(t *testing.T) {
 	require.NoError(t, store.ScopedByOrg(db, orgA.ID).Table("organizations").Find(&orgs).Error)
 	require.Len(t, orgs, 2, "unregistered tables must be left untouched")
 }
+
+// Aliased table references and explicit .Table over a model must both stay scoped.
+func TestScopedByOrg_TableAliasAndExplicitTable(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	orgA := model.Organization{Name: "org-a-alias"}
+	orgB := model.Organization{Name: "org-b-alias"}
+	require.NoError(t, db.Create(&orgA).Error)
+	require.NoError(t, db.Create(&orgB).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgA.ID, UserID: 61, Role: model.RoleOwner}).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgB.ID, UserID: 62, Role: model.RoleMember}).Error)
+
+	// Aliased reference: GORM keeps the alias in Statement.Table and the real
+	// name in TableExpr.
+	var aliased []map[string]any
+	require.NoError(t, store.ScopedByOrg(db, orgA.ID).Table("memberships AS m").Find(&aliased).Error)
+	require.Len(t, aliased, 1, "aliased table must stay inside the tenant")
+
+	// Explicit .Table must win over the model schema.
+	var overModel []map[string]any
+	require.NoError(t, store.ScopedByOrg(db, orgA.ID).Model(&model.Organization{}).Table("memberships").Find(&overModel).Error)
+	require.Len(t, overModel, 1, "explicit .Table must override the model schema")
+
+	// A model-only query on a non-scoped table is untouched.
+	var orgs []model.Organization
+	require.NoError(t, store.ScopedByOrg(db, orgA.ID).Find(&orgs).Error)
+	require.Len(t, orgs, 2, "non-scoped models must not receive the tenant condition")
+}

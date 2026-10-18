@@ -1,6 +1,8 @@
 package store
 
 import (
+	"strings"
+
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -20,12 +22,9 @@ func registerTenantPlugin(db *gorm.DB) error {
 		if tx.Statement == nil {
 			return
 		}
-		// Querying via .Table(...) into maps leaves Schema nil but keeps Table set,
-		// so the table name must be resolved from both sources.
-		table := tx.Statement.Table
-		if tx.Statement.Schema != nil && tx.Statement.Schema.Table != "" {
-			table = tx.Statement.Schema.Table
-		}
+		// Resolve the queried table: an explicit .Table(...) wins over the model
+		// schema, and aliases ("memberships AS m") must map back to the real name.
+		table := resolveTable(tx.Statement)
 		if table == "" || !tableIsScoped(table) {
 			return
 		}
@@ -90,4 +89,40 @@ func (g parenGroup) Build(builder clause.Builder) {
 	_ = builder.WriteByte('(')
 	clause.Where{Exprs: g.exprs}.Build(builder)
 	_ = builder.WriteByte(')')
+}
+
+// resolveTable returns the underlying table name of the current statement.
+// Precedence: explicit table expression, explicit table name, model schema.
+func resolveTable(stmt *gorm.Statement) string {
+	if stmt.TableExpr != nil {
+		if name := normalizeTableName(stmt.TableExpr.SQL); name != "" {
+			return name
+		}
+	}
+	if name := normalizeTableName(stmt.Table); name != "" {
+		return name
+	}
+	if stmt.Schema != nil {
+		return stmt.Schema.Table
+	}
+	return ""
+}
+
+// normalizeTableName strips aliases and quoting from a table reference.
+func normalizeTableName(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" || strings.HasPrefix(s, "(") {
+		return ""
+	}
+	upper := strings.ToUpper(s)
+	if i := strings.Index(upper, " AS "); i > 0 {
+		s = s[:i]
+	} else if i := strings.IndexAny(s, " \t\n"); i > 0 {
+		s = s[:i]
+	}
+	s = strings.Trim(s, "\"`[]")
+	if i := strings.LastIndex(s, "."); i >= 0 {
+		s = s[i+1:]
+	}
+	return strings.Trim(s, "\"`[]")
 }
