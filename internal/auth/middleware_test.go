@@ -56,3 +56,24 @@ func TestRequireJWT_AcceptsValidToken(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Contains(t, w.Body.String(), "77")
 }
+
+func TestRequireJWT_AcceptsLowercaseScheme(t *testing.T) {
+	issuer := auth.NewIssuer("s", time.Minute, time.Hour)
+	access, _, err := issuer.Issue(88)
+	require.NoError(t, err)
+
+	gin.SetMode(gin.TestMode)
+	r := newRouter(issuer)
+	req := httptest.NewRequest(http.MethodGet, "/me", nil)
+	req.Header.Set("Authorization", "bearer "+access)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestRequireJWT_SetsChallengeHeader(t *testing.T) {
+	r := newRouter(auth.NewIssuer("s", time.Minute, time.Hour))
+	w := doGet(t, r, "")
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+	require.Contains(t, w.Header().Get("WWW-Authenticate"), "Bearer")
+}

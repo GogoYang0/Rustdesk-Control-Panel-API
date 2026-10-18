@@ -3,10 +3,12 @@ package auth
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 )
@@ -44,64 +46,92 @@ func (s *Service) IssueTokens(userID uint) (access, refresh string, err error) {
 	return access, refresh, nil
 }
 
+// ErrRefreshReplay 表示 refresh token 已被使用（重放）。遇到该错误时调用方
+// 应清除客户端凭据并要求重新登录。
+var ErrRefreshReplay = fmt.Errorf("refresh token already used")
+
 // RotateRefresh validates an opaque refresh token against its stored hash,
 // revokes it, and issues a new pair. Reusing a revoked token revokes every
 // refresh token of that user (token-family revocation, design C3).
+//
+// 校验与撤销在同一事务内完成：行锁 + 条件更新（WHERE revoked_at IS NULL），
+// 并发提交同一 refresh 时只有一个请求能成功，其余按重放处理（CWE-367）。
+// 重放时的"全族撤销"在事务提交/回滚之后单独执行——在事务内撤销会随错误回滚失效。
 func (s *Service) RotateRefresh(oldRefresh string) (access, newRefresh string, err error) {
 	hash := hashToken(oldRefresh)
-
-	var row model.RefreshToken
-	if err := s.db.Where("token_hash = ?", hash).First(&row).Error; err != nil {
-		return "", "", fmt.Errorf("refresh token not found")
-	}
-
-	if row.RevokedAt != nil {
-		// 重放已撤销的 token：撤销该用户全部 refresh token
-		now := time.Now()
-		if err := s.db.Model(&model.RefreshToken{}).
-			Where("user_id = ? AND revoked_at IS NULL", row.UserID).
-			Update("revoked_at", now).Error; err != nil {
-			return "", "", fmt.Errorf("revoke token family: %w", err)
-		}
-		return "", "", fmt.Errorf("refresh token already used")
-	}
-
-	if time.Now().After(row.ExpiresAt) {
-		return "", "", fmt.Errorf("refresh token expired")
-	}
-
-	access, newRefresh, err = s.issuer.Issue(row.UserID)
-	if err != nil {
-		return "", "", err
-	}
+	var userID uint
 
 	err = s.db.Transaction(func(tx *gorm.DB) error {
-		now := time.Now()
-		newHash := hashToken(newRefresh)
-		var next model.RefreshToken
-		if err := tx.Create(&model.RefreshToken{
-			UserID:    row.UserID,
-			TokenHash: newHash,
-			ExpiresAt: now.Add(s.issuer.RefreshTTL()),
-		}).Error; err != nil {
-			return fmt.Errorf("persist refresh token: %w", err)
+		var row model.RefreshToken
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("token_hash = ?", hash).First(&row).Error; err != nil {
+			return fmt.Errorf("refresh token not found")
 		}
-		if err := tx.Where("token_hash = ?", newHash).First(&next).Error; err != nil {
-			return fmt.Errorf("load new refresh token: %w", err)
+		userID = row.UserID
+
+		now := time.Now()
+		if row.RevokedAt != nil {
+			return ErrRefreshReplay
+		}
+		if now.After(row.ExpiresAt) {
+			return fmt.Errorf("refresh token expired")
+		}
+
+		access, newRefresh, err = s.issuer.Issue(row.UserID)
+		if err != nil {
+			return err
+		}
+
+		// 条件更新：并发下仅一次能命中，未命中视为重放
+		res := tx.Model(&model.RefreshToken{}).
+			Where("id = ? AND revoked_at IS NULL", row.ID).
+			Update("revoked_at", now)
+		if res.Error != nil {
+			return fmt.Errorf("revoke refresh token: %w", res.Error)
+		}
+		if res.RowsAffected == 0 {
+			return ErrRefreshReplay
+		}
+
+		next := model.RefreshToken{
+			UserID:    row.UserID,
+			TokenHash: hashToken(newRefresh),
+			ExpiresAt: now.Add(s.issuer.RefreshTTL()),
+		}
+		if err := tx.Create(&next).Error; err != nil {
+			return fmt.Errorf("persist refresh token: %w", err)
 		}
 		return tx.Model(&model.RefreshToken{}).
 			Where("id = ?", row.ID).
-			Updates(map[string]any{"revoked_at": now, "replaced_by": next.ID}).Error
+			Update("replaced_by", next.ID).Error
 	})
+
+	if errors.Is(err, ErrRefreshReplay) {
+		// 事务已回滚，族撤销必须在事务外单独执行才能生效
+		if revokeErr := revokeFamily(s.db, userID, time.Now()); revokeErr != nil {
+			return "", "", revokeErr
+		}
+		return "", "", ErrRefreshReplay
+	}
 	if err != nil {
 		return "", "", err
 	}
 
 	if s.logger != nil {
 		// 只记录用户与事件，绝不记录 token 内容
-		s.logger.Info("refresh token rotated", "user_id", row.UserID)
+		s.logger.Info("refresh token rotated", "user_id", userID)
 	}
 	return access, newRefresh, nil
+}
+
+// revokeFamily 撤销该用户全部未撤销的 refresh token。
+func revokeFamily(tx *gorm.DB, userID uint, now time.Time) error {
+	if err := tx.Model(&model.RefreshToken{}).
+		Where("user_id = ? AND revoked_at IS NULL", userID).
+		Update("revoked_at", now).Error; err != nil {
+		return fmt.Errorf("revoke token family: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) storeRefresh(userID uint, refresh string) error {

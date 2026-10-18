@@ -114,18 +114,54 @@ func applyPostgresTimeouts(dsn string) string {
 	return dsn
 }
 
-func applyMySQLTimeouts(dsn string) string {
-	if strings.Contains(dsn, "timeout=") {
-		return dsn
-	}
-	// go-sql-driver 以最后一个 '?' 之后的部分为参数区，且仅当该 '?' 在
-	// 地址段（最后一个 '/'）之后时才是参数分隔符；密码中的 '?' 位于 '/' 之前
+// mysqlParamsIndex 返回 MySQL DSN 参数区起始 '?' 的下标（无参数区返回 -1）。
+// 与 go-sql-driver 的解析规则一致：在最后一个 '/' 之后从前往后找第一个 '?'，
+// 因此密码（位于 '/' 之前）与参数值中的 '?' 都不会被误判。
+func mysqlParamsIndex(dsn string) int {
 	slash := strings.LastIndex(dsn, "/")
-	qmark := strings.LastIndex(dsn, "?")
-	if qmark > slash {
-		return dsn + "&timeout=5s&readTimeout=10s&writeTimeout=10s"
+	start := slash + 1
+	if start >= len(dsn) {
+		return -1
 	}
-	return dsn + "?timeout=5s&readTimeout=10s&writeTimeout=10s"
+	if i := strings.IndexByte(dsn[start:], '?'); i >= 0 {
+		return start + i
+	}
+	return -1
+}
+
+func applyMySQLTimeouts(dsn string) string {
+	if mysqlParamsIndex(dsn) < 0 {
+		return dsn + "?timeout=5s&readTimeout=10s&writeTimeout=10s&parseTime=true"
+	}
+	// 已有参数区：逐个按参数名补齐缺失项，已设置的不动（驱动后值覆盖前值）
+	var b strings.Builder
+	b.WriteString(dsn)
+	for _, p := range []struct{ name, value string }{
+		{"timeout", "timeout=5s"},
+		{"readTimeout", "readTimeout=10s"},
+		{"writeTimeout", "writeTimeout=10s"},
+		{"parseTime", "parseTime=true"},
+	} {
+		if !hasMySQLParam(dsn, p.name) {
+			b.WriteString("&" + p.value)
+		}
+	}
+	return b.String()
+}
+
+// hasMySQLParam 报告参数区是否已包含指定参数名。
+func hasMySQLParam(dsn, name string) bool {
+	idx := mysqlParamsIndex(dsn)
+	if idx < 0 {
+		return false
+	}
+	prefix := name + "="
+	for _, kv := range strings.Split(dsn[idx+1:], "&") {
+		if strings.HasPrefix(kv, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func ensureDir(dsn string) error {

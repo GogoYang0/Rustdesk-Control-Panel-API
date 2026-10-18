@@ -1,6 +1,8 @@
 package auth_test
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -72,4 +74,30 @@ func TestRotateRefresh_Expired_Fails(t *testing.T) {
 
 	_, _, err = svc.RotateRefresh(refresh)
 	require.Error(t, err)
+}
+
+func TestRotateRefresh_ConcurrentOnlyOneSucceeds(t *testing.T) {
+	svc, cleanup := newTestService(t)
+	defer cleanup()
+
+	_, r1, err := svc.IssueTokens(6)
+	require.NoError(t, err)
+
+	var wg sync.WaitGroup
+	var success, failed int32
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, _, err := svc.RotateRefresh(r1); err == nil {
+				atomic.AddInt32(&success, 1)
+			} else {
+				atomic.AddInt32(&failed, 1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	require.EqualValues(t, 1, success, "exactly one rotation may succeed")
+	require.EqualValues(t, 1, failed, "the racing request must be treated as replay")
 }
