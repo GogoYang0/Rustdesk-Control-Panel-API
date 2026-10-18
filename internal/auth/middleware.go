@@ -16,7 +16,7 @@ func RequireJWT(issuer *Issuer) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		header := c.GetHeader("Authorization")
 		const prefix = "bearer "
-		// HTTP 认证方案名不区分大小写（RFC 7235 §2.1）
+		// HTTP auth scheme names are case-insensitive (RFC 7235 §2.1)
 		if len(header) <= len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
 			c.Header("WWW-Authenticate", `Bearer realm="api"`)
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": "unauthorized", "message": "missing bearer token"})

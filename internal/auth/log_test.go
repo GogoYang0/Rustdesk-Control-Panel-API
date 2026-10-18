@@ -24,7 +24,7 @@ func (l *captureLogger) Info(msg string, keysAndValues ...any) {
 	}
 }
 
-// Review Focus #2：签发与轮换路径的日志绝不允许出现 token 内容。
+// Review Focus #2: logs on the issue/rotation paths must never contain token material.
 func TestLogNeverContainsToken(t *testing.T) {
 	s, err := store.Open(config.DatabaseConfig{Driver: "sqlite", DSN: "file::memory:?cache=shared"})
 	require.NoError(t, err)

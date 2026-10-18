@@ -36,7 +36,7 @@ func TestRotateRefresh_ReturnsNewPair(t *testing.T) {
 	require.NotEqual(t, access, newAccess)
 	require.NotEqual(t, refresh, newRefresh)
 
-	// 新 access 可解析
+	// the new access token must parse
 	uid, err := svc.Issuer().ParseAccess(newAccess)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, uid)
@@ -52,11 +52,11 @@ func TestRotateRefresh_ReplayRevokesFamily(t *testing.T) {
 	_, r2, err := svc.RotateRefresh(r1)
 	require.NoError(t, err)
 
-	// 重放旧 refresh：必须失败
+	// replaying the old refresh token must fail
 	_, _, err = svc.RotateRefresh(r1)
 	require.Error(t, err)
 
-	// 且该用户全部 refresh 失效（含刚签发的新 token）
+	// and every refresh token of the user must be revoked, including the fresh one
 	_, _, err = svc.RotateRefresh(r2)
 	require.Error(t, err, "replay must revoke the whole token family")
 }

@@ -38,7 +38,7 @@ func Open(cfg config.DatabaseConfig) (*Store, error) {
 
 	switch cfg.Driver {
 	case "sqlite":
-		// 文件型 SQLite 必须在打开前确保父目录存在，否则建库直接失败
+		// File-backed SQLite needs its parent directory to exist before opening
 		if !strings.Contains(cfg.DSN, ":memory:") {
 			if err := ensureDir(cfg.DSN); err != nil {
 				return nil, fmt.Errorf("prepare sqlite directory: %w", err)
@@ -63,7 +63,7 @@ func Open(cfg config.DatabaseConfig) (*Store, error) {
 		return nil, fmt.Errorf("wrap database handle: %w", err)
 	}
 
-	// 单文件 SQLite 用单连接避免锁问题
+	// A single connection avoids locking issues for file-backed SQLite
 	if cfg.Driver == "sqlite" {
 		sqlDB.SetMaxOpenConns(1)
 	} else {
@@ -81,8 +81,9 @@ func Open(cfg config.DatabaseConfig) (*Store, error) {
 	return &Store{DB: db}, nil
 }
 
-// applyDialTimeouts 为驱动 DSN 补充拨号/读写超时，限制 gorm.Open 初始化阶段的耗时。
-// 必须按各自 DSN 格式精确插入参数，避免改写密码等含特殊字符的字段。
+// applyDialTimeouts appends dial/read/write timeouts to the driver DSN so that
+// gorm.Open initialization cannot hang. Parameters must be inserted according to
+// each DSN format so passwords and other special fields stay untouched.
 func applyDialTimeouts(driver, dsn string) string {
 	switch driver {
 	case "postgres":
@@ -108,15 +109,16 @@ func applyPostgresTimeouts(dsn string) string {
 		return u.String()
 	}
 	if strings.Contains(dsn, "=") {
-		// 键值风格 DSN：空格分隔，密码中的任何字符都不受影响
+		// Keyword-value DSN: space-separated, so any character in the password is safe
 		return dsn + " connect_timeout=5"
 	}
 	return dsn
 }
 
-// mysqlParamsIndex 返回 MySQL DSN 参数区起始 '?' 的下标（无参数区返回 -1）。
-// 与 go-sql-driver 的解析规则一致：在最后一个 '/' 之后从前往后找第一个 '?'，
-// 因此密码（位于 '/' 之前）与参数值中的 '?' 都不会被误判。
+// mysqlParamsIndex returns the index of the '?' that starts the params section of a
+// MySQL DSN, or -1 when absent. It mirrors go-sql-driver: scan for the first '?'
+// after the last '/', so neither passwords (before the '/') nor '?' inside param
+// values are misdetected.
 func mysqlParamsIndex(dsn string) int {
 	slash := strings.LastIndex(dsn, "/")
 	start := slash + 1
@@ -133,7 +135,7 @@ func applyMySQLTimeouts(dsn string) string {
 	if mysqlParamsIndex(dsn) < 0 {
 		return dsn + "?timeout=5s&readTimeout=10s&writeTimeout=10s&parseTime=true"
 	}
-	// 已有参数区：逐个按参数名补齐缺失项，已设置的不动（驱动后值覆盖前值）
+	// Existing params section: backfill missing params by name; set values stay as-is
 	var b strings.Builder
 	b.WriteString(dsn)
 	for _, p := range []struct{ name, value string }{
@@ -149,7 +151,7 @@ func applyMySQLTimeouts(dsn string) string {
 	return b.String()
 }
 
-// hasMySQLParam 报告参数区是否已包含指定参数名。
+// hasMySQLParam reports whether the params section already contains the named param.
 func hasMySQLParam(dsn, name string) bool {
 	idx := mysqlParamsIndex(dsn)
 	if idx < 0 {

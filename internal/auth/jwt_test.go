@@ -21,7 +21,7 @@ func TestParseAccess_Valid(t *testing.T) {
 }
 
 func TestParseAccess_Expired_Fails(t *testing.T) {
-	// 负 TTL 立即过期
+	// negative TTL means the token is already expired
 	iss := auth.NewIssuer("test-secret", -time.Minute, time.Hour)
 
 	access, _, err := iss.Issue(1)
@@ -48,7 +48,7 @@ func TestParseAccess_RefreshTokenRejected(t *testing.T) {
 	_, refresh, err := iss.Issue(9)
 	require.NoError(t, err)
 
-	// refresh 是 opaque token，不是 JWT：不得被当作 access 解析
+	// refresh is an opaque token, not a JWT: it must not parse as an access token
 	_, err = iss.ParseAccess(refresh)
 	require.Error(t, err)
 }

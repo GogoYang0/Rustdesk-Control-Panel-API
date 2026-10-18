@@ -16,7 +16,7 @@ func TestApplyPostgresTimeouts_KeywordDSNWithSpecialPassword(t *testing.T) {
 func TestApplyPostgresTimeouts_URLDSN(t *testing.T) {
 	got := applyPostgresTimeouts("postgres://u:p%3Fss@localhost/panel_test")
 	require.Contains(t, got, "connect_timeout=5")
-	require.Contains(t, got, "p%3Fss") // 密码不被改写
+	require.Contains(t, got, "p%3Fss") // password must stay untouched
 }
 
 func TestApplyPostgresTimeouts_AlreadySet(t *testing.T) {
@@ -25,7 +25,7 @@ func TestApplyPostgresTimeouts_AlreadySet(t *testing.T) {
 }
 
 func TestApplyMySQLTimeouts_PasswordWithQuestionMark(t *testing.T) {
-	// 密码里的 '?' 位于最后一个 '/' 之前，不得被当作参数分隔符
+	// the '?' in the password sits before the last '/', so it is not a param separator
 	dsn := "u:p?ss@tcp(localhost:3306)/panel_test"
 	got := applyMySQLTimeouts(dsn)
 	require.Equal(t, dsn+"?timeout=5s&readTimeout=10s&writeTimeout=10s&parseTime=true", got)
@@ -38,11 +38,11 @@ func TestApplyMySQLTimeouts_ExistingParams(t *testing.T) {
 }
 
 func TestApplyMySQLTimeouts_PartialTimeoutsBackfilled(t *testing.T) {
-	// 只有 dial timeout 时，read/write/parseTime 仍需分别补齐，
-	// 且操作者显式设置的 timeout=9s 必须保留且只出现一次（驱动后值覆盖前值）
+	// With only a dial timeout set, read/write/parseTime must still be backfilled,
+	// and the explicit timeout=9s must be preserved exactly once (later values win).
 	dsn := "root:mysql@tcp(localhost:3306)/panel_test?timeout=9s"
 	got := applyMySQLTimeouts(dsn)
-	require.Equal(t, 1, strings.Count(got, "timeout=")) // timeout=9s 保留，不再追加 timeout=5s
+	require.Equal(t, 1, strings.Count(got, "timeout=")) // keep timeout=9s, do not append timeout=5s
 	require.Contains(t, got, "timeout=9s")
 	require.Contains(t, got, "readTimeout=10s")
 	require.Contains(t, got, "writeTimeout=10s")
@@ -57,7 +57,7 @@ func TestApplyMySQLTimeouts_ParseTimePreserved(t *testing.T) {
 }
 
 func TestApplyMySQLTimeouts_QuestionMarkInsideParamValue(t *testing.T) {
-	// 参数值里的 '?' 不得影响参数区识别（驱动在最后一个 '/' 后找第一个 '?'）
+	// a '?' inside a param value must not confuse param detection (driver scans for the first '?' after the last '/')
 	dsn := "root:mysql@tcp(localhost:3306)/panel_test?parseTime=false&connectionAttributes=app:worker?debug"
 	got := applyMySQLTimeouts(dsn)
 	require.Contains(t, got, "parseTime=false")

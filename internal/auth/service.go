@@ -46,17 +46,19 @@ func (s *Service) IssueTokens(userID uint) (access, refresh string, err error) {
 	return access, refresh, nil
 }
 
-// ErrRefreshReplay 表示 refresh token 已被使用（重放）。遇到该错误时调用方
-// 应清除客户端凭据并要求重新登录。
+// ErrRefreshReplay reports a reused refresh token (replay). Callers should
+// clear client credentials and require a fresh login.
 var ErrRefreshReplay = fmt.Errorf("refresh token already used")
 
 // RotateRefresh validates an opaque refresh token against its stored hash,
 // revokes it, and issues a new pair. Reusing a revoked token revokes every
 // refresh token of that user (token-family revocation, design C3).
 //
-// 校验与撤销在同一事务内完成：行锁 + 条件更新（WHERE revoked_at IS NULL），
-// 并发提交同一 refresh 时只有一个请求能成功，其余按重放处理（CWE-367）。
-// 重放时的"全族撤销"在事务提交/回滚之后单独执行——在事务内撤销会随错误回滚失效。
+// Validation and revocation run in a single transaction with a row lock and a
+// conditional update (WHERE revoked_at IS NULL), so concurrent submissions of the
+// same refresh token let exactly one request win; the rest are treated as replays
+// (CWE-367). Family revocation on replay runs after the transaction: revoking
+// inside it would be rolled back together with the error.
 func (s *Service) RotateRefresh(oldRefresh string) (access, newRefresh string, err error) {
 	hash := hashToken(oldRefresh)
 	var userID uint
@@ -82,7 +84,7 @@ func (s *Service) RotateRefresh(oldRefresh string) (access, newRefresh string, e
 			return err
 		}
 
-		// 条件更新：并发下仅一次能命中，未命中视为重放
+		// Conditional update: under concurrency only one caller can hit the row
 		res := tx.Model(&model.RefreshToken{}).
 			Where("id = ? AND revoked_at IS NULL", row.ID).
 			Update("revoked_at", now)
@@ -107,7 +109,7 @@ func (s *Service) RotateRefresh(oldRefresh string) (access, newRefresh string, e
 	})
 
 	if errors.Is(err, ErrRefreshReplay) {
-		// 事务已回滚，族撤销必须在事务外单独执行才能生效
+		// The transaction rolled back; family revocation must run outside it to persist
 		if revokeErr := revokeFamily(s.db, userID, time.Now()); revokeErr != nil {
 			return "", "", revokeErr
 		}
@@ -118,13 +120,13 @@ func (s *Service) RotateRefresh(oldRefresh string) (access, newRefresh string, e
 	}
 
 	if s.logger != nil {
-		// 只记录用户与事件，绝不记录 token 内容
+		// Log the event and user only; never log token material
 		s.logger.Info("refresh token rotated", "user_id", userID)
 	}
 	return access, newRefresh, nil
 }
 
-// revokeFamily 撤销该用户全部未撤销的 refresh token。
+// revokeFamily revokes every non-revoked refresh token of the user.
 func revokeFamily(tx *gorm.DB, userID uint, now time.Time) error {
 	if err := tx.Model(&model.RefreshToken{}).
 		Where("user_id = ? AND revoked_at IS NULL", userID).
