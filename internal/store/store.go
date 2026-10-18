@@ -53,7 +53,7 @@ func Open(cfg config.DatabaseConfig) (*Store, error) {
 		return nil, fmt.Errorf("unsupported database driver %q", cfg.Driver)
 	}
 
-	db, err := gorm.Open(dial, &gorm.Config{})
+	db, err := gorm.Open(dial, &gorm.Config{TranslateError: true})
 	if err != nil {
 		return nil, fmt.Errorf("open %s database: %w", cfg.Driver, err)
 	}
