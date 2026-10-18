@@ -85,3 +85,34 @@ func TestScopedByOrg_ZeroOrgFailsClosed(t *testing.T) {
 	require.NoError(t, store.ScopedByOrg(db, 0).Find(&rows).Error)
 	require.Empty(t, rows, "zero orgID must not return any tenant rows")
 }
+
+// Review Focus #1: a caller-side .Or(...) must not escape the tenant condition.
+func TestScopedByOrg_OrCannotEscapeTenant(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	orgA := model.Organization{Name: "org-a-or"}
+	orgB := model.Organization{Name: "org-b-or"}
+	require.NoError(t, db.Create(&orgA).Error)
+	require.NoError(t, db.Create(&orgB).Error)
+
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgA.ID, UserID: 10, Role: model.RoleOwner}).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgB.ID, UserID: 20, Role: model.RoleMember}).Error)
+
+	// Org A queries with an OR on user 20 (a user of org B): must return nothing.
+	var escaped []model.Membership
+	require.NoError(t, store.ScopedByOrg(db, orgA.ID).Or("user_id = ?", 20).Find(&escaped).Error)
+	require.Empty(t, escaped, ".Or must not escape the tenant condition")
+
+	// Zero org id must stay empty even with .Or.
+	var zero []model.Membership
+	require.NoError(t, store.ScopedByOrg(db, 0).Or("user_id = ?", 20).Find(&zero).Error)
+	require.Empty(t, zero, ".Or must not escape fail-closed zero org")
+
+	// Top-level OR is rejected for every org (fail closed): silently returning
+	// nothing is preferable to a cross-tenant leak. Callers that need
+	// disjunction must pass a nested group.
+	var orgOr []model.Membership
+	require.NoError(t, store.ScopedByOrg(db, orgA.ID).Or("user_id = ?", 10).Find(&orgOr).Error)
+	require.Empty(t, orgOr, "top-level OR must fail closed even inside the tenant")
+}
