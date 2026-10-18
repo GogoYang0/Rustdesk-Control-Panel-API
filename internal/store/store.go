@@ -22,6 +22,15 @@ type Store struct {
 	DB *gorm.DB
 }
 
+// Close releases the underlying database connections.
+func (s *Store) Close() error {
+	sqlDB, err := s.DB.DB()
+	if err != nil {
+		return err
+	}
+	return sqlDB.Close()
+}
+
 // Open connects to the database described by cfg.
 func Open(cfg config.DatabaseConfig) (*Store, error) {
 	var dial gorm.Dialector

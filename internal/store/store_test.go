@@ -43,6 +43,7 @@ func TestOpen_SqliteCreatesDir(t *testing.T) {
 
 	s, err := store.Open(config.DatabaseConfig{Driver: "sqlite", DSN: dsn})
 	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
 	require.NoError(t, s.DB.AutoMigrate(&probeModel{}))
 
 	_, err = os.Stat(filepath.Join(dir, "nested", "sub", "test.db"))
