@@ -33,7 +33,12 @@ func ScopedModels() []any {
 
 // ScopedByOrg is the only sanctioned way to query tenant data: every business
 // query must go through it, never through a hand-written WHERE clause.
+// A zero orgID fails closed (matches no rows) so a missing tenant context can
+// never widen the result set.
 func ScopedByOrg(db *gorm.DB, orgID uint) *gorm.DB {
+	if orgID == 0 {
+		return db.Where("1 = 0")
+	}
 	return db.Where("organization_id = ?", orgID)
 }
 

@@ -71,3 +71,17 @@ func TestScopedModels_HaveOrgIDField(t *testing.T) {
 		require.Equal(t, reflect.TypeOf(uint(0)), f.Type)
 	}
 }
+
+// A zero orgID must fail closed instead of matching organization_id = 0.
+func TestScopedByOrg_ZeroOrgFailsClosed(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	org := model.Organization{Name: "org-zero"}
+	require.NoError(t, db.Create(&org).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: org.ID, UserID: 3, Role: model.RoleMember}).Error)
+
+	var rows []model.Membership
+	require.NoError(t, store.ScopedByOrg(db, 0).Find(&rows).Error)
+	require.Empty(t, rows, "zero orgID must not return any tenant rows")
+}
