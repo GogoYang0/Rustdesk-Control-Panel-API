@@ -1,6 +1,11 @@
 server:
   addr: ":8080"
 
+auth:
+  secret: "dev-only-change-me"
+  accessTTL: 15m
+  refreshTTL: 168h
+
 database:
   driver: sqlite
   dsn: "file:data/panel.db"

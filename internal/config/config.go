@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -12,6 +13,7 @@ type Config struct {
 	Server   ServerConfig   `mapstructure:"server"`
 	Log      LogConfig      `mapstructure:"log"`
 	Database DatabaseConfig `mapstructure:"database"`
+	Auth     AuthConfig     `mapstructure:"auth"`
 }
 
 // ServerConfig holds HTTP server settings.
@@ -25,6 +27,13 @@ type LogConfig struct {
 	Format string `mapstructure:"format"`
 }
 
+// AuthConfig holds JWT and token lifetime settings.
+type AuthConfig struct {
+	Secret     string        `mapstructure:"secret"`
+	AccessTTL  time.Duration `mapstructure:"accessTTL"`
+	RefreshTTL time.Duration `mapstructure:"refreshTTL"`
+}
+
 // DatabaseConfig holds database connection settings.
 type DatabaseConfig struct {
 	Driver string `mapstructure:"driver"` // sqlite | postgres | mysql
@@ -35,6 +44,8 @@ type DatabaseConfig struct {
 func Load(path string) (*Config, error) {
 	v := viper.New()
 	v.SetConfigFile(path)
+	v.SetDefault("auth.accessTTL", "15m")
+	v.SetDefault("auth.refreshTTL", "168h")
 	v.SetDefault("database.driver", "sqlite")
 	// cache=shared: all pooled database/sql connections share one in-memory database
 	v.SetDefault("database.dsn", "file::memory:?cache=shared")

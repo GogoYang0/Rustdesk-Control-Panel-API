@@ -1,0 +1,254 @@
+package api_test
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/api"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
+)
+
+type harness struct {
+	router *gin.Engine
+	db     store.Store
+	issuer *auth.Issuer
+}
+
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+
+	st, err := store.Open(config.DatabaseConfig{Driver: "sqlite", DSN: "file::memory:?cache=shared"})
+	require.NoError(t, err)
+	require.NoError(t, st.DB.AutoMigrate(
+		&model.User{}, &model.RefreshToken{},
+		&model.Organization{}, &model.Membership{}, &model.Invitation{},
+	))
+
+	issuer := auth.NewIssuer("test-secret", time.Minute, time.Hour)
+	svc := auth.NewService(st.DB, issuer, nil)
+
+	r := api.NewRouter(api.Deps{
+		DB:            st.DB,
+		Auth:          svc,
+		Issuer:        issuer,
+		AccessTTL:     time.Minute,
+		RefreshTTL:    time.Hour,
+		InvitationTTL: time.Hour,
+	})
+
+	return &harness{router: r, db: *st, issuer: issuer}
+}
+
+func (h *harness) do(t *testing.T, method, path string, body any, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	var buf bytes.Buffer
+	if body != nil {
+		require.NoError(t, json.NewEncoder(&buf).Encode(body))
+	}
+	req := httptest.NewRequest(method, path, &buf)
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "192.0.2.10:1234"
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	w := httptest.NewRecorder()
+	h.router.ServeHTTP(w, req)
+	return w
+}
+
+func (h *harness) seedUser(t *testing.T, email, password string) model.User {
+	t.Helper()
+	hash, err := auth.HashPassword(password)
+	require.NoError(t, err)
+	u := model.User{Email: email, PasswordHash: hash}
+	require.NoError(t, h.db.DB.Create(&u).Error)
+	return u
+}
+
+func (h *harness) login(t *testing.T, email, password string) string {
+	t.Helper()
+	w := h.do(t, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"email": email, "password": password,
+	}, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var resp struct {
+		Data struct {
+			AccessToken string `json:"access_token"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotEmpty(t, resp.Data.AccessToken)
+	return resp.Data.AccessToken
+}
+
+func TestHealthz_ReturnsOK(t *testing.T) {
+	h := newHarness(t)
+	w := h.do(t, http.MethodGet, "/healthz", nil, "")
+	require.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestProtectedEndpoint_NoToken_401(t *testing.T) {
+	h := newHarness(t)
+	w := h.do(t, http.MethodGet, "/api/v1/orgs", nil, "")
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+func TestLogin_ReturnsTokens(t *testing.T) {
+	h := newHarness(t)
+	h.seedUser(t, "alice@example.com", "password123")
+
+	w := h.do(t, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"email": "alice@example.com", "password": "password123",
+	}, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	var resp struct {
+		Code string `json:"code"`
+		Data struct {
+			AccessToken  string `json:"access_token"`
+			RefreshToken string `json:"refresh_token"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Equal(t, "ok", resp.Code)
+	require.NotEmpty(t, resp.Data.AccessToken)
+	require.NotEmpty(t, resp.Data.RefreshToken)
+}
+
+func TestLogin_BadPassword_401(t *testing.T) {
+	h := newHarness(t)
+	h.seedUser(t, "bob@example.com", "password123")
+
+	w := h.do(t, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"email": "bob@example.com", "password": "wrong-password",
+	}, "")
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+// The sixth attempt from one IP within a minute must be rate limited.
+func TestLogin_RateLimited(t *testing.T) {
+	h := newHarness(t)
+	h.seedUser(t, "carol@example.com", "password123")
+
+	for i := 0; i < 5; i++ {
+		w := h.do(t, http.MethodPost, "/api/v1/auth/login", map[string]string{
+			"email": "carol@example.com", "password": "wrong-password",
+		}, "")
+		require.NotEqual(t, http.StatusTooManyRequests, w.Code, "attempt %d should not be limited yet", i+1)
+	}
+
+	w := h.do(t, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"email": "carol@example.com", "password": "wrong-password",
+	}, "")
+	require.Equal(t, http.StatusTooManyRequests, w.Code)
+}
+
+func TestCreateOrg_BecomesOwner(t *testing.T) {
+	h := newHarness(t)
+	h.seedUser(t, "dave@example.com", "password123")
+	token := h.login(t, "dave@example.com", "password123")
+
+	w := h.do(t, http.MethodPost, "/api/v1/orgs", map[string]string{"name": "acme"}, token)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+
+	var resp struct {
+		Data struct {
+			Id int64 `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotZero(t, resp.Data.Id)
+
+	var m model.Membership
+	require.NoError(t, store.ScopedByOrg(h.db.DB, uint(resp.Data.Id)).First(&m).Error)
+	require.Equal(t, model.RoleOwner, m.Role)
+}
+
+func TestListMembers_CrossOrg_Forbidden(t *testing.T) {
+	h := newHarness(t)
+	h.seedUser(t, "erin@example.com", "password123")
+	h.seedUser(t, "frank@example.com", "password123")
+
+	erinToken := h.login(t, "erin@example.com", "password123")
+	frankToken := h.login(t, "frank@example.com", "password123")
+
+	w := h.do(t, http.MethodPost, "/api/v1/orgs", map[string]string{"name": "erin-org"}, erinToken)
+	require.Equal(t, http.StatusCreated, w.Code)
+	w = h.do(t, http.MethodPost, "/api/v1/orgs", map[string]string{"name": "frank-org"}, frankToken)
+	require.Equal(t, http.StatusCreated, w.Code)
+
+	var frankResp struct {
+		Data struct {
+			Id int64 `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &frankResp))
+
+	w = h.do(t, http.MethodGet, "/api/v1/orgs/"+itoa(frankResp.Data.Id)+"/members", nil, erinToken)
+	require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+}
+
+func TestAcceptInvitation_JoinsAsRole(t *testing.T) {
+	h := newHarness(t)
+	h.seedUser(t, "owner@example.com", "password123")
+	ownerToken := h.login(t, "owner@example.com", "password123")
+
+	w := h.do(t, http.MethodPost, "/api/v1/orgs", map[string]string{"name": "invite-org"}, ownerToken)
+	require.Equal(t, http.StatusCreated, w.Code)
+	var orgResp struct {
+		Data struct {
+			Id int64 `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &orgResp))
+
+	w = h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgResp.Data.Id)+"/invitations",
+		map[string]string{"email": "newbie@example.com", "role": "admin"}, ownerToken)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+
+	var invResp struct {
+		Data struct {
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &invResp))
+	require.NotEmpty(t, invResp.Data.Token)
+
+	// Only the hash is stored.
+	var stored model.Invitation
+	require.NoError(t, store.ScopedByOrg(h.db.DB, uint(orgResp.Data.Id)).First(&stored).Error)
+	require.NotEqual(t, invResp.Data.Token, stored.TokenHash)
+	require.NotEmpty(t, stored.TokenHash)
+
+	w = h.do(t, http.MethodPost, "/api/v1/invitations/accept",
+		map[string]string{"token": invResp.Data.Token, "password": "newpass123"}, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	var member model.Membership
+	require.NoError(t, store.ScopedByOrg(h.db.DB, uint(orgResp.Data.Id)).
+		Where("role = ?", model.RoleAdmin).First(&member).Error)
+	require.NotZero(t, member.UserID)
+
+	// Reusing the token must fail with a conflict.
+	w = h.do(t, http.MethodPost, "/api/v1/invitations/accept",
+		map[string]string{"token": invResp.Data.Token, "password": "newpass123"}, "")
+	require.Equal(t, http.StatusConflict, w.Code)
+}
+
+func itoa(v int64) string {
+	return json.Number(func() string {
+		b, _ := json.Marshal(v)
+		return string(b)
+	}()).String()
+}

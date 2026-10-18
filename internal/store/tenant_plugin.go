@@ -24,6 +24,9 @@ func registerTenantPlugin(db *gorm.DB) error {
 		if tx.Statement == nil {
 			return
 		}
+		if isCrossTenant(tx.Statement) {
+			return
+		}
 		var orgID uint
 		hasCtx := false
 		if tx.Statement.Context != nil {
