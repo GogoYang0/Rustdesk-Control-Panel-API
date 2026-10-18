@@ -81,7 +81,7 @@ type parenGroup struct {
 
 // Build implements clause.Expression.
 func (g parenGroup) Build(builder clause.Builder) {
-	builder.WriteByte('(')
+	_ = builder.WriteByte('(')
 	clause.Where{Exprs: g.exprs}.Build(builder)
-	builder.WriteByte(')')
+	_ = builder.WriteByte(')')
 }
