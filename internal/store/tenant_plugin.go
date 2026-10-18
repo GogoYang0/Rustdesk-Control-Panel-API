@@ -165,24 +165,6 @@ func normalizeTableName(raw string) string {
 	return strings.Trim(s, "\"`[]")
 }
 
-// joinedScopedTable reports the first registered scoped table referenced by a
-// JOIN expression, or an empty string.
-func joinedScopedTable(joins []clause.Expression) string {
-	for _, j := range joins {
-		sql := expressionSQL(j)
-		if sql == "" {
-			continue
-		}
-		lower := strings.ToLower(sql)
-		for _, table := range scopedTableNames() {
-			if containsWord(lower, strings.ToLower(table)) {
-				return table
-			}
-		}
-	}
-	return ""
-}
-
 func expressionSQL(expr clause.Expression) string {
 	switch v := expr.(type) {
 	case clause.Expr:
