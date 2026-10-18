@@ -116,3 +116,39 @@ func TestScopedByOrg_OrCannotEscapeTenant(t *testing.T) {
 	require.NoError(t, store.ScopedByOrg(db, orgA.ID).Or("user_id = ?", 10).Find(&orgOr).Error)
 	require.Empty(t, orgOr, "top-level OR must fail closed even inside the tenant")
 }
+
+// Scan/Row go through the Row callback chain and must be scoped too.
+func TestScopedByOrg_ScanIsScoped(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	orgA := model.Organization{Name: "org-a-scan"}
+	orgB := model.Organization{Name: "org-b-scan"}
+	require.NoError(t, db.Create(&orgA).Error)
+	require.NoError(t, db.Create(&orgB).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgA.ID, UserID: 31, Role: model.RoleOwner}).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgB.ID, UserID: 32, Role: model.RoleMember}).Error)
+
+	type count struct{ N int }
+	var c count
+	require.NoError(t, store.ScopedByOrg(db, orgA.ID).
+		Model(&model.Membership{}).
+		Select("count(*) as n").
+		Scan(&c).Error)
+	require.Equal(t, 1, c.N, "Scan must stay inside the tenant")
+
+}
+
+// Forgetting ScopedByOrg entirely must not expose other tenants' rows.
+func TestUnscopedQuery_FailsClosed(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	org := model.Organization{Name: "org-no-ctx"}
+	require.NoError(t, db.Create(&org).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: org.ID, UserID: 41, Role: model.RoleOwner}).Error)
+
+	var rows []model.Membership
+	require.NoError(t, db.Find(&rows).Error)
+	require.Empty(t, rows, "a missing tenant context must return no rows")
+}

@@ -6,14 +6,15 @@ import (
 )
 
 // registerTenantPlugin adds the organization condition to every query against a
-// registered scoped table. Two guarantees:
+// registered scoped table. It is attached to the Query, Row, Update and Delete
+// callback chains, so Find and Scan both go through it.
 //
-//  1. Queries without a tenant context are rejected (fail closed), so a missing
-//     org id can never widen a result set.
+// Guarantees:
+//  1. No tenant context on a scoped table fails closed (WHERE 1 = 0), so a
+//     forgotten ScopedByOrg call cannot read every tenant's rows.
 //  2. A top-level OR written by the caller cannot escape the tenant boundary:
-//     GORM flattens chained WHERE/OR clauses, so such a statement is replaced by
-//     a fail-closed condition instead of guessing at grouping. Callers that need
-//     an internal disjunction must pass a nested group (clause.Group) themselves.
+//     GORM flattens chained WHERE/OR clauses and offers no grouping primitive,
+//     so such a statement fails closed instead of guessing at syntax.
 func registerTenantPlugin(db *gorm.DB) error {
 	inject := func(tx *gorm.DB) {
 		if tx.Statement == nil || tx.Statement.Schema == nil {
@@ -22,14 +23,15 @@ func registerTenantPlugin(db *gorm.DB) error {
 		if !tableIsScoped(tx.Statement.Schema.Table) {
 			return
 		}
-		if tx.Statement.Context == nil {
-			return
+
+		var orgID uint
+		hasCtx := false
+		if tx.Statement.Context != nil {
+			if raw := tx.Statement.Context.Value(orgContextKey); raw != nil {
+				orgID, _ = raw.(uint)
+				hasCtx = true
+			}
 		}
-		rawOrg := tx.Statement.Context.Value(orgContextKey)
-		if rawOrg == nil {
-			return
-		}
-		orgID, _ := rawOrg.(uint)
 
 		var exprs []clause.Expression
 		if w, ok := tx.Statement.Clauses["WHERE"].Expression.(clause.Where); ok {
@@ -38,8 +40,8 @@ func registerTenantPlugin(db *gorm.DB) error {
 
 		var tenantExpr clause.Expression
 		switch {
-		case orgID == 0:
-			// No tenant context: match nothing, ignore caller conditions entirely.
+		case !hasCtx || orgID == 0:
+			// Missing tenant context: match nothing, ignore caller conditions.
 			tenantExpr = clause.Expr{SQL: "1 = 0"}
 			exprs = nil
 		case hasTopLevelOr(exprs):
@@ -57,14 +59,18 @@ func registerTenantPlugin(db *gorm.DB) error {
 		}
 	}
 
-	if err := db.Callback().Query().Before("gorm:query").Register("panel:tenant_scope", inject); err != nil {
-		return err
+	chains := []struct {
+		register func(name string, fn func(*gorm.DB)) error
+	}{
+		{db.Callback().Query().Before("gorm:query").Register},
+		{db.Callback().Row().Before("gorm:row").Register},
+		{db.Callback().Update().Before("gorm:update").Register},
+		{db.Callback().Delete().Before("gorm:delete").Register},
 	}
-	if err := db.Callback().Update().Before("gorm:update").Register("panel:tenant_scope", inject); err != nil {
-		return err
-	}
-	if err := db.Callback().Delete().Before("gorm:delete").Register("panel:tenant_scope", inject); err != nil {
-		return err
+	for _, c := range chains {
+		if err := c.register("panel:tenant_scope", inject); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -62,8 +62,14 @@ func tableIsScoped(table string) bool {
 // clauses cannot escape it (a plain WHERE would).
 //
 // A zero orgID fails closed: the injected condition matches no rows.
+//
+// Raw() and Exec() carry no schema, so the tenant plugin cannot scope them:/n// raw SQL must never be used for tenant data.
 func ScopedByOrg(db *gorm.DB, orgID uint) *gorm.DB {
-	return db.WithContext(context.WithValue(context.Background(), orgContextKey, orgID))
+	parent := context.Background()
+	if db.Statement != nil && db.Statement.Context != nil {
+		parent = db.Statement.Context
+	}
+	return db.WithContext(context.WithValue(parent, orgContextKey, orgID))
 }
 
 // RequireOrgID fails fast when an org-scoped call has no organization.
