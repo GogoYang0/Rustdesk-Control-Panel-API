@@ -1,10 +1,12 @@
 package compatapi
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
@@ -73,24 +75,26 @@ func (s *Server) sysinfo(c *gin.Context) {
 }
 
 // touchDevice records a heartbeat for the device bound to the session's
-// organization; the device row is created on demand.
+// organization. The row must exist and carry this session's binding: a
+// deleted row is not resurrected here — the admin's delete is the binding
+// reset, and the client re-claims the device through a fresh login
+// (claimDevice); a row re-bound to another client instance is left alone.
 func (s *Server) touchDevice(c *gin.Context, session *model.CompatSession, rustdeskID string) error {
 	orgID := session.OrganizationID
 	var dev model.Device
 	err := store.ScopedByOrg(s.deps.DB, orgID).Where("rustdesk_id = ?", rustdeskID).First(&dev).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		// The admin deleted the row to reset the binding; the old session
+		// must not resurrect or re-claim it.
+		return nil
+	}
 	if err != nil {
-		// The binding at login creates it; a missing row means the admin
-		// deleted it meanwhile — recreate so the heartbeat is not lost.
-		// The recreated row is claimed by this session's client instance.
-		created, rerr := s.deps.Devices.Register(c.Request.Context(), orgID, device.RegisterInput{
-			Name:       rustdeskID,
-			RustdeskID: rustdeskID,
-			BoundUUID:  session.UUID,
-		})
-		if rerr != nil {
-			return rerr
-		}
-		dev = *created
+		// A transient query failure must not be mistaken for a missing row.
+		return err
+	}
+	if dev.BoundUUID != session.UUID {
+		// The binding moved to another client instance meanwhile.
+		return nil
 	}
 	_, err = s.deps.Devices.Heartbeat(c.Request.Context(), orgID, dev.ID)
 	return err

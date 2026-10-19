@@ -187,12 +187,18 @@ func (s *Server) claimDevice(ctx context.Context, orgID uint, rustdeskID, uuid s
 		Where("rustdesk_id = ?", rustdeskID).First(&dev).Error
 	switch {
 	case errors.Is(err, gorm.ErrRecordNotFound):
-		_, rerr := s.deps.Devices.Register(ctx, orgID, device.RegisterInput{
+		created, rerr := s.deps.Devices.Register(ctx, orgID, device.RegisterInput{
 			Name:       rustdeskID,
 			RustdeskID: rustdeskID,
 			BoundUUID:  uuid,
 		})
-		return rerr
+		if rerr != nil {
+			return rerr
+		}
+		// A concurrent request may have registered and claimed the row
+		// first: the upsert never overwrites an existing binding, so the
+		// race loser must judge on the actually stored value.
+		dev = *created
 	case err != nil:
 		return err
 	}
@@ -200,11 +206,23 @@ func (s *Server) claimDevice(ctx context.Context, orgID uint, rustdeskID, uuid s
 		return errDeviceBound
 	}
 	if dev.BoundUUID == "" && uuid != "" {
-		// The WHERE guard keeps a concurrent first claim from being
-		// overwritten by a slower request.
-		return store.ScopedByOrg(s.deps.DB, orgID).Model(&model.Device{}).
+		res := store.ScopedByOrg(s.deps.DB, orgID).Model(&model.Device{}).
 			Where("id = ? AND bound_uuid = ''", dev.ID).
-			Update("bound_uuid", uuid).Error
+			Update("bound_uuid", uuid)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			// Another request claimed the row first: re-read and compare
+			// against the stored binding before issuing anything.
+			if err := store.ScopedByOrg(s.deps.DB, orgID).
+				First(&dev, dev.ID).Error; err != nil {
+				return err
+			}
+			if dev.BoundUUID != uuid {
+				return errDeviceBound
+			}
+		}
 	}
 	return nil
 }

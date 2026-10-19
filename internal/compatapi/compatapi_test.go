@@ -509,3 +509,41 @@ func TestLogin_AllowsSameUUIDRelogin(t *testing.T) {
 		Where("rustdesk_id = ?", "333333333").First(&dev).Error)
 	require.Equal(t, "same-uuid", dev.BoundUUID)
 }
+
+// An admin's device-row delete is the binding reset: the old session must
+// not resurrect the row through a heartbeat, and a stale session must not
+// drive a row that was meanwhile re-bound to another client instance.
+func TestHeartbeat_DoesNotResurrectOrHijack(t *testing.T) {
+	h := newHarness(t)
+	u := h.seedUser(t, "stale@example.com", "password123", true)
+	org := h.seedOrg(t, "acme")
+	h.seedMembership(t, u.ID, org.ID)
+
+	fixture := loadFixture(t, "heartbeat_request.json")
+	id := fixture["id"].(string)
+	h.login(t, "stale@example.com", "password123", id, fixture["uuid"].(string))
+
+	// The binding moves to another client instance (as a fresh login of the
+	// new owner would): the stale session is ignored.
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).Model(&model.Device{}).
+		Where("rustdesk_id = ?", id).Update("bound_uuid", "new-owner-uuid").Error)
+	w := h.do(t, http.MethodPost, "/api/heartbeat", fixture, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	var dev model.Device
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).
+		Where("rustdesk_id = ?", id).First(&dev).Error)
+	require.Nil(t, dev.LastSeenAt, "a stale session must not drive a re-bound device")
+
+	// The admin resets the binding by deleting the row: the old session
+	// must not resurrect it.
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).
+		Where("rustdesk_id = ?", id).Delete(&model.Device{}).Error)
+	w = h.do(t, http.MethodPost, "/api/heartbeat", fixture, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	var count int64
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).
+		Model(&model.Device{}).Where("rustdesk_id = ?", id).Count(&count).Error)
+	require.Zero(t, count, "the old session must not resurrect the deleted row")
+}
