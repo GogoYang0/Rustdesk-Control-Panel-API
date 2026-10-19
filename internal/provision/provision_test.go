@@ -25,11 +25,12 @@ const (
 )
 
 type fixture struct {
-	st   store.Store
-	pool *provision.PortPool
-	orch *provision.MockOrchestrator
-	svc  *provision.Service
-	logs *bytes.Buffer
+	st      store.Store
+	pool    *provision.PortPool
+	orch    *provision.MockOrchestrator
+	svc     *provision.Service
+	logs    *bytes.Buffer
+	dataDir string
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -50,11 +51,17 @@ func newFixture(t *testing.T) *fixture {
 
 	orch := &provision.MockOrchestrator{}
 	pool := provision.NewPortPool(st.DB, testPortStart, testPortEnd)
+	dataDir := t.TempDir()
 	return &fixture{
-		st:   *st,
-		pool: pool,
-		orch: orch,
-		svc:  provision.NewService(st.DB, pool, orch, zap.New(core)),
+		st:      *st,
+		pool:    pool,
+		orch:    orch,
+		dataDir: dataDir,
+		svc: provision.NewService(st.DB, pool, orch, zap.New(core), provision.Config{
+			Image:     "rustdesk/rustdesk-server:test",
+			RelayHost: "relay.test",
+			DataDir:   dataDir,
+		}),
 		logs: buf,
 	}
 }
@@ -66,7 +73,6 @@ func (f *fixture) org(t *testing.T, name string) model.Organization {
 	return o
 }
 
-// Review Focus #4: concurrent provisioning must never hand out the same pair.
 func TestPortPool_ConcurrentAllocate_NoDup(t *testing.T) {
 	f := newFixture(t)
 
@@ -95,11 +101,23 @@ func TestPortPool_ConcurrentAllocate_NoDup(t *testing.T) {
 		key := fmt.Sprintf("%d-%d", results[i].HbbsPort, results[i].HbbrPort)
 		require.False(t, seen[key], "duplicate port pair %s", key)
 		seen[key] = true
-		require.EqualValues(t, results[i].HbbsPort+1, results[i].HbbrPort, "ports must be adjacent")
+		require.EqualValues(t, results[i].HbbsPort+1, results[i].HbbrPort)
 	}
 }
 
-// Review Focus #2: a failed deploy releases the ports and leaves no row.
+// A second allocation for the same org must fail fast, not scan the whole pool.
+func TestPortPool_SecondAllocateForSameOrg_ReportsConflict(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "same-org")
+
+	_, err := f.pool.Allocate(org.ID)
+	require.NoError(t, err)
+
+	_, err = f.pool.Allocate(org.ID)
+	require.ErrorIs(t, err, provision.ErrProvisioningInProgress)
+	require.NotErrorIs(t, err, provision.ErrPortPoolExhausted)
+}
+
 func TestProvision_FailureRollsBack(t *testing.T) {
 	f := newFixture(t)
 	org := f.org(t, "rollback-org")
@@ -110,15 +128,54 @@ func TestProvision_FailureRollsBack(t *testing.T) {
 
 	var count int64
 	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Model(&model.ServerGroup{}).Count(&count).Error)
-	require.Zero(t, count, "no server group may remain after a failed deploy")
+	require.Zero(t, count, "a clean rollback removes the row and frees the ports")
 	require.Contains(t, f.orch.Removed, fmt.Sprintf("panel-org-%d", org.ID))
 
-	// The ports are free again, so a retry succeeds with the first pair.
 	f.orch.FailWith = nil
 	row, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
 	require.NoError(t, err)
 	require.EqualValues(t, testPortStart, row.HbbsPort)
 	require.Equal(t, model.ServerGroupDeployed, row.State)
+}
+
+// When cleanup itself fails the row must stay in the failed state so the ports
+// are not handed to another organization.
+func TestProvision_CleanupFailure_KeepsPortsReserved(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "stuck-org")
+	f.orch.FailWith = errors.New("docker unavailable")
+	f.orch.RemoveErr = errors.New("cannot remove container")
+
+	_, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.Error(t, err)
+
+	var row model.ServerGroup
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).First(&row).Error)
+	require.Equal(t, model.ServerGroupFailed, row.State)
+	require.NotEmpty(t, row.LastError)
+
+	// Ports stay reserved, so a retry reports a pending record instead of
+	// silently reusing them.
+	f.orch.FailWith = nil
+	f.orch.RemoveErr = nil
+	_, err = f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.ErrorIs(t, err, provision.ErrProvisioningInProgress)
+}
+
+// Cleanup must not inherit an already-cancelled deploy context.
+func TestProvision_CleanupUsesLiveContext(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "cancel-org")
+	f.orch.FailWith = errors.New("deploy timed out")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := f.svc.ProvisionForOrg(ctx, org.ID)
+	require.Error(t, err)
+	require.NotContains(t, f.orch.Removed, "", "remove was attempted")
+	require.Contains(t, f.orch.Removed, fmt.Sprintf("panel-org-%d", org.ID),
+		"rollback must run with a live context, not the cancelled one")
 }
 
 func TestProvision_SuccessStoresPublicKeyOnly(t *testing.T) {
@@ -130,12 +187,12 @@ func TestProvision_SuccessStoresPublicKeyOnly(t *testing.T) {
 	require.NotEmpty(t, row.PubKey)
 	require.NotEmpty(t, row.Fingerprint)
 	require.NotEmpty(t, row.ConfigSnapshot)
-
-	// The persisted snapshot and the emitted logs must never carry the private
-	// key material.
 	require.NotContains(t, row.ConfigSnapshot, "PRIVATE KEY")
-	require.NotContains(t, f.logs.String(), "PRIVATE KEY")
-	require.NotContains(t, f.logs.String(), "BEGIN PRIVATE")
+
+	require.Len(t, f.orch.Deployed, 1)
+	require.NotEmpty(t, f.orch.Deployed[0].PrivateKey, "the key pair must reach the orchestrator")
+	require.NotContains(t, f.logs.String(), f.orch.Deployed[0].PrivateKey,
+		"the private key must never be logged")
 
 	_, err = f.svc.ProvisionForOrg(context.Background(), org.ID)
 	require.ErrorIs(t, err, provision.ErrAlreadyProvisioned)
@@ -156,5 +213,5 @@ func TestDeprovision_FreesPorts(t *testing.T) {
 	next := f.org(t, "next-org")
 	again, err := f.svc.ProvisionForOrg(context.Background(), next.ID)
 	require.NoError(t, err)
-	require.Equal(t, row.HbbsPort, again.HbbsPort, "released ports are reusable")
+	require.Equal(t, row.HbbsPort, again.HbbsPort)
 }

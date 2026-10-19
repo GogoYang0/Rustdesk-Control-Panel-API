@@ -4,40 +4,46 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/pem"
 	"fmt"
+	"strings"
 )
+
+// keyGenerationAttempts mirrors RustDesk's own retry: it regenerates keys until
+// the encoded secret avoids characters that would break its config parsing.
+const keyGenerationAttempts = 20
 
 // KeyPair is a RustDesk-compatible ed25519 identity.
 //
-// RustDesk keeps the private key as an OpenSSH/PKCS#8 PEM file (id_ed25519) and
-// the public key as base64 of the raw 32 bytes (id_ed25519.pub).
+// RustDesk stores id_ed25519 as base64 of the 64-byte secret key (seed||pub) and
+// id_ed25519.pub as base64 of the raw 32-byte public key. Go's ed25519.PrivateKey
+// already uses that 64-byte layout, so it is encoded directly.
 type KeyPair struct {
-	PrivatePEM  string
+	PrivateKey  string
 	PublicKey   string
 	Fingerprint string
 }
 
-// GenerateKeyPair creates a fresh ed25519 identity.
+// GenerateKeyPair creates a fresh ed25519 identity in RustDesk's encoding.
 func GenerateKeyPair() (KeyPair, error) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return KeyPair{}, fmt.Errorf("generate ed25519 key: %w", err)
-	}
+	for attempt := 0; attempt < keyGenerationAttempts; attempt++ {
+		pub, priv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			return KeyPair{}, fmt.Errorf("generate ed25519 key: %w", err)
+		}
 
-	der, err := x509.MarshalPKCS8PrivateKey(priv)
-	if err != nil {
-		return KeyPair{}, fmt.Errorf("marshal private key: %w", err)
-	}
-	privPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+		secret := base64.StdEncoding.EncodeToString(priv)
+		if strings.ContainsAny(secret, "/:") {
+			continue
+		}
 
-	sum := sha256.Sum256(pub)
-	return KeyPair{
-		PrivatePEM:  privPEM,
-		PublicKey:   base64.StdEncoding.EncodeToString(pub),
-		Fingerprint: hex.EncodeToString(sum[:16]),
-	}, nil
+		sum := sha256.Sum256(pub)
+		return KeyPair{
+			PrivateKey:  secret,
+			PublicKey:   base64.StdEncoding.EncodeToString(pub),
+			Fingerprint: hex.EncodeToString(sum[:16]),
+		}, nil
+	}
+	return KeyPair{}, fmt.Errorf("generate ed25519 key: no acceptable encoding after %d attempts", keyGenerationAttempts)
 }

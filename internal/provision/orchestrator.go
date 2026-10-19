@@ -2,8 +2,13 @@ package provision
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -13,7 +18,11 @@ type InstanceSpec struct {
 	OrgID      uint
 	HbbsPort   uint16
 	HbbrPort   uint16
-	PrivatePEM string
+	PrivateKey string
+	PublicKey  string
+	Image      string
+	RelayHost  string
+	DataDir    string
 }
 
 // InstanceState is the observed state of one deployment.
@@ -31,9 +40,10 @@ type Orchestrator interface {
 
 // MockOrchestrator records calls for tests and can simulate failures.
 type MockOrchestrator struct {
-	Deployed []InstanceSpec
-	Removed  []string
-	FailWith error
+	Deployed  []InstanceSpec
+	Removed   []string
+	FailWith  error
+	RemoveErr error
 }
 
 // Deploy implements Orchestrator.
@@ -47,6 +57,9 @@ func (m *MockOrchestrator) Deploy(_ context.Context, spec InstanceSpec) error {
 
 // Remove implements Orchestrator.
 func (m *MockOrchestrator) Remove(_ context.Context, name string) error {
+	if m.RemoveErr != nil {
+		return m.RemoveErr
+	}
 	m.Removed = append(m.Removed, name)
 	return nil
 }
@@ -64,52 +77,118 @@ func (m *MockOrchestrator) Status(_ context.Context, name string) (InstanceState
 // DockerOrchestrator drives the docker CLI.
 //
 // The SDK is intentionally not vendored in M1: the CLI keeps the dependency
-// surface small and the compose labels are the only contract we need. The
-// interface stays the same, so swapping in the SDK later is local to this file.
+// surface small and the container layout is the only contract we need.
 type DockerOrchestrator struct {
-	OrgLabel   string
-	RoleLabel  string
-	RelayHost  string
-	ComposeDir string
+	OrgLabel  string
+	RoleLabel string
 }
 
-// Deploy implements Orchestrator.
+// Deploy starts one hbbs and one hbbr container that share a per-org data
+// directory holding the generated key pair.
 func (d *DockerOrchestrator) Deploy(ctx context.Context, spec InstanceSpec) error {
-	args := []string{
-		"run", "-d", "--name", spec.Name,
+	if spec.Image == "" {
+		return errors.New("provision.image must be configured")
+	}
+	if spec.RelayHost == "" {
+		return errors.New("provision.relayHost must be configured")
+	}
+	if spec.DataDir == "" {
+		return errors.New("provision.dataDir must be configured")
+	}
+	if spec.PrivateKey == "" || spec.PublicKey == "" {
+		return errors.New("device keys are required")
+	}
+	if err := writeKeyFiles(spec); err != nil {
+		return err
+	}
+
+	hbbsName := spec.Name + "-hbbs"
+	if err := runDocker(ctx, d.hbbsArgs(spec, hbbsName)...); err != nil {
+		return err
+	}
+
+	hbbrName := spec.Name + "-hbbr"
+	if err := runDocker(ctx, d.hbbrArgs(spec, hbbrName)...); err != nil {
+		// Do not leave a half-deployed pair behind.
+		_ = runDocker(ctx, "rm", "-f", hbbsName)
+		return fmt.Errorf("start hbbr: %w", err)
+	}
+	return nil
+}
+
+// hbbsArgs renders the hbbs container arguments. Ports 21115/21116 (tcp and udp)
+// belong to hbbs; the relay port belongs to hbbr.
+func (d *DockerOrchestrator) hbbsArgs(spec InstanceSpec, name string) []string {
+	relay := net.JoinHostPort(spec.RelayHost, strconv.Itoa(int(spec.HbbrPort)))
+	return []string{
+		"run", "-d", "--name", name,
 		"--label", fmt.Sprintf("%s=%d", d.OrgLabel, spec.OrgID),
-		"--label", fmt.Sprintf("%s=hbbs-hbbr", d.RoleLabel),
-		"-p", fmt.Sprintf("%d:21116/udp", spec.HbbsPort),
-		"-p", fmt.Sprintf("%d:21116", spec.HbbsPort),
+		"--label", fmt.Sprintf("%s=hbbs", d.RoleLabel),
+		"-v", spec.DataDir + ":/root",
 		"-p", fmt.Sprintf("%d:21115", spec.HbbsPort),
+		"-p", fmt.Sprintf("%d:21116", spec.HbbsPort),
+		"-p", fmt.Sprintf("%d:21116/udp", spec.HbbsPort),
+		spec.Image,
+		"hbbs", "-r", relay,
+	}
+}
+
+// hbbrArgs renders the hbbr container arguments.
+func (d *DockerOrchestrator) hbbrArgs(spec InstanceSpec, name string) []string {
+	return []string{
+		"run", "-d", "--name", name,
+		"--label", fmt.Sprintf("%s=%d", d.OrgLabel, spec.OrgID),
+		"--label", fmt.Sprintf("%s=hbbr", d.RoleLabel),
+		"-v", spec.DataDir + ":/root",
 		"-p", fmt.Sprintf("%d:21117", spec.HbbrPort),
 		"-p", fmt.Sprintf("%d:21118", spec.HbbrPort),
 		"-p", fmt.Sprintf("%d:21119", spec.HbbrPort),
-		"rustdesk/rustdesk-server:latest",
-		"hbbs", "-r", fmt.Sprintf("%s:%d", d.relayHost(), spec.HbbrPort),
+		spec.Image,
+		"hbbr",
 	}
-	return runDocker(ctx, args...)
 }
 
-// Remove implements Orchestrator.
+// writeKeyFiles stores the key pair in the per-org data directory.
+func writeKeyFiles(spec InstanceSpec) error {
+	if err := os.MkdirAll(spec.DataDir, 0o700); err != nil {
+		return fmt.Errorf("create data dir: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(spec.DataDir, "id_ed25519"), []byte(spec.PrivateKey), 0o600); err != nil {
+		return fmt.Errorf("write private key: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(spec.DataDir, "id_ed25519.pub"), []byte(spec.PublicKey), 0o644); err != nil {
+		return fmt.Errorf("write public key: %w", err)
+	}
+	return nil
+}
+
+// Remove stops both containers of an instance.
 func (d *DockerOrchestrator) Remove(ctx context.Context, name string) error {
-	if err := runDocker(ctx, "rm", "-f", name); err != nil {
-		return fmt.Errorf("remove %s: %w", name, err)
+	var errs []string
+	for _, suffix := range []string{"-hbbs", "-hbbr"} {
+		if err := runDockerAllowMissing(ctx, "rm", "-f", name+suffix); err != nil {
+			errs = append(errs, err.Error())
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("remove %s: %s", name, strings.Join(errs, "; "))
 	}
 	return nil
 }
 
 // Status implements Orchestrator.
 func (d *DockerOrchestrator) Status(ctx context.Context, name string) (InstanceState, error) {
-	out, err := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{.State.Running}}", name).Output()
+	running, err := runDockerOutput(ctx, "inspect", "-f", "{{.State.Running}}", name+"-hbbs")
 	if err != nil {
 		return InstanceState{Name: name}, nil
 	}
-	return InstanceState{Name: name, Running: strings.TrimSpace(string(out)) == "true"}, nil
+	return InstanceState{Name: name, Running: strings.TrimSpace(running) == "true"}, nil
 }
 
+var execCommand = exec.CommandContext
+
 func runDocker(ctx context.Context, args ...string) error {
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := execCommand(ctx, "docker", args...)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -118,10 +197,25 @@ func runDocker(ctx context.Context, args ...string) error {
 	return nil
 }
 
-// relayHost falls back to loopback when the deployment runs on one host.
-func (d *DockerOrchestrator) relayHost() string {
-	if d.RelayHost == "" {
-		return "127.0.0.1"
+// runDockerAllowMissing ignores "no such container", keeping Remove idempotent.
+func runDockerAllowMissing(ctx context.Context, args ...string) error {
+	cmd := execCommand(ctx, "docker", args...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if strings.Contains(strings.ToLower(msg), "no such container") {
+			return nil
+		}
+		return fmt.Errorf("docker %s: %w: %s", args[0], err, msg)
 	}
-	return d.RelayHost
+	return nil
+}
+
+func runDockerOutput(ctx context.Context, args ...string) (string, error) {
+	out, err := execCommand(ctx, "docker", args...).Output()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }

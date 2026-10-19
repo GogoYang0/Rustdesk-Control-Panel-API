@@ -1,14 +1,12 @@
 package api
 
 import (
-	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	openapi_types "github.com/oapi-codegen/runtime/types"
@@ -34,6 +32,23 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 		return
 	}
 
+	// Per-user organization quota: every creation reserves a port pair and a
+	// container pair, so it must be bounded (CWE-770).
+	if a.deps.OrgsPerUser > 0 {
+		var owned int64
+		if err := store.WithoutTenantScope(a.deps.DB).
+			Model(&model.Membership{}).
+			Where("user_id = ? AND role = ?", uid, model.RoleOwner).
+			Count(&owned).Error; err != nil {
+			abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not create organization")
+			return
+		}
+		if owned >= int64(a.deps.OrgsPerUser) {
+			abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "organization quota reached")
+			return
+		}
+	}
+
 	org := model.Organization{Name: req.Name}
 	err := a.deps.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&org).Error; err != nil {
@@ -51,17 +66,12 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 		return
 	}
 
-	// Provisioning is slow (container start), so it runs after the response.
-	// The context must not be the request one: it is cancelled on return.
-	if a.deps.Provision != nil {
-		orgID := org.ID
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			defer cancel()
-			if _, err := a.deps.Provision.ProvisionForOrg(ctx, orgID); err != nil {
-				a.deps.Logger.Error("provision hbbs/hbbr failed", zap.Uint("org_id", orgID), zap.Error(err))
-			}
-		}()
+	// Provisioning is slow (container start), so it runs on a bounded worker
+	// queue after the response.
+	if a.deps.ProvisionQueue != nil {
+		if err := a.deps.ProvisionQueue.Enqueue(org.ID); err != nil {
+			a.deps.Logger.Error("enqueue provisioning failed", zap.Uint("org_id", org.ID), zap.Error(err))
+		}
 	}
 
 	c.JSON(http.StatusCreated, gen.OrgResponse{

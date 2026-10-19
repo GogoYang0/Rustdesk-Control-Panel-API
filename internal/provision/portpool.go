@@ -13,11 +13,19 @@ import (
 // ErrPortPoolExhausted is returned when no free port pair is left in the range.
 var ErrPortPoolExhausted = errors.New("no free hbbs/hbbr port pair in the configured range")
 
+// ErrAlreadyProvisioned is returned when the organization already has a
+// deployed server group.
+var ErrAlreadyProvisioned = errors.New("organization already provisioned")
+
+// ErrProvisioningInProgress is returned when the organization has a pending or
+// failed row that must be cleaned up first.
+var ErrProvisioningInProgress = errors.New("organization has a pending provisioning record")
+
 // PortPool allocates hbbs/hbbr port pairs.
 //
 // Allocation is a database insert: the unique indexes on hbbs_port and hbbr_port
-// make a collision observable, and the allocator simply tries the next pair.
-// Two instances therefore never hand out the same pair.
+// make a collision observable, and the allocator tries the next pair. Two
+// instances therefore never hand out the same pair.
 type PortPool struct {
 	db    *gorm.DB
 	start uint16
@@ -30,14 +38,28 @@ func NewPortPool(db *gorm.DB, start, end uint16) *PortPool {
 }
 
 // Allocate reserves a port pair for the organization and returns the pending
-// row. The caller owns the row: it either finalises it after a successful
-// deploy or deletes it to release the ports.
+// row. The caller either finalises it after a successful deploy or deletes it to
+// release the ports.
 func (p *PortPool) Allocate(orgID uint) (*model.ServerGroup, error) {
 	if err := store.RequireOrgID(orgID); err != nil {
 		return nil, err
 	}
 	if p.start == 0 || p.end <= p.start {
 		return nil, fmt.Errorf("invalid port range %d-%d", p.start, p.end)
+	}
+
+	// Distinguish an organization conflict from a port conflict: without this
+	// check every create would collide on organization_id and the loop would
+	// report a bogus "port pool exhausted" after scanning the whole range.
+	var existing model.ServerGroup
+	err := store.ScopedByOrg(p.db, orgID).First(&existing).Error
+	switch {
+	case err == nil && existing.State == model.ServerGroupDeployed:
+		return nil, fmt.Errorf("%w", ErrAlreadyProvisioned)
+	case err == nil:
+		return nil, fmt.Errorf("%w: state=%s", ErrProvisioningInProgress, existing.State)
+	case !errors.Is(err, gorm.ErrRecordNotFound):
+		return nil, fmt.Errorf("look up server group: %w", err)
 	}
 
 	var lastErr error

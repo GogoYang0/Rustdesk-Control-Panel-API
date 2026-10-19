@@ -445,3 +445,27 @@ func TestCreateDevice_MemberRole_Forbidden(t *testing.T) {
 		map[string]string{"name": "nope", "rustdesk_id": "1"}, memberToken)
 	require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
 }
+
+// A user must not be able to create organizations without bound.
+func TestCreateOrg_QuotaEnforced(t *testing.T) {
+	h := newHarness(t)
+	h.router = api.NewRouter(api.Deps{
+		DB:            h.db.DB,
+		Auth:          auth.NewService(h.db.DB, h.issuer, nil),
+		Issuer:        h.issuer,
+		Devices:       device.NewService(h.db.DB, nil),
+		AccessTTL:     time.Minute,
+		RefreshTTL:    time.Hour,
+		InvitationTTL: time.Hour,
+		OrgsPerUser:   1,
+	})
+
+	h.seedUser(t, "quota@example.com", "password123")
+	token := h.login(t, "quota@example.com", "password123")
+
+	w := h.do(t, http.MethodPost, "/api/v1/orgs", map[string]string{"name": "first"}, token)
+	require.Equal(t, http.StatusCreated, w.Code)
+
+	w = h.do(t, http.MethodPost, "/api/v1/orgs", map[string]string{"name": "second"}, token)
+	require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
+}

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"time"
 
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -13,8 +15,16 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
 
-// ErrAlreadyProvisioned is returned when a deployed group already exists.
-var ErrAlreadyProvisioned = errors.New("organization already provisioned")
+// cleanupTimeout bounds rollback work, which must not inherit the deploy
+// deadline: the deploy context may already be cancelled.
+const cleanupTimeout = 30 * time.Second
+
+// Config carries deployment settings.
+type Config struct {
+	Image     string
+	RelayHost string
+	DataDir   string
+}
 
 // Service provisions one hbbs/hbbr pair per organization.
 type Service struct {
@@ -22,14 +32,15 @@ type Service struct {
 	pool   *PortPool
 	orch   Orchestrator
 	logger *zap.Logger
+	cfg    Config
 }
 
 // NewService builds the provisioning service.
-func NewService(db *gorm.DB, pool *PortPool, orch Orchestrator, logger *zap.Logger) *Service {
+func NewService(db *gorm.DB, pool *PortPool, orch Orchestrator, logger *zap.Logger, cfg Config) *Service {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	return &Service{db: db, pool: pool, orch: orch, logger: logger}
+	return &Service{db: db, pool: pool, orch: orch, logger: logger, cfg: cfg}
 }
 
 // snapshot is the subset written to ServerGroup.ConfigSnapshot. It never
@@ -42,19 +53,10 @@ type snapshot struct {
 }
 
 // ProvisionForOrg allocates ports, generates keys, deploys and persists the
-// result. Any failure releases the ports and removes the container.
+// result. Any failure releases the ports and removes the containers.
 func (s *Service) ProvisionForOrg(ctx context.Context, orgID uint) (*model.ServerGroup, error) {
 	if err := store.RequireOrgID(orgID); err != nil {
 		return nil, err
-	}
-
-	var existing model.ServerGroup
-	err := store.ScopedByOrg(s.db, orgID).First(&existing).Error
-	if err == nil && existing.State == model.ServerGroupDeployed {
-		return nil, fmt.Errorf("%w", ErrAlreadyProvisioned)
-	}
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, fmt.Errorf("load server group: %w", err)
 	}
 
 	row, err := s.pool.Allocate(orgID)
@@ -64,7 +66,7 @@ func (s *Service) ProvisionForOrg(ctx context.Context, orgID uint) (*model.Serve
 
 	keys, err := GenerateKeyPair()
 	if err != nil {
-		s.release(row)
+		s.releaseWithCleanup(row)
 		return nil, err
 	}
 
@@ -73,16 +75,15 @@ func (s *Service) ProvisionForOrg(ctx context.Context, orgID uint) (*model.Serve
 		OrgID:      orgID,
 		HbbsPort:   row.HbbsPort,
 		HbbrPort:   row.HbbrPort,
-		PrivatePEM: keys.PrivatePEM,
+		PrivateKey: keys.PrivateKey,
+		PublicKey:  keys.PublicKey,
+		Image:      s.cfg.Image,
+		RelayHost:  s.cfg.RelayHost,
+		DataDir:    filepath.Join(s.cfg.DataDir, fmt.Sprintf("org-%d", orgID)),
 	}
+
 	if err := s.orch.Deploy(ctx, spec); err != nil {
-		// Roll back: the container may exist half-configured, and the ports must
-		// be released so a retry can use them.
-		if rmErr := s.orch.Remove(ctx, spec.Name); rmErr != nil {
-			s.logger.Warn("provision rollback: remove failed",
-				zap.String("instance", spec.Name), zap.Error(rmErr))
-		}
-		s.release(row)
+		s.failAndCleanup(ctx, row, spec, err)
 		return nil, fmt.Errorf("deploy hbbs/hbbr: %w", err)
 	}
 
@@ -93,7 +94,7 @@ func (s *Service) ProvisionForOrg(ctx context.Context, orgID uint) (*model.Serve
 		Fingerprint: keys.Fingerprint,
 	})
 	if err != nil {
-		s.rollback(ctx, spec, row)
+		s.failAndCleanup(ctx, row, spec, err)
 		return nil, fmt.Errorf("snapshot config: %w", err)
 	}
 
@@ -104,9 +105,10 @@ func (s *Service) ProvisionForOrg(ctx context.Context, orgID uint) (*model.Serve
 			"fingerprint":     keys.Fingerprint,
 			"config_snapshot": string(snap),
 			"state":           model.ServerGroupDeployed,
+			"last_error":      "",
 		}).Error
 	if err != nil {
-		s.rollback(ctx, spec, row)
+		s.failAndCleanup(ctx, row, spec, err)
 		return nil, fmt.Errorf("persist server group: %w", err)
 	}
 
@@ -137,20 +139,49 @@ func (s *Service) Deprovision(ctx context.Context, orgID uint) error {
 	}
 
 	name := fmt.Sprintf("panel-org-%d", orgID)
-	if err := s.orch.Remove(ctx, name); err != nil {
-		// Keep the row: the container still exists, so the ports stay reserved.
+	if err := s.orch.Remove(cleanupContext(ctx), name); err != nil {
+		// Keep the row: the containers may still exist, so the ports stay
+		// reserved instead of being handed to another organization.
+		s.markFailed(&row, fmt.Errorf("remove deployment: %w", err))
 		return fmt.Errorf("remove deployment: %w", err)
 	}
 	return store.ScopedByOrg(s.db, orgID).Delete(&model.ServerGroup{}, row.ID).Error
 }
 
-// rollback removes the deployment and the pending row.
-func (s *Service) rollback(ctx context.Context, spec InstanceSpec, row *model.ServerGroup) {
-	if err := s.orch.Remove(ctx, spec.Name); err != nil {
-		s.logger.Warn("provision rollback: remove failed",
+// failAndCleanup rolls back a failed deployment. When removal fails the row is
+// kept in the failed state so the ports stay reserved for a later retry.
+func (s *Service) failAndCleanup(ctx context.Context, row *model.ServerGroup, spec InstanceSpec, cause error) {
+	cleanupCtx := cleanupContext(ctx)
+	if err := s.orch.Remove(cleanupCtx, spec.Name); err != nil {
+		s.logger.Warn("provision rollback: remove failed, keeping ports reserved",
 			zap.String("instance", spec.Name), zap.Error(err))
+		s.markFailed(row, cause)
+		return
 	}
 	s.release(row)
+}
+
+// releaseWithCleanup releases the ports after a local failure.
+func (s *Service) releaseWithCleanup(row *model.ServerGroup) {
+	s.release(row)
+}
+
+// markFailed records the failure while keeping the row and its ports.
+func (s *Service) markFailed(row *model.ServerGroup, cause error) {
+	msg := ""
+	if cause != nil {
+		msg = cause.Error()
+	}
+	if err := store.ScopedByOrg(s.db, row.OrganizationID).
+		Model(&model.ServerGroup{}).
+		Where("id = ?", row.ID).
+		Updates(map[string]any{
+			"state":      model.ServerGroupFailed,
+			"last_error": msg,
+		}).Error; err != nil {
+		s.logger.Error("mark server group failed",
+			zap.Uint("org_id", row.OrganizationID), zap.Error(err))
+	}
 }
 
 // release deletes the pending row so the ports become available again.
@@ -160,4 +191,13 @@ func (s *Service) release(row *model.ServerGroup) {
 		s.logger.Error("release ports failed",
 			zap.Uint("org_id", row.OrganizationID), zap.Error(err))
 	}
+}
+
+// cleanupContext detaches cleanup from a cancelled deploy context.
+func cleanupContext(ctx context.Context) context.Context {
+	base := context.WithoutCancel(ctx)
+	out, cancel := context.WithTimeout(base, cleanupTimeout)
+	// The timeout is short and the context is only used for the cleanup call.
+	_ = cancel
+	return out
 }
