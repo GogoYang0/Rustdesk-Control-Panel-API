@@ -89,6 +89,10 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 		return
 	}
 
+	// Surface the new org and the actor to the audit middleware: tenant
+	// creation is a security-relevant event and must appear in the trail.
+	c.Set(contextOrgID, org.ID)
+
 	// Provisioning is slow (container start), so it runs on a bounded worker
 	// queue after the response. Enqueue failures are recoverable: the
 	// organization row is the durable record, and the queue reconciler
@@ -339,6 +343,11 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 		return
 	}
 	a.guard.reset(inv.Email, ip)
+
+	// Record the org and the accepted user in the audit trail: joining a
+	// tenant grants a role and must be traceable to both sides.
+	c.Set(contextOrgID, inv.OrganizationID)
+	c.Set(auth.ContextUserID, member.UserID)
 
 	c.JSON(http.StatusOK, gen.MemberResponse{
 		Code:    gen.ErrorCodeOk,

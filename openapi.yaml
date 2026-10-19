@@ -398,8 +398,9 @@ components:
         message:
           type: string
         data:
-          type: object
-          nullable: true
+          type:
+            - object
+            - "null"
           additionalProperties: true
 
     LoginRequest:

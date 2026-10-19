@@ -72,6 +72,11 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("provision.maxOrgsPerUser", 5)
 	v.SetDefault("provision.workers", 2)
 
+	// The signing key must not live in the repository; deployment supplies it.
+	if err := v.BindEnv("auth.secret", "PANEL_AUTH_SECRET"); err != nil {
+		return nil, fmt.Errorf("bind auth secret env: %w", err)
+	}
+
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
 	}
