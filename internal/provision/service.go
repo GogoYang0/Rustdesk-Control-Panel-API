@@ -62,6 +62,16 @@ func (s *Service) ProvisionForOrg(ctx context.Context, orgID uint) (*model.Serve
 		return nil, err
 	}
 
+	// An explicit provisioning request clears an earlier deprovision, so a
+	// deliberate removal can be followed by a deliberate re-deploy. The write
+	// is deliberately detached from the request context: bookkeeping must not
+	// depend on the caller still being around.
+	if err := s.db.Model(&model.Organization{}).
+		Where("id = ?", orgID).
+		Update("provisioning_disabled", false).Error; err != nil {
+		return nil, fmt.Errorf("reset provisioning state: %w", err)
+	}
+
 	row, err := s.pool.Allocate(orgID)
 	if err != nil {
 		return nil, err
@@ -130,23 +140,33 @@ func (s *Service) ProvisionForOrg(ctx context.Context, orgID uint) (*model.Serve
 	return &stored, nil
 }
 
-// PendingOrgIDs returns organizations that have no server group row, meaning
-// provisioning never reached a worker: the queue was full at creation time, or
-// the process stopped after the organization was committed.
+// PendingOrgIDs returns organizations after the given cursor that have no
+// server group row, meaning provisioning never reached a worker: the queue was
+// full at creation time, or the process stopped after the organization was
+// committed.
 //
-// The organization row is the durable record of the intent, so callers can
-// safely re-enqueue: ProvisionForOrg refuses an organization that already owns a
-// row. limit caps one sweep; zero means no cap.
-func (s *Service) PendingOrgIDs(ctx context.Context, limit int) ([]uint, error) {
+// Organizations that were deliberately deprovisioned are excluded: removing the
+// server group on purpose must not be undone by the reconciler.
+//
+// Results are ordered by id and capped by limit, so callers page through a
+// backlog with the cursor. The second return value is the id of the last
+// organization examined; passing it back as afterID continues the scan, and 0
+// means the scan reached the end of the table and should restart.
+func (s *Service) PendingOrgIDs(ctx context.Context, afterID uint, limit int) ([]uint, uint, error) {
 	var all []uint
-	if err := s.db.WithContext(ctx).
+	query := s.db.WithContext(ctx).
 		Model(&model.Organization{}).
-		Order("id").
-		Pluck("id", &all).Error; err != nil {
-		return nil, fmt.Errorf("list organizations: %w", err)
+		Where("provisioning_disabled = ?", false).
+		Where("id > ?", afterID).
+		Order("id")
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+	if err := query.Pluck("id", &all).Error; err != nil {
+		return nil, 0, fmt.Errorf("list organizations: %w", err)
 	}
 	if len(all) == 0 {
-		return nil, nil
+		return nil, 0, nil
 	}
 
 	var provisioned []uint
@@ -156,7 +176,7 @@ func (s *Service) PendingOrgIDs(ctx context.Context, limit int) ([]uint, error) 
 	if err := store.WithoutTenantScope(s.db.WithContext(ctx)).
 		Model(&model.ServerGroup{}).
 		Pluck("organization_id", &provisioned).Error; err != nil {
-		return nil, fmt.Errorf("list server groups: %w", err)
+		return nil, 0, fmt.Errorf("list server groups: %w", err)
 	}
 	seen := make(map[uint]struct{}, len(provisioned))
 	for _, id := range provisioned {
@@ -169,11 +189,8 @@ func (s *Service) PendingOrgIDs(ctx context.Context, limit int) ([]uint, error) 
 			continue
 		}
 		missing = append(missing, id)
-		if limit > 0 && len(missing) >= limit {
-			break
-		}
 	}
-	return missing, nil
+	return missing, all[len(all)-1], nil
 }
 
 // Deprovision removes the deployment and frees the ports.
@@ -197,7 +214,18 @@ func (s *Service) Deprovision(ctx context.Context, orgID uint) error {
 		s.markFailed(&row, fmt.Errorf("remove deployment: %w", err))
 		return fmt.Errorf("remove deployment: %w", err)
 	}
-	return store.ScopedByOrg(s.db, orgID).Delete(&model.ServerGroup{}, row.ID).Error
+
+	// Persist the deprovision intent together with the row deletion: otherwise
+	// the reconciler would see an organization without a server group and
+	// deploy it again.
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := store.ScopedByOrg(tx, orgID).Delete(&model.ServerGroup{}, row.ID).Error; err != nil {
+			return err
+		}
+		return tx.Model(&model.Organization{}).
+			Where("id = ?", orgID).
+			Update("provisioning_disabled", true).Error
+	})
 }
 
 // failAndCleanup rolls back a failed deployment. When removal fails the row is

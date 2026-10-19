@@ -3,6 +3,7 @@ package provision
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -26,7 +27,7 @@ const reconcileBatch = 100
 // the retry behaviour can be tested without a database.
 type provisioner interface {
 	ProvisionForOrg(ctx context.Context, orgID uint) (*model.ServerGroup, error)
-	PendingOrgIDs(ctx context.Context, limit int) ([]uint, error)
+	PendingOrgIDs(ctx context.Context, afterID uint, limit int) ([]uint, uint, error)
 }
 
 // Queue runs provisioning on a bounded worker pool, so a burst of organization
@@ -36,6 +37,12 @@ type Queue struct {
 	jobs    chan uint
 	workers int
 	logger  *zap.Logger
+
+	mu sync.Mutex
+	// cursor is the last organization examined by a sweep. It advances across
+	// sweeps so a page of organizations that keep failing cannot starve the
+	// ones behind it.
+	cursor uint
 }
 
 // NewQueue builds a queue with the given worker count and buffer depth.
@@ -92,20 +99,39 @@ func (q *Queue) Enqueue(orgID uint) error {
 //
 // The organization row is the durable record of the intent, so a sweep is
 // idempotent: ProvisionForOrg refuses an organization that already owns a
-// server group row. A full queue stops the sweep and the next one retries.
+// server group row. Sweeps page through the table with a cursor, so a batch of
+// failing organizations cannot block the ones behind it. A full queue stops the
+// sweep and the same page is retried by the next one.
 func (q *Queue) Reconcile(ctx context.Context) (int, error) {
-	ids, err := q.svc.PendingOrgIDs(ctx, reconcileBatch)
+	ids, lastScanned, err := q.svc.PendingOrgIDs(ctx, q.cursorValue(), reconcileBatch)
 	if err != nil {
 		return 0, err
 	}
+
 	queued := 0
 	for _, id := range ids {
 		if err := q.Enqueue(id); err != nil {
+			// Leave the cursor untouched so this page is retried as a whole.
 			return queued, err
 		}
 		queued++
 	}
+	q.advanceCursor(lastScanned)
 	return queued, nil
+}
+
+// cursorValue reads the cursor under the lock.
+func (q *Queue) cursorValue() uint {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.cursor
+}
+
+// advanceCursor moves the cursor; zero restarts the scan at the beginning.
+func (q *Queue) advanceCursor(lastScanned uint) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.cursor = lastScanned
 }
 
 // RunReconciler sweeps immediately and then periodically until ctx is done.

@@ -8,6 +8,11 @@ type Organization struct {
 	Name      string    `gorm:"size:128;not null" json:"name"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+
+	// ProvisioningDisabled records an explicit deprovision. Without it the
+	// reconciler would see an organization without a server group and deploy
+	// hbbs/hbbr again right after the operator removed them.
+	ProvisioningDisabled bool `gorm:"not null;default:false" json:"provisioning_disabled"`
 }
 
 // Role values inside an organization.

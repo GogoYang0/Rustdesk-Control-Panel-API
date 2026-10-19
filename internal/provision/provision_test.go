@@ -269,3 +269,28 @@ func TestReconcile_EnqueuesOnlyUnprovisionedOrgs(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, queued)
 }
+
+// Removing the deployment on purpose must not be undone by the reconciler: the
+// organization has no server group row afterwards, so the intent has to be
+// recorded on the organization itself.
+func TestDeprovision_IsNotReconciled(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "leaving-org")
+
+	_, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.NoError(t, err)
+	require.NoError(t, f.svc.Deprovision(context.Background(), org.ID))
+
+	queue := provision.NewQueue(f.svc, 1, 4, nil)
+	queued, err := queue.Reconcile(context.Background())
+	require.NoError(t, err)
+	require.Zero(t, queued, "a deliberate deprovision must not be re-provisioned")
+
+	ids, _, err := f.svc.PendingOrgIDs(context.Background(), 0, 10)
+	require.NoError(t, err)
+	require.Empty(t, ids)
+
+	// An explicit provisioning request still works after a deprovision.
+	_, err = f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.NoError(t, err)
+}
