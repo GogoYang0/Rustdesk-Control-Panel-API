@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"go.uber.org/zap"
@@ -16,6 +17,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logger"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/provision"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
@@ -78,6 +80,30 @@ func main() {
 	// sweep re-enqueues anything that never reached a worker (full queue, crash).
 	go provQueue.RunReconciler(context.Background(), 2*time.Minute)
 
+	// Mail delivery: devMode prints to stdout; otherwise real SMTP. The
+	// SMTP password comes only from PANEL_SMTP_PASSWORD.
+	var mailer mail.Mailer
+	if cfg.Mail.DevMode {
+		mailer = mail.NewDev(os.Stdout)
+		lg.Info("mail delivery in devMode: messages are written to stdout")
+	} else {
+		if cfg.Mail.SMTP.Host == "" || cfg.Mail.SMTP.From == "" {
+			lg.Fatal("mail.devMode is false but mail.smtp.host/from is empty")
+		}
+		if cfg.Mail.SMTP.Username != "" && os.Getenv("PANEL_SMTP_PASSWORD") == "" {
+			// dialSMTP would still attempt AUTH with the empty password and
+			// every delivery would fail at runtime; refuse to start instead.
+			lg.Fatal("PANEL_SMTP_PASSWORD is required when mail.smtp.username is set")
+		}
+		mailer = mail.NewSMTP(mail.SMTPConfig{
+			Host:     cfg.Mail.SMTP.Host,
+			Port:     cfg.Mail.SMTP.Port,
+			Username: cfg.Mail.SMTP.Username,
+			Password: os.Getenv("PANEL_SMTP_PASSWORD"),
+			From:     cfg.Mail.SMTP.From,
+		})
+	}
+
 	srv := &http.Server{
 		Addr: cfg.Server.Addr,
 		// Timeouts are mandatory: without a read header deadline an unauthenticated
@@ -96,6 +122,7 @@ func main() {
 			Issuer:         issuer,
 			Auditor:        audit.NewGormAuditor(st.DB),
 			Logger:         lg,
+			Mailer:         mailer,
 			AccessTTL:      cfg.Auth.AccessTTL,
 			RefreshTTL:     cfg.Auth.RefreshTTL,
 			InvitationTTL:  7 * 24 * time.Hour,
