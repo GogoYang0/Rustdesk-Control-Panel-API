@@ -59,6 +59,14 @@ func (a *AdminAPI) Login(c *gin.Context) {
 	}
 
 	a.guard.reset(email, ip)
+
+	// Issue #17: correct credentials are not enough — the mailbox must be
+	// confirmed before any login path issues tokens.
+	if err := requireVerifiedUser(user); err != nil {
+		abortError(c, http.StatusForbidden, gen.ErrorCodeEmailNotVerified, "email is not verified")
+		return
+	}
+
 	access, refresh, err := a.deps.Auth.IssueTokens(user.ID)
 	if err != nil {
 		a.deps.Logger.Error("issue tokens failed")

@@ -59,7 +59,7 @@ paths:
     post:
       operationId: login
       summary: 邮箱密码登录
-      description: 校验邮箱与密码，返回 access/refresh 令牌对。受 IP 与账号双轨限流（429）。
+      description: 校验邮箱与密码，返回 access/refresh 令牌对。受 IP 与账号双轨限流（429）。邮箱未验证的账号返回 403（code=email_not_verified）。
       tags:
         - auth
       security: []
@@ -80,6 +80,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "429":
           $ref: "#/components/responses/TooManyRequests"
 
@@ -191,7 +193,7 @@ paths:
     post:
       operationId: createInvitation
       summary: 邀请成员加入组织
-      description: 生成邀请令牌（服务端只存哈希），有效期 7 天。需要 member.manage 权限。
+      description: 生成邀请令牌（服务端只存哈希），有效期 7 天，并通过邮件发送给受邀邮箱；令牌不出现在响应中（issue #17）。需要 member.manage 权限。
       tags:
         - orgs
       security:
@@ -224,6 +226,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/Internal"
 
   /api/v1/invitations/accept:
     post:
@@ -754,6 +758,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
+    Internal:
+      description: 服务端错误（如邀请邮件投递失败）
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
 
   schemas:
     ErrorCode:
@@ -765,9 +775,10 @@ components:
         - unauthorized：未认证或令牌无效
         - forbidden：权限不足
         - not_found：资源不存在
-        - conflict：状态冲突（重复创建、邀请过期或已使用）
+        - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
         - rate_limited：触发限流
         - internal：服务端错误
+        - email_not_verified：邮箱未验证（登录被拒）
       enum:
         - ok
         - invalid_request
@@ -777,6 +788,7 @@ components:
         - conflict
         - rate_limited
         - internal
+        - email_not_verified
 
     ErrorResponse:
       type: object

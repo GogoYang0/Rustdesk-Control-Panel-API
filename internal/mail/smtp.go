@@ -139,6 +139,13 @@ func authenticate(c clientConn, cfg SMTPConfig) (clientConn, error) {
 	return c, nil
 }
 
+// ErrDeliveryAccepted reports that the message body was fully handed over
+// but the final server reply could not be confirmed: the server may already
+// have accepted the mail. Callers must not treat the message as lost — for
+// example they must not delete one-time tokens referenced by the mail,
+// because the link may already sit in the recipient's mailbox.
+var ErrDeliveryAccepted = errors.New("mail: delivery outcome unknown; server may have accepted the message")
+
 // isPermanent reports a 5xx SMTP reply, which retrying cannot fix: an
 // authentication failure or rejected recipient stays rejected, and hammering
 // the provider only invites rate limiting. 4xx replies stay transient.
@@ -193,6 +200,13 @@ func (s *SMTP) Send(ctx context.Context, msg Message) error {
 		cancel() // releases the connection watcher goroutine
 		if serr == nil {
 			return nil
+		}
+		if errors.Is(serr, ErrDeliveryAccepted) {
+			// The server may already have accepted this exact message;
+			// retrying would deliver a duplicate into the recipient's
+			// mailbox. Surface the unknown outcome and let the caller
+			// decide (the caller keeps any token the mail may carry).
+			return serr
 		}
 		if isPermanent(serr) {
 			return serr

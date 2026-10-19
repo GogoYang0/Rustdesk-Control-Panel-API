@@ -40,3 +40,8 @@ mail:
     # The SMTP password must NOT be stored here: it is injected via the
     # PANEL_SMTP_PASSWORD environment variable (same policy as the JWT key).
     from: ""
+
+web:
+  # Frontend origin used to build the links inside outgoing emails
+  # (verify-email, invitation accept). Override with PANEL_WEB_BASE_URL.
+  baseURL: "http://localhost:5173"

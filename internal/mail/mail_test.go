@@ -209,12 +209,19 @@ type fakeSMTP struct {
 	t        *testing.T
 	listener net.Listener
 	offerTLS bool
-	certs    []tls.Certificate
-	roots    *x509.CertPool
-	mu       sync.Mutex
-	gotAuth  bool
-	gotMail  string
-	gotBody  string
+	// dropFinalReply simulates a connection loss right after the body was
+	// handed over: the client can never confirm the final DATA reply.
+	dropFinalReply bool
+	// rejectFinalReply simulates an explicit 5xx rejection as the final
+	// DATA reply: the message was definitively not accepted.
+	rejectFinalReply bool
+	certs            []tls.Certificate
+	roots            *x509.CertPool
+	mu               sync.Mutex
+	gotAuth          bool
+	gotMail          string
+	gotBody          string
+	conns            int
 }
 
 func newFakeSMTP(t *testing.T, offerTLS bool) (*fakeSMTP, *x509.CertPool) {
@@ -258,6 +265,9 @@ func (f *fakeSMTP) serve() {
 
 func (f *fakeSMTP) handle(c net.Conn) {
 	defer func() { _ = c.Close() }()
+	f.mu.Lock()
+	f.conns++
+	f.mu.Unlock()
 	f.w(c, "220 fake ready")
 	for {
 		line, ok := f.r(c)
@@ -296,6 +306,15 @@ func (f *fakeSMTP) handle(c net.Conn) {
 			f.mu.Lock()
 			f.gotBody = body
 			f.mu.Unlock()
+			if f.dropFinalReply {
+				// The body arrived, but the final reply is never sent: from
+				// the client's perspective the delivery outcome is unknown.
+				return
+			}
+			if f.rejectFinalReply {
+				f.w(c, "550 mailbox unavailable")
+				return
+			}
 			f.w(c, "250 queued")
 		case strings.HasPrefix(line, "QUIT"):
 			f.w(c, "221 bye")
@@ -439,4 +458,57 @@ func TestSMTP_Retry_OnTemporaryError(t *testing.T) {
 	})
 	require.NoError(t, err, "a 4xx reply is transient and must be retried")
 	require.Len(t, fc.sent, 2)
+}
+
+// When the body was handed over but the final DATA reply is lost, the
+// delivery outcome is unknown: the error must wrap ErrDeliveryAccepted so
+// callers do not treat the message as definitely lost (e.g. by deleting
+// one-time tokens the mail may still deliver).
+func TestSMTP_Send_UnconfirmedDelivery_WrapsSentinel(t *testing.T) {
+	f, roots := newFakeSMTP(t, true)
+	f.dropFinalReply = true
+	s := NewSMTP(SMTPConfig{
+		Host: "127.0.0.1", Port: portOf(f.addr()),
+		Username: "user", Password: "pass", From: "f@example.com",
+		tlsRoots: roots,
+	})
+	s.retryBase = time.Millisecond
+
+	err := s.Send(context.Background(), Message{
+		To: []string{"to@example.com"}, Subject: "s", TextBody: "b",
+	})
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrDeliveryAccepted, "an unconfirmed final reply must be recognisable")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	require.NotEmpty(t, f.gotBody, "the body did reach the server")
+	// The server may have accepted the message, so Send must stop instead of
+	// delivering a duplicate mail on the retry path.
+	require.Equal(t, 1, f.conns, "an unconfirmed delivery must not be retried")
+}
+
+// An explicit 5xx as the final DATA reply is a definite rejection, not an
+// unknown outcome: the error must stay a textproto error and must NOT wrap
+// ErrDeliveryAccepted, so callers can safely treat the message as lost.
+func TestSMTP_Send_ExplicitRejectionAfterBody_NotAcceptedSentinel(t *testing.T) {
+	f, roots := newFakeSMTP(t, true)
+	f.rejectFinalReply = true
+	s := NewSMTP(SMTPConfig{
+		Host: "127.0.0.1", Port: portOf(f.addr()),
+		Username: "user", Password: "pass", From: "f@example.com",
+		tlsRoots: roots,
+	})
+	s.retryBase = time.Millisecond
+
+	err := s.Send(context.Background(), Message{
+		To: []string{"to@example.com"}, Subject: "s", TextBody: "b",
+	})
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrDeliveryAccepted, "an explicit rejection is not an unknown outcome")
+	var tpErr *textproto.Error
+	require.ErrorAs(t, err, &tpErr)
+	require.Equal(t, 550, tpErr.Code, "the 5xx rejection must stay a permanent failure")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	require.NotEmpty(t, f.gotBody, "the body did reach the server before the rejection")
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/gen"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 )
 
 // inviteAndJoin creates an invitation directly and joins the user, returning
@@ -20,6 +21,12 @@ func inviteAndJoin(t *testing.T, h *harness, orgID int64, email, role, password 
 	w := h.do(t, http.MethodPost, "/api/v1/invitations/accept",
 		map[string]string{"token": token, "password": password}, "")
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	// The join flow now starts the account unverified (issue #17); these
+	// tests only need an established member, so confirm the mailbox
+	// directly instead of walking the verification mail round-trip.
+	require.NoError(t, h.db.DB.Model(&model.User{}).
+		Where("email = ?", email).
+		Update("email_verified", true).Error)
 	return h.login(t, email, password)
 }
 
