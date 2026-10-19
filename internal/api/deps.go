@@ -7,6 +7,7 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/addressbook"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
@@ -37,6 +38,7 @@ type Provisioner interface {
 type AdminAPI struct {
 	deps  Deps
 	guard *loginGuard
+	books *addressbook.Service
 }
 
 // NewAdminAPI builds the handler set.
@@ -53,5 +55,5 @@ func NewAdminAPI(d Deps) *AdminAPI {
 	if d.InvitationTTL == 0 {
 		d.InvitationTTL = 7 * 24 * time.Hour
 	}
-	return &AdminAPI{deps: d, guard: newLoginGuard()}
+	return &AdminAPI{deps: d, guard: newLoginGuard(), books: addressbook.NewService(d.DB)}
 }

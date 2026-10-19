@@ -19,24 +19,6 @@ func notImplemented(c *gin.Context) {
 	})
 }
 
-func (a *AdminAPI) ListAddressBooks(c *gin.Context, orgId int64) { notImplemented(c) }
-
-func (a *AdminAPI) CreateAddressBook(c *gin.Context, orgId int64) { notImplemented(c) }
-
-func (a *AdminAPI) GetAddressBook(c *gin.Context, orgId int64, bookId int64) { notImplemented(c) }
-
-func (a *AdminAPI) UpdateAddressBook(c *gin.Context, orgId int64, bookId int64) { notImplemented(c) }
-
-func (a *AdminAPI) DeleteAddressBook(c *gin.Context, orgId int64, bookId int64) { notImplemented(c) }
-
-func (a *AdminAPI) ReplaceAddressBookPeers(c *gin.Context, orgId int64, bookId int64) {
-	notImplemented(c)
-}
-
-func (a *AdminAPI) ReplaceAddressBookTags(c *gin.Context, orgId int64, bookId int64) {
-	notImplemented(c)
-}
-
 func (a *AdminAPI) ListLogEvents(c *gin.Context, orgId int64, params gen.ListLogEventsParams) {
 	notImplemented(c)
 }

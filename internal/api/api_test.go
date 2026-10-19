@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -43,6 +44,8 @@ func newHarness(t *testing.T) *harness {
 		&model.User{}, &model.RefreshToken{},
 		&model.Organization{}, &model.Membership{}, &model.Invitation{},
 		&model.AuditLog{}, &model.Device{}, &model.DeviceHeartbeat{},
+		&model.AddressBook{}, &model.AddressBookPeer{},
+		&model.AddressBookTag{}, &model.SyncCursor{},
 	))
 
 	issuer := auth.NewIssuer("test-secret", time.Minute, time.Hour)
@@ -279,13 +282,18 @@ func sanitize(name string) string {
 	return r.Replace(name)
 }
 
+// inviteSeq keeps each test invitation token unique: the token_hash column
+// is uniquely indexed.
+var inviteSeq int
+
 // newInvitationForTest inserts an invitation directly and returns the
 // plaintext token: contract 0.3.0 no longer returns it in the API response
 // (it is emailed to the invitee; delivery arrives with the email
 // verification task).
 func (h *harness) newInvitationForTest(t *testing.T, orgID int64, email, role string) string {
 	t.Helper()
-	const token = "test-invite-token-0123456789abcdef"
+	inviteSeq++
+	token := fmt.Sprintf("test-invite-token-%d-0123456789abcdef", inviteSeq)
 	sum := sha256.Sum256([]byte(token))
 	inv := model.Invitation{
 		OrganizationID: uint(orgID),
