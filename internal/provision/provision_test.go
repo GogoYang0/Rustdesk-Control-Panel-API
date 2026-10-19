@@ -101,7 +101,7 @@ func TestPortPool_ConcurrentAllocate_NoDup(t *testing.T) {
 		key := fmt.Sprintf("%d-%d", results[i].HbbsPort, results[i].HbbrPort)
 		require.False(t, seen[key], "duplicate port pair %s", key)
 		seen[key] = true
-		require.EqualValues(t, results[i].HbbsPort+1, results[i].HbbrPort)
+		require.EqualValues(t, results[i].HbbsPort+2, results[i].HbbrPort, "hbbr starts two ports after hbbs")
 	}
 }
 

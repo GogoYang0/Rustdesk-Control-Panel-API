@@ -126,8 +126,8 @@ func (d *DockerOrchestrator) hbbsArgs(spec InstanceSpec, name string) []string {
 		"--label", fmt.Sprintf("%s=hbbs", d.RoleLabel),
 		"-v", spec.DataDir + ":/root",
 		"-p", fmt.Sprintf("%d:21115", spec.HbbsPort),
-		"-p", fmt.Sprintf("%d:21116", spec.HbbsPort),
-		"-p", fmt.Sprintf("%d:21116/udp", spec.HbbsPort),
+		"-p", fmt.Sprintf("%d:21116", spec.HbbsPort+1),
+		"-p", fmt.Sprintf("%d:21116/udp", spec.HbbsPort+1),
 		spec.Image,
 		"hbbs", "-r", relay,
 	}
@@ -141,8 +141,8 @@ func (d *DockerOrchestrator) hbbrArgs(spec InstanceSpec, name string) []string {
 		"--label", fmt.Sprintf("%s=hbbr", d.RoleLabel),
 		"-v", spec.DataDir + ":/root",
 		"-p", fmt.Sprintf("%d:21117", spec.HbbrPort),
-		"-p", fmt.Sprintf("%d:21118", spec.HbbrPort),
-		"-p", fmt.Sprintf("%d:21119", spec.HbbrPort),
+		"-p", fmt.Sprintf("%d:21118", spec.HbbrPort+1),
+		"-p", fmt.Sprintf("%d:21119", spec.HbbrPort+2),
 		spec.Image,
 		"hbbr",
 	}

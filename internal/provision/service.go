@@ -47,7 +47,10 @@ func NewService(db *gorm.DB, pool *PortPool, orch Orchestrator, logger *zap.Logg
 // contains the private key.
 type snapshot struct {
 	HbbsPort    uint16 `json:"hbbs_port"`
+	HbbsMain    uint16 `json:"hbbs_main_port"`
 	HbbrPort    uint16 `json:"hbbr_port"`
+	HbbrWS1     uint16 `json:"hbbr_ws1_port"`
+	HbbrWS2     uint16 `json:"hbbr_ws2_port"`
 	PublicKey   string `json:"public_key"`
 	Fingerprint string `json:"fingerprint"`
 }
@@ -89,7 +92,10 @@ func (s *Service) ProvisionForOrg(ctx context.Context, orgID uint) (*model.Serve
 
 	snap, err := json.Marshal(snapshot{
 		HbbsPort:    row.HbbsPort,
+		HbbsMain:    row.HbbsPort + 1,
 		HbbrPort:    row.HbbrPort,
+		HbbrWS1:     row.HbbrPort + 1,
+		HbbrWS2:     row.HbbrPort + 2,
 		PublicKey:   keys.PublicKey,
 		Fingerprint: keys.Fingerprint,
 	})

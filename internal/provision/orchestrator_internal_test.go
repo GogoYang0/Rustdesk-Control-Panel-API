@@ -39,9 +39,8 @@ func TestHBBSArgs_MapPortsAndRelay(t *testing.T) {
 
 	args := strings.Join(d.hbbsArgs(spec, "panel-org-7-hbbs"), " ")
 	require.Contains(t, args, "-p 21116:21115")
-	require.Contains(t, args, "-p 21116:21116")
-	require.Contains(t, args, "-p 21116:21116/udp")
-	require.NotContains(t, args, "21117:21117", "the relay port belongs to hbbr only")
+	require.Contains(t, args, "-p 21117:21116")
+	require.Contains(t, args, "-p 21117:21116/udp")
 	require.Contains(t, args, "img:tag hbbs -r relay.example.com:21117")
 	require.Contains(t, args, "-v /data/org-7:/root")
 }
@@ -60,8 +59,8 @@ func TestHBBRArgs_MapRelayPorts(t *testing.T) {
 
 	args := strings.Join(d.hbbrArgs(spec, "panel-org-7-hbbr"), " ")
 	require.Contains(t, args, "-p 21117:21117")
-	require.Contains(t, args, "-p 21117:21118")
-	require.Contains(t, args, "-p 21117:21119")
+	require.Contains(t, args, "-p 21118:21118")
+	require.Contains(t, args, "-p 21119:21119")
 	require.Contains(t, args, "img:tag hbbr")
 }
 
@@ -80,4 +79,34 @@ func TestDeploy_RequiresConfiguration(t *testing.T) {
 	d := &DockerOrchestrator{OrgLabel: "org", RoleLabel: "role"}
 	err := d.Deploy(t.Context(), InstanceSpec{Name: "n"})
 	require.Error(t, err, "missing image/relay/data dir must fail before touching docker")
+}
+
+// Every published host port must appear exactly once per protocol; docker
+// refuses to bind the same host port twice.
+func TestHostPorts_AreUniquePerProtocol(t *testing.T) {
+	d := &DockerOrchestrator{OrgLabel: "org", RoleLabel: "role"}
+	spec := InstanceSpec{
+		Name: "n", HbbsPort: 21116, HbbrPort: 21118,
+		Image: "img:tag", RelayHost: "relay", DataDir: "/d",
+	}
+
+	seen := map[string]bool{}
+	for _, args := range [][]string{d.hbbsArgs(spec, "n-hbbs"), d.hbbrArgs(spec, "n-hbbr")} {
+		for i := 0; i < len(args)-1; i++ {
+			if args[i] != "-p" {
+				continue
+			}
+			publish := args[i+1]
+			proto := "tcp"
+			if strings.HasSuffix(publish, "/udp") {
+				proto = "udp"
+				publish = strings.TrimSuffix(publish, "/udp")
+			}
+			host := strings.SplitN(publish, ":", 2)[0]
+			key := host + "/" + proto
+			require.False(t, seen[key], "host port %s published twice", key)
+			seen[key] = true
+		}
+	}
+	require.Len(t, seen, 6, "five host ports, one of them bound for tcp and udp")
 }

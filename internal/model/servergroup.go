@@ -11,6 +11,17 @@ const (
 
 // ServerGroup holds the per-organization hbbs/hbbr allocation.
 //
+// Each organization owns a contiguous block of five host ports, because one host
+// port can be published only once per protocol:
+//
+//	HbbsPort+0 -> hbbs 21115 (tcp)
+//	HbbsPort+1 -> hbbs 21116 (tcp and udp)
+//	HbbrPort+0 -> hbbr 21117 (tcp, also the relay port)
+//	HbbrPort+1 -> hbbr 21118 (tcp)
+//	HbbrPort+2 -> hbbr 21119 (tcp)
+//
+// HbbrPort is therefore always HbbsPort+2.
+//
 // The unique indexes on ports and organization are the source of truth for the
 // port pool: allocation is an insert that either wins or collides, which keeps
 // concurrent provisioning safe without a separate lock.

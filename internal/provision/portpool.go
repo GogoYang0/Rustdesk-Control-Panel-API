@@ -32,7 +32,10 @@ type PortPool struct {
 	end   uint16
 }
 
-// NewPortPool builds a pool covering [start, end] with a step of two ports.
+// PortBlockSize is how many host ports one organization needs (see model.ServerGroup).
+const PortBlockSize = 5
+
+// NewPortPool builds a pool covering [start, end] in blocks of PortBlockSize.
 func NewPortPool(db *gorm.DB, start, end uint16) *PortPool {
 	return &PortPool{db: db, start: start, end: end}
 }
@@ -44,7 +47,7 @@ func (p *PortPool) Allocate(orgID uint) (*model.ServerGroup, error) {
 	if err := store.RequireOrgID(orgID); err != nil {
 		return nil, err
 	}
-	if p.start == 0 || p.end <= p.start {
+	if p.start == 0 || p.end < p.start+PortBlockSize-1 {
 		return nil, fmt.Errorf("invalid port range %d-%d", p.start, p.end)
 	}
 
@@ -63,11 +66,11 @@ func (p *PortPool) Allocate(orgID uint) (*model.ServerGroup, error) {
 	}
 
 	var lastErr error
-	for hbbs := uint32(p.start); hbbs+1 <= uint32(p.end); hbbs += 2 {
+	for base := uint32(p.start); base+PortBlockSize-1 <= uint32(p.end); base += PortBlockSize {
 		row := model.ServerGroup{
 			OrganizationID: orgID,
-			HbbsPort:       uint16(hbbs),
-			HbbrPort:       uint16(hbbs + 1),
+			HbbsPort:       uint16(base),
+			HbbrPort:       uint16(base + 2),
 			State:          model.ServerGroupProvisioning,
 		}
 		err := store.ScopedByOrg(p.db, orgID).Create(&row).Error
