@@ -38,47 +38,15 @@ func (a *GormAuditor) Record(ctx context.Context, entry Entry) error {
 		return nil
 	}
 
-	detail := "{}"
-	if len(entry.Detail) > 0 {
-		b, err := json.Marshal(entry.Detail)
-		if err != nil {
-			return fmt.Errorf("marshal audit detail: %w", err)
-		}
-		detail = string(b)
+	detail, err := detailJSON(entry)
+	if err != nil {
+		return err
 	}
 
 	var lastErr error
 	for attempt := 0; attempt < maxSeqAttempts; attempt++ {
 		err := a.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			// Locking the organization row serialises sequence allocation on
-			// databases that support row locks; SQLite serialises writers anyway.
-			var org model.Organization
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-				First(&org, entry.OrganizationID).Error; err != nil {
-				return err
-			}
-
-			// The tenant plugin fails closed without an org context, so the
-			// maximum must be read through the scoped handle.
-			var maxSeq uint64
-			if err := store.ScopedByOrg(tx, entry.OrganizationID).
-				Model(&model.AuditLog{}).
-				Select("COALESCE(MAX(seq), 0)").
-				Scan(&maxSeq).Error; err != nil {
-				return err
-			}
-
-			row := model.AuditLog{
-				OrganizationID: entry.OrganizationID,
-				Seq:            maxSeq + 1,
-				ActorUserID:    entry.ActorUserID,
-				Action:         entry.Action,
-				TargetType:     entry.TargetType,
-				TargetID:       entry.TargetID,
-				Detail:         detail,
-				CreatedAt:      time.Now(),
-			}
-			return tx.Create(&row).Error
+			return insertAuditRow(tx, entry, detail)
 		})
 		if err == nil {
 			return nil
@@ -89,4 +57,75 @@ func (a *GormAuditor) Record(ctx context.Context, entry Entry) error {
 		}
 	}
 	return fmt.Errorf("record audit entry after %d attempts: %w", maxSeqAttempts, lastErr)
+}
+
+// RecordTx implements TxRecorder: it allocates the sequence and inserts the
+// entry on the caller's transaction, so the entity change and the audit row
+// commit or roll back together (#19). There is deliberately no retry loop —
+// a duplicate-key collision fails the whole transaction, and the outer
+// entity retry strategy decides what to do.
+func (a *GormAuditor) RecordTx(tx *gorm.DB, entry Entry) error {
+	if entry.OrganizationID == 0 {
+		return nil
+	}
+
+	detail, err := detailJSON(entry)
+	if err != nil {
+		return err
+	}
+	return insertAuditRow(tx, entry, detail)
+}
+
+// detailJSON serialises the entry detail; an empty detail becomes "{}".
+func detailJSON(entry Entry) (string, error) {
+	if len(entry.Detail) == 0 {
+		return "{}", nil
+	}
+	b, err := json.Marshal(entry.Detail)
+	if err != nil {
+		return "", fmt.Errorf("marshal audit detail: %w", err)
+	}
+	return string(b), nil
+}
+
+// insertAuditRow locks the organization row, allocates the next sequence and
+// inserts the entry — all on the given (possibly transactional) handle.
+func insertAuditRow(tx *gorm.DB, entry Entry, detail string) error {
+	// Locking the organization row serialises sequence allocation on
+	// databases that support row locks; SQLite serialises writers anyway.
+	var org model.Organization
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		First(&org, entry.OrganizationID).Error; err != nil {
+		return err
+	}
+
+	// A locking read always sees the latest committed rows, even when the
+	// caller's transaction already holds an older REPEATABLE READ snapshot
+	// (MySQL): a snapshot read of MAX(seq) could miss rows committed by
+	// other requests since the caller's first read, turning the insert into
+	// a spurious duplicate-key failure for the whole entity transaction.
+	var maxSeq uint64
+	var seqs []uint64
+	if err := store.ScopedByOrg(tx, entry.OrganizationID).
+		Model(&model.AuditLog{}).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Order("seq DESC").Limit(1).
+		Pluck("seq", &seqs).Error; err != nil {
+		return err
+	}
+	if len(seqs) > 0 {
+		maxSeq = seqs[0]
+	}
+
+	row := model.AuditLog{
+		OrganizationID: entry.OrganizationID,
+		Seq:            maxSeq + 1,
+		ActorUserID:    entry.ActorUserID,
+		Action:         entry.Action,
+		TargetType:     entry.TargetType,
+		TargetID:       entry.TargetID,
+		Detail:         detail,
+		CreatedAt:      time.Now(),
+	}
+	return tx.Create(&row).Error
 }
