@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net/http"
 
+	"unicode/utf8"
+
 	"go.uber.org/zap"
 
 	"github.com/gin-gonic/gin"
@@ -95,8 +97,8 @@ func (a *AdminAPI) CreateAddressBook(c *gin.Context, orgId int64) {
 		return
 	}
 	var req gen.CreateAddressBookJSONRequestBody
-	if err := c.ShouldBindJSON(&req); err != nil || req.Name == "" {
-		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "name is required")
+	if err := c.ShouldBindJSON(&req); err != nil || !validBookName(req.Name) {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "name must be non-empty and at most 128 characters")
 		return
 	}
 
@@ -168,8 +170,8 @@ func (a *AdminAPI) UpdateAddressBook(c *gin.Context, orgId int64, bookId int64) 
 		return
 	}
 	var req gen.UpdateAddressBookJSONRequestBody
-	if err := c.ShouldBindJSON(&req); err != nil || req.Name == "" {
-		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "name is required")
+	if err := c.ShouldBindJSON(&req); err != nil || !validBookName(req.Name) {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "name must be non-empty and at most 128 characters")
 		return
 	}
 
@@ -211,13 +213,31 @@ func (a *AdminAPI) DeleteAddressBook(c *gin.Context, orgId int64, bookId int64) 
 	respondBook(c, http.StatusOK, book)
 }
 
-// validatePeers enforces the column widths and per-request uniqueness so a
-// bad payload comes back as 400 instead of surfacing as a 500 from a unique
-// index violation mid-transaction.
+// tooManyRunes reports whether s exceeds max Unicode characters. Column
+// widths are varchar(n) in character semantics, so byte counting would
+// wrongly reject legitimate multi-byte (e.g. Chinese) values.
+func tooManyRunes(s string, max int) bool {
+	return utf8.RuneCountInString(s) > max
+}
+
+// validatePeers enforces the column widths (in characters) and per-request
+// uniqueness so a bad payload comes back as 400 instead of surfacing as a
+// 500 from a varchar or unique-index failure mid-transaction.
 func validatePeers(peers []gen.AddressBookPeer) bool {
 	seen := make(map[string]struct{}, len(peers))
 	for _, p := range peers {
-		if p.PeerId == "" || len(p.PeerId) > 64 {
+		if p.PeerId == "" || tooManyRunes(p.PeerId, 64) {
+			return false
+		}
+		if tooManyRunes(deref(p.Alias), 128) ||
+			tooManyRunes(deref(p.Username), 128) ||
+			tooManyRunes(deref(p.Hostname), 128) ||
+			tooManyRunes(deref(p.Platform), 64) {
+			return false
+		}
+		// The encoded TagsJSON must fit its column; encode with the same
+		// function the service persists with, so escaping is accounted for.
+		if encoded := addressbook.TagsJSON(derefStrings(p.Tags)); tooManyRunes(encoded, 2048) {
 			return false
 		}
 		if _, dup := seen[p.PeerId]; dup {
@@ -232,7 +252,7 @@ func validatePeers(peers []gen.AddressBookPeer) bool {
 func validateTags(tags []gen.AddressBookTag) bool {
 	seen := make(map[string]struct{}, len(tags))
 	for _, tg := range tags {
-		if tg.Name == "" || len(tg.Name) > 64 {
+		if tg.Name == "" || tooManyRunes(tg.Name, 64) {
 			return false
 		}
 		if _, dup := seen[tg.Name]; dup {
@@ -241,6 +261,11 @@ func validateTags(tags []gen.AddressBookTag) bool {
 		seen[tg.Name] = struct{}{}
 	}
 	return true
+}
+
+// validBookName checks the varchar(128) bound for book names.
+func validBookName(name string) bool {
+	return name != "" && !tooManyRunes(name, 128)
 }
 
 // ReplaceAddressBookPeers swaps the full peer list.

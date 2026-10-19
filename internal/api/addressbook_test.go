@@ -491,3 +491,121 @@ func TestAddressBook_ReplacePeers_ConcurrentSerialised(t *testing.T) {
 	require.NotNil(t, got.Data.Peers)
 	require.Len(t, *got.Data.Peers, 1, "final peer list must be one complete replace, not a merge")
 }
+
+// Review round 2: length checks count Unicode characters, not bytes —
+// varchar(64) in PostgreSQL/MySQL is 64 characters, so a 22-character
+// Chinese tag name is legal and must not be rejected.
+func TestAddressBook_ReplaceTags_UnicodeNamesAccepted(t *testing.T) {
+	h := newHarness(t)
+	token, orgID := seedOrgOwner(t, h, "uni1@example.com")
+	book := createBook(t, h, token, orgID, "uni-tags", "personal")
+	path := "/api/v1/orgs/" + itoa(orgID) + "/address-books/" + itoa(book.Data.Id) + "/tags"
+
+	name := strings.Repeat("标", 22) // 22 chars, 66 bytes
+	w := h.do(t, http.MethodPut, path, map[string]any{
+		"tags": []map[string]any{{"name": name, "color": 16711680}},
+	}, token)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	w = h.do(t, http.MethodGet, "/api/v1/orgs/"+itoa(orgID)+"/address-books/"+itoa(book.Data.Id), nil, token)
+	var got abResp
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	require.NotNil(t, got.Data.Tags)
+	require.Len(t, *got.Data.Tags, 1)
+	require.Equal(t, name, (*got.Data.Tags)[0].Name)
+}
+
+// Review round 2: the remaining length-bounded columns must reject overlong
+// input with 400 instead of a varchar error mid-transaction (500).
+func TestAddressBook_ReplacePeers_FieldOverlong(t *testing.T) {
+	h := newHarness(t)
+	token, orgID := seedOrgOwner(t, h, "uni2@example.com")
+	book := createBook(t, h, token, orgID, "uni-peers", "personal")
+	path := "/api/v1/orgs/" + itoa(orgID) + "/address-books/" + itoa(book.Data.Id) + "/peers"
+
+	cases := []struct {
+		name string
+		body map[string]any
+	}{
+		{
+			name: "alias over 128 chars",
+			body: map[string]any{"peers": []map[string]any{
+				{"peer_id": "111111", "alias": strings.Repeat("a", 129)},
+			}},
+		},
+		{
+			name: "platform over 64 chars",
+			body: map[string]any{"peers": []map[string]any{
+				{"peer_id": "111111", "platform": strings.Repeat("w", 65)},
+			}},
+		},
+		{
+			name: "overlong unicode alias (129 chars, 387 bytes)",
+			body: map[string]any{"peers": []map[string]any{
+				{"peer_id": "111111", "alias": strings.Repeat("别", 129)},
+			}},
+		},
+		{
+			name: "tags json encoding over 2048 bytes",
+			body: map[string]any{"peers": []map[string]any{
+				{
+					"peer_id": "111111",
+					// 40 tags x 60 chars each: far beyond the 2048-char TagsJSON column.
+					"tags": func() []string {
+						tags := make([]string, 40)
+						for i := range tags {
+							tags[i] = strings.Repeat("t", 60)
+						}
+						return tags
+					}(),
+				},
+			}},
+		},
+	}
+	for _, tc := range cases {
+		w := h.do(t, http.MethodPut, path, tc.body, token)
+		require.Equal(t, http.StatusBadRequest, w.Code, tc.name+": "+w.Body.String())
+	}
+}
+
+// Review round 2: concurrent creation of same-named shared books must yield
+// exactly one success — the pre-check alone cannot prevent that, so Create
+// serialises on the organization row.
+func TestAddressBook_Create_ConcurrentSharedDuplicate(t *testing.T) {
+	h := newHarness(t)
+	token, orgID := seedOrgOwner(t, h, "uni3@example.com")
+
+	var mu sync.Mutex
+	created := 0
+	conflicted := 0
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w := h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgID)+"/address-books",
+				map[string]string{"name": "race-shared", "scope": "shared"}, token)
+			mu.Lock()
+			defer mu.Unlock()
+			switch w.Code {
+			case http.StatusCreated:
+				created++
+			case http.StatusConflict:
+				conflicted++
+			}
+		}()
+	}
+	wg.Wait()
+	require.Equal(t, 1, created, "exactly one create must succeed")
+	require.Equal(t, 5, conflicted, "the other five must conflict")
+}
+
+// Review round 2: book names are varchar(128) — overlong names must be 400.
+func TestAddressBook_Create_NameOverlong(t *testing.T) {
+	h := newHarness(t)
+	token, orgID := seedOrgOwner(t, h, "uni4@example.com")
+
+	w := h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgID)+"/address-books",
+		map[string]string{"name": strings.Repeat("n", 129), "scope": "personal"}, token)
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+}

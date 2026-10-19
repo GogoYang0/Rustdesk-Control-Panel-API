@@ -71,23 +71,34 @@ func (s *Service) Create(userID, orgID uint, scope, name string) (*model.Address
 		book.OwnerID = &userID
 	}
 
-	var count int64
-	q := store.ScopedByOrg(s.db, orgID).Model(&model.AddressBook{}).
-		Where("scope = ? AND name = ?", scope, name)
-	if scope == model.AddressBookScopePersonal {
-		q = q.Where("owner_id = ?", userID)
-	}
-	if err := q.Count(&count).Error; err != nil {
-		return nil, err
-	}
-	if count > 0 {
-		return nil, ErrDuplicateName
-	}
-
-	if err := store.ScopedByOrg(s.db, orgID).Create(book).Error; err != nil {
-		if errors.Is(err, gorm.ErrDuplicatedKey) {
-			return nil, ErrDuplicateName
+	// The duplicate-name pre-check alone cannot stop two concurrent creations
+	// (it protects no existing row), so Create serialises on the organization
+	// row; the shared-book unique index cannot deduplicate NULL owners.
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := lockOrgRow(tx, orgID); err != nil {
+			return err
 		}
+		var count int64
+		q := store.ScopedByOrg(tx, orgID).Model(&model.AddressBook{}).
+			Where("scope = ? AND name = ?", scope, name)
+		if scope == model.AddressBookScopePersonal {
+			q = q.Where("owner_id = ?", userID)
+		}
+		if err := q.Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			return ErrDuplicateName
+		}
+		if err := store.ScopedByOrg(tx, orgID).Create(book).Error; err != nil {
+			if errors.Is(err, gorm.ErrDuplicatedKey) {
+				return ErrDuplicateName
+			}
+			return err
+		}
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 	return book, nil
@@ -176,6 +187,19 @@ func (s *Service) Update(userID uint, role string, orgID, bookID uint, name stri
 		return nil, err
 	}
 	return book, nil
+}
+
+// lockOrgRow takes a write lock on the organization row so check-then-insert
+// sequences (duplicate-name pre-checks, quota-like counts) serialise across
+// concurrent requests. SQLite has no SELECT ... FOR UPDATE and serialises
+// writers itself, so the clause is skipped there.
+func lockOrgRow(tx *gorm.DB, orgID uint) error {
+	query := tx
+	if tx.Name() != "sqlite" {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	var org model.Organization
+	return query.Select("id").First(&org, orgID).Error
 }
 
 // lockBook takes a write lock on the book row inside a transaction so
@@ -275,7 +299,7 @@ func (s *Service) ReplacePeers(userID uint, role string, orgID, bookID uint, pee
 				Username:       p.Username,
 				Hostname:       p.Hostname,
 				Platform:       p.Platform,
-				TagsJSON:       tagsJSON(p.Tags),
+				TagsJSON:       TagsJSON(p.Tags),
 			}
 			if err := store.ScopedByOrg(tx, orgID).Create(&row).Error; err != nil {
 				return err
@@ -336,7 +360,7 @@ func (s *Service) ReplaceTags(userID uint, role string, orgID, bookID uint, tags
 
 // tagsJSON serialises the tag name list; nil becomes an empty array so the
 // stored value is always valid JSON.
-func tagsJSON(tags []string) string {
+func TagsJSON(tags []string) string {
 	if tags == nil {
 		tags = []string{}
 	}
