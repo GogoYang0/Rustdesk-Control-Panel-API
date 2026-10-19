@@ -14,6 +14,7 @@ import (
 
 	"go.uber.org/zap"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/api"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
@@ -85,7 +86,7 @@ func main() {
 			lg.Fatal("backfill email_verified", zap.Error(res.Error))
 		}
 		lg.Info("backfilled email_verified for existing users", zap.Int64("rows", res.RowsAffected))
-		if err := st.DB.Create(&model.MigrationMark{
+		if err := st.DB.Clauses(clause.OnConflict{DoNothing: true}).Create(&model.MigrationMark{
 			Name:      backfillEmailVerifiedTrue,
 			AppliedAt: time.Now().UTC(),
 		}).Error; err != nil {

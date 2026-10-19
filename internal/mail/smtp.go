@@ -139,6 +139,13 @@ func authenticate(c clientConn, cfg SMTPConfig) (clientConn, error) {
 	return c, nil
 }
 
+// ErrDeliveryAccepted reports that the message body was fully handed over
+// but the final server reply could not be confirmed: the server may already
+// have accepted the mail. Callers must not treat the message as lost — for
+// example they must not delete one-time tokens referenced by the mail,
+// because the link may already sit in the recipient's mailbox.
+var ErrDeliveryAccepted = errors.New("mail: delivery outcome unknown; server may have accepted the message")
+
 // isPermanent reports a 5xx SMTP reply, which retrying cannot fix: an
 // authentication failure or rejected recipient stays rejected, and hammering
 // the provider only invites rate limiting. 4xx replies stay transient.

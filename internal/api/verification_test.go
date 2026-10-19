@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -28,6 +29,14 @@ type failingMailer struct{}
 
 func (failingMailer) Send(context.Context, mail.Message) error {
 	return errors.New("smtp unavailable")
+}
+
+// ambiguousMailer simulates a delivery whose outcome is unknown: the body
+// was handed over, but the final reply could not be confirmed.
+type ambiguousMailer struct{}
+
+func (ambiguousMailer) Send(context.Context, mail.Message) error {
+	return fmt.Errorf("data close: %w", mail.ErrDeliveryAccepted)
 }
 
 // newMailHarness is a harness whose mailer renders every message into a
@@ -180,6 +189,52 @@ func TestSendVerificationMail_Failure_CleansUpToken(t *testing.T) {
 	var tokens int64
 	require.NoError(t, h.db.DB.Model(&model.VerificationToken{}).Count(&tokens).Error)
 	require.Zero(t, tokens, "failed deliveries must not leave token rows behind")
+}
+
+// An unconfirmed delivery may have reached the mailbox: the token must stay
+// so a possibly-delivered link keeps working, and the cooldown legitimately
+// protects it against immediate duplicate mails.
+func TestSendVerificationMail_AmbiguousOutcome_KeepsToken(t *testing.T) {
+	h := newHarnessWith(t, func(d *api.Deps) {
+		d.Mailer = ambiguousMailer{}
+		d.WebBaseURL = "https://panel.example.com"
+	})
+	h.seedUser(t, "owner6@example.com", "password123")
+	ownerToken := h.login(t, "owner6@example.com", "password123")
+
+	w := h.do(t, http.MethodPost, "/api/v1/orgs", map[string]string{"name": "ambiguous-org"}, ownerToken)
+	require.Equal(t, http.StatusCreated, w.Code)
+	var orgResp struct {
+		Data struct {
+			Id int64 `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &orgResp))
+
+	// The invitation mail may be out; CreateInvitation still surfaces 500.
+	w = h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgResp.Data.Id)+"/invitations",
+		map[string]string{"email": "unsure@example.com", "role": "member"}, ownerToken)
+	require.Equal(t, http.StatusInternalServerError, w.Code)
+
+	inviteToken := h.newInvitationForTest(t, orgResp.Data.Id, "unsure@example.com", "member")
+	w = h.do(t, http.MethodPost, "/api/v1/invitations/accept",
+		map[string]string{"token": inviteToken, "password": "unsurepass1"}, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	// The verification token created for the (possibly delivered) mail
+	// survives: exactly one row remains.
+	var tokens int64
+	require.NoError(t, h.db.DB.Model(&model.VerificationToken{}).Count(&tokens).Error)
+	require.EqualValues(t, 1, tokens, "unconfirmed deliveries must keep the token")
+
+	// An immediate resend is held back by the cooldown: the possibly
+	// delivered mail must not be drowned in duplicates.
+	w = h.do(t, http.MethodPost, "/api/v1/auth/resend-verification",
+		map[string]string{"email": "unsure@example.com"}, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	require.NoError(t, h.db.DB.Model(&model.VerificationToken{}).Count(&tokens).Error)
+	require.EqualValues(t, 1, tokens, "cooldown prevents a second token while the mail may be out")
 }
 
 // Two concurrent redeems of the same token must yield exactly one success:
