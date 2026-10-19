@@ -2,9 +2,11 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -20,6 +22,13 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
+
+// failingMailer simulates an SMTP outage: every send fails.
+type failingMailer struct{}
+
+func (failingMailer) Send(context.Context, mail.Message) error {
+	return errors.New("smtp unavailable")
+}
 
 // newMailHarness is a harness whose mailer renders every message into a
 // buffer, so tests can assert recipients and follow the links inside.
@@ -128,6 +137,49 @@ func TestResendVerification_NoEnumeration(t *testing.T) {
 		map[string]string{"email": "real@example.com"}, "")
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	require.Equal(t, 1, countVerificationLinks(buf))
+}
+
+// When a delivery fails, the token created for that mail must be removed:
+// a leftover token would make verificationCooldownActive swallow the
+// user's immediate retry for the whole cooldown window.
+func TestSendVerificationMail_Failure_CleansUpToken(t *testing.T) {
+	h := newHarnessWith(t, func(d *api.Deps) {
+		d.Mailer = failingMailer{}
+		d.WebBaseURL = "https://panel.example.com"
+	})
+	h.seedUser(t, "owner5@example.com", "password123")
+	ownerToken := h.login(t, "owner5@example.com", "password123")
+
+	w := h.do(t, http.MethodPost, "/api/v1/orgs", map[string]string{"name": "failing-org"}, ownerToken)
+	require.Equal(t, http.StatusCreated, w.Code)
+	var orgResp struct {
+		Data struct {
+			Id int64 `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &orgResp))
+
+	// Invitation delivery fails hard: 500, no token row left behind.
+	w = h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgResp.Data.Id)+"/invitations",
+		map[string]string{"email": "stranded@example.com", "role": "member"}, ownerToken)
+	require.Equal(t, http.StatusInternalServerError, w.Code)
+
+	// The invitee accepts through a directly inserted invitation; the
+	// verification mail fails softly (warn) but its token must be cleaned.
+	inviteToken := h.newInvitationForTest(t, orgResp.Data.Id, "stranded@example.com", "member")
+	w = h.do(t, http.MethodPost, "/api/v1/invitations/accept",
+		map[string]string{"token": inviteToken, "password": "strangepass1"}, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	// The immediate resend goes through (the failed-delivery token was
+	// deleted, so no cooldown applies) and also cleans up after itself.
+	w = h.do(t, http.MethodPost, "/api/v1/auth/resend-verification",
+		map[string]string{"email": "stranded@example.com"}, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	var tokens int64
+	require.NoError(t, h.db.DB.Model(&model.VerificationToken{}).Count(&tokens).Error)
+	require.Zero(t, tokens, "failed deliveries must not leave token rows behind")
 }
 
 // Two concurrent redeems of the same token must yield exactly one success:

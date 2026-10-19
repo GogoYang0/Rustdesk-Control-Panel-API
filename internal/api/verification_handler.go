@@ -153,10 +153,19 @@ func (a *AdminAPI) sendVerificationMail(ctx context.Context, user model.User) er
 
 	link := fmt.Sprintf("%s/verify-email?token=%s", strings.TrimRight(a.deps.WebBaseURL, "/"), token)
 	hours := int(a.deps.VerificationTTL / time.Hour)
-	return a.deps.Mailer.Send(ctx, mail.Message{
+	if err := a.deps.Mailer.Send(ctx, mail.Message{
 		To:      []string{user.Email},
 		Subject: "请验证您的邮箱",
 		TextBody: fmt.Sprintf("您好！\n\n请点击以下链接确认您的邮箱地址，验证后即可登录控制面板：\n\n%s\n\n"+
 			"该链接 %d 小时内有效，且仅可使用一次。如果您没有注册过本服务，请忽略此邮件。\n", link, hours),
-	})
+	}); err != nil {
+		// The link never went out, so drop only this token: leaving it
+		// behind would make verificationCooldownActive swallow the user's
+		// immediate retry through POST /auth/resend-verification.
+		if derr := store.WithoutTenantScope(a.deps.DB).Delete(&model.VerificationToken{}, vt.ID).Error; derr != nil {
+			return fmt.Errorf("verification mail failed: %w; token cleanup failed: %v", err, derr)
+		}
+		return err
+	}
+	return nil
 }

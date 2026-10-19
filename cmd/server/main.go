@@ -85,7 +85,10 @@ func main() {
 			lg.Fatal("backfill email_verified", zap.Error(res.Error))
 		}
 		lg.Info("backfilled email_verified for existing users", zap.Int64("rows", res.RowsAffected))
-		if err := st.DB.Create(&model.MigrationMark{Name: backfillEmailVerifiedTrue}).Error; err != nil {
+		if err := st.DB.Create(&model.MigrationMark{
+			Name:      backfillEmailVerifiedTrue,
+			AppliedAt: time.Now().UTC(),
+		}).Error; err != nil {
 			lg.Fatal("record backfill marker", zap.Error(err))
 		}
 	case err != nil:
@@ -187,7 +190,9 @@ func (l zapLogger) Info(msg string, keysAndValues ...any) {
 }
 
 // isPublicHTTPSOrigin reports whether raw is a well-formed https origin
-// (scheme + host, no path/query) that does not point at loopback.
+// (scheme + host, no path/query) that points neither at loopback nor at a
+// private address: this panel is a multi-tenant SaaS, and email links embed
+// plaintext tokens, so an unreachable intranet origin is a misconfiguration.
 func isPublicHTTPSOrigin(raw string) bool {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.Path != "" ||
@@ -198,7 +203,7 @@ func isPublicHTTPSOrigin(raw string) bool {
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
 		return false
 	}
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
 		return false
 	}
 	return true
