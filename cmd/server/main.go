@@ -5,11 +5,15 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/api"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
@@ -45,9 +49,9 @@ func main() {
 	}
 	defer func() { _ = st.Close() }()
 
-	// Whether users already had the email_verified column before this run:
-	// only the very first start after the upgrade may backfill it.
-	hadEmailVerifiedColumn := st.DB.Migrator().HasColumn(&model.User{}, "email_verified")
+	// backfillEmailVerifiedTrue is the persistent marker for the one-time
+	// data migration that trusts pre-verification accounts as verified.
+	const backfillEmailVerifiedTrue = "backfill_email_verified_true"
 
 	if err := st.DB.AutoMigrate(
 		&model.User{}, &model.RefreshToken{},
@@ -57,22 +61,35 @@ func main() {
 		&model.AddressBook{}, &model.AddressBookPeer{},
 		&model.AddressBookTag{}, &model.SyncCursor{},
 		&model.VerificationToken{},
+		&model.MigrationMark{},
 	); err != nil {
 		lg.Fatal("migrate database", zap.Error(err))
 	}
 
-	if !hadEmailVerifiedColumn {
-		// One-time backfill: every account created before email verification
-		// existed (M1) went through the invitation password-proving chain, so
-		// all of them are trusted as verified. Accounts created afterwards
-		// start unverified (default false) and must confirm their mailbox.
+	// One-time backfill, guarded by a persistent marker instead of the
+	// column's existence: if the data migration itself fails, the next boot
+	// must retry it, not skip it. The column carries NOT NULL DEFAULT false,
+	// so upgraded rows arrive as false (or NULL on a legacy nullable
+	// column); every account created before email verification existed (M1)
+	// went through the invitation password-proving chain and is trusted as
+	// verified. Accounts created afterwards start unverified.
+	var mark model.MigrationMark
+	err = st.DB.Where("name = ?", backfillEmailVerifiedTrue).First(&mark).Error
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
 		res := st.DB.Model(&model.User{}).
-			Where("email_verified = ?", false).
+			Where("email_verified IS NULL OR email_verified = ?", false).
 			Update("email_verified", true)
 		if res.Error != nil {
+			// Die without writing the marker: the next start retries.
 			lg.Fatal("backfill email_verified", zap.Error(res.Error))
 		}
 		lg.Info("backfilled email_verified for existing users", zap.Int64("rows", res.RowsAffected))
+		if err := st.DB.Create(&model.MigrationMark{Name: backfillEmailVerifiedTrue}).Error; err != nil {
+			lg.Fatal("record backfill marker", zap.Error(err))
+		}
+	case err != nil:
+		lg.Fatal("read migration marker", zap.Error(err))
 	}
 
 	issuer := auth.NewIssuer(cfg.Auth.Secret, cfg.Auth.AccessTTL, cfg.Auth.RefreshTTL)
@@ -113,6 +130,13 @@ func main() {
 			// dialSMTP would still attempt AUTH with the empty password and
 			// every delivery would fail at runtime; refuse to start instead.
 			lg.Fatal("PANEL_SMTP_PASSWORD is required when mail.smtp.username is set")
+		}
+		if !isPublicHTTPSOrigin(cfg.Web.BaseURL) {
+			// Every mail embeds the plaintext token in a link built from this
+			// origin. A localhost or plain-http default would silently hand
+			// verification and invitation links to an unusable (or
+			// interceptable) destination.
+			lg.Fatal("web.baseURL must be a public https origin when mail.devMode is false")
 		}
 		mailer = mail.NewSMTP(mail.SMTPConfig{
 			Host:     cfg.Mail.SMTP.Host,
@@ -160,4 +184,22 @@ type zapLogger struct{ lg *zap.Logger }
 
 func (l zapLogger) Info(msg string, keysAndValues ...any) {
 	l.lg.Sugar().Infow(msg, keysAndValues...)
+}
+
+// isPublicHTTPSOrigin reports whether raw is a well-formed https origin
+// (scheme + host, no path/query) that does not point at loopback.
+func isPublicHTTPSOrigin(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.Path != "" ||
+		u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		return false
+	}
+	host := u.Hostname()
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return false
+	}
+	return true
 }

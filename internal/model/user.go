@@ -9,9 +9,11 @@ type User struct {
 	Email        string `gorm:"size:255;uniqueIndex;not null" json:"email"`
 	PasswordHash string `gorm:"size:255;not null" json:"-"`
 	// EmailVerified gates every login path: false until the mailbox is
-	// proven with a verification token. Rows created before the field
-	// existed are backfilled to true once at startup (cmd/server/main.go).
-	EmailVerified bool      `json:"-"`
+	// proven with a verification token. NOT NULL + DEFAULT false keeps the
+	// column safe for ALTER-based migration: pre-existing rows are backfilled
+	// to true once at startup (see cmd/server/main.go), and no NULL can ever
+	// reach a Go bool scan.
+	EmailVerified bool      `gorm:"not null;default:false" json:"-"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }

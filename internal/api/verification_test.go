@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -126,6 +128,58 @@ func TestResendVerification_NoEnumeration(t *testing.T) {
 		map[string]string{"email": "real@example.com"}, "")
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	require.Equal(t, 1, countVerificationLinks(buf))
+}
+
+// Two concurrent redeems of the same token must yield exactly one success:
+// the conditional used_at update serialises the race, and no request may
+// observe a redeem that later rolls back.
+func TestVerifyEmail_ConcurrentRedeem_ExactlyOnce(t *testing.T) {
+	h, buf := newMailHarness(t)
+	h.seedUnverifiedUser(t, "race@example.com", "password123")
+
+	w := h.do(t, http.MethodPost, "/api/v1/auth/resend-verification",
+		map[string]string{"email": "race@example.com"}, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	token := extractToken(t, buf, "verify-email")
+
+	const attempts = 2
+	results := make([]*httptest.ResponseRecorder, attempts)
+	var wg sync.WaitGroup
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i] = h.do(t, http.MethodPost, "/api/v1/auth/verify-email",
+				map[string]string{"token": token}, "")
+		}(i)
+	}
+	wg.Wait()
+
+	ok, rejected := 0, 0
+	for _, rec := range results {
+		switch rec.Code {
+		case http.StatusOK:
+			ok++
+		case http.StatusConflict, http.StatusInternalServerError:
+			// 409 means the token was already consumed; 500 can surface
+			// from SQLite busy under concurrent writers. Both are "not
+			// redeemed" — never a second success.
+			rejected++
+		default:
+			require.Failf(t, "unexpected status", "got %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+	require.Equal(t, 1, ok, "exactly one redeem may succeed")
+	require.Equal(t, attempts-1, rejected)
+
+	var used int64
+	require.NoError(t, h.db.DB.Model(&model.VerificationToken{}).
+		Where("used_at IS NOT NULL").Count(&used).Error)
+	require.EqualValues(t, 1, used, "the token must be consumed exactly once")
+
+	var u model.User
+	require.NoError(t, h.db.DB.Where("email = ?", "race@example.com").First(&u).Error)
+	require.True(t, u.EmailVerified)
 }
 
 // Expired tokens are rejected exactly like unknown ones (409), so a leaked
