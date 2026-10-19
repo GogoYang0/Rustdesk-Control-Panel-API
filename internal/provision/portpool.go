@@ -72,13 +72,26 @@ func (p *PortPool) Allocate(orgID uint) (*model.ServerGroup, error) {
 
 	var lastErr error
 	for base := uint32(p.start); base+PortBlockSize-1 <= uint32(p.end); base += PortBlockSize {
+		overlap, err := p.blockOverlaps(uint16(base))
+		if err != nil {
+			return nil, err
+		}
+		if overlap {
+			// A block can overlap without colliding on the two indexed columns
+			// when provision.portStart changes after allocations exist
+			// (21116..21120 vs 21117..21121). The host would bind some ports
+			// twice, so the whole block is skipped.
+			lastErr = fmt.Errorf("block %d-%d overlaps an existing allocation", base, base+PortBlockSize-1)
+			continue
+		}
+
 		row := model.ServerGroup{
 			OrganizationID: orgID,
 			HbbsPort:       uint16(base),
 			HbbrPort:       uint16(base + hbbrPortOffset),
 			State:          model.ServerGroupProvisioning,
 		}
-		err := store.ScopedByOrg(p.db, orgID).Create(&row).Error
+		err = store.ScopedByOrg(p.db, orgID).Create(&row).Error
 		if err == nil {
 			return &row, nil
 		}
@@ -88,4 +101,34 @@ func (p *PortPool) Allocate(orgID uint) (*model.ServerGroup, error) {
 		lastErr = err
 	}
 	return nil, fmt.Errorf("%w: %v", ErrPortPoolExhausted, lastErr)
+}
+
+// blockOverlaps reports whether the five-port block starting at base overlaps a
+// block that is already reserved.
+//
+// Host ports are a machine-level resource, so this lookup spans tenants on
+// purpose: the pool protects ports, not tenant data.
+func (p *PortPool) blockOverlaps(base uint16) (bool, error) {
+	var rows []model.ServerGroup
+	if err := store.WithoutTenantScope(p.db).
+		Select("hbbs_port", "hbbr_port").
+		Find(&rows).Error; err != nil {
+		return false, fmt.Errorf("list reserved port blocks: %w", err)
+	}
+
+	start := uint32(base)
+	end := start + PortBlockSize - 1
+	for _, r := range rows {
+		rStart := uint32(r.HbbsPort)
+		// hbbr publishes HbbrPort and HbbrPort+1; fall back to the full block
+		// width for rows written by an older layout.
+		rEnd := uint32(r.HbbrPort) + 1
+		if rEnd < rStart+PortBlockSize-1 {
+			rEnd = rStart + PortBlockSize - 1
+		}
+		if rStart <= end && start <= rEnd {
+			return true, nil
+		}
+	}
+	return false, nil
 }

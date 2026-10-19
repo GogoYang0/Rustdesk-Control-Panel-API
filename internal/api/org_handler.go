@@ -67,10 +67,13 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 	}
 
 	// Provisioning is slow (container start), so it runs on a bounded worker
-	// queue after the response.
+	// queue after the response. Enqueue failures are recoverable: the
+	// organization row is the durable record, and the queue reconciler
+	// re-enqueues every organization that has no server group yet.
 	if a.deps.ProvisionQueue != nil {
 		if err := a.deps.ProvisionQueue.Enqueue(org.ID); err != nil {
-			a.deps.Logger.Error("enqueue provisioning failed", zap.Uint("org_id", org.ID), zap.Error(err))
+			a.deps.Logger.Warn("provisioning deferred to reconciler",
+				zap.Uint("org_id", org.ID), zap.Error(err))
 		}
 	}
 

@@ -219,3 +219,53 @@ func TestDeprovision_FreesPorts(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, row.HbbsPort, again.HbbsPort)
 }
+
+// A changed provision.portStart must not hand out overlapping blocks: the two
+// unique indexes alone would accept 21117 after 21116, yet the host would then
+// bind 21117..21120 twice.
+func TestPortPool_ShiftedStartSkipsOverlappingBlocks(t *testing.T) {
+	f := newFixture(t)
+
+	first := f.org(t, "first-org")
+	block, err := f.pool.Allocate(first.ID)
+	require.NoError(t, err)
+	require.EqualValues(t, testPortStart, block.HbbsPort)
+
+	// Same range, one port later, as if provision.portStart had changed.
+	shifted := provision.NewPortPool(f.st.DB, testPortStart+1, testPortEnd)
+	second := f.org(t, "second-org")
+	next, err := shifted.Allocate(second.ID)
+	require.NoError(t, err)
+	require.EqualValues(t, testPortStart+provision.PortBlockSize+1, next.HbbsPort,
+		"the overlapping block must be skipped entirely")
+
+	// When every block in range overlaps, allocation fails instead of
+	// producing a partial overlap.
+	tiny := provision.NewPortPool(f.st.DB, testPortStart+1, testPortStart+5)
+	third := f.org(t, "third-org")
+	_, err = tiny.Allocate(third.ID)
+	require.ErrorIs(t, err, provision.ErrPortPoolExhausted)
+}
+
+// Reconciliation treats the organization row as the durable provisioning
+// intent: every organization without a server group is queued exactly once.
+func TestReconcile_EnqueuesOnlyUnprovisionedOrgs(t *testing.T) {
+	f := newFixture(t)
+	done := f.org(t, "done-org")
+	pending := f.org(t, "pending-org")
+
+	_, err := f.svc.ProvisionForOrg(context.Background(), done.ID)
+	require.NoError(t, err)
+
+	queue := provision.NewQueue(f.svc, 1, 4, nil)
+	queued, err := queue.Reconcile(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, queued, "only the organization without a server group is queued")
+
+	// Once the pending organization is provisioned it must not be queued again.
+	_, err = f.svc.ProvisionForOrg(context.Background(), pending.ID)
+	require.NoError(t, err)
+	queued, err = queue.Reconcile(context.Background())
+	require.NoError(t, err)
+	require.Zero(t, queued)
+}

@@ -130,6 +130,52 @@ func (s *Service) ProvisionForOrg(ctx context.Context, orgID uint) (*model.Serve
 	return &stored, nil
 }
 
+// PendingOrgIDs returns organizations that have no server group row, meaning
+// provisioning never reached a worker: the queue was full at creation time, or
+// the process stopped after the organization was committed.
+//
+// The organization row is the durable record of the intent, so callers can
+// safely re-enqueue: ProvisionForOrg refuses an organization that already owns a
+// row. limit caps one sweep; zero means no cap.
+func (s *Service) PendingOrgIDs(ctx context.Context, limit int) ([]uint, error) {
+	var all []uint
+	if err := s.db.WithContext(ctx).
+		Model(&model.Organization{}).
+		Order("id").
+		Pluck("id", &all).Error; err != nil {
+		return nil, fmt.Errorf("list organizations: %w", err)
+	}
+	if len(all) == 0 {
+		return nil, nil
+	}
+
+	var provisioned []uint
+	// Port allocations are a host-level resource, so the lookup spans tenants.
+	// WithoutTenantScope must be applied after WithContext: it derives from the
+	// current statement context, and a later WithContext would drop the marker.
+	if err := store.WithoutTenantScope(s.db.WithContext(ctx)).
+		Model(&model.ServerGroup{}).
+		Pluck("organization_id", &provisioned).Error; err != nil {
+		return nil, fmt.Errorf("list server groups: %w", err)
+	}
+	seen := make(map[uint]struct{}, len(provisioned))
+	for _, id := range provisioned {
+		seen[id] = struct{}{}
+	}
+
+	missing := make([]uint, 0, len(all))
+	for _, id := range all {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		missing = append(missing, id)
+		if limit > 0 && len(missing) >= limit {
+			break
+		}
+	}
+	return missing, nil
+}
+
 // Deprovision removes the deployment and frees the ports.
 func (s *Service) Deprovision(ctx context.Context, orgID uint) error {
 	if err := store.RequireOrgID(orgID); err != nil {
