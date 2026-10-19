@@ -48,6 +48,8 @@ func main() {
 		&model.Organization{}, &model.Membership{}, &model.Invitation{},
 		&model.AuditLog{},
 		&model.Device{}, &model.DeviceHeartbeat{}, &model.ServerGroup{},
+		&model.AddressBook{}, &model.AddressBookPeer{},
+		&model.AddressBookTag{}, &model.SyncCursor{},
 	); err != nil {
 		lg.Fatal("migrate database", zap.Error(err))
 	}

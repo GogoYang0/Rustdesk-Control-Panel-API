@@ -261,3 +261,75 @@ func TestScopedByOrg_JoinOnScopedTableRejected(t *testing.T) {
 	require.Error(t, err, "joins touching a scoped table must be rejected")
 	require.Empty(t, rows)
 }
+
+// M2 Task 3: every address book table must be tenant-isolated (Review Focus #1).
+func TestTenantIsolation_AddressBookTables(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	require.NoError(t, db.AutoMigrate(
+		&model.AddressBook{}, &model.AddressBookPeer{},
+		&model.AddressBookTag{}, &model.SyncCursor{},
+	))
+
+	orgA := model.Organization{Name: "org-ab-a"}
+	orgB := model.Organization{Name: "org-ab-b"}
+	require.NoError(t, db.Create(&orgA).Error)
+	require.NoError(t, db.Create(&orgB).Error)
+
+	owner := uint(101)
+	bookA := model.AddressBook{OrganizationID: orgA.ID, OwnerID: &owner, Scope: model.AddressBookScopePersonal, Name: "personal-a"}
+	require.NoError(t, db.Create(&bookA).Error)
+	require.NoError(t, db.Create(&model.AddressBookPeer{
+		OrganizationID: orgA.ID, BookID: bookA.ID, PeerID: "111111", Alias: "alpha",
+	}).Error)
+	require.NoError(t, db.Create(&model.AddressBookTag{
+		OrganizationID: orgA.ID, BookID: bookA.ID, Name: "infra", Color: 16711680,
+	}).Error)
+	require.NoError(t, db.Create(&model.SyncCursor{
+		OrganizationID: orgA.ID, UserID: owner, BookID: bookA.ID, LastRevision: 3,
+	}).Error)
+
+	// Org B must see nothing in any of the four tables.
+	var books []model.AddressBook
+	require.NoError(t, store.ScopedByOrg(db, orgB.ID).Find(&books).Error)
+	require.Empty(t, books, "org B must not see org A address books")
+
+	var peers []model.AddressBookPeer
+	require.NoError(t, store.ScopedByOrg(db, orgB.ID).Find(&peers).Error)
+	require.Empty(t, peers, "org B must not see org A peers")
+
+	var tags []model.AddressBookTag
+	require.NoError(t, store.ScopedByOrg(db, orgB.ID).Find(&tags).Error)
+	require.Empty(t, tags, "org B must not see org A tags")
+
+	var cursors []model.SyncCursor
+	require.NoError(t, store.ScopedByOrg(db, orgB.ID).Find(&cursors).Error)
+	require.Empty(t, cursors, "org B must not see org A sync cursors")
+
+	// Org A still sees its own rows.
+	var own []model.AddressBook
+	require.NoError(t, store.ScopedByOrg(db, orgA.ID).Find(&own).Error)
+	require.Len(t, own, 1)
+}
+
+// The (book_id, peer_id) pair is unique: re-inserting the same peer into the
+// same book must surface gorm.ErrDuplicatedKey (TranslateError is enabled).
+func TestAddressBookPeer_UniqueConstraint(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	require.NoError(t, db.AutoMigrate(&model.AddressBook{}, &model.AddressBookPeer{}))
+
+	org := model.Organization{Name: "org-ab-uniq"}
+	require.NoError(t, db.Create(&org).Error)
+	owner := uint(201)
+	book := model.AddressBook{OrganizationID: org.ID, OwnerID: &owner, Scope: model.AddressBookScopePersonal, Name: "uniq"}
+	require.NoError(t, db.Create(&book).Error)
+
+	peer := model.AddressBookPeer{OrganizationID: org.ID, BookID: book.ID, PeerID: "222222"}
+	require.NoError(t, db.Create(&peer).Error)
+
+	err := db.Create(&model.AddressBookPeer{OrganizationID: org.ID, BookID: book.ID, PeerID: "222222"}).Error
+	require.ErrorIs(t, err, gorm.ErrDuplicatedKey, "duplicate (book_id, peer_id) must raise ErrDuplicatedKey")
+}
