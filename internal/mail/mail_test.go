@@ -13,6 +13,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"net/textproto"
 	"strconv"
 	"strings"
 	"sync"
@@ -96,9 +97,11 @@ func TestSMTP_BuildMessage_TextOnly(t *testing.T) {
 	require.Contains(t, string(raw), "text/plain")
 }
 
-// fakeConn records Send attempts; the first n fail with a transient error.
+// fakeConn records Send attempts; the first n attempts fail with the
+// configured error (a generic transient error by default).
 type fakeConn struct {
 	failures int
+	smtpErr  error
 	sent     [][]string
 	closed   bool
 }
@@ -112,6 +115,9 @@ func (f *fakeConn) Data(r io.Reader) error {
 	b, _ := io.ReadAll(r)
 	f.sent = append(f.sent, []string{string(b)})
 	if len(f.sent) <= f.failures {
+		if f.smtpErr != nil {
+			return f.smtpErr
+		}
 		return errors.New("transient smtp error")
 	}
 	return nil
@@ -373,7 +379,9 @@ func TestSMTP_Dial_StartTLSAndAuth(t *testing.T) {
 	defer f.mu.Unlock()
 	require.True(t, f.gotAuth, "configured credentials must authenticate")
 	require.Contains(t, f.gotMail, "f@example.com")
-	require.Contains(t, f.gotBody, "b")
+	// Bodies travel base64-encoded: assert the encoded form, a bare "b"
+	// would spuriously match the "base64" header text.
+	require.Contains(t, f.gotBody, base64.StdEncoding.EncodeToString([]byte("b")))
 }
 
 func portOf(addr string) int {
@@ -392,4 +400,43 @@ func TestSMTP_Send_RespectsContext(t *testing.T) {
 		To: []string{"to@example.com"}, Subject: "s", TextBody: "b",
 	})
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+// Review round 3: 5xx SMTP replies are permanent — retrying them only
+// delays the failure and can trip provider rate limits. A 535 on AUTH must
+// surface immediately instead of being retried.
+func TestSMTP_NoRetry_OnPermanentError(t *testing.T) {
+	fc := &fakeConn{failures: 100, smtpErr: &textproto.Error{Code: 535, Msg: "authentication failed"}}
+	dials := 0
+	s := NewSMTP(SMTPConfig{Host: "h", Port: 1, From: "f@example.com"})
+	s.dial = func(_ context.Context, addr string) (conn, error) {
+		dials++
+		return fc, nil
+	}
+	s.retryBase = time.Millisecond
+
+	err := s.Send(context.Background(), Message{
+		To: []string{"to@example.com"}, Subject: "s", TextBody: "b",
+	})
+	require.Error(t, err)
+	require.Equal(t, 1, dials, "a 5xx reply must not be retried")
+	var tpErr *textproto.Error
+	require.ErrorAs(t, err, &tpErr)
+	require.Equal(t, 535, tpErr.Code)
+}
+
+// 4xx replies stay transient and keep the retry behaviour.
+func TestSMTP_Retry_OnTemporaryError(t *testing.T) {
+	fc := &fakeConn{failures: 1, smtpErr: &textproto.Error{Code: 451, Msg: "try again later"}}
+	s := NewSMTP(SMTPConfig{Host: "h", Port: 1, From: "f@example.com"})
+	s.dial = func(_ context.Context, addr string) (conn, error) {
+		return fc, nil
+	}
+	s.retryBase = time.Millisecond
+
+	err := s.Send(context.Background(), Message{
+		To: []string{"to@example.com"}, Subject: "s", TextBody: "b",
+	})
+	require.NoError(t, err, "a 4xx reply is transient and must be retried")
+	require.Len(t, fc.sent, 2)
 }

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/smtp"
+	"net/textproto"
 	"strings"
 	"time"
 )
@@ -138,6 +139,14 @@ func authenticate(c clientConn, cfg SMTPConfig) (clientConn, error) {
 	return c, nil
 }
 
+// isPermanent reports a 5xx SMTP reply, which retrying cannot fix: an
+// authentication failure or rejected recipient stays rejected, and hammering
+// the provider only invites rate limiting. 4xx replies stay transient.
+func isPermanent(err error) bool {
+	var tpErr *textproto.Error
+	return errors.As(err, &tpErr) && tpErr.Code >= 500
+}
+
 // ctxDeadline returns the earlier of the context deadline and now+timeout.
 func ctxDeadline(ctx context.Context, timeout time.Duration) time.Time {
 	dl := time.Now().Add(timeout)
@@ -172,6 +181,9 @@ func (s *SMTP) Send(ctx context.Context, msg Message) error {
 		c, derr := s.dial(attemptCtx, addr)
 		if derr != nil {
 			cancel()
+			if isPermanent(derr) {
+				return derr
+			}
 			lastErr = derr
 			continue
 		}
@@ -181,6 +193,9 @@ func (s *SMTP) Send(ctx context.Context, msg Message) error {
 		cancel() // releases the connection watcher goroutine
 		if serr == nil {
 			return nil
+		}
+		if isPermanent(serr) {
+			return serr
 		}
 		lastErr = serr
 	}
