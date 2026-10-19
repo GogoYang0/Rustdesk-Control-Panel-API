@@ -69,20 +69,23 @@ func (e DeviceStatus) Valid() bool {
 
 // Defines values for ErrorCode.
 const (
-	ErrorCodeConflict       ErrorCode = "conflict"
-	ErrorCodeForbidden      ErrorCode = "forbidden"
-	ErrorCodeInternal       ErrorCode = "internal"
-	ErrorCodeInvalidRequest ErrorCode = "invalid_request"
-	ErrorCodeNotFound       ErrorCode = "not_found"
-	ErrorCodeOk             ErrorCode = "ok"
-	ErrorCodeRateLimited    ErrorCode = "rate_limited"
-	ErrorCodeUnauthorized   ErrorCode = "unauthorized"
+	ErrorCodeConflict         ErrorCode = "conflict"
+	ErrorCodeEmailNotVerified ErrorCode = "email_not_verified"
+	ErrorCodeForbidden        ErrorCode = "forbidden"
+	ErrorCodeInternal         ErrorCode = "internal"
+	ErrorCodeInvalidRequest   ErrorCode = "invalid_request"
+	ErrorCodeNotFound         ErrorCode = "not_found"
+	ErrorCodeOk               ErrorCode = "ok"
+	ErrorCodeRateLimited      ErrorCode = "rate_limited"
+	ErrorCodeUnauthorized     ErrorCode = "unauthorized"
 )
 
 // Valid indicates whether the value is a known member of the ErrorCode enum.
 func (e ErrorCode) Valid() bool {
 	switch e {
 	case ErrorCodeConflict:
+		return true
+	case ErrorCodeEmailNotVerified:
 		return true
 	case ErrorCodeForbidden:
 		return true
@@ -296,9 +299,10 @@ type AddressBookListResponse struct {
 	// - unauthorized：未认证或令牌无效
 	// - forbidden：权限不足
 	// - not_found：资源不存在
-	// - conflict：状态冲突（重复创建、邀请过期或已使用）
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
 	// - rate_limited：触发限流
 	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
 	Code    ErrorCode     `json:"code"`
 	Data    []AddressBook `json:"data"`
 	Message string        `json:"message"`
@@ -329,9 +333,10 @@ type AddressBookResponse struct {
 	// - unauthorized：未认证或令牌无效
 	// - forbidden：权限不足
 	// - not_found：资源不存在
-	// - conflict：状态冲突（重复创建、邀请过期或已使用）
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
 	// - rate_limited：触发限流
 	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
 	Code    ErrorCode   `json:"code"`
 	Data    AddressBook `json:"data"`
 	Message string      `json:"message"`
@@ -380,9 +385,10 @@ type DeviceResponse struct {
 	// - unauthorized：未认证或令牌无效
 	// - forbidden：权限不足
 	// - not_found：资源不存在
-	// - conflict：状态冲突（重复创建、邀请过期或已使用）
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
 	// - rate_limited：触发限流
 	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
 	Code    ErrorCode `json:"code"`
 	Data    Device    `json:"data"`
 	Message string    `json:"message"`
@@ -399,9 +405,10 @@ type EmailVerificationRequest struct {
 // - unauthorized：未认证或令牌无效
 // - forbidden：权限不足
 // - not_found：资源不存在
-// - conflict：状态冲突（重复创建、邀请过期或已使用）
+// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
 // - rate_limited：触发限流
 // - internal：服务端错误
+// - email_not_verified：邮箱未验证（登录被拒）
 type ErrorCode string
 
 // ErrorResponse defines model for ErrorResponse.
@@ -412,9 +419,10 @@ type ErrorResponse struct {
 	// - unauthorized：未认证或令牌无效
 	// - forbidden：权限不足
 	// - not_found：资源不存在
-	// - conflict：状态冲突（重复创建、邀请过期或已使用）
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
 	// - rate_limited：触发限流
 	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
 	Code    ErrorCode               `json:"code"`
 	Data    *map[string]interface{} `json:"data,omitempty"`
 	Message string                  `json:"message"`
@@ -454,9 +462,10 @@ type InvitationResponse struct {
 	// - unauthorized：未认证或令牌无效
 	// - forbidden：权限不足
 	// - not_found：资源不存在
-	// - conflict：状态冲突（重复创建、邀请过期或已使用）
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
 	// - rate_limited：触发限流
 	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
 	Code    ErrorCode  `json:"code"`
 	Data    Invitation `json:"data"`
 	Message string     `json:"message"`
@@ -492,9 +501,10 @@ type LogEventListResponse struct {
 	// - unauthorized：未认证或令牌无效
 	// - forbidden：权限不足
 	// - not_found：资源不存在
-	// - conflict：状态冲突（重复创建、邀请过期或已使用）
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
 	// - rate_limited：触发限流
 	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
 	Code    ErrorCode  `json:"code"`
 	Data    []LogEvent `json:"data"`
 	Message string     `json:"message"`
@@ -526,9 +536,10 @@ type MemberListResponse struct {
 	// - unauthorized：未认证或令牌无效
 	// - forbidden：权限不足
 	// - not_found：资源不存在
-	// - conflict：状态冲突（重复创建、邀请过期或已使用）
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
 	// - rate_limited：触发限流
 	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
 	Code    ErrorCode `json:"code"`
 	Data    []Member  `json:"data"`
 	Message string    `json:"message"`
@@ -542,9 +553,10 @@ type MemberResponse struct {
 	// - unauthorized：未认证或令牌无效
 	// - forbidden：权限不足
 	// - not_found：资源不存在
-	// - conflict：状态冲突（重复创建、邀请过期或已使用）
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
 	// - rate_limited：触发限流
 	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
 	Code    ErrorCode `json:"code"`
 	Data    Member    `json:"data"`
 	Message string    `json:"message"`
@@ -558,9 +570,10 @@ type OkResponse struct {
 	// - unauthorized：未认证或令牌无效
 	// - forbidden：权限不足
 	// - not_found：资源不存在
-	// - conflict：状态冲突（重复创建、邀请过期或已使用）
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
 	// - rate_limited：触发限流
 	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
 	Code    ErrorCode `json:"code"`
 	Message string    `json:"message"`
 }
@@ -585,9 +598,10 @@ type OrgListResponse struct {
 	// - unauthorized：未认证或令牌无效
 	// - forbidden：权限不足
 	// - not_found：资源不存在
-	// - conflict：状态冲突（重复创建、邀请过期或已使用）
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
 	// - rate_limited：触发限流
 	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
 	Code    ErrorCode `json:"code"`
 	Data    []Org     `json:"data"`
 	Message string    `json:"message"`
@@ -601,9 +615,10 @@ type OrgResponse struct {
 	// - unauthorized：未认证或令牌无效
 	// - forbidden：权限不足
 	// - not_found：资源不存在
-	// - conflict：状态冲突（重复创建、邀请过期或已使用）
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
 	// - rate_limited：触发限流
 	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
 	Code    ErrorCode `json:"code"`
 	Data    Org       `json:"data"`
 	Message string    `json:"message"`
@@ -636,9 +651,10 @@ type TokenResponse struct {
 	// - unauthorized：未认证或令牌无效
 	// - forbidden：权限不足
 	// - not_found：资源不存在
-	// - conflict：状态冲突（重复创建、邀请过期或已使用）
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
 	// - rate_limited：触发限流
 	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
 	Code    ErrorCode `json:"code"`
 	Data    TokenPair `json:"data"`
 	Message string    `json:"message"`
@@ -652,6 +668,9 @@ type Conflict = ErrorResponse
 
 // Forbidden defines model for Forbidden.
 type Forbidden = ErrorResponse
+
+// Internal defines model for Internal.
+type Internal = ErrorResponse
 
 // NotFound defines model for NotFound.
 type NotFound = ErrorResponse

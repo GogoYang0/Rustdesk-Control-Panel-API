@@ -45,6 +45,10 @@ func main() {
 	}
 	defer func() { _ = st.Close() }()
 
+	// Whether users already had the email_verified column before this run:
+	// only the very first start after the upgrade may backfill it.
+	hadEmailVerifiedColumn := st.DB.Migrator().HasColumn(&model.User{}, "email_verified")
+
 	if err := st.DB.AutoMigrate(
 		&model.User{}, &model.RefreshToken{},
 		&model.Organization{}, &model.Membership{}, &model.Invitation{},
@@ -52,8 +56,23 @@ func main() {
 		&model.Device{}, &model.DeviceHeartbeat{}, &model.ServerGroup{},
 		&model.AddressBook{}, &model.AddressBookPeer{},
 		&model.AddressBookTag{}, &model.SyncCursor{},
+		&model.VerificationToken{},
 	); err != nil {
 		lg.Fatal("migrate database", zap.Error(err))
+	}
+
+	if !hadEmailVerifiedColumn {
+		// One-time backfill: every account created before email verification
+		// existed (M1) went through the invitation password-proving chain, so
+		// all of them are trusted as verified. Accounts created afterwards
+		// start unverified (default false) and must confirm their mailbox.
+		res := st.DB.Model(&model.User{}).
+			Where("email_verified = ?", false).
+			Update("email_verified", true)
+		if res.Error != nil {
+			lg.Fatal("backfill email_verified", zap.Error(res.Error))
+		}
+		lg.Info("backfilled email_verified for existing users", zap.Int64("rows", res.RowsAffected))
 	}
 
 	issuer := auth.NewIssuer(cfg.Auth.Secret, cfg.Auth.AccessTTL, cfg.Auth.RefreshTTL)
@@ -126,6 +145,7 @@ func main() {
 			AccessTTL:      cfg.Auth.AccessTTL,
 			RefreshTTL:     cfg.Auth.RefreshTTL,
 			InvitationTTL:  7 * 24 * time.Hour,
+			WebBaseURL:     cfg.Web.BaseURL,
 		}),
 	}
 

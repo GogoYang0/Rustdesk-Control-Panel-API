@@ -16,6 +16,12 @@ type Config struct {
 	Auth      AuthConfig      `mapstructure:"auth"`
 	Provision ProvisionConfig `mapstructure:"provision"`
 	Mail      MailConfig      `mapstructure:"mail"`
+	Web       WebConfig       `mapstructure:"web"`
+}
+
+// WebConfig points at the panel frontend so emails can link back to it.
+type WebConfig struct {
+	BaseURL string `mapstructure:"baseURL"`
 }
 
 // MailConfig selects the delivery backend. In devMode messages are written
@@ -99,6 +105,11 @@ func Load(path string) (*Config, error) {
 	}
 	v.SetDefault("mail.devMode", true)
 	v.SetDefault("mail.smtp.port", 587)
+	// Frontend origin for links inside outgoing emails.
+	v.SetDefault("web.baseurl", "http://localhost:5173")
+	if err := v.BindEnv("web.baseurl", "PANEL_WEB_BASE_URL"); err != nil {
+		return nil, fmt.Errorf("bind web base url env: %w", err)
+	}
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)

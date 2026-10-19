@@ -31,6 +31,12 @@ type harness struct {
 }
 
 func newHarness(t *testing.T) *harness {
+	return newHarnessWith(t, nil)
+}
+
+// newHarnessWith builds the standard harness and lets a test tweak the Deps
+// (e.g. inject a mailer) before the router is created.
+func newHarnessWith(t *testing.T, tune func(*api.Deps)) *harness {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
@@ -45,13 +51,13 @@ func newHarness(t *testing.T) *harness {
 		&model.Organization{}, &model.Membership{}, &model.Invitation{},
 		&model.AuditLog{}, &model.Device{}, &model.DeviceHeartbeat{},
 		&model.AddressBook{}, &model.AddressBookPeer{},
-		&model.AddressBookTag{}, &model.SyncCursor{},
+		&model.AddressBookTag{}, &model.SyncCursor{}, &model.VerificationToken{},
 	))
 
 	issuer := auth.NewIssuer("test-secret", time.Minute, time.Hour)
 	svc := auth.NewService(st.DB, issuer, nil)
 
-	r := api.NewRouter(api.Deps{
+	deps := api.Deps{
 		DB:            st.DB,
 		Auth:          svc,
 		Devices:       device.NewService(st.DB, nil),
@@ -59,7 +65,12 @@ func newHarness(t *testing.T) *harness {
 		AccessTTL:     time.Minute,
 		RefreshTTL:    time.Hour,
 		InvitationTTL: time.Hour,
-	})
+	}
+	if tune != nil {
+		tune(&deps)
+	}
+
+	r := api.NewRouter(deps)
 
 	return &harness{router: r, db: *st, issuer: issuer}
 }
@@ -104,7 +115,19 @@ func (h *harness) seedUser(t *testing.T, email, password string) model.User {
 	t.Helper()
 	hash, err := auth.HashPassword(password)
 	require.NoError(t, err)
-	u := model.User{Email: email, PasswordHash: hash}
+	// Seeded accounts represent pre-existing (verified) users: every M1
+	// account was created through the invitation password-proving chain.
+	u := model.User{Email: email, PasswordHash: hash, EmailVerified: true}
+	require.NoError(t, h.db.DB.Create(&u).Error)
+	return u
+}
+
+// seedUnverifiedUser creates an account that has not confirmed its mailbox.
+func (h *harness) seedUnverifiedUser(t *testing.T, email, password string) model.User {
+	t.Helper()
+	hash, err := auth.HashPassword(password)
+	require.NoError(t, err)
+	u := model.User{Email: email, PasswordHash: hash, EmailVerified: false}
 	require.NoError(t, h.db.DB.Create(&u).Error)
 	return u
 }
@@ -448,7 +471,7 @@ func TestCreateDevice_WritesAndHeartbeats(t *testing.T) {
 }
 
 func TestCreateDevice_MemberRole_Forbidden(t *testing.T) {
-	h := newHarness(t)
+	h, buf := newMailHarness(t)
 	h.seedUser(t, "owner4@example.com", "password123")
 	ownerToken := h.login(t, "owner4@example.com", "password123")
 
@@ -461,15 +484,21 @@ func TestCreateDevice_MemberRole_Forbidden(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &orgResp))
 
-	// Invite a second user as member, accept, then try to write a device.
+	// Invite a second user as member, accept, verify the mailbox (a newly
+	// created account starts unverified), then try to write a device.
 	w = h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgResp.Data.Id)+"/invitations",
 		map[string]string{"email": "plain@example.com", "role": "member"}, ownerToken)
 	require.Equal(t, http.StatusCreated, w.Code)
-	token := h.newInvitationForTest(t, orgResp.Data.Id, "plain@example.com", "member")
+	inviteToken := extractToken(t, buf, "accept-invitation")
 
 	w = h.do(t, http.MethodPost, "/api/v1/invitations/accept",
-		map[string]string{"token": token, "password": "memberpass1"}, "")
+		map[string]string{"token": inviteToken, "password": "memberpass1"}, "")
 	require.Equal(t, http.StatusOK, w.Code)
+
+	verifyToken := extractToken(t, buf, "verify-email")
+	w = h.do(t, http.MethodPost, "/api/v1/auth/verify-email",
+		map[string]string{"token": verifyToken}, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 
 	memberToken := h.login(t, "plain@example.com", "memberpass1")
 	w = h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgResp.Data.Id)+"/devices",
@@ -552,16 +581,17 @@ func TestCreateOrg_ConcurrentRequestsRespectQuota(t *testing.T) {
 }
 
 // Contract 0.3.0 declares verify-email / resend-verification with
-// security: []; the JWT middleware must not intercept them even while the
-// handlers are still 501 placeholders (task 6 implements the real flow).
+// security: []; the JWT middleware must not intercept them. Task 6 turned
+// the placeholders into real handlers: a malformed token is 400 and an
+// unknown email is 200 (anti-enumeration).
 func TestVerifyEmailRoutes_AnonymousReachHandler(t *testing.T) {
 	h := newHarness(t)
 
 	w := h.do(t, http.MethodPost, "/api/v1/auth/verify-email",
-		map[string]string{"token": "irrelevant-token-1"}, "")
-	require.Equal(t, http.StatusNotImplemented, w.Code, w.Body.String())
+		map[string]string{"token": "short"}, "")
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 
 	w = h.do(t, http.MethodPost, "/api/v1/auth/resend-verification",
 		map[string]string{"email": "someone@example.com"}, "")
-	require.Equal(t, http.StatusNotImplemented, w.Code, w.Body.String())
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 }
