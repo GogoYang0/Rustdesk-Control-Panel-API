@@ -201,6 +201,13 @@ func (s *SMTP) Send(ctx context.Context, msg Message) error {
 		if serr == nil {
 			return nil
 		}
+		if errors.Is(serr, ErrDeliveryAccepted) {
+			// The server may already have accepted this exact message;
+			// retrying would deliver a duplicate into the recipient's
+			// mailbox. Surface the unknown outcome and let the caller
+			// decide (the caller keeps any token the mail may carry).
+			return serr
+		}
 		if isPermanent(serr) {
 			return serr
 		}
