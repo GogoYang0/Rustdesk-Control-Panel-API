@@ -17,6 +17,15 @@ import (
 // ErrDeviceNotFound is returned when a device id does not exist in the org.
 var ErrDeviceNotFound = errors.New("device not found")
 
+// ErrInvalidInput reports client input that does not satisfy the contract.
+var ErrInvalidInput = errors.New("invalid device input")
+
+// Field limits mirror the contract and the column sizes.
+const (
+	maxNameLen       = 128
+	maxRustdeskIDLen = 64
+)
+
 // RegisterInput carries the fields accepted by the contract.
 type RegisterInput struct {
 	Name       string
@@ -43,7 +52,13 @@ func (s *Service) Register(ctx context.Context, orgID uint, in RegisterInput) (*
 		return nil, err
 	}
 	if in.Name == "" || in.RustdeskID == "" {
-		return nil, fmt.Errorf("name and rustdesk_id are required")
+		return nil, fmt.Errorf("%w: name and rustdesk_id are required", ErrInvalidInput)
+	}
+	if len([]rune(in.Name)) > maxNameLen {
+		return nil, fmt.Errorf("%w: name exceeds %d characters", ErrInvalidInput, maxNameLen)
+	}
+	if len(in.RustdeskID) > maxRustdeskIDLen {
+		return nil, fmt.Errorf("%w: rustdesk_id exceeds %d characters", ErrInvalidInput, maxRustdeskIDLen)
 	}
 
 	row := model.Device{
@@ -85,8 +100,11 @@ func (s *Service) Heartbeat(ctx context.Context, orgID, deviceID uint) (*model.D
 			}
 			return err
 		}
+		// Only move the timestamp forward: a slower in-flight heartbeat must not
+		// overwrite a newer one and make the device look offline.
 		if err := store.ScopedByOrg(tx, orgID).Model(&model.Device{}).
 			Where("id = ?", dev.ID).
+			Where("last_seen_at IS NULL OR last_seen_at < ?", now).
 			Update("last_seen_at", now).Error; err != nil {
 			return err
 		}

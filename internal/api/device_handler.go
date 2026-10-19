@@ -36,6 +36,10 @@ func (a *AdminAPI) CreateDevice(c *gin.Context, orgId int64) {
 		Name:       req.Name,
 		RustdeskID: req.RustdeskId,
 	})
+	if errors.Is(err, device.ErrInvalidInput) {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
+		return
+	}
 	if err != nil {
 		a.deps.Logger.Error("register device failed")
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not register device")

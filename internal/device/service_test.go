@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,11 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
+)
+
+const (
+	maxNameLenForTest    = 128
+	maxRustdeskIDForTest = 64
 )
 
 type fixture struct {
@@ -117,4 +123,55 @@ func TestRegister_RequiresOrg(t *testing.T) {
 	_, err := f.svc.Register(context.Background(), 0, device.RegisterInput{Name: "x", RustdeskID: "y"})
 	require.Error(t, err)
 	require.False(t, errors.Is(err, device.ErrDeviceNotFound))
+}
+
+func TestRegister_RejectsOversizedFields(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	_, err := f.svc.Register(ctx, f.orgA.ID, device.RegisterInput{
+		Name:       strings.Repeat("n", maxNameLenForTest+1),
+		RustdeskID: "id-1",
+	})
+	require.ErrorIs(t, err, device.ErrInvalidInput)
+
+	_, err = f.svc.Register(ctx, f.orgA.ID, device.RegisterInput{
+		Name:       "ok",
+		RustdeskID: strings.Repeat("9", maxRustdeskIDForTest+1),
+	})
+	require.ErrorIs(t, err, device.ErrInvalidInput)
+}
+
+func TestHeartbeat_NeverMovesLastSeenBackwards(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	dev, err := f.svc.Register(ctx, f.orgA.ID, device.RegisterInput{Name: "pc", RustdeskID: "clock-1"})
+	require.NoError(t, err)
+
+	later := time.Now()
+	f.svc = device.NewService(f.st.DB, func() time.Time { return later })
+	_, err = f.svc.Heartbeat(ctx, f.orgA.ID, dev.ID)
+	require.NoError(t, err)
+
+	// A heartbeat that started earlier but finishes later must not regress.
+	earlier := later.Add(-30 * time.Second)
+	f.svc = device.NewService(f.st.DB, func() time.Time { return earlier })
+	after, err := f.svc.Heartbeat(ctx, f.orgA.ID, dev.ID)
+	require.NoError(t, err)
+	require.NotNil(t, after.LastSeenAt)
+	require.WithinDuration(t, later, *after.LastSeenAt, time.Second)
+
+	var beats int64
+	require.NoError(t, store.ScopedByOrg(f.st.DB, f.orgA.ID).Model(&model.DeviceHeartbeat{}).Count(&beats).Error)
+	require.EqualValues(t, 2, beats, "every heartbeat event is still recorded")
+}
+
+func TestOnline_FutureTimestampIsOffline(t *testing.T) {
+	now := time.Now()
+	future := now.Add(2 * time.Minute)
+	require.False(t, (&model.Device{LastSeenAt: &future}).Online(now), "a far-future heartbeat must not count as online")
+
+	slightFuture := now.Add(2 * time.Second)
+	require.True(t, (&model.Device{LastSeenAt: &slightFuture}).Online(now), "small clock skew stays online")
 }

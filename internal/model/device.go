@@ -21,12 +21,23 @@ type Device struct {
 // online.
 const OnlineWindow = 90 * time.Second
 
+// ClockSkew tolerates small clock differences between nodes.
+const ClockSkew = 5 * time.Second
+
 // Online reports whether the device sent a heartbeat within OnlineWindow.
+//
+// A timestamp further in the future than ClockSkew is treated as offline: a
+// skewed node must not keep a device online until the future time plus the
+// window has elapsed.
 func (d *Device) Online(now time.Time) bool {
 	if d.LastSeenAt == nil {
 		return false
 	}
-	return now.Sub(*d.LastSeenAt) < OnlineWindow
+	age := now.Sub(*d.LastSeenAt)
+	if age < -ClockSkew {
+		return false
+	}
+	return age < OnlineWindow
 }
 
 // DeviceHeartbeat records one heartbeat event.
