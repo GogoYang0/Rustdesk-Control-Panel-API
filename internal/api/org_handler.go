@@ -31,7 +31,7 @@ var errOrgQuotaReached = errors.New("organization quota reached")
 // skipped there.
 func (a *AdminAPI) lockUserRow(tx *gorm.DB, uid uint) error {
 	query := tx
-	if tx.Dialector.Name() != "sqlite" {
+	if tx.Name() != "sqlite" {
 		query = tx.Clauses(clause.Locking{Strength: "UPDATE"})
 	}
 	var user model.User
