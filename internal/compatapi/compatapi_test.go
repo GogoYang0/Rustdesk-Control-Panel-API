@@ -3,6 +3,7 @@ package compatapi_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -546,4 +547,77 @@ func TestHeartbeat_DoesNotResurrectOrHijack(t *testing.T) {
 	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).
 		Model(&model.Device{}).Where("rustdesk_id = ?", id).Count(&count).Error)
 	require.Zero(t, count, "the old session must not resurrect the deleted row")
+}
+
+// After the admin resets a binding by deleting the device row, the
+// legitimate client re-claims it through a fresh login.
+func TestLogin_ReclaimsAfterAdminDelete(t *testing.T) {
+	h := newHarness(t)
+	u := h.seedUser(t, "reclaim@example.com", "password123", true)
+	org := h.seedOrg(t, "acme")
+	h.seedMembership(t, u.ID, org.ID)
+
+	h.login(t, "reclaim@example.com", "password123", "555555555", "owner-uuid")
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).
+		Where("rustdesk_id = ?", "555555555").Delete(&model.Device{}).Error)
+
+	// A fresh login recreates and re-claims the row.
+	h.login(t, "reclaim@example.com", "password123", "555555555", "owner-uuid")
+
+	var dev model.Device
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).
+		Where("rustdesk_id = ?", "555555555").First(&dev).Error)
+	require.Equal(t, "owner-uuid", dev.BoundUUID)
+}
+
+// Concurrent first claims of one rustdesk id with different uuids must let
+// exactly one login through: the stored binding belongs to a single client
+// instance, and every loser is refused before a session is issued. The
+// losing requests may surface 403 (bound), 429 (rate limit) or 500
+// (SQLite busy) — backend-agnostic invariant, as in PR#23/#24.
+func TestLogin_ConcurrentClaim_ExactlyOneWinner(t *testing.T) {
+	h := newHarness(t)
+	u := h.seedUser(t, "race@example.com", "password123", true)
+	org := h.seedOrg(t, "acme")
+	h.seedMembership(t, u.ID, org.ID)
+
+	const contenders = 4
+	type result struct {
+		uuid string
+		code int
+	}
+	results := make(chan result, contenders)
+	start := make(chan struct{})
+	for i := 0; i < contenders; i++ {
+		go func(i int) {
+			uuid := fmt.Sprintf("race-uuid-%d", i)
+			<-start
+			w := h.do(t, http.MethodPost, "/api/login", map[string]string{
+				"username": "race@example.com", "password": "password123",
+				"id": "666666666", "uuid": uuid,
+			}, "")
+			results <- result{uuid: uuid, code: w.Code}
+		}(i)
+	}
+	close(start)
+
+	winner := ""
+	for i := 0; i < contenders; i++ {
+		r := <-results
+		switch r.code {
+		case http.StatusOK:
+			require.Empty(t, winner, "two concurrent claims cannot both win")
+			winner = r.uuid
+		default:
+			require.Contains(t, []int{http.StatusForbidden, http.StatusTooManyRequests, http.StatusInternalServerError}, r.code,
+				"loser %s got unexpected status %d", r.uuid, r.code)
+		}
+	}
+	require.NotEmpty(t, winner, "one of the contenders must claim the device")
+
+	var dev model.Device
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).
+		Where("rustdesk_id = ?", "666666666").First(&dev).Error)
+	require.Equal(t, winner, dev.BoundUUID,
+		"the stored binding must belong to the winning login")
 }
