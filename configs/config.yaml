@@ -6,6 +6,12 @@ auth:
   accessTTL: 15m
   refreshTTL: 168h
 
+provision:
+  portStart: 21116
+  portEnd: 22115
+  orgLabel: "com.rustdesk-panel.org"
+  roleLabel: "com.rustdesk-panel.role"
+
 database:
   driver: sqlite
   dsn: "file:data/panel.db"

@@ -1,15 +1,18 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	openapi_types "github.com/oapi-codegen/runtime/types"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/gen"
@@ -46,6 +49,19 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 		a.deps.Logger.Error("create org failed")
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not create organization")
 		return
+	}
+
+	// Provisioning is slow (container start), so it runs after the response.
+	// The context must not be the request one: it is cancelled on return.
+	if a.deps.Provision != nil {
+		orgID := org.ID
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			if _, err := a.deps.Provision.ProvisionForOrg(ctx, orgID); err != nil {
+				a.deps.Logger.Error("provision hbbs/hbbr failed", zap.Uint("org_id", orgID), zap.Error(err))
+			}
+		}()
 	}
 
 	c.JSON(http.StatusCreated, gen.OrgResponse{

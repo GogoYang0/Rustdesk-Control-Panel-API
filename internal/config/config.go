@@ -10,10 +10,11 @@ import (
 
 // Config is the root configuration tree.
 type Config struct {
-	Server   ServerConfig   `mapstructure:"server"`
-	Log      LogConfig      `mapstructure:"log"`
-	Database DatabaseConfig `mapstructure:"database"`
-	Auth     AuthConfig     `mapstructure:"auth"`
+	Server    ServerConfig    `mapstructure:"server"`
+	Log       LogConfig       `mapstructure:"log"`
+	Database  DatabaseConfig  `mapstructure:"database"`
+	Auth      AuthConfig      `mapstructure:"auth"`
+	Provision ProvisionConfig `mapstructure:"provision"`
 }
 
 // ServerConfig holds HTTP server settings.
@@ -25,6 +26,14 @@ type ServerConfig struct {
 type LogConfig struct {
 	Level  string `mapstructure:"level"`
 	Format string `mapstructure:"format"`
+}
+
+// ProvisionConfig holds hbbs/hbbr deployment settings.
+type ProvisionConfig struct {
+	PortStart uint16 `mapstructure:"portStart"`
+	PortEnd   uint16 `mapstructure:"portEnd"`
+	OrgLabel  string `mapstructure:"orgLabel"`
+	RoleLabel string `mapstructure:"roleLabel"`
 }
 
 // AuthConfig holds JWT and token lifetime settings.
@@ -49,6 +58,10 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("database.dsn", "file::memory:?cache=shared")
 	v.SetDefault("auth.accessTTL", "15m")
 	v.SetDefault("auth.refreshTTL", "168h")
+	v.SetDefault("provision.portStart", 21116)
+	v.SetDefault("provision.portEnd", 22115)
+	v.SetDefault("provision.orgLabel", "com.rustdesk-panel.org")
+	v.SetDefault("provision.roleLabel", "com.rustdesk-panel.role")
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
