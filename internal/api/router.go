@@ -13,10 +13,12 @@ import (
 
 // publicPaths never require a bearer token.
 var publicPaths = map[string]bool{
-	"/healthz":                   true,
-	"/api/v1/auth/login":         true,
-	"/api/v1/auth/refresh":       true,
-	"/api/v1/invitations/accept": true,
+	"/healthz":                         true,
+	"/api/v1/auth/login":               true,
+	"/api/v1/auth/refresh":             true,
+	"/api/v1/auth/verify-email":        true,
+	"/api/v1/auth/resend-verification": true,
+	"/api/v1/invitations/accept":       true,
 }
 
 // NewRouter mounts the generated handlers behind the fixed middleware chain:

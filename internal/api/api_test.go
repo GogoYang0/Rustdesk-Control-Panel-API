@@ -542,3 +542,18 @@ func TestCreateOrg_ConcurrentRequestsRespectQuota(t *testing.T) {
 	require.NoError(t, h.db.DB.Model(&model.Organization{}).Count(&orgs).Error)
 	require.EqualValues(t, 1, orgs, "the quota must hold in the database, not just in the responses")
 }
+
+// Contract 0.3.0 declares verify-email / resend-verification with
+// security: []; the JWT middleware must not intercept them even while the
+// handlers are still 501 placeholders (task 6 implements the real flow).
+func TestVerifyEmailRoutes_AnonymousReachHandler(t *testing.T) {
+	h := newHarness(t)
+
+	w := h.do(t, http.MethodPost, "/api/v1/auth/verify-email",
+		map[string]string{"token": "irrelevant-token-1"}, "")
+	require.Equal(t, http.StatusNotImplemented, w.Code, w.Body.String())
+
+	w = h.do(t, http.MethodPost, "/api/v1/auth/resend-verification",
+		map[string]string{"email": "someone@example.com"}, "")
+	require.Equal(t, http.StatusNotImplemented, w.Code, w.Body.String())
+}

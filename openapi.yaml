@@ -396,8 +396,8 @@ paths:
           $ref: "#/components/responses/NotFound"
     put:
       operationId: updateAddressBook
-      summary: 更新地址簿名称与共享范围
-      description: personal 仅 owner 可改；shared 需要组织管理权限。
+      summary: 更新地址簿名称
+      description: personal 仅 owner 可改；shared 需要组织管理权限。scope 创建后不可变更。
       tags:
         - addressbooks
       security:
