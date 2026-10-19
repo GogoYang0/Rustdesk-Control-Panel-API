@@ -15,6 +15,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/api"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
@@ -38,6 +39,7 @@ func newHarness(t *testing.T) *harness {
 	require.NoError(t, st.DB.AutoMigrate(
 		&model.User{}, &model.RefreshToken{},
 		&model.Organization{}, &model.Membership{}, &model.Invitation{},
+		&model.AuditLog{}, &model.Device{}, &model.DeviceHeartbeat{},
 	))
 
 	issuer := auth.NewIssuer("test-secret", time.Minute, time.Hour)
@@ -46,6 +48,7 @@ func newHarness(t *testing.T) *harness {
 	r := api.NewRouter(api.Deps{
 		DB:            st.DB,
 		Auth:          svc,
+		Devices:       device.NewService(st.DB, nil),
 		Issuer:        issuer,
 		AccessTTL:     time.Minute,
 		RefreshTTL:    time.Hour,
@@ -358,4 +361,87 @@ func TestAcceptInvitation_PasswordGuessing_IsRateLimited(t *testing.T) {
 	// The sixth attempt from the same IP is throttled before verification runs.
 	w = h.doFrom(t, attackerIP, http.MethodPost, "/api/v1/invitations/accept", body, "")
 	require.Equal(t, http.StatusTooManyRequests, w.Code, w.Body.String())
+}
+
+func TestCreateDevice_WritesAndHeartbeats(t *testing.T) {
+	h := newHarness(t)
+	h.seedUser(t, "dev-owner@example.com", "password123")
+	token := h.login(t, "dev-owner@example.com", "password123")
+
+	w := h.do(t, http.MethodPost, "/api/v1/orgs", map[string]string{"name": "device-org"}, token)
+	require.Equal(t, http.StatusCreated, w.Code)
+	var orgResp struct {
+		Data struct {
+			Id int64 `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &orgResp))
+
+	w = h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgResp.Data.Id)+"/devices",
+		map[string]string{"name": "laptop", "rustdesk_id": "555000111"}, token)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+
+	var devResp struct {
+		Data struct {
+			Id         int64  `json:"id"`
+			Status     string `json:"status"`
+			RustdeskId string `json:"rustdesk_id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &devResp))
+	require.Equal(t, "555000111", devResp.Data.RustdeskId)
+	require.Equal(t, "offline", devResp.Data.Status, "a new device has no heartbeat yet")
+
+	// Re-registering the same rustdesk id must not create a second row.
+	w = h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgResp.Data.Id)+"/devices",
+		map[string]string{"name": "laptop-2", "rustdesk_id": "555000111"}, token)
+	require.Equal(t, http.StatusCreated, w.Code)
+
+	w = h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgResp.Data.Id)+"/devices/"+itoa(devResp.Data.Id)+"/heartbeat", nil, token)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	var hbResp struct {
+		Data struct {
+			Status     string `json:"status"`
+			LastSeenAt string `json:"last_seen_at"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &hbResp))
+	require.Equal(t, "online", hbResp.Data.Status)
+	require.NotEmpty(t, hbResp.Data.LastSeenAt)
+}
+
+func TestCreateDevice_MemberRole_Forbidden(t *testing.T) {
+	h := newHarness(t)
+	h.seedUser(t, "owner4@example.com", "password123")
+	ownerToken := h.login(t, "owner4@example.com", "password123")
+
+	w := h.do(t, http.MethodPost, "/api/v1/orgs", map[string]string{"name": "rbac-org"}, ownerToken)
+	require.Equal(t, http.StatusCreated, w.Code)
+	var orgResp struct {
+		Data struct {
+			Id int64 `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &orgResp))
+
+	// Invite a second user as member, accept, then try to write a device.
+	w = h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgResp.Data.Id)+"/invitations",
+		map[string]string{"email": "plain@example.com", "role": "member"}, ownerToken)
+	require.Equal(t, http.StatusCreated, w.Code)
+	var invResp struct {
+		Data struct {
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &invResp))
+
+	w = h.do(t, http.MethodPost, "/api/v1/invitations/accept",
+		map[string]string{"token": invResp.Data.Token, "password": "memberpass1"}, "")
+	require.Equal(t, http.StatusOK, w.Code)
+
+	memberToken := h.login(t, "plain@example.com", "memberpass1")
+	w = h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgResp.Data.Id)+"/devices",
+		map[string]string{"name": "nope", "rustdesk_id": "1"}, memberToken)
+	require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
 }
