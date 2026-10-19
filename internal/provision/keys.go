@@ -10,9 +10,9 @@ import (
 	"strings"
 )
 
-// keyGenerationAttempts mirrors RustDesk's own retry: it regenerates keys until
-// the encoded secret avoids characters that would break its config parsing.
-const keyGenerationAttempts = 20
+// keyGenerationAttempts mirrors RustDesk's gen_sk, which regenerates keys until
+// the encoded public key avoids the characters that break its config parsing.
+const keyGenerationAttempts = 300
 
 // KeyPair is a RustDesk-compatible ed25519 identity.
 //
@@ -33,15 +33,19 @@ func GenerateKeyPair() (KeyPair, error) {
 			return KeyPair{}, fmt.Errorf("generate ed25519 key: %w", err)
 		}
 
-		secret := base64.StdEncoding.EncodeToString(priv)
-		if strings.ContainsAny(secret, "/:") {
+		// RustDesk constrains the public key, not the secret: the public key is
+		// embedded in the client configuration string, where '/' and ':' break
+		// parsing. The secret key is written to id_ed25519 verbatim, so it needs
+		// no such restriction.
+		public := base64.StdEncoding.EncodeToString(pub)
+		if strings.ContainsAny(public, "/:") {
 			continue
 		}
 
 		sum := sha256.Sum256(pub)
 		return KeyPair{
-			PrivateKey:  secret,
-			PublicKey:   base64.StdEncoding.EncodeToString(pub),
+			PrivateKey:  base64.StdEncoding.EncodeToString(priv),
+			PublicKey:   public,
 			Fingerprint: hex.EncodeToString(sum[:16]),
 		}, nil
 	}

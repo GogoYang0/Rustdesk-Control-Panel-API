@@ -2,13 +2,16 @@ package provision
 
 import (
 	"encoding/base64"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
-// RustDesk expects id_ed25519 to be base64 of the 64-byte secret key.
+// RustDesk expects id_ed25519 to be base64 of the 64-byte secret key, and its
+// gen_sk constrains the encoded public key because that string appears in the
+// client configuration.
 func TestGenerateKeyPair_RustDeskEncoding(t *testing.T) {
 	kp, err := GenerateKeyPair()
 	require.NoError(t, err)
@@ -21,7 +24,7 @@ func TestGenerateKeyPair_RustDeskEncoding(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, pub, 32)
 
-	require.False(t, strings.ContainsAny(kp.PrivateKey, "/:"), "RustDesk avoids these characters")
+	require.False(t, strings.ContainsAny(kp.PublicKey, "/:"), "the public key must avoid these characters")
 	require.Len(t, kp.Fingerprint, 32)
 }
 
@@ -31,7 +34,7 @@ func TestHBBSArgs_MapPortsAndRelay(t *testing.T) {
 		Name:      "panel-org-7",
 		OrgID:     7,
 		HbbsPort:  21116,
-		HbbrPort:  21117,
+		HbbrPort:  21118,
 		Image:     "img:tag",
 		RelayHost: "relay.example.com",
 		DataDir:   "/data/org-7",
@@ -41,7 +44,7 @@ func TestHBBSArgs_MapPortsAndRelay(t *testing.T) {
 	require.Contains(t, args, "-p 21116:21115")
 	require.Contains(t, args, "-p 21117:21116")
 	require.Contains(t, args, "-p 21117:21116/udp")
-	require.Contains(t, args, "img:tag hbbs -r relay.example.com:21117")
+	require.Contains(t, args, "img:tag hbbs -r relay.example.com:21118")
 	require.Contains(t, args, "-v /data/org-7:/root")
 }
 
@@ -51,16 +54,16 @@ func TestHBBRArgs_MapRelayPorts(t *testing.T) {
 		Name:      "panel-org-7",
 		OrgID:     7,
 		HbbsPort:  21116,
-		HbbrPort:  21117,
+		HbbrPort:  21118,
 		Image:     "img:tag",
 		RelayHost: "relay.example.com",
 		DataDir:   "/data/org-7",
 	}
 
 	args := strings.Join(d.hbbrArgs(spec, "panel-org-7-hbbr"), " ")
-	require.Contains(t, args, "-p 21117:21117")
-	require.Contains(t, args, "-p 21118:21118")
-	require.Contains(t, args, "-p 21119:21119")
+	require.Contains(t, args, "-p 21118:21117")
+	require.Contains(t, args, "-p 21119:21118")
+	require.Contains(t, args, "-p 21120:21119")
 	require.Contains(t, args, "img:tag hbbr")
 }
 
@@ -68,11 +71,31 @@ func TestHBBRArgs_MapRelayPorts(t *testing.T) {
 func TestHBBSArgs_IPv6RelayHost(t *testing.T) {
 	d := &DockerOrchestrator{OrgLabel: "org", RoleLabel: "role"}
 	spec := InstanceSpec{
-		Name: "n", HbbsPort: 21116, HbbrPort: 21117,
+		Name: "n", HbbsPort: 21116, HbbrPort: 21118,
 		Image: "img:tag", RelayHost: "2001:db8::1", DataDir: "/d",
 	}
 	args := strings.Join(d.hbbsArgs(spec, "n-hbbs"), " ")
-	require.Contains(t, args, "[2001:db8::1]:21117")
+	require.Contains(t, args, "[2001:db8::1]:21118")
+}
+
+// A port pair that is not part of one contiguous block would bind a host port
+// twice, so Deploy refuses it before touching docker.
+func TestDeploy_RejectsMisalignedPortBlock(t *testing.T) {
+	d := &DockerOrchestrator{OrgLabel: "org", RoleLabel: "role"}
+	err := d.Deploy(t.Context(), InstanceSpec{
+		Name: "n", HbbsPort: 21116, HbbrPort: 21117,
+		Image: "img:tag", RelayHost: "relay", DataDir: "/d",
+		PrivateKey: "k", PublicKey: "p",
+	})
+	require.ErrorContains(t, err, "invalid port block")
+}
+
+// Docker needs an absolute bind source; a relative one becomes a named volume.
+func TestResolveDataDir_ReturnsAbsolutePath(t *testing.T) {
+	abs, err := resolveDataDir("./data/servergroups/org-1")
+	require.NoError(t, err)
+	require.True(t, filepath.IsAbs(abs), "got %q", abs)
+	require.True(t, strings.HasSuffix(abs, filepath.Join("data", "servergroups", "org-1")))
 }
 
 func TestDeploy_RequiresConfiguration(t *testing.T) {

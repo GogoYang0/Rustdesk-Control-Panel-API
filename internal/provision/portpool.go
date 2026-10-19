@@ -35,6 +35,10 @@ type PortPool struct {
 // PortBlockSize is how many host ports one organization needs (see model.ServerGroup).
 const PortBlockSize = 5
 
+// hbbrPortOffset is where the hbbr sub-block starts inside the organization's
+// five-port block, so HbbrPort is always HbbsPort+hbbrPortOffset.
+const hbbrPortOffset = 2
+
 // NewPortPool builds a pool covering [start, end] in blocks of PortBlockSize.
 func NewPortPool(db *gorm.DB, start, end uint16) *PortPool {
 	return &PortPool{db: db, start: start, end: end}
@@ -70,7 +74,7 @@ func (p *PortPool) Allocate(orgID uint) (*model.ServerGroup, error) {
 		row := model.ServerGroup{
 			OrganizationID: orgID,
 			HbbsPort:       uint16(base),
-			HbbrPort:       uint16(base + 2),
+			HbbrPort:       uint16(base + hbbrPortOffset),
 			State:          model.ServerGroupProvisioning,
 		}
 		err := store.ScopedByOrg(p.db, orgID).Create(&row).Error

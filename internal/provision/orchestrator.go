@@ -95,6 +95,21 @@ func (d *DockerOrchestrator) Deploy(ctx context.Context, spec InstanceSpec) erro
 	if spec.DataDir == "" {
 		return errors.New("provision.dataDir must be configured")
 	}
+	// hbbs and hbbr share one contiguous block of five host ports; any other
+	// pairing would publish the same host port twice.
+	if spec.HbbrPort != spec.HbbsPort+hbbrPortOffset {
+		return fmt.Errorf(
+			"invalid port block: hbbr port %d must be hbbs port %d + %d",
+			spec.HbbrPort, spec.HbbsPort, hbbrPortOffset,
+		)
+	}
+	// Docker treats a relative bind source as a named volume on versions before
+	// 23.0 and rejects it, so the directory is resolved before use.
+	dataDir, err := resolveDataDir(spec.DataDir)
+	if err != nil {
+		return err
+	}
+	spec.DataDir = dataDir
 	if spec.PrivateKey == "" || spec.PublicKey == "" {
 		return errors.New("device keys are required")
 	}
@@ -146,6 +161,17 @@ func (d *DockerOrchestrator) hbbrArgs(spec InstanceSpec, name string) []string {
 		spec.Image,
 		"hbbr",
 	}
+}
+
+// resolveDataDir makes the bind source absolute. Docker versions before 23.0
+// read a relative path as a named volume and fail with "invalid volume name"
+// instead of mounting the directory.
+func resolveDataDir(dir string) (string, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolve data dir %q: %w", dir, err)
+	}
+	return abs, nil
 }
 
 // writeKeyFiles stores the key pair in the per-org data directory.
