@@ -28,6 +28,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
 
+// main loads configuration, prepares persistence and services, and starts the API server.
 func main() {
 	cfg, err := config.Load("configs/config.yaml")
 	if err != nil {

@@ -44,6 +44,7 @@ type authBody struct {
 	User        userPayload `json:"user"`
 }
 
+// userPayloadOf maps a panel user to the RustDesk client's user payload.
 func userPayloadOf(u model.User) userPayload {
 	email := u.Email
 	return userPayload{

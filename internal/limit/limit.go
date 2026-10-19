@@ -50,6 +50,7 @@ const (
 	gcInterval      = time.Second
 )
 
+// NewLoginGuard creates a login guard with empty rate and failure tracking tables.
 func NewLoginGuard() *LoginGuard {
 	return &LoginGuard{
 		limiters: map[string]*ipEntry{},
@@ -58,7 +59,7 @@ func NewLoginGuard() *LoginGuard {
 	}
 }
 
-// allowIP reports whether the IP may attempt another credential check.
+// AllowIP reports whether the IP may attempt another credential check.
 func (g *LoginGuard) AllowIP(ip string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -78,7 +79,7 @@ func (g *LoginGuard) AllowIP(ip string) bool {
 	return entry.lim.Allow()
 }
 
-// locked reports whether the account+IP pair is currently locked out.
+// Locked reports whether the account+IP pair is currently locked out.
 func (g *LoginGuard) Locked(account, ip string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -95,7 +96,7 @@ func (g *LoginGuard) Locked(account, ip string) bool {
 	return w.count >= failureLimit
 }
 
-// recordFailure increments the failure counter for the account+IP pair.
+// RecordFailure increments the failure counter for the account+IP pair.
 func (g *LoginGuard) RecordFailure(account, ip string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -117,7 +118,7 @@ func (g *LoginGuard) RecordFailure(account, ip string) {
 	w.count++
 }
 
-// reset clears the failure counter after a successful credential check.
+// Reset clears the failure counter after a successful credential check.
 func (g *LoginGuard) Reset(account, ip string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()

@@ -8,4 +8,5 @@ import (
 // working; the compat layer (internal/compatapi) uses the same limiter.
 type loginGuard = limit.LoginGuard
 
+// newLoginGuard creates the shared login rate limiter for the management API.
 func newLoginGuard() *loginGuard { return limit.NewLoginGuard() }
