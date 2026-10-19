@@ -17,6 +17,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/compatapi"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/limit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
@@ -25,6 +26,7 @@ type harness struct {
 	router *gin.Engine
 	db     store.Store
 	issuer *auth.Issuer
+	guard  *limit.LoginGuard
 }
 
 func newHarness(t *testing.T) *harness {
@@ -44,14 +46,16 @@ func newHarness(t *testing.T) *harness {
 	))
 
 	issuer := auth.NewIssuer("test-secret", time.Minute, time.Hour)
+	guard := limit.NewLoginGuard()
 	r := gin.New()
 	compatapi.Mount(r, compatapi.Deps{
 		DB:        st.DB,
 		Issuer:    issuer,
 		Devices:   device.NewService(st.DB, nil),
+		Guard:     guard,
 		AccessTTL: time.Hour,
 	})
-	return &harness{router: r, db: *st, issuer: issuer}
+	return &harness{router: r, db: *st, issuer: issuer, guard: guard}
 }
 
 func (h *harness) do(t *testing.T, method, path string, body any, token string) *httptest.ResponseRecorder {
@@ -213,6 +217,39 @@ func TestLogin_RateLimited(t *testing.T) {
 	require.Equal(t, http.StatusTooManyRequests, w.Code)
 }
 
+// Rotating the "#orgID" suffix or the letter case must not bypass the
+// per-account lockout: every username variant feeds the same normalized
+// lock key, so failureLimit failures under any spelling lock the account
+// (CWE-307).
+func TestLogin_LockKeyNormalizesUsername(t *testing.T) {
+	h := newHarness(t)
+	h.seedUser(t, "victim@example.com", "password123", true)
+
+	variants := []string{
+		"Victim@example.com#1",
+		"victim@example.com#2",
+		"VICTIM@example.com#3",
+		"victim@example.com#4",
+		" victim@example.com#5",
+	}
+	for i, v := range variants {
+		w := h.do(t, http.MethodPost, "/api/login", map[string]string{
+			"username": v, "password": "wrong-pass-1",
+		}, "")
+		require.NotEqual(t, http.StatusInternalServerError, w.Code)
+		require.Equal(t, http.StatusUnauthorized, w.Code, "variant %d: %s", i+1, v)
+	}
+
+	// All five failures share one normalized key: the pair is locked.
+	require.True(t, h.guard.Locked("victim@example.com", "192.0.2.10"),
+		"rotating suffixes or case must not split the failure counter")
+	// A differently-cased spelling is the same key for the handler too.
+	w := h.do(t, http.MethodPost, "/api/login", map[string]string{
+		"username": "Victim@Example.com", "password": "password123",
+	}, "")
+	require.Equal(t, http.StatusTooManyRequests, w.Code, w.Body.String())
+}
+
 // The session endpoints require a bearer compat token; management tokens
 // are a different family and must be rejected.
 func TestCurrentUser_BearerOnly(t *testing.T) {
@@ -273,6 +310,42 @@ func TestHeartbeat_UpdatesDeviceLastSeen(t *testing.T) {
 	w = h.do(t, http.MethodPost, "/api/heartbeat",
 		map[string]any{"id": "999999999", "uuid": "unknown-uuid"}, "")
 	require.Equal(t, http.StatusOK, w.Code)
+}
+
+// A forged rustdesk id must not register devices or heartbeats in the
+// session's organization: the uuid is a stable hardware identifier, not a
+// secret, so the request id has to match the device bound at login
+// (CWE-639). The endpoint stays fire-and-forget (200) for the client.
+func TestHeartbeat_ForgedDeviceID_IsIgnored(t *testing.T) {
+	h := newHarness(t)
+	u := h.seedUser(t, "forge@example.com", "password123", true)
+	org := h.seedOrg(t, "acme")
+	h.seedMembership(t, u.ID, org.ID)
+
+	fixture := loadFixture(t, "heartbeat_request.json")
+	h.login(t, "forge@example.com", "password123",
+		fixture["id"].(string), fixture["uuid"].(string))
+
+	// Same uuid as the live session, but a device id that session never
+	// bound: both heartbeat and sysinfo must ignore it.
+	forged := map[string]any{"id": "000000001", "uuid": fixture["uuid"]}
+	w := h.do(t, http.MethodPost, "/api/heartbeat", forged, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	w = h.do(t, http.MethodPost, "/api/sysinfo",
+		map[string]any{"id": "000000001", "uuid": fixture["uuid"], "os": "Windows"}, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	// Only the device bound at login exists; no heartbeat was written.
+	var devices []model.Device
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).Find(&devices).Error)
+	require.Len(t, devices, 1)
+	require.Equal(t, fixture["id"], devices[0].RustdeskID,
+		"a forged id must not register an extra device")
+
+	var beats int64
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).
+		Model(&model.DeviceHeartbeat{}).Count(&beats).Error)
+	require.Zero(t, beats, "a forged id must not write a heartbeat")
 }
 
 // Review Focus #1: a session bound to org A must never see org B devices.

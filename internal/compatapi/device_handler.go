@@ -12,8 +12,9 @@ import (
 )
 
 // heartbeatRequest carries the client identity: the device binding comes
-// from the most recent active session with that uuid (裁定 C16), so the
-// unauthenticated client cannot cross tenants.
+// from the most recent active session with that uuid (裁定 C16), and the
+// request id must match the device the session was bound to at login —
+// the uuid is a stable hardware identifier, not a secret (CWE-639).
 type heartbeatRequest struct {
 	ID         string `json:"id"`
 	UUID       string `json:"uuid"`
@@ -31,13 +32,13 @@ func (s *Server) heartbeat(c *gin.Context) {
 		return
 	}
 	session, found := s.activeSessionByUUID(req.UUID)
-	if !found {
+	if !found || session.DeviceID == "" || session.DeviceID != req.ID {
 		// Fire-and-forget endpoint: an unknown device must not produce
 		// client-visible errors, the client just retries later.
 		ok(c)
 		return
 	}
-	if err := s.touchDevice(c, session, req.ID); err != nil {
+	if err := s.touchDevice(c, session, session.DeviceID); err != nil {
 		compatError(c, http.StatusInternalServerError, "heartbeat failed")
 		return
 	}
@@ -60,11 +61,11 @@ func (s *Server) sysinfo(c *gin.Context) {
 		return
 	}
 	session, found := s.activeSessionByUUID(uuid)
-	if !found {
+	if !found || session.DeviceID == "" || session.DeviceID != id {
 		ok(c)
 		return
 	}
-	if err := s.touchDevice(c, session, id); err != nil {
+	if err := s.touchDevice(c, session, session.DeviceID); err != nil {
 		compatError(c, http.StatusInternalServerError, "sysinfo failed")
 		return
 	}

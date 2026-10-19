@@ -9,41 +9,38 @@ import (
 )
 
 // The limiter table must stay bounded even when every entry is fresh: an
-// attacker rotating source addresses never lets entries go idle.
+// attacker rotating source addresses never lets entries go idle. The clock
+// is fixed so GC cannot remove anything and the cap is actually reached.
 func TestLoginGuard_LimitersAreHardBounded(t *testing.T) {
 	g := NewLoginGuard()
-	base := time.Now()
-	step := 0
-	g.now = func() time.Time { return base.Add(time.Duration(step) * time.Second) }
+	g.now = func() time.Time { return time.Unix(1700000000, 0) }
 
 	for i := 0; i < maxLimiters+500; i++ {
-		step++
 		g.AllowIP(fmt.Sprintf("198.51.100.%d/%d", i%256, i))
 	}
 
-	require.LessOrEqual(t, len(g.limiters), maxLimiters)
+	require.Equal(t, maxLimiters, len(g.limiters))
 }
 
 // Failure windows must never be evicted while still valid, so the table is
-// bounded by refusing new keys once full.
+// bounded by refusing new keys once full. The clock is fixed so GC cannot
+// remove anything and the cap is actually reached.
 func TestLoginGuard_FailuresAreHardBounded(t *testing.T) {
 	g := NewLoginGuard()
-	base := time.Now()
-	step := 0
-	g.now = func() time.Time { return base.Add(time.Duration(step) * time.Second) }
+	g.now = func() time.Time { return time.Unix(1700000000, 0) }
 
 	for i := 0; i < maxFailures+500; i++ {
-		step++
 		g.RecordFailure(fmt.Sprintf("user%d@example.com", i), "203.0.113.7")
 	}
 
-	require.LessOrEqual(t, len(g.failures), maxFailures)
+	require.Equal(t, maxFailures, len(g.failures))
 
-	// An existing tracked pair keeps being counted.
-	key := "user0@example.com\x00 203.0.113.7"
-	_ = key
-	g.RecordFailure("user0@example.com", "203.0.113.7")
-	require.False(t, g.Locked("user0@example.com", "203.0.113.7"))
+	// A tracked, still-live pair keeps being counted while the table is
+	// full: its lockout still triggers instead of silently resetting.
+	for i := 1; i < failureLimit; i++ {
+		g.RecordFailure("user0@example.com", "203.0.113.7")
+	}
+	require.True(t, g.Locked("user0@example.com", "203.0.113.7"))
 }
 
 func TestLoginGuard_LocksAfterFiveFailures(t *testing.T) {

@@ -79,12 +79,17 @@ func (s *Server) login(c *gin.Context) {
 		compatError(c, http.StatusTooManyRequests, "too many login attempts")
 		return
 	}
-	if s.deps.Guard.Locked(req.Username, ip) {
+
+	// The lockout key is the normalized email part of the username, never
+	// the raw value: rotating an "#orgID" suffix or changing letter case
+	// must not create independent failure counters for one account
+	// (CWE-307). Credential checks and the guard share this key.
+	email, orgSelector, hasOrgSelector := strings.Cut(req.Username, "#")
+	lockKey := strings.ToLower(strings.TrimSpace(email))
+	if s.deps.Guard.Locked(lockKey, ip) {
 		compatError(c, http.StatusTooManyRequests, "account temporarily locked")
 		return
 	}
-
-	email, orgSelector, hasOrgSelector := strings.Cut(req.Username, "#")
 
 	// Always run one Argon2id verification so the response time does not
 	// reveal whether the email exists (CWE-208).
@@ -99,7 +104,7 @@ func (s *Server) login(c *gin.Context) {
 		valid = true
 	}
 	if !valid {
-		s.deps.Guard.RecordFailure(req.Username, ip)
+		s.deps.Guard.RecordFailure(lockKey, ip)
 		compatError(c, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
@@ -116,7 +121,7 @@ func (s *Server) login(c *gin.Context) {
 		return
 	}
 
-	s.deps.Guard.Reset(req.Username, ip)
+	s.deps.Guard.Reset(lockKey, ip)
 
 	token, jti, err := s.deps.Issuer.IssueCompat(user.ID, orgID, s.deps.AccessTTL)
 	if err != nil {
