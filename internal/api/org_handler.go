@@ -244,6 +244,10 @@ func (a *AdminAPI) CreateInvitation(c *gin.Context, orgId int64) {
 		return
 	}
 
+	// Contract 0.3.0: the invitation token is no longer returned in the
+	// response — it is delivered to the invitee mailbox only (issue #17).
+	// Mail delivery lands with the email verification task; until then
+	// newly created invitations cannot be accepted by anyone (M2 interim).
 	c.JSON(http.StatusCreated, gen.InvitationResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
@@ -252,7 +256,6 @@ func (a *AdminAPI) CreateInvitation(c *gin.Context, orgId int64) {
 			Email:     openapi_types.Email(inv.Email),
 			Role:      gen.InvitationRole(inv.Role),
 			ExpiresAt: inv.ExpiresAt,
-			Token:     &token,
 		},
 	})
 }

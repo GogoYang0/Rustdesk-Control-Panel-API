@@ -13,6 +13,42 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for AddressBookScope.
+const (
+	AddressBookScopePersonal AddressBookScope = "personal"
+	AddressBookScopeShared   AddressBookScope = "shared"
+)
+
+// Valid indicates whether the value is a known member of the AddressBookScope enum.
+func (e AddressBookScope) Valid() bool {
+	switch e {
+	case AddressBookScopePersonal:
+		return true
+	case AddressBookScopeShared:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AddressBookCreateRequestScope.
+const (
+	AddressBookCreateRequestScopePersonal AddressBookCreateRequestScope = "personal"
+	AddressBookCreateRequestScopeShared   AddressBookCreateRequestScope = "shared"
+)
+
+// Valid indicates whether the value is a known member of the AddressBookCreateRequestScope enum.
+func (e AddressBookCreateRequestScope) Valid() bool {
+	switch e {
+	case AddressBookCreateRequestScopePersonal:
+		return true
+	case AddressBookCreateRequestScopeShared:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for DeviceStatus.
 const (
 	Offline DeviceStatus = "offline"
@@ -103,6 +139,69 @@ func (e InvitationCreateRequestRole) Valid() bool {
 	}
 }
 
+// Defines values for LogEventKind.
+const (
+	LogEventKindConn  LogEventKind = "conn"
+	LogEventKindError LogEventKind = "error"
+	LogEventKindFile  LogEventKind = "file"
+	LogEventKindOther LogEventKind = "other"
+)
+
+// Valid indicates whether the value is a known member of the LogEventKind enum.
+func (e LogEventKind) Valid() bool {
+	switch e {
+	case LogEventKindConn:
+		return true
+	case LogEventKindError:
+		return true
+	case LogEventKindFile:
+		return true
+	case LogEventKindOther:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for LogEventLevel.
+const (
+	LogEventLevelError LogEventLevel = "error"
+	LogEventLevelInfo  LogEventLevel = "info"
+	LogEventLevelWarn  LogEventLevel = "warn"
+)
+
+// Valid indicates whether the value is a known member of the LogEventLevel enum.
+func (e LogEventLevel) Valid() bool {
+	switch e {
+	case LogEventLevelError:
+		return true
+	case LogEventLevelInfo:
+		return true
+	case LogEventLevelWarn:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for LogEventSource.
+const (
+	Hbbr LogEventSource = "hbbr"
+	Hbbs LogEventSource = "hbbs"
+)
+
+// Valid indicates whether the value is a known member of the LogEventSource enum.
+func (e LogEventSource) Valid() bool {
+	switch e {
+	case Hbbr:
+		return true
+	case Hbbs:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for MemberRole.
 const (
 	MemberRoleAdmin  MemberRole = "admin"
@@ -124,6 +223,27 @@ func (e MemberRole) Valid() bool {
 	}
 }
 
+// Defines values for ListLogEventsParamsLevel.
+const (
+	ListLogEventsParamsLevelError ListLogEventsParamsLevel = "error"
+	ListLogEventsParamsLevelInfo  ListLogEventsParamsLevel = "info"
+	ListLogEventsParamsLevelWarn  ListLogEventsParamsLevel = "warn"
+)
+
+// Valid indicates whether the value is a known member of the ListLogEventsParamsLevel enum.
+func (e ListLogEventsParamsLevel) Valid() bool {
+	switch e {
+	case ListLogEventsParamsLevelError:
+		return true
+	case ListLogEventsParamsLevelInfo:
+		return true
+	case ListLogEventsParamsLevelWarn:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for GetHealthz200JSONResponseBodyStatus.
 const (
 	GetHealthz200JSONResponseBodyStatusOk GetHealthz200JSONResponseBodyStatus = "ok"
@@ -137,6 +257,101 @@ func (e GetHealthz200JSONResponseBodyStatus) Valid() bool {
 	default:
 		return false
 	}
+}
+
+// AddressBook defines model for AddressBook.
+type AddressBook struct {
+	CreatedAt time.Time `json:"created_at"`
+	Id        int64     `json:"id"`
+	Name      string    `json:"name"`
+
+	// OwnerId personal 时为所有者用户 id；shared 时为 null
+	OwnerId *int64             `json:"owner_id,omitempty"`
+	Peers   *[]AddressBookPeer `json:"peers,omitempty"`
+
+	// Revision 内容修订号，每次 peers/tags 全量替换递增
+	Revision  int64             `json:"revision"`
+	Scope     AddressBookScope  `json:"scope"`
+	Tags      *[]AddressBookTag `json:"tags,omitempty"`
+	UpdatedAt time.Time         `json:"updated_at"`
+}
+
+// AddressBookScope defines model for AddressBook.Scope.
+type AddressBookScope string
+
+// AddressBookCreateRequest defines model for AddressBookCreateRequest.
+type AddressBookCreateRequest struct {
+	Name  string                        `json:"name"`
+	Scope AddressBookCreateRequestScope `json:"scope"`
+}
+
+// AddressBookCreateRequestScope defines model for AddressBookCreateRequest.Scope.
+type AddressBookCreateRequestScope string
+
+// AddressBookListResponse defines model for AddressBookListResponse.
+type AddressBookListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	Code    ErrorCode     `json:"code"`
+	Data    []AddressBook `json:"data"`
+	Message string        `json:"message"`
+}
+
+// AddressBookPeer defines model for AddressBookPeer.
+type AddressBookPeer struct {
+	Alias    *string `json:"alias,omitempty"`
+	Hostname *string `json:"hostname,omitempty"`
+
+	// PeerId RustDesk 设备 ID
+	PeerId   string    `json:"peer_id"`
+	Platform *string   `json:"platform,omitempty"`
+	Tags     *[]string `json:"tags,omitempty"`
+	Username *string   `json:"username,omitempty"`
+}
+
+// AddressBookPeersReplaceRequest defines model for AddressBookPeersReplaceRequest.
+type AddressBookPeersReplaceRequest struct {
+	Peers []AddressBookPeer `json:"peers"`
+}
+
+// AddressBookResponse defines model for AddressBookResponse.
+type AddressBookResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	Code    ErrorCode   `json:"code"`
+	Data    AddressBook `json:"data"`
+	Message string      `json:"message"`
+}
+
+// AddressBookTag defines model for AddressBookTag.
+type AddressBookTag struct {
+	// Color RGB 颜色值（同 RustDesk 客户端 tag_colors 语义）
+	Color *int   `json:"color,omitempty"`
+	Name  string `json:"name"`
+}
+
+// AddressBookTagsReplaceRequest defines model for AddressBookTagsReplaceRequest.
+type AddressBookTagsReplaceRequest struct {
+	Tags []AddressBookTag `json:"tags"`
+}
+
+// AddressBookUpdateRequest defines model for AddressBookUpdateRequest.
+type AddressBookUpdateRequest struct {
+	Name string `json:"name"`
 }
 
 // Device defines model for Device.
@@ -173,6 +388,11 @@ type DeviceResponse struct {
 	Message string    `json:"message"`
 }
 
+// EmailVerificationRequest defines model for EmailVerificationRequest.
+type EmailVerificationRequest struct {
+	Token string `json:"token"`
+}
+
 // ErrorCode 机器可读错误码：
 // - ok：成功
 // - invalid_request：参数校验失败
@@ -206,9 +426,6 @@ type Invitation struct {
 	ExpiresAt time.Time           `json:"expires_at"`
 	Id        int64               `json:"id"`
 	Role      InvitationRole      `json:"role"`
-
-	// Token 邀请令牌明文，仅在创建响应中返回一次，服务端只存哈希。
-	Token *string `json:"token,omitempty"`
 }
 
 // InvitationRole defines model for Invitation.Role.
@@ -242,6 +459,44 @@ type InvitationResponse struct {
 	// - internal：服务端错误
 	Code    ErrorCode  `json:"code"`
 	Data    Invitation `json:"data"`
+	Message string     `json:"message"`
+}
+
+// LogEvent defines model for LogEvent.
+type LogEvent struct {
+	Detail *map[string]interface{} `json:"detail,omitempty"`
+
+	// DeviceId 关联设备；无法解析时为 null
+	DeviceId   *int64         `json:"device_id,omitempty"`
+	Id         int64          `json:"id"`
+	Kind       LogEventKind   `json:"kind"`
+	Level      LogEventLevel  `json:"level"`
+	OccurredAt time.Time      `json:"occurred_at"`
+	Source     LogEventSource `json:"source"`
+}
+
+// LogEventKind defines model for LogEvent.Kind.
+type LogEventKind string
+
+// LogEventLevel defines model for LogEvent.Level.
+type LogEventLevel string
+
+// LogEventSource defines model for LogEvent.Source.
+type LogEventSource string
+
+// LogEventListResponse defines model for LogEventListResponse.
+type LogEventListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	Code    ErrorCode  `json:"code"`
+	Data    []LogEvent `json:"data"`
 	Message string     `json:"message"`
 }
 
@@ -295,6 +550,21 @@ type MemberResponse struct {
 	Message string    `json:"message"`
 }
 
+// OkResponse defines model for OkResponse.
+type OkResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	Code    ErrorCode `json:"code"`
+	Message string    `json:"message"`
+}
+
 // Org defines model for Org.
 type Org struct {
 	CreatedAt time.Time `json:"created_at"`
@@ -344,6 +614,11 @@ type RefreshRequest struct {
 	RefreshToken string `json:"refresh_token"`
 }
 
+// ResendVerificationRequest defines model for ResendVerificationRequest.
+type ResendVerificationRequest struct {
+	Email openapi_types.Email `json:"email"`
+}
+
 // TokenPair defines model for TokenPair.
 type TokenPair struct {
 	AccessToken string `json:"access_token"`
@@ -387,6 +662,17 @@ type TooManyRequests = ErrorResponse
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = ErrorResponse
 
+// ListLogEventsParams defines parameters for ListLogEvents.
+type ListLogEventsParams struct {
+	DeviceId *int64                    `form:"deviceId,omitempty" json:"deviceId,omitempty"`
+	Level    *ListLogEventsParamsLevel `form:"level,omitempty" json:"level,omitempty"`
+	Since    *time.Time                `form:"since,omitempty" json:"since,omitempty"`
+	Limit    *int                      `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// ListLogEventsParamsLevel defines parameters for ListLogEvents.
+type ListLogEventsParamsLevel string
+
 // GetHealthz200JSONResponseBodyStatus defines parameters for GetHealthz.
 type GetHealthz200JSONResponseBodyStatus string
 
@@ -396,11 +682,29 @@ type LoginJSONRequestBody = LoginRequest
 // RefreshTokensJSONRequestBody defines body for RefreshTokens for application/json ContentType.
 type RefreshTokensJSONRequestBody = RefreshRequest
 
+// ResendVerificationJSONRequestBody defines body for ResendVerification for application/json ContentType.
+type ResendVerificationJSONRequestBody = ResendVerificationRequest
+
+// VerifyEmailJSONRequestBody defines body for VerifyEmail for application/json ContentType.
+type VerifyEmailJSONRequestBody = EmailVerificationRequest
+
 // AcceptInvitationJSONRequestBody defines body for AcceptInvitation for application/json ContentType.
 type AcceptInvitationJSONRequestBody = InvitationAcceptRequest
 
 // CreateOrgJSONRequestBody defines body for CreateOrg for application/json ContentType.
 type CreateOrgJSONRequestBody = OrgCreateRequest
+
+// CreateAddressBookJSONRequestBody defines body for CreateAddressBook for application/json ContentType.
+type CreateAddressBookJSONRequestBody = AddressBookCreateRequest
+
+// UpdateAddressBookJSONRequestBody defines body for UpdateAddressBook for application/json ContentType.
+type UpdateAddressBookJSONRequestBody = AddressBookUpdateRequest
+
+// ReplaceAddressBookPeersJSONRequestBody defines body for ReplaceAddressBookPeers for application/json ContentType.
+type ReplaceAddressBookPeersJSONRequestBody = AddressBookPeersReplaceRequest
+
+// ReplaceAddressBookTagsJSONRequestBody defines body for ReplaceAddressBookTags for application/json ContentType.
+type ReplaceAddressBookTagsJSONRequestBody = AddressBookTagsReplaceRequest
 
 // CreateDeviceJSONRequestBody defines body for CreateDevice for application/json ContentType.
 type CreateDeviceJSONRequestBody = DeviceCreateRequest
@@ -416,6 +720,12 @@ type ServerInterface interface {
 	// RefreshTokens 轮换 refresh 令牌
 	// (POST /api/v1/auth/refresh)
 	RefreshTokens(c *gin.Context)
+	// ResendVerification 重发验证邮件
+	// (POST /api/v1/auth/resend-verification)
+	ResendVerification(c *gin.Context)
+	// VerifyEmail 邮箱验证
+	// (POST /api/v1/auth/verify-email)
+	VerifyEmail(c *gin.Context)
 	// AcceptInvitation 接受邀请
 	// (POST /api/v1/invitations/accept)
 	AcceptInvitation(c *gin.Context)
@@ -425,6 +735,27 @@ type ServerInterface interface {
 	// CreateOrg 创建组织
 	// (POST /api/v1/orgs)
 	CreateOrg(c *gin.Context)
+	// ListAddressBooks 列出地址簿
+	// (GET /api/v1/orgs/{orgId}/address-books)
+	ListAddressBooks(c *gin.Context, orgId int64)
+	// CreateAddressBook 创建地址簿
+	// (POST /api/v1/orgs/{orgId}/address-books)
+	CreateAddressBook(c *gin.Context, orgId int64)
+	// DeleteAddressBook 删除地址簿（级联删除 peers 与 tags）
+	// (DELETE /api/v1/orgs/{orgId}/address-books/{bookId})
+	DeleteAddressBook(c *gin.Context, orgId int64, bookId int64)
+	// GetAddressBook 地址簿详情（含 peers 与 tags）
+	// (GET /api/v1/orgs/{orgId}/address-books/{bookId})
+	GetAddressBook(c *gin.Context, orgId int64, bookId int64)
+	// UpdateAddressBook 更新地址簿名称
+	// (PUT /api/v1/orgs/{orgId}/address-books/{bookId})
+	UpdateAddressBook(c *gin.Context, orgId int64, bookId int64)
+	// ReplaceAddressBookPeers 全量替换地址簿 peers
+	// (PUT /api/v1/orgs/{orgId}/address-books/{bookId}/peers)
+	ReplaceAddressBookPeers(c *gin.Context, orgId int64, bookId int64)
+	// ReplaceAddressBookTags 全量替换地址簿标签
+	// (PUT /api/v1/orgs/{orgId}/address-books/{bookId}/tags)
+	ReplaceAddressBookTags(c *gin.Context, orgId int64, bookId int64)
 	// CreateDevice 注册设备
 	// (POST /api/v1/orgs/{orgId}/devices)
 	CreateDevice(c *gin.Context, orgId int64)
@@ -434,6 +765,9 @@ type ServerInterface interface {
 	// CreateInvitation 邀请成员加入组织
 	// (POST /api/v1/orgs/{orgId}/invitations)
 	CreateInvitation(c *gin.Context, orgId int64)
+	// ListLogEvents 查询采集日志事件
+	// (GET /api/v1/orgs/{orgId}/log-events)
+	ListLogEvents(c *gin.Context, orgId int64, params ListLogEventsParams)
 	// ListMembers 列出组织成员
 	// (GET /api/v1/orgs/{orgId}/members)
 	ListMembers(c *gin.Context, orgId int64)
@@ -477,6 +811,32 @@ func (siw *ServerInterfaceWrapper) RefreshTokens(c *gin.Context) {
 	siw.Handler.RefreshTokens(c)
 }
 
+// ResendVerification operation middleware
+func (siw *ServerInterfaceWrapper) ResendVerification(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ResendVerification(c)
+}
+
+// VerifyEmail operation middleware
+func (siw *ServerInterfaceWrapper) VerifyEmail(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.VerifyEmail(c)
+}
+
 // AcceptInvitation operation middleware
 func (siw *ServerInterfaceWrapper) AcceptInvitation(c *gin.Context) {
 
@@ -514,6 +874,226 @@ func (siw *ServerInterfaceWrapper) CreateOrg(c *gin.Context) {
 	}
 
 	siw.Handler.CreateOrg(c)
+}
+
+// ListAddressBooks operation middleware
+func (siw *ServerInterfaceWrapper) ListAddressBooks(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListAddressBooks(c, orgId)
+}
+
+// CreateAddressBook operation middleware
+func (siw *ServerInterfaceWrapper) CreateAddressBook(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateAddressBook(c, orgId)
+}
+
+// DeleteAddressBook operation middleware
+func (siw *ServerInterfaceWrapper) DeleteAddressBook(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "bookId" -------------
+	var bookId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "bookId", c.Param("bookId"), &bookId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter bookId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteAddressBook(c, orgId, bookId)
+}
+
+// GetAddressBook operation middleware
+func (siw *ServerInterfaceWrapper) GetAddressBook(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "bookId" -------------
+	var bookId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "bookId", c.Param("bookId"), &bookId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter bookId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetAddressBook(c, orgId, bookId)
+}
+
+// UpdateAddressBook operation middleware
+func (siw *ServerInterfaceWrapper) UpdateAddressBook(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "bookId" -------------
+	var bookId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "bookId", c.Param("bookId"), &bookId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter bookId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UpdateAddressBook(c, orgId, bookId)
+}
+
+// ReplaceAddressBookPeers operation middleware
+func (siw *ServerInterfaceWrapper) ReplaceAddressBookPeers(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "bookId" -------------
+	var bookId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "bookId", c.Param("bookId"), &bookId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter bookId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ReplaceAddressBookPeers(c, orgId, bookId)
+}
+
+// ReplaceAddressBookTags operation middleware
+func (siw *ServerInterfaceWrapper) ReplaceAddressBookTags(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "bookId" -------------
+	var bookId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "bookId", c.Param("bookId"), &bookId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter bookId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ReplaceAddressBookTags(c, orgId, bookId)
 }
 
 // CreateDevice operation middleware
@@ -600,6 +1180,66 @@ func (siw *ServerInterfaceWrapper) CreateInvitation(c *gin.Context) {
 	siw.Handler.CreateInvitation(c, orgId)
 }
 
+// ListLogEvents operation middleware
+func (siw *ServerInterfaceWrapper) ListLogEvents(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListLogEventsParams
+
+	// ------------- Optional query parameter "deviceId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "deviceId", c.Request.URL.Query(), &params.DeviceId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "level" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "level", c.Request.URL.Query(), &params.Level, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter level: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "since" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "since", c.Request.URL.Query(), &params.Since, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter since: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", c.Request.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter limit: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListLogEvents(c, orgId, params)
+}
+
 // ListMembers operation middleware
 func (siw *ServerInterfaceWrapper) ListMembers(c *gin.Context) {
 
@@ -674,5 +1314,15 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/invitations", wrapper.CreateInvitation)
 	router.POST(options.BaseURL+"/api/v1/invitations/accept", wrapper.AcceptInvitation)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices", wrapper.CreateDevice)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/address-books", wrapper.ListAddressBooks)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/address-books", wrapper.CreateAddressBook)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId", wrapper.DeleteAddressBook)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId", wrapper.GetAddressBook)
+	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId", wrapper.UpdateAddressBook)
+	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId/peers", wrapper.ReplaceAddressBookPeers)
+	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId/tags", wrapper.ReplaceAddressBookTags)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/log-events", wrapper.ListLogEvents)
+	router.POST(options.BaseURL+"/api/v1/auth/verify-email", wrapper.VerifyEmail)
+	router.POST(options.BaseURL+"/api/v1/auth/resend-verification", wrapper.ResendVerification)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/heartbeat", wrapper.DeviceHeartbeat)
 }
