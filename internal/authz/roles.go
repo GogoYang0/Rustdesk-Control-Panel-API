@@ -10,6 +10,7 @@ const (
 	PermDeviceRead   = "device.read"
 	PermDeviceWrite  = "device.write"
 	PermAuditRead    = "audit.read"
+	PermAddressBook  = "addressbook.write"
 )
 
 // rolePermissions is the single source of truth for authorization.
@@ -21,12 +22,14 @@ var rolePermissions = map[string]map[string]bool{
 		PermDeviceRead:   true,
 		PermDeviceWrite:  true,
 		PermAuditRead:    true,
+		PermAddressBook:  true,
 	},
 	"admin": {
 		PermMemberManage: true,
 		PermDeviceRead:   true,
 		PermDeviceWrite:  true,
 		PermAuditRead:    true,
+		PermAddressBook:  true,
 	},
 	"member": {
 		PermDeviceRead: true,
