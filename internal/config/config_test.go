@@ -72,7 +72,7 @@ auth: {secret: "dev-only-change-me", accessTTL: 15m, refreshTTL: 168h}
 // The SMTP password must come only from PANEL_SMTP_PASSWORD; the tracked
 // file cannot carry it (same policy as the JWT secret).
 func TestLoad_SMTPPasswordFromEnvOnly(t *testing.T) {
-	t.Setenv("PANEL_AUTH_SECRET", "")
+	t.Setenv("PANEL_AUTH_SECRET", "test-signing-key-0123456789abcdef012345")
 	t.Setenv("PANEL_SMTP_PASSWORD", "smtp-secret-123")
 
 	cfg, err := config.Load("../../configs/config.yaml")
