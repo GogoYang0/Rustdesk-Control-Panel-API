@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 )
 
@@ -11,7 +12,8 @@ import (
 // message to the given writer (stdout in devMode, a buffer in tests). A nil
 // writer discards messages.
 type Dev struct {
-	w io.Writer
+	mu sync.Mutex
+	w  io.Writer
 }
 
 // NewDev builds the development Mailer.
@@ -22,6 +24,8 @@ func (d *Dev) Send(_ context.Context, msg Message) error {
 	if d.w == nil {
 		return nil
 	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	recipients := "none"
 	if len(msg.To) > 0 {
 		recipients = joinAddresses(msg.To)

@@ -90,8 +90,10 @@ func main() {
 		if cfg.Mail.SMTP.Host == "" || cfg.Mail.SMTP.From == "" {
 			lg.Fatal("mail.devMode is false but mail.smtp.host/from is empty")
 		}
-		if os.Getenv("PANEL_SMTP_PASSWORD") == "" && cfg.Mail.SMTP.Username != "" {
-			lg.Warn("PANEL_SMTP_PASSWORD is empty; SMTP auth will be skipped")
+		if cfg.Mail.SMTP.Username != "" && os.Getenv("PANEL_SMTP_PASSWORD") == "" {
+			// dialSMTP would still attempt AUTH with the empty password and
+			// every delivery would fail at runtime; refuse to start instead.
+			lg.Fatal("PANEL_SMTP_PASSWORD is required when mail.smtp.username is set")
 		}
 		mailer = mail.NewSMTP(mail.SMTPConfig{
 			Host:     cfg.Mail.SMTP.Host,

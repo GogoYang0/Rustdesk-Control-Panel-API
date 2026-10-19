@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -13,9 +15,9 @@ import (
 )
 
 const (
-	maxAttempts  = 3
-	addrFmt      = "%s:%d"
-	submissionPt = 587
+	maxAttempts       = 3
+	addrFmt           = "%s:%d"
+	defaultSessionTTL = 30 * time.Second
 )
 
 // conn abstracts an SMTP client session for test injection.
@@ -28,70 +30,126 @@ type conn interface {
 }
 
 // SMTPConfig carries the SMTP server settings; the password never comes from
-// the config file (viper binds it to PANEL_SMTP_PASSWORD only).
+// the config file (viper binds it to PANEL_SMTP_PASSWORD only). Timeout
+// bounds a whole delivery attempt (dial through QUIT); zero means 30s.
 type SMTPConfig struct {
 	Host     string
 	Port     int
 	Username string
 	Password string
 	From     string
+	Timeout  time.Duration
+
+	// tlsRoots lets tests pin a private CA; production uses the system pool.
+	tlsRoots *x509.CertPool
 }
 
-// SMTP delivers mail over SMTP with STARTTLS (implicit TLS on port 465) and
-// up to three attempts with exponential backoff on transient failures.
+// sessionTimeout returns the per-attempt bound.
+func (c SMTPConfig) sessionTimeout() time.Duration {
+	if c.Timeout > 0 {
+		return c.Timeout
+	}
+	return defaultSessionTTL
+}
+
+// SMTP delivers mail over SMTP with mandatory TLS (STARTTLS upgraded, or
+// implicit TLS on port 465) and up to three attempts with exponential
+// backoff on transient failures. Each attempt is bounded by the configured
+// timeout and honours the caller's context: a cancellation or deadline
+// closes the connection mid-session.
 type SMTP struct {
 	cfg       SMTPConfig
-	dial      func(addr string) (conn, error)
+	dial      func(ctx context.Context, addr string) (conn, error)
 	retryBase time.Duration
 }
 
 // NewSMTP builds the SMTP Mailer with the real dialer.
 func NewSMTP(cfg SMTPConfig) *SMTP {
 	s := &SMTP{cfg: cfg, retryBase: 500 * time.Millisecond}
-	s.dial = func(addr string) (conn, error) {
-		return dialSMTP(addr, cfg)
+	s.dial = func(ctx context.Context, addr string) (conn, error) {
+		return dialSMTP(ctx, addr, cfg)
 	}
 	return s
 }
 
-// dialSMTP connects, upgrades to TLS and authenticates as needed.
-func dialSMTP(addr string, cfg SMTPConfig) (conn, error) {
+// dialSMTP connects with the context deadline, forces TLS (implicit on 465,
+// STARTTLS upgrade otherwise — plaintext is never accepted), and
+// authenticates when credentials are configured. A context cancellation
+// closes the underlying connection to unblock any in-flight I/O.
+func dialSMTP(ctx context.Context, addr string, cfg SMTPConfig) (conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	deadline := ctxDeadline(ctx, cfg.sessionTimeout())
+	d := &net.Dialer{Deadline: deadline}
+
+	nc, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	// Bound every subsequent read/write (greeting, TLS, AUTH, DATA).
+	_ = nc.SetDeadline(deadline)
+	go func() {
+		<-ctx.Done()
+		_ = nc.Close()
+	}()
+
 	if cfg.Port == 465 {
-		d := &net.Dialer{Timeout: 10 * time.Second}
-		c, err := tls.DialWithDialer(d, "tcp", addr, &tls.Config{ServerName: cfg.Host})
+		tc := tls.Client(nc, &tls.Config{ServerName: cfg.Host, MinVersion: tls.VersionTLS12, RootCAs: cfg.tlsRoots})
+		cl, err := smtp.NewClient(tc, cfg.Host)
 		if err != nil {
+			_ = nc.Close()
 			return nil, err
 		}
-		cl, err := smtp.NewClient(c, cfg.Host)
-		if err != nil {
-			_ = c.Close()
-			return nil, err
-		}
-		return clientConn{cl: cl}, nil
+		c := clientConn{cl: cl}
+		return authenticate(c, cfg)
 	}
 
-	c, err := smtp.Dial(addr)
+	cl, err := smtp.NewClient(nc, cfg.Host)
 	if err != nil {
+		_ = nc.Close()
 		return nil, err
 	}
-	wrapped, err := clientConn{cl: c}.startTLSIfPossible(cfg.Host)
-	if err != nil {
+	c := clientConn{cl: cl}
+	if ok, _ := cl.Extension("STARTTLS"); !ok {
+		_ = c.Quit()
 		_ = c.Close()
-		return nil, err
+		return nil, errors.New("smtp: server does not offer STARTTLS; refusing to send over plaintext")
 	}
-	if cfg.Username != "" {
-		auth := smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.Host)
-		if err := wrapped.Auth(auth); err != nil {
-			_ = wrapped.Quit()
-			return nil, fmt.Errorf("smtp auth: %w", err)
-		}
+	if err := cl.StartTLS(&tls.Config{ServerName: cfg.Host, MinVersion: tls.VersionTLS12, RootCAs: cfg.tlsRoots}); err != nil {
+		_ = c.Quit()
+		_ = c.Close()
+		return nil, fmt.Errorf("starttls: %w", err)
 	}
-	return wrapped, nil
+	return authenticate(c, cfg)
+}
+
+// authenticate performs PlainAuth when credentials are configured.
+func authenticate(c clientConn, cfg SMTPConfig) (clientConn, error) {
+	if cfg.Username == "" {
+		return c, nil
+	}
+	auth := smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.Host)
+	if err := c.Auth(auth); err != nil {
+		_ = c.Quit()
+		_ = c.Close()
+		return clientConn{}, fmt.Errorf("smtp auth: %w", err)
+	}
+	return c, nil
+}
+
+// ctxDeadline returns the earlier of the context deadline and now+timeout.
+func ctxDeadline(ctx context.Context, timeout time.Duration) time.Time {
+	dl := time.Now().Add(timeout)
+	if cd, ok := ctx.Deadline(); ok && cd.Before(dl) {
+		return cd
+	}
+	return dl
 }
 
 // Send delivers the message with up to maxAttempts tries separated by
 // exponential backoff; every attempt dials a fresh connection and closes it.
-func (s *SMTP) Send(_ context.Context, msg Message) error {
+func (s *SMTP) Send(ctx context.Context, msg Message) error {
 	addr := fmt.Sprintf(addrFmt, s.cfg.Host, s.cfg.Port)
 	raw, err := buildMessage(s.cfg.From, msg)
 	if err != nil {
@@ -101,16 +159,26 @@ func (s *SMTP) Send(_ context.Context, msg Message) error {
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
-			time.Sleep(s.retryBase << (attempt - 1))
+			// Back off, but bail out immediately when the caller is done.
+			timer := time.NewTimer(s.retryBase << (attempt - 1))
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
 		}
-		c, derr := s.dial(addr)
+		attemptCtx, cancel := context.WithTimeout(ctx, s.cfg.sessionTimeout())
+		c, derr := s.dial(attemptCtx, addr)
 		if derr != nil {
+			cancel()
 			lastErr = derr
 			continue
 		}
 		serr := deliver(c, s.cfg.From, msg.To, raw)
 		_ = c.Quit()
 		_ = c.Close()
+		cancel() // releases the connection watcher goroutine
 		if serr == nil {
 			return nil
 		}
