@@ -1,0 +1,11 @@
+{
+  "access_token": "jwt-access-token",
+  "type": "access_token",
+  "user": {
+    "name": "alice@example.com",
+    "email": "alice@example.com",
+    "status": 1,
+    "info": {},
+    "is_admin": false
+  }
+}

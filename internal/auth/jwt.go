@@ -9,7 +9,10 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-const tokenTypeAccess = "access"
+const (
+	tokenTypeAccess = "access"
+	tokenTypeCompat = "compat"
+)
 
 // Issuer mints access JWTs and opaque refresh tokens.
 type Issuer struct {
@@ -80,4 +83,85 @@ func (i *Issuer) ParseAccess(token string) (uint, error) {
 		return 0, fmt.Errorf("invalid subject %q", sub)
 	}
 	return uid, nil
+}
+
+// IssueCompat mints a RustDesk-compatibility access token that carries the
+// bound organization and a jti matching a persisted CompatSession row. The
+// lifetime comes from compat.accessTTL (long-lived by design: 720h).
+func (i *Issuer) IssueCompat(userID, orgID uint, ttl time.Duration) (token, jti string, err error) {
+	now := time.Now()
+	jtiRaw := make([]byte, 16)
+	if _, err := rand.Read(jtiRaw); err != nil {
+		return "", "", fmt.Errorf("generate jti: %w", err)
+	}
+	jti = base64.RawURLEncoding.EncodeToString(jtiRaw)
+	claims := jwt.MapClaims{
+		"sub": fmt.Sprint(userID),
+		"typ": tokenTypeCompat,
+		"org": fmt.Sprint(orgID),
+		"jti": jti,
+		"iat": now.Unix(),
+		"exp": now.Add(ttl).Unix(),
+	}
+	token, err = jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(i.secret)
+	if err != nil {
+		return "", "", fmt.Errorf("sign compat token: %w", err)
+	}
+	return token, jti, nil
+}
+
+// ParseCompat validates a RustDesk-compatibility token and returns its user
+// ID, bound organization and jti. Management tokens (typ=access) are
+// rejected: the two token families must never be interchangeable.
+func (i *Issuer) ParseCompat(token string) (userID, orgID uint, jti string, err error) {
+	parsed, err := jwt.Parse(token, func(t *jwt.Token) (any, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method %v", t.Header["alg"])
+		}
+		return i.secret, nil
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithExpirationRequired())
+	if err != nil {
+		return 0, 0, "", fmt.Errorf("parse compat token: %w", err)
+	}
+	claims, ok := parsed.Claims.(jwt.MapClaims)
+	if !ok || !parsed.Valid {
+		return 0, 0, "", fmt.Errorf("invalid compat token")
+	}
+	if typ, _ := claims["typ"].(string); typ != tokenTypeCompat {
+		return 0, 0, "", fmt.Errorf("wrong token type %q", typ)
+	}
+	if uid, err := parseUintClaim(claims["sub"]); err != nil {
+		return 0, 0, "", fmt.Errorf("invalid subject")
+	} else {
+		userID = uid
+	}
+	if org, err := parseUintClaim(claims["org"]); err != nil {
+		return 0, 0, "", fmt.Errorf("missing organization claim")
+	} else {
+		orgID = org
+	}
+	jti, _ = claims["jti"].(string)
+	if jti == "" {
+		return 0, 0, "", fmt.Errorf("missing jti")
+	}
+	return userID, orgID, jti, nil
+}
+
+// parseUintClaim converts a numeric or string claim into a uint.
+func parseUintClaim(v any) (uint, error) {
+	switch n := v.(type) {
+	case string:
+		var uid uint
+		if _, err := fmt.Sscan(n, &uid); err != nil {
+			return 0, fmt.Errorf("invalid numeric claim %q", n)
+		}
+		return uid, nil
+	case float64:
+		if n < 0 {
+			return 0, fmt.Errorf("negative numeric claim")
+		}
+		return uint(n), nil
+	default:
+		return 0, fmt.Errorf("unsupported claim type %T", v)
+	}
 }

@@ -63,6 +63,7 @@ func main() {
 		&model.AddressBookTag{}, &model.SyncCursor{},
 		&model.VerificationToken{},
 		&model.MigrationMark{},
+		&model.CompatSession{},
 	); err != nil {
 		lg.Fatal("migrate database", zap.Error(err))
 	}
@@ -174,6 +175,7 @@ func main() {
 			RefreshTTL:     cfg.Auth.RefreshTTL,
 			InvitationTTL:  7 * 24 * time.Hour,
 			WebBaseURL:     cfg.Web.BaseURL,
+			CompatTTL:      cfg.Compat.AccessTTL,
 		}),
 	}
 

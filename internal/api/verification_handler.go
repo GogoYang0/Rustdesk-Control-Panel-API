@@ -18,22 +18,9 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
 
-// errEmailNotVerified is returned by requireVerifiedUser when a login is
-// attempted with an account whose mailbox is not confirmed yet.
-var errEmailNotVerified = errors.New("email not verified")
-
 // errVerificationUsed aborts the redeem transaction when another request
 // already consumed the token (single-use invariant).
 var errVerificationUsed = errors.New("verification token already used")
-
-// requireVerifiedUser gates every login path — the admin Login handler and,
-// later, the compat layer (task 8) — on a confirmed mailbox (issue #17).
-func requireVerifiedUser(u model.User) error {
-	if !u.EmailVerified {
-		return errEmailNotVerified
-	}
-	return nil
-}
 
 // VerifyEmail redeems a verification token: single-use and time-limited.
 // Unknown, expired and already-used tokens all answer 409 so a leaked link
@@ -99,7 +86,7 @@ func (a *AdminAPI) ResendVerification(c *gin.Context) {
 
 	// The endpoint triggers outbound email, so it shares the login-style
 	// per-IP throttle: otherwise it becomes a mail-bombing relay (CWE-770).
-	if !a.resend.allowIP(c.ClientIP()) {
+	if !a.resend.AllowIP(c.ClientIP()) {
 		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "too many requests")
 		return
 	}

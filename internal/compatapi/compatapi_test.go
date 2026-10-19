@@ -1,0 +1,362 @@
+package compatapi_test
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
+
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/compatapi"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
+)
+
+type harness struct {
+	router *gin.Engine
+	db     store.Store
+	issuer *auth.Issuer
+}
+
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+
+	dsn := "file:compattest_" + sanitize(t.Name()) + "?mode=memory&cache=shared"
+	st, err := store.Open(config.DatabaseConfig{Driver: "sqlite", DSN: dsn})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	require.NoError(t, st.DB.AutoMigrate(
+		&model.User{}, &model.RefreshToken{},
+		&model.Organization{}, &model.Membership{}, &model.Invitation{},
+		&model.AuditLog{},
+		&model.Device{}, &model.DeviceHeartbeat{},
+		&model.CompatSession{},
+	))
+
+	issuer := auth.NewIssuer("test-secret", time.Minute, time.Hour)
+	r := gin.New()
+	compatapi.Mount(r, compatapi.Deps{
+		DB:        st.DB,
+		Issuer:    issuer,
+		Devices:   device.NewService(st.DB, nil),
+		AccessTTL: time.Hour,
+	})
+	return &harness{router: r, db: *st, issuer: issuer}
+}
+
+func (h *harness) do(t *testing.T, method, path string, body any, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	var buf bytes.Buffer
+	if body != nil {
+		require.NoError(t, json.NewEncoder(&buf).Encode(body))
+	}
+	req := httptest.NewRequest(method, path, &buf)
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "192.0.2.10:1234"
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	w := httptest.NewRecorder()
+	h.router.ServeHTTP(w, req)
+	return w
+}
+
+func (h *harness) seedUser(t *testing.T, email, password string, verified bool) model.User {
+	t.Helper()
+	hash, err := auth.HashPassword(password)
+	require.NoError(t, err)
+	u := model.User{Email: email, PasswordHash: hash, EmailVerified: verified}
+	require.NoError(t, h.db.DB.Create(&u).Error)
+	return u
+}
+
+func (h *harness) seedMembership(t *testing.T, userID, orgID uint) {
+	t.Helper()
+	require.NoError(t, h.db.DB.Create(&model.Membership{
+		OrganizationID: orgID,
+		UserID:         userID,
+		Role:           model.RoleOwner,
+	}).Error)
+}
+
+func (h *harness) seedOrg(t *testing.T, name string) model.Organization {
+	t.Helper()
+	org := model.Organization{Name: name}
+	require.NoError(t, h.db.DB.Create(&org).Error)
+	return org
+}
+
+// loadFixture reads a client protocol fixture from testdata/.
+func loadFixture(t *testing.T, name string) map[string]any {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", name))
+	require.NoError(t, err)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(b, &m))
+	return m
+}
+
+// login performs the client flow and returns the access token plus the raw
+// response body.
+func (h *harness) login(t *testing.T, username, password, deviceID, deviceUUID string) (string, map[string]any) {
+	t.Helper()
+	w := h.do(t, http.MethodPost, "/api/login", map[string]string{
+		"username": username, "password": password,
+		"id": deviceID, "uuid": deviceUUID,
+	}, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	token, _ := resp["access_token"].(string)
+	require.NotEmpty(t, token)
+	return token, resp
+}
+
+// The login response must match the frozen client fixture shape: an
+// AuthBody with access_token, type and a user payload carrying name/email.
+func TestLogin_Success_IssuesCompatToken(t *testing.T) {
+	h := newHarness(t)
+	u := h.seedUser(t, "alice@example.com", "password123", true)
+	org := h.seedOrg(t, "acme")
+	h.seedMembership(t, u.ID, org.ID)
+
+	fixture := loadFixture(t, "login_response.json")
+
+	token, resp := h.login(t, "alice@example.com", "password123", "123456789", "ZmFrZS1kZXZpY2UtdXVpZA")
+
+	// Every fixture key must be present in the response at the top level.
+	for k := range fixture {
+		require.Contains(t, resp, k)
+	}
+	require.Equal(t, "access_token", resp["type"])
+	user, ok := resp["user"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "alice@example.com", user["name"])
+	require.Equal(t, "alice@example.com", user["email"])
+
+	// The token parses as a compat token bound to the organization.
+	uid, orgID, jti, err := h.issuer.ParseCompat(token)
+	require.NoError(t, err)
+	require.Equal(t, u.ID, uid)
+	require.Equal(t, org.ID, orgID)
+	require.NotEmpty(t, jti)
+
+	// The session row exists and matches the token.
+	var session model.CompatSession
+	require.NoError(t, h.db.DB.Where("jti = ?", jti).First(&session).Error)
+	require.Equal(t, org.ID, session.OrganizationID)
+	require.Equal(t, "123456789", session.DeviceID)
+	require.Equal(t, "ZmFrZS1kZXZpY2UtdXVpZA", session.UUID)
+}
+
+// C16: a multi-org account without a selector must be rejected with
+// guidance, and email#orgID must bind the named organization.
+func TestLogin_MultiOrg_RequiresDisambiguation(t *testing.T) {
+	h := newHarness(t)
+	u := h.seedUser(t, "multi@example.com", "password123", true)
+	orgA := h.seedOrg(t, "org-a")
+	orgB := h.seedOrg(t, "org-b")
+	h.seedMembership(t, u.ID, orgA.ID)
+	h.seedMembership(t, u.ID, orgB.ID)
+
+	w := h.do(t, http.MethodPost, "/api/login", map[string]string{
+		"username": "multi@example.com", "password": "password123",
+	}, "")
+	require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+	require.Contains(t, w.Body.String(), "email#orgID")
+
+	token, _ := h.login(t, "multi@example.com#"+uintString(orgB.ID), "password123", "", "")
+	_, orgID, _, err := h.issuer.ParseCompat(token)
+	require.NoError(t, err)
+	require.Equal(t, orgB.ID, orgID, "the selector must bind the named organization")
+}
+
+// Issue #17 gates every login path: an unverified mailbox cannot log in
+// through the compat layer either.
+func TestLogin_RejectsUnverified(t *testing.T) {
+	h := newHarness(t)
+	u := h.seedUser(t, "unv@example.com", "password123", false)
+	org := h.seedOrg(t, "acme")
+	h.seedMembership(t, u.ID, org.ID)
+
+	w := h.do(t, http.MethodPost, "/api/login", map[string]string{
+		"username": "unv@example.com", "password": "password123",
+	}, "")
+	require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+	require.Contains(t, w.Body.String(), "not verified")
+}
+
+// Review Focus #4: the sixth attempt from one IP is throttled.
+func TestLogin_RateLimited(t *testing.T) {
+	h := newHarness(t)
+	h.seedUser(t, "rl@example.com", "password123", true)
+
+	for i := 0; i < 5; i++ {
+		w := h.do(t, http.MethodPost, "/api/login", map[string]string{
+			"username": "rl@example.com", "password": "wrong-pass-1",
+		}, "")
+		require.NotEqual(t, http.StatusTooManyRequests, w.Code, "attempt %d", i+1)
+	}
+	w := h.do(t, http.MethodPost, "/api/login", map[string]string{
+		"username": "rl@example.com", "password": "wrong-pass-1",
+	}, "")
+	require.Equal(t, http.StatusTooManyRequests, w.Code)
+}
+
+// The session endpoints require a bearer compat token; management tokens
+// are a different family and must be rejected.
+func TestCurrentUser_BearerOnly(t *testing.T) {
+	h := newHarness(t)
+	u := h.seedUser(t, "cur@example.com", "password123", true)
+	org := h.seedOrg(t, "acme")
+	h.seedMembership(t, u.ID, org.ID)
+
+	// No token at all.
+	w := h.do(t, http.MethodPost, "/api/currentUser", nil, "")
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+
+	token, _ := h.login(t, "cur@example.com", "password123", "", "")
+	w = h.do(t, http.MethodPost, "/api/currentUser", nil, token)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var user map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &user))
+	require.Equal(t, "cur@example.com", user["name"])
+
+	// A management-family token must not open compat endpoints.
+	adminIssuer := auth.NewIssuer("test-secret", time.Minute, time.Hour)
+	adminToken, _, err := adminIssuer.Issue(u.ID)
+	require.NoError(t, err)
+	w = h.do(t, http.MethodPost, "/api/currentUser", nil, adminToken)
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+// The client's fire-and-forget heartbeat must refresh the device's
+// last-seen timestamp and record a heartbeat event (issue C11).
+func TestHeartbeat_UpdatesDeviceLastSeen(t *testing.T) {
+	h := newHarness(t)
+	u := h.seedUser(t, "hb@example.com", "password123", true)
+	org := h.seedOrg(t, "acme")
+	h.seedMembership(t, u.ID, org.ID)
+
+	fixture := loadFixture(t, "heartbeat_request.json")
+	h.login(t, "hb@example.com", "password123",
+		fixture["id"].(string), fixture["uuid"].(string))
+
+	w := h.do(t, http.MethodPost, "/api/heartbeat", fixture, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	var dev model.Device
+	// Raw DB reads on tenant tables fail closed; scope to the org.
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).
+		Where("rustdesk_id = ?", fixture["id"]).First(&dev).Error)
+	require.NotNil(t, dev.LastSeenAt, "the heartbeat must update last_seen_at")
+	require.Equal(t, org.ID, dev.OrganizationID)
+
+	var beats int64
+	// DeviceHeartbeat also carries a tenant plugin; scope the count.
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).
+		Model(&model.DeviceHeartbeat{}).
+		Where("device_id = ?", dev.ID).Count(&beats).Error)
+	require.EqualValues(t, 1, beats)
+
+	// A heartbeat from an unknown device binding is silently accepted.
+	w = h.do(t, http.MethodPost, "/api/heartbeat",
+		map[string]any{"id": "999999999", "uuid": "unknown-uuid"}, "")
+	require.Equal(t, http.StatusOK, w.Code)
+}
+
+// Review Focus #1: a session bound to org A must never see org B devices.
+func TestPeers_CrossOrgEmpty(t *testing.T) {
+	h := newHarness(t)
+	u := h.seedUser(t, "peer@example.com", "password123", true)
+	orgA := h.seedOrg(t, "org-a")
+	orgB := h.seedOrg(t, "org-b")
+	h.seedMembership(t, u.ID, orgA.ID)
+
+	// A device lives in org B; the session is bound to org A.
+	require.NoError(t, h.db.DB.Create(&model.Device{
+		OrganizationID: orgB.ID,
+		RustdeskID:     "777777777",
+		Name:           "b-pc",
+	}).Error)
+
+	token, _ := h.login(t, "peer@example.com", "password123", "", "")
+	w := h.do(t, http.MethodGet, "/api/peers", nil, token)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	var resp struct {
+		Peers []map[string]any `json:"peers"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Empty(t, resp.Peers, "devices of another organization must not leak")
+
+	// A device in the bound organization shows up.
+	require.NoError(t, h.db.DB.Create(&model.Device{
+		OrganizationID: orgA.ID,
+		RustdeskID:     "123456789",
+		Name:           "a-pc",
+	}).Error)
+	w = h.do(t, http.MethodGet, "/api/peers", nil, token)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Len(t, resp.Peers, 1)
+	require.Equal(t, "123456789", resp.Peers[0]["id"])
+
+	fixture := loadFixture(t, "peers_response.json")
+	for k := range fixture["peers"].([]any)[0].(map[string]any) {
+		require.Contains(t, resp.Peers[0], k)
+	}
+}
+
+// The client's logout revokes the session server-side; the token must stop
+// working immediately afterwards.
+func TestLogout_RevokesSession(t *testing.T) {
+	h := newHarness(t)
+	u := h.seedUser(t, "lo@example.com", "password123", true)
+	org := h.seedOrg(t, "acme")
+	h.seedMembership(t, u.ID, org.ID)
+
+	token, _ := h.login(t, "lo@example.com", "password123", "", "")
+
+	w := h.do(t, http.MethodPost, "/api/logout", nil, token)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	w = h.do(t, http.MethodPost, "/api/currentUser", nil, token)
+	require.Equal(t, http.StatusUnauthorized, w.Code, "a revoked session must stop working")
+}
+
+// login-options is the client's capability probe and answers an empty list.
+func TestLoginOptions_EmptyList(t *testing.T) {
+	h := newHarness(t)
+	w := h.do(t, http.MethodGet, "/api/login-options", nil, "")
+	require.Equal(t, http.StatusOK, w.Code)
+	require.JSONEq(t, "[]", w.Body.String())
+}
+
+func uintString(v uint) string {
+	b, _ := json.Marshal(v)
+	return string(b)
+}
+
+func sanitize(name string) string {
+	r := map[byte]string{'/': "_", ' ': "_", '-': "_"}
+	out := make([]byte, 0, len(name))
+	for i := 0; i < len(name); i++ {
+		if rep, ok := r[name[i]]; ok {
+			out = append(out, rep...)
+		} else {
+			out = append(out, name[i])
+		}
+	}
+	return string(out)
+}
