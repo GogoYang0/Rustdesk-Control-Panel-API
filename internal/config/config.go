@@ -3,14 +3,18 @@ package config
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/spf13/viper"
 )
 
 // Config is the root configuration tree.
 type Config struct {
-	Server ServerConfig `mapstructure:"server"`
-	Log    LogConfig    `mapstructure:"log"`
+	Server    ServerConfig    `mapstructure:"server"`
+	Log       LogConfig       `mapstructure:"log"`
+	Database  DatabaseConfig  `mapstructure:"database"`
+	Auth      AuthConfig      `mapstructure:"auth"`
+	Provision ProvisionConfig `mapstructure:"provision"`
 }
 
 // ServerConfig holds HTTP server settings.
@@ -24,13 +28,65 @@ type LogConfig struct {
 	Format string `mapstructure:"format"`
 }
 
+// ProvisionConfig holds hbbs/hbbr deployment settings.
+type ProvisionConfig struct {
+	PortStart      uint16 `mapstructure:"portStart"`
+	PortEnd        uint16 `mapstructure:"portEnd"`
+	OrgLabel       string `mapstructure:"orgLabel"`
+	RoleLabel      string `mapstructure:"roleLabel"`
+	RelayHost      string `mapstructure:"relayHost"`
+	Image          string `mapstructure:"image"`
+	DataDir        string `mapstructure:"dataDir"`
+	MaxOrgsPerUser int    `mapstructure:"maxOrgsPerUser"`
+	Workers        int    `mapstructure:"workers"`
+}
+
+// AuthConfig holds JWT and token lifetime settings.
+type AuthConfig struct {
+	Secret     string        `mapstructure:"secret"`
+	AccessTTL  time.Duration `mapstructure:"accessTTL"`
+	RefreshTTL time.Duration `mapstructure:"refreshTTL"`
+}
+
+// DatabaseConfig holds database connection settings.
+type DatabaseConfig struct {
+	Driver string `mapstructure:"driver"` // sqlite | postgres | mysql
+	DSN    string `mapstructure:"dsn"`
+}
+
 // Load reads configuration from the given YAML file.
 func Load(path string) (*Config, error) {
 	v := viper.New()
 	v.SetConfigFile(path)
+	v.SetDefault("database.driver", "sqlite")
+	// cache=shared: all pooled database/sql connections share one in-memory database
+	v.SetDefault("database.dsn", "file::memory:?cache=shared")
+	v.SetDefault("auth.accessTTL", "15m")
+	v.SetDefault("auth.refreshTTL", "168h")
+	v.SetDefault("provision.portStart", 21116)
+	v.SetDefault("provision.portEnd", 22115)
+	v.SetDefault("provision.orgLabel", "com.rustdesk-panel.org")
+	v.SetDefault("provision.roleLabel", "com.rustdesk-panel.role")
+	v.SetDefault("provision.image", "")
+	v.SetDefault("provision.dataDir", "./data/servergroups")
+	v.SetDefault("provision.maxOrgsPerUser", 5)
+	v.SetDefault("provision.workers", 2)
+
+	// The signing key must not live in the repository; deployment supplies it.
+	if err := v.BindEnv("auth.secret", "PANEL_AUTH_SECRET"); err != nil {
+		return nil, fmt.Errorf("bind auth secret env: %w", err)
+	}
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
+	}
+
+	if err := validateAuth(
+		v.GetString("auth.secret"),
+		v.GetDuration("auth.accessTTL"),
+		v.GetDuration("auth.refreshTTL"),
+	); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 
 	var cfg Config
@@ -39,4 +95,24 @@ func Load(path string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// devSecretPlaceholder is rejected so a shipped config cannot become production.
+const devSecretPlaceholder = "dev-only-change-me"
+
+// validateAuth refuses secrets that would make token signatures predictable.
+func validateAuth(secret string, accessTTL, refreshTTL time.Duration) error {
+	if secret == "" {
+		return fmt.Errorf("auth.secret must be configured")
+	}
+	if secret == devSecretPlaceholder {
+		return fmt.Errorf("auth.secret still uses the development placeholder")
+	}
+	if len(secret) < 32 {
+		return fmt.Errorf("auth.secret must be at least 32 bytes")
+	}
+	if accessTTL <= 0 || refreshTTL <= 0 {
+		return fmt.Errorf("auth token lifetimes must be positive")
+	}
+	return nil
 }

@@ -4,29 +4,439 @@
 package gen
 
 import (
+	"fmt"
+	"net/http"
+	"time"
+
 	"github.com/gin-gonic/gin"
+	"github.com/oapi-codegen/runtime"
+	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
-// Defines values for GetHealthz200JSONResponseBodyStatus.
+// Defines values for DeviceStatus.
 const (
-	Ok GetHealthz200JSONResponseBodyStatus = "ok"
+	Offline DeviceStatus = "offline"
+	Online  DeviceStatus = "online"
 )
 
-// Valid indicates whether the value is a known member of the GetHealthz200JSONResponseBodyStatus enum.
-func (e GetHealthz200JSONResponseBodyStatus) Valid() bool {
+// Valid indicates whether the value is a known member of the DeviceStatus enum.
+func (e DeviceStatus) Valid() bool {
 	switch e {
-	case Ok:
+	case Offline:
+		return true
+	case Online:
 		return true
 	default:
 		return false
 	}
 }
 
+// Defines values for ErrorCode.
+const (
+	ErrorCodeConflict       ErrorCode = "conflict"
+	ErrorCodeForbidden      ErrorCode = "forbidden"
+	ErrorCodeInternal       ErrorCode = "internal"
+	ErrorCodeInvalidRequest ErrorCode = "invalid_request"
+	ErrorCodeNotFound       ErrorCode = "not_found"
+	ErrorCodeOk             ErrorCode = "ok"
+	ErrorCodeRateLimited    ErrorCode = "rate_limited"
+	ErrorCodeUnauthorized   ErrorCode = "unauthorized"
+)
+
+// Valid indicates whether the value is a known member of the ErrorCode enum.
+func (e ErrorCode) Valid() bool {
+	switch e {
+	case ErrorCodeConflict:
+		return true
+	case ErrorCodeForbidden:
+		return true
+	case ErrorCodeInternal:
+		return true
+	case ErrorCodeInvalidRequest:
+		return true
+	case ErrorCodeNotFound:
+		return true
+	case ErrorCodeOk:
+		return true
+	case ErrorCodeRateLimited:
+		return true
+	case ErrorCodeUnauthorized:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for InvitationRole.
+const (
+	InvitationRoleAdmin  InvitationRole = "admin"
+	InvitationRoleMember InvitationRole = "member"
+)
+
+// Valid indicates whether the value is a known member of the InvitationRole enum.
+func (e InvitationRole) Valid() bool {
+	switch e {
+	case InvitationRoleAdmin:
+		return true
+	case InvitationRoleMember:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for InvitationCreateRequestRole.
+const (
+	InvitationCreateRequestRoleAdmin  InvitationCreateRequestRole = "admin"
+	InvitationCreateRequestRoleMember InvitationCreateRequestRole = "member"
+)
+
+// Valid indicates whether the value is a known member of the InvitationCreateRequestRole enum.
+func (e InvitationCreateRequestRole) Valid() bool {
+	switch e {
+	case InvitationCreateRequestRoleAdmin:
+		return true
+	case InvitationCreateRequestRoleMember:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MemberRole.
+const (
+	MemberRoleAdmin  MemberRole = "admin"
+	MemberRoleMember MemberRole = "member"
+	MemberRoleOwner  MemberRole = "owner"
+)
+
+// Valid indicates whether the value is a known member of the MemberRole enum.
+func (e MemberRole) Valid() bool {
+	switch e {
+	case MemberRoleAdmin:
+		return true
+	case MemberRoleMember:
+		return true
+	case MemberRoleOwner:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for GetHealthz200JSONResponseBodyStatus.
+const (
+	GetHealthz200JSONResponseBodyStatusOk GetHealthz200JSONResponseBodyStatus = "ok"
+)
+
+// Valid indicates whether the value is a known member of the GetHealthz200JSONResponseBodyStatus enum.
+func (e GetHealthz200JSONResponseBodyStatus) Valid() bool {
+	switch e {
+	case GetHealthz200JSONResponseBodyStatusOk:
+		return true
+	default:
+		return false
+	}
+}
+
+// Device defines model for Device.
+type Device struct {
+	Id         int64        `json:"id"`
+	LastSeenAt *time.Time   `json:"last_seen_at"`
+	Name       string       `json:"name"`
+	RustdeskId string       `json:"rustdesk_id"`
+	Status     DeviceStatus `json:"status"`
+}
+
+// DeviceStatus defines model for Device.Status.
+type DeviceStatus string
+
+// DeviceCreateRequest defines model for DeviceCreateRequest.
+type DeviceCreateRequest struct {
+	Name       string `json:"name"`
+	RustdeskId string `json:"rustdesk_id"`
+}
+
+// DeviceResponse defines model for DeviceResponse.
+type DeviceResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	Code    ErrorCode `json:"code"`
+	Data    Device    `json:"data"`
+	Message string    `json:"message"`
+}
+
+// ErrorCode 机器可读错误码：
+// - ok：成功
+// - invalid_request：参数校验失败
+// - unauthorized：未认证或令牌无效
+// - forbidden：权限不足
+// - not_found：资源不存在
+// - conflict：状态冲突（重复创建、邀请过期或已使用）
+// - rate_limited：触发限流
+// - internal：服务端错误
+type ErrorCode string
+
+// ErrorResponse defines model for ErrorResponse.
+type ErrorResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	Code    ErrorCode               `json:"code"`
+	Data    *map[string]interface{} `json:"data,omitempty"`
+	Message string                  `json:"message"`
+}
+
+// Invitation defines model for Invitation.
+type Invitation struct {
+	Email     openapi_types.Email `json:"email"`
+	ExpiresAt time.Time           `json:"expires_at"`
+	Id        int64               `json:"id"`
+	Role      InvitationRole      `json:"role"`
+
+	// Token 邀请令牌明文，仅在创建响应中返回一次，服务端只存哈希。
+	Token *string `json:"token,omitempty"`
+}
+
+// InvitationRole defines model for Invitation.Role.
+type InvitationRole string
+
+// InvitationAcceptRequest defines model for InvitationAcceptRequest.
+type InvitationAcceptRequest struct {
+	Password string `json:"password"`
+	Token    string `json:"token"`
+}
+
+// InvitationCreateRequest defines model for InvitationCreateRequest.
+type InvitationCreateRequest struct {
+	Email openapi_types.Email         `json:"email"`
+	Role  InvitationCreateRequestRole `json:"role"`
+}
+
+// InvitationCreateRequestRole defines model for InvitationCreateRequest.Role.
+type InvitationCreateRequestRole string
+
+// InvitationResponse defines model for InvitationResponse.
+type InvitationResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	Code    ErrorCode  `json:"code"`
+	Data    Invitation `json:"data"`
+	Message string     `json:"message"`
+}
+
+// LoginRequest defines model for LoginRequest.
+type LoginRequest struct {
+	Email    openapi_types.Email `json:"email"`
+	Password string              `json:"password"`
+}
+
+// Member defines model for Member.
+type Member struct {
+	CreatedAt time.Time           `json:"created_at"`
+	Email     openapi_types.Email `json:"email"`
+	Id        int64               `json:"id"`
+	Role      MemberRole          `json:"role"`
+	UserId    int64               `json:"user_id"`
+}
+
+// MemberRole defines model for Member.Role.
+type MemberRole string
+
+// MemberListResponse defines model for MemberListResponse.
+type MemberListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	Code    ErrorCode `json:"code"`
+	Data    []Member  `json:"data"`
+	Message string    `json:"message"`
+}
+
+// MemberResponse defines model for MemberResponse.
+type MemberResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	Code    ErrorCode `json:"code"`
+	Data    Member    `json:"data"`
+	Message string    `json:"message"`
+}
+
+// Org defines model for Org.
+type Org struct {
+	CreatedAt time.Time `json:"created_at"`
+	Id        int64     `json:"id"`
+	Name      string    `json:"name"`
+}
+
+// OrgCreateRequest defines model for OrgCreateRequest.
+type OrgCreateRequest struct {
+	Name string `json:"name"`
+}
+
+// OrgListResponse defines model for OrgListResponse.
+type OrgListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	Code    ErrorCode `json:"code"`
+	Data    []Org     `json:"data"`
+	Message string    `json:"message"`
+}
+
+// OrgResponse defines model for OrgResponse.
+type OrgResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	Code    ErrorCode `json:"code"`
+	Data    Org       `json:"data"`
+	Message string    `json:"message"`
+}
+
+// RefreshRequest defines model for RefreshRequest.
+type RefreshRequest struct {
+	RefreshToken string `json:"refresh_token"`
+}
+
+// TokenPair defines model for TokenPair.
+type TokenPair struct {
+	AccessToken string `json:"access_token"`
+
+	// ExpiresIn access 令牌剩余有效秒数
+	ExpiresIn    int64  `json:"expires_in"`
+	RefreshToken string `json:"refresh_token"`
+}
+
+// TokenResponse defines model for TokenResponse.
+type TokenResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	Code    ErrorCode `json:"code"`
+	Data    TokenPair `json:"data"`
+	Message string    `json:"message"`
+}
+
+// BadRequest defines model for BadRequest.
+type BadRequest = ErrorResponse
+
+// Conflict defines model for Conflict.
+type Conflict = ErrorResponse
+
+// Forbidden defines model for Forbidden.
+type Forbidden = ErrorResponse
+
+// NotFound defines model for NotFound.
+type NotFound = ErrorResponse
+
+// TooManyRequests defines model for TooManyRequests.
+type TooManyRequests = ErrorResponse
+
+// Unauthorized defines model for Unauthorized.
+type Unauthorized = ErrorResponse
+
 // GetHealthz200JSONResponseBodyStatus defines parameters for GetHealthz.
 type GetHealthz200JSONResponseBodyStatus string
 
+// LoginJSONRequestBody defines body for Login for application/json ContentType.
+type LoginJSONRequestBody = LoginRequest
+
+// RefreshTokensJSONRequestBody defines body for RefreshTokens for application/json ContentType.
+type RefreshTokensJSONRequestBody = RefreshRequest
+
+// AcceptInvitationJSONRequestBody defines body for AcceptInvitation for application/json ContentType.
+type AcceptInvitationJSONRequestBody = InvitationAcceptRequest
+
+// CreateOrgJSONRequestBody defines body for CreateOrg for application/json ContentType.
+type CreateOrgJSONRequestBody = OrgCreateRequest
+
+// CreateDeviceJSONRequestBody defines body for CreateDevice for application/json ContentType.
+type CreateDeviceJSONRequestBody = DeviceCreateRequest
+
+// CreateInvitationJSONRequestBody defines body for CreateInvitation for application/json ContentType.
+type CreateInvitationJSONRequestBody = InvitationCreateRequest
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// Login 邮箱密码登录
+	// (POST /api/v1/auth/login)
+	Login(c *gin.Context)
+	// RefreshTokens 轮换 refresh 令牌
+	// (POST /api/v1/auth/refresh)
+	RefreshTokens(c *gin.Context)
+	// AcceptInvitation 接受邀请
+	// (POST /api/v1/invitations/accept)
+	AcceptInvitation(c *gin.Context)
+	// ListOrgs 列出当前用户所属组织
+	// (GET /api/v1/orgs)
+	ListOrgs(c *gin.Context)
+	// CreateOrg 创建组织
+	// (POST /api/v1/orgs)
+	CreateOrg(c *gin.Context)
+	// CreateDevice 注册设备
+	// (POST /api/v1/orgs/{orgId}/devices)
+	CreateDevice(c *gin.Context, orgId int64)
+	// DeviceHeartbeat 设备心跳
+	// (POST /api/v1/orgs/{orgId}/devices/{deviceId}/heartbeat)
+	DeviceHeartbeat(c *gin.Context, orgId int64, deviceId int64)
+	// CreateInvitation 邀请成员加入组织
+	// (POST /api/v1/orgs/{orgId}/invitations)
+	CreateInvitation(c *gin.Context, orgId int64)
+	// ListMembers 列出组织成员
+	// (GET /api/v1/orgs/{orgId}/members)
+	ListMembers(c *gin.Context, orgId int64)
 	// GetHealthz 存活探针
 	// (GET /healthz)
 	GetHealthz(c *gin.Context)
@@ -40,6 +450,180 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(c *gin.Context)
+
+// Login operation middleware
+func (siw *ServerInterfaceWrapper) Login(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.Login(c)
+}
+
+// RefreshTokens operation middleware
+func (siw *ServerInterfaceWrapper) RefreshTokens(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RefreshTokens(c)
+}
+
+// AcceptInvitation operation middleware
+func (siw *ServerInterfaceWrapper) AcceptInvitation(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AcceptInvitation(c)
+}
+
+// ListOrgs operation middleware
+func (siw *ServerInterfaceWrapper) ListOrgs(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListOrgs(c)
+}
+
+// CreateOrg operation middleware
+func (siw *ServerInterfaceWrapper) CreateOrg(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateOrg(c)
+}
+
+// CreateDevice operation middleware
+func (siw *ServerInterfaceWrapper) CreateDevice(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateDevice(c, orgId)
+}
+
+// DeviceHeartbeat operation middleware
+func (siw *ServerInterfaceWrapper) DeviceHeartbeat(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "deviceId" -------------
+	var deviceId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "deviceId", c.Param("deviceId"), &deviceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeviceHeartbeat(c, orgId, deviceId)
+}
+
+// CreateInvitation operation middleware
+func (siw *ServerInterfaceWrapper) CreateInvitation(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateInvitation(c, orgId)
+}
+
+// ListMembers operation middleware
+func (siw *ServerInterfaceWrapper) ListMembers(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListMembers(c, orgId)
+}
 
 // GetHealthz operation middleware
 func (siw *ServerInterfaceWrapper) GetHealthz(c *gin.Context) {
@@ -82,4 +666,13 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	}
 
 	router.GET(options.BaseURL+"/healthz", wrapper.GetHealthz)
+	router.POST(options.BaseURL+"/api/v1/auth/login", wrapper.Login)
+	router.POST(options.BaseURL+"/api/v1/auth/refresh", wrapper.RefreshTokens)
+	router.GET(options.BaseURL+"/api/v1/orgs", wrapper.ListOrgs)
+	router.POST(options.BaseURL+"/api/v1/orgs", wrapper.CreateOrg)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/members", wrapper.ListMembers)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/invitations", wrapper.CreateInvitation)
+	router.POST(options.BaseURL+"/api/v1/invitations/accept", wrapper.AcceptInvitation)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices", wrapper.CreateDevice)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/heartbeat", wrapper.DeviceHeartbeat)
 }

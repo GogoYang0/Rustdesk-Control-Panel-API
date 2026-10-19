@@ -1,6 +1,30 @@
 server:
   addr: ":8080"
 
+auth:
+  # Injected from PANEL_AUTH_SECRET. Never commit a real signing key: this file
+  # is published, so anyone could forge access tokens with it.
+  secret: ""
+  accessTTL: 15m
+  refreshTTL: 168h
+
+provision:
+  portStart: 21116
+  portEnd: 22115
+  orgLabel: "com.rustdesk-panel.org"
+  roleLabel: "com.rustdesk-panel.role"
+  # Must be an address clients can reach; there is no loopback fallback.
+  relayHost: "panel.example.com"
+  # Pin the image tag so deployments are reproducible.
+  image: "rustdesk/rustdesk-server:1.1.11"
+  dataDir: "./data/servergroups"
+  maxOrgsPerUser: 5
+  workers: 2
+
+database:
+  driver: sqlite
+  dsn: "file:data/panel.db"
+
 log:
   level: info
   format: json

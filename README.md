@@ -34,6 +34,9 @@ make generate
 # 测试
 make test
 
+# 设置签名密钥（不要提交真实密钥；至少 32 字节）
+export PANEL_AUTH_SECRET=$(openssl rand -base64 48)
+
 # 启动（默认 :8080）
 make run
 ```
