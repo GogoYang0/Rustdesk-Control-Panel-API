@@ -151,7 +151,9 @@ func TestRecordTx_RollbackTogether(t *testing.T) {
 
 	var orgs, logs int64
 	require.NoError(t, st.DB.Model(&model.Organization{}).Count(&orgs).Error)
-	require.NoError(t, st.DB.Model(&model.AuditLog{}).Count(&logs).Error)
+	// Raw SQL on purpose: the tenant plugin fail-closes model-based
+	// audit_logs queries without an org context, which would mask leftovers.
+	require.NoError(t, st.DB.Raw("SELECT COUNT(*) FROM audit_logs").Scan(&logs).Error)
 	require.Zero(t, orgs, "the entity change must roll back with the audit failure")
 	require.Zero(t, logs, "no audit row may survive a failed transaction")
 }

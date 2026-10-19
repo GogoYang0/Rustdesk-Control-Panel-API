@@ -395,8 +395,8 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 				ActorUserID:    user.ID,
 				Action:         "invitation.accept",
 				TargetType:     "membership",
-				TargetID:       fmt.Sprint(inv.ID),
-				Detail:         map[string]any{"role": inv.Role},
+				TargetID:       fmt.Sprint(member.ID),
+				Detail:         map[string]any{"role": inv.Role, "invitation_id": inv.ID},
 			}); err != nil {
 				return err
 			}

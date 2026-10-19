@@ -99,14 +99,22 @@ func insertAuditRow(tx *gorm.DB, entry Entry, detail string) error {
 		return err
 	}
 
-	// The tenant plugin fails closed without an org context, so the
-	// maximum must be read through the scoped handle.
+	// A locking read always sees the latest committed rows, even when the
+	// caller's transaction already holds an older REPEATABLE READ snapshot
+	// (MySQL): a snapshot read of MAX(seq) could miss rows committed by
+	// other requests since the caller's first read, turning the insert into
+	// a spurious duplicate-key failure for the whole entity transaction.
 	var maxSeq uint64
+	var seqs []uint64
 	if err := store.ScopedByOrg(tx, entry.OrganizationID).
 		Model(&model.AuditLog{}).
-		Select("COALESCE(MAX(seq), 0)").
-		Scan(&maxSeq).Error; err != nil {
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Order("seq DESC").Limit(1).
+		Pluck("seq", &seqs).Error; err != nil {
 		return err
+	}
+	if len(seqs) > 0 {
+		maxSeq = seqs[0]
 	}
 
 	row := model.AuditLog{
