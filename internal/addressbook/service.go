@@ -154,9 +154,11 @@ func (s *Service) Get(userID, orgID, bookID uint) (*model.AddressBook, []model.A
 }
 
 // Update renames the book. Scope stays immutable (contract 0.3.0). The
-// duplicate-name pre-check mirrors Create: the (org, owner, name) unique
-// index cannot deduplicate shared books because their owner_id is NULL and
-// NULLs never collide in a unique index.
+// duplicate-name check and the rename run inside one transaction holding the
+// organization row lock — the same serialisation as Create — otherwise a
+// concurrent Create could insert the target name between the check and the
+// write and produce two same-named shared books (NULL owner is not
+// deduplicated by the unique index).
 func (s *Service) Update(userID uint, role string, orgID, bookID uint, name string) (*model.AddressBook, error) {
 	book, err := s.getBook(userID, orgID, bookID)
 	if err != nil {
@@ -165,25 +167,35 @@ func (s *Service) Update(userID uint, role string, orgID, bookID uint, name stri
 	if !canWrite(book, userID, role) {
 		return nil, ErrForbidden
 	}
-	if book.Name != name {
+	if book.Name == name {
+		return book, nil
+	}
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		if err := lockOrgRow(tx, orgID); err != nil {
+			return err
+		}
 		var count int64
-		q := store.ScopedByOrg(s.db, orgID).Model(&model.AddressBook{}).
+		q := store.ScopedByOrg(tx, orgID).Model(&model.AddressBook{}).
 			Where("scope = ? AND name = ? AND id <> ?", book.Scope, name, book.ID)
 		if book.Scope == model.AddressBookScopePersonal {
 			q = q.Where("owner_id = ?", userID)
 		}
 		if err := q.Count(&count).Error; err != nil {
-			return nil, err
+			return err
 		}
 		if count > 0 {
-			return nil, ErrDuplicateName
+			return ErrDuplicateName
 		}
-	}
-	if err := store.ScopedByOrg(s.db, orgID).Model(book).
-		Update("name", name).Error; err != nil {
-		if errors.Is(err, gorm.ErrDuplicatedKey) {
-			return nil, ErrDuplicateName
+		if err := store.ScopedByOrg(tx, orgID).Model(book).
+			Update("name", name).Error; err != nil {
+			if errors.Is(err, gorm.ErrDuplicatedKey) {
+				return ErrDuplicateName
+			}
+			return err
 		}
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 	return book, nil

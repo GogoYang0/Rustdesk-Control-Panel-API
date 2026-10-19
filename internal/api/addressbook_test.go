@@ -609,3 +609,64 @@ func TestAddressBook_Create_NameOverlong(t *testing.T) {
 		map[string]string{"name": strings.Repeat("n", 129), "scope": "personal"}, token)
 	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 }
+
+// Review round 3 (outside diff): Update's duplicate check and the rename
+// must share Create's organization-row lock, otherwise a concurrent Create
+// can insert the target name between the check and the write.
+func TestAddressBook_Update_Create_ConcurrentNoDuplicates(t *testing.T) {
+	h := newHarness(t)
+	token, orgID := seedOrgOwner(t, h, "uni5@example.com")
+	book := createBook(t, h, token, orgID, "renamed-src", "shared")
+
+	// On SQLite the in-memory database serialises writers and can answer
+	// concurrent contention with 500s, so exact per-status counts are not
+	// assertable here. The invariants that must hold on every backend: at
+	// most one successful creation of the same name; renames to an existing
+	// name are idempotent no-ops (200 is legal for every loser); and the
+	// final state contains no duplicate names.
+	var mu sync.Mutex
+	created, updated := 0, 0
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w := h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgID)+"/address-books",
+				map[string]string{"name": "race-target", "scope": "shared"}, token)
+			mu.Lock()
+			defer mu.Unlock()
+			if w.Code == http.StatusCreated {
+				created++
+			}
+		}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w := h.do(t, http.MethodPut, "/api/v1/orgs/"+itoa(orgID)+"/address-books/"+itoa(book.Data.Id),
+				map[string]string{"name": "race-target"}, token)
+			mu.Lock()
+			defer mu.Unlock()
+			if w.Code == http.StatusOK {
+				updated++
+			}
+		}()
+	}
+	wg.Wait()
+	require.LessOrEqual(t, created, 1, "duplicate shared name must not be created twice")
+	_ = updated // renames may all report 200 as idempotent no-ops
+
+	// Final state: no two same-named shared books.
+	w := h.do(t, http.MethodGet, "/api/v1/orgs/"+itoa(orgID)+"/address-books", nil, token)
+	require.Equal(t, http.StatusOK, w.Code)
+	var list struct {
+		Data []gen.AddressBook `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &list))
+	names := map[string]int{}
+	for _, b := range list.Data {
+		names[b.Name]++
+	}
+	for name, n := range names {
+		require.LessOrEqual(t, n, 1, "duplicate shared book name after race: "+name)
+	}
+}
