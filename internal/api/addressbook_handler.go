@@ -211,6 +211,38 @@ func (a *AdminAPI) DeleteAddressBook(c *gin.Context, orgId int64, bookId int64) 
 	respondBook(c, http.StatusOK, book)
 }
 
+// validatePeers enforces the column widths and per-request uniqueness so a
+// bad payload comes back as 400 instead of surfacing as a 500 from a unique
+// index violation mid-transaction.
+func validatePeers(peers []gen.AddressBookPeer) bool {
+	seen := make(map[string]struct{}, len(peers))
+	for _, p := range peers {
+		if p.PeerId == "" || len(p.PeerId) > 64 {
+			return false
+		}
+		if _, dup := seen[p.PeerId]; dup {
+			return false
+		}
+		seen[p.PeerId] = struct{}{}
+	}
+	return true
+}
+
+// validateTags is the tag-name counterpart of validatePeers.
+func validateTags(tags []gen.AddressBookTag) bool {
+	seen := make(map[string]struct{}, len(tags))
+	for _, tg := range tags {
+		if tg.Name == "" || len(tg.Name) > 64 {
+			return false
+		}
+		if _, dup := seen[tg.Name]; dup {
+			return false
+		}
+		seen[tg.Name] = struct{}{}
+	}
+	return true
+}
+
 // ReplaceAddressBookPeers swaps the full peer list.
 func (a *AdminAPI) ReplaceAddressBookPeers(c *gin.Context, orgId int64, bookId int64) {
 	uid, ok := requireUserID(c)
@@ -225,6 +257,11 @@ func (a *AdminAPI) ReplaceAddressBookPeers(c *gin.Context, orgId int64, bookId i
 
 	role, ok := a.roleForBook(c, uid, orgId, bookId)
 	if !ok {
+		return
+	}
+	if !validatePeers(req.Peers) {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest,
+			"peer_id must be non-empty, at most 64 characters and unique within the request")
 		return
 	}
 
@@ -266,6 +303,11 @@ func (a *AdminAPI) ReplaceAddressBookTags(c *gin.Context, orgId int64, bookId in
 
 	role, ok := a.roleForBook(c, uid, orgId, bookId)
 	if !ok {
+		return
+	}
+	if !validateTags(req.Tags) {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest,
+			"tag name must be non-empty, at most 64 characters and unique within the request")
 		return
 	}
 

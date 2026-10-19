@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
@@ -141,7 +142,10 @@ func (s *Service) Get(userID, orgID, bookID uint) (*model.AddressBook, []model.A
 	return book, peers, tags, nil
 }
 
-// Update renames the book. Scope stays immutable (contract 0.3.0).
+// Update renames the book. Scope stays immutable (contract 0.3.0). The
+// duplicate-name pre-check mirrors Create: the (org, owner, name) unique
+// index cannot deduplicate shared books because their owner_id is NULL and
+// NULLs never collide in a unique index.
 func (s *Service) Update(userID uint, role string, orgID, bookID uint, name string) (*model.AddressBook, error) {
 	book, err := s.getBook(userID, orgID, bookID)
 	if err != nil {
@@ -149,6 +153,20 @@ func (s *Service) Update(userID uint, role string, orgID, bookID uint, name stri
 	}
 	if !canWrite(book, userID, role) {
 		return nil, ErrForbidden
+	}
+	if book.Name != name {
+		var count int64
+		q := store.ScopedByOrg(s.db, orgID).Model(&model.AddressBook{}).
+			Where("scope = ? AND name = ? AND id <> ?", book.Scope, name, book.ID)
+		if book.Scope == model.AddressBookScopePersonal {
+			q = q.Where("owner_id = ?", userID)
+		}
+		if err := q.Count(&count).Error; err != nil {
+			return nil, err
+		}
+		if count > 0 {
+			return nil, ErrDuplicateName
+		}
 	}
 	if err := store.ScopedByOrg(s.db, orgID).Model(book).
 		Update("name", name).Error; err != nil {
@@ -160,7 +178,44 @@ func (s *Service) Update(userID uint, role string, orgID, bookID uint, name stri
 	return book, nil
 }
 
-// Delete removes the book together with its peers and tags.
+// lockBook takes a write lock on the book row inside a transaction so
+// concurrent full-replaces serialise instead of merging lists, and so a
+// concurrent Delete cannot orphan child rows. SQLite has no SELECT ... FOR
+// UPDATE and serialises writers itself, so the clause is skipped there.
+func lockBook(tx *gorm.DB, orgID, bookID uint) (*model.AddressBook, error) {
+	query := store.ScopedByOrg(tx, orgID)
+	if tx.Name() != "sqlite" {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	var book model.AddressBook
+	err := query.First(&book, bookID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrBookNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &book, nil
+}
+
+// bumpRevision increments the revision under the held row lock and fails the
+// transaction if the row vanished (RowsAffected == 0).
+func bumpRevision(tx *gorm.DB, orgID, bookID uint) error {
+	res := store.ScopedByOrg(tx, orgID).Model(&model.AddressBook{}).
+		Where("id = ?", bookID).
+		UpdateColumn("revision", gorm.Expr("revision + 1"))
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrBookNotFound
+	}
+	return nil
+}
+
+// Delete removes the book together with its peers and tags. The book row is
+// locked first so a concurrent replace cannot re-insert children after the
+// cascading deletes.
 func (s *Service) Delete(userID uint, role string, orgID, bookID uint) (*model.AddressBook, error) {
 	book, err := s.getBook(userID, orgID, bookID)
 	if err != nil {
@@ -170,6 +225,9 @@ func (s *Service) Delete(userID uint, role string, orgID, bookID uint) (*model.A
 		return nil, ErrForbidden
 	}
 	err = s.db.Transaction(func(tx *gorm.DB) error {
+		if _, err := lockBook(tx, orgID, book.ID); err != nil {
+			return err
+		}
 		if err := store.ScopedByOrg(tx, orgID).
 			Where("book_id = ?", book.ID).Delete(&model.AddressBookPeer{}).Error; err != nil {
 			return err
@@ -187,7 +245,9 @@ func (s *Service) Delete(userID uint, role string, orgID, bookID uint) (*model.A
 }
 
 // ReplacePeers swaps the full peer list inside a transaction and bumps the
-// book revision.
+// book revision. The book row is locked for the whole transaction so two
+// concurrent replaces serialise instead of merging their lists, and the
+// refreshed row is read before commit (no post-commit reload race).
 func (s *Service) ReplacePeers(userID uint, role string, orgID, bookID uint, peers []PeerInput) (*model.AddressBook, error) {
 	book, err := s.getBook(userID, orgID, bookID)
 	if err != nil {
@@ -197,7 +257,11 @@ func (s *Service) ReplacePeers(userID uint, role string, orgID, bookID uint, pee
 		return nil, ErrForbidden
 	}
 
+	var fresh model.AddressBook
 	err = s.db.Transaction(func(tx *gorm.DB) error {
+		if _, err := lockBook(tx, orgID, book.ID); err != nil {
+			return err
+		}
 		if err := store.ScopedByOrg(tx, orgID).
 			Where("book_id = ?", book.ID).Delete(&model.AddressBookPeer{}).Error; err != nil {
 			return err
@@ -217,17 +281,19 @@ func (s *Service) ReplacePeers(userID uint, role string, orgID, bookID uint, pee
 				return err
 			}
 		}
-		return store.ScopedByOrg(tx, orgID).Model(book).
-			UpdateColumn("revision", gorm.Expr("revision + 1")).Error
+		if err := bumpRevision(tx, orgID, book.ID); err != nil {
+			return err
+		}
+		return store.ScopedByOrg(tx, orgID).First(&fresh, book.ID).Error
 	})
 	if err != nil {
 		return nil, err
 	}
-	return s.reload(book)
+	return &fresh, nil
 }
 
 // ReplaceTags swaps the full tag list inside a transaction and bumps the
-// book revision.
+// book revision, under the same row lock as ReplacePeers.
 func (s *Service) ReplaceTags(userID uint, role string, orgID, bookID uint, tags []TagInput) (*model.AddressBook, error) {
 	book, err := s.getBook(userID, orgID, bookID)
 	if err != nil {
@@ -237,7 +303,11 @@ func (s *Service) ReplaceTags(userID uint, role string, orgID, bookID uint, tags
 		return nil, ErrForbidden
 	}
 
+	var fresh model.AddressBook
 	err = s.db.Transaction(func(tx *gorm.DB) error {
+		if _, err := lockBook(tx, orgID, book.ID); err != nil {
+			return err
+		}
 		if err := store.ScopedByOrg(tx, orgID).
 			Where("book_id = ?", book.ID).Delete(&model.AddressBookTag{}).Error; err != nil {
 			return err
@@ -253,19 +323,12 @@ func (s *Service) ReplaceTags(userID uint, role string, orgID, bookID uint, tags
 				return err
 			}
 		}
-		return store.ScopedByOrg(tx, orgID).Model(book).
-			UpdateColumn("revision", gorm.Expr("revision + 1")).Error
+		if err := bumpRevision(tx, orgID, book.ID); err != nil {
+			return err
+		}
+		return store.ScopedByOrg(tx, orgID).First(&fresh, book.ID).Error
 	})
 	if err != nil {
-		return nil, err
-	}
-	return s.reload(book)
-}
-
-func (s *Service) reload(book *model.AddressBook) (*model.AddressBook, error) {
-	var fresh model.AddressBook
-	if err := store.ScopedByOrg(s.db, book.OrganizationID).
-		First(&fresh, book.ID).Error; err != nil {
 		return nil, err
 	}
 	return &fresh, nil

@@ -3,6 +3,8 @@ package api_test
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -359,4 +361,133 @@ func TestAddressBook_UpdateName(t *testing.T) {
 	var r abResp
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &r))
 	require.Equal(t, "new-name", r.Data.Name)
+}
+
+// seedOrgOwner creates a user plus a fresh org, returning the bearer token
+// and org id.
+func seedOrgOwner(t *testing.T, h *harness, email string) (string, int64) {
+	t.Helper()
+	h.seedUser(t, email, "password123")
+	token := h.login(t, email, "password123")
+	w := h.do(t, http.MethodPost, "/api/v1/orgs", map[string]string{"name": "org-" + email}, token)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	var org struct {
+		Data struct {
+			Id int64 `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &org))
+	return token, org.Data.Id
+}
+
+// Review fix 1: Update must reject a rename that collides with another book
+// in the same org+scope (shared books have NULL owner, so the unique index
+// alone does not deduplicate them).
+func TestAddressBook_Update_DuplicateName(t *testing.T) {
+	h := newHarness(t)
+	token, orgID := seedOrgOwner(t, h, "dup6@example.com")
+
+	createBook(t, h, token, orgID, "shared-one", "shared")
+	second := createBook(t, h, token, orgID, "shared-two", "shared")
+
+	// Renaming shared-two to shared-one must conflict.
+	w := h.do(t, http.MethodPut, "/api/v1/orgs/"+itoa(orgID)+"/address-books/"+itoa(second.Data.Id),
+		map[string]string{"name": "shared-one"}, token)
+	require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
+}
+
+// Review fix 3: invalid replace payloads must be 400, not a 500 from a
+// violated unique index.
+func TestAddressBook_ReplacePeers_InvalidInput(t *testing.T) {
+	h := newHarness(t)
+	token, orgID := seedOrgOwner(t, h, "dup7@example.com")
+	book := createBook(t, h, token, orgID, "peers-validate", "personal")
+	path := "/api/v1/orgs/" + itoa(orgID) + "/address-books/" + itoa(book.Data.Id) + "/peers"
+
+	cases := []struct {
+		name string
+		body map[string]any
+	}{
+		{
+			name: "duplicate peer ids",
+			body: map[string]any{"peers": []map[string]any{
+				{"peer_id": "111111"}, {"peer_id": "111111"},
+			}},
+		},
+		{
+			name: "empty peer id",
+			body: map[string]any{"peers": []map[string]any{{"peer_id": ""}}},
+		},
+		{
+			name: "overlong peer id",
+			body: map[string]any{"peers": []map[string]any{{"peer_id": strings.Repeat("x", 65)}}},
+		},
+	}
+	for _, tc := range cases {
+		w := h.do(t, http.MethodPut, path, tc.body, token)
+		require.Equal(t, http.StatusBadRequest, w.Code, tc.name+": "+w.Body.String())
+	}
+}
+
+func TestAddressBook_ReplaceTags_InvalidInput(t *testing.T) {
+	h := newHarness(t)
+	token, orgID := seedOrgOwner(t, h, "dup8@example.com")
+	book := createBook(t, h, token, orgID, "tags-validate", "personal")
+	path := "/api/v1/orgs/" + itoa(orgID) + "/address-books/" + itoa(book.Data.Id) + "/tags"
+
+	cases := []struct {
+		name string
+		body map[string]any
+	}{
+		{
+			name: "duplicate tag names",
+			body: map[string]any{"tags": []map[string]any{
+				{"name": "dup", "color": 1}, {"name": "dup", "color": 2},
+			}},
+		},
+		{
+			name: "empty tag name",
+			body: map[string]any{"tags": []map[string]any{{"name": "", "color": 1}}},
+		},
+	}
+	for _, tc := range cases {
+		w := h.do(t, http.MethodPut, path, tc.body, token)
+		require.Equal(t, http.StatusBadRequest, w.Code, tc.name+": "+w.Body.String())
+	}
+}
+
+// Review fix 2: concurrent full-replaces must serialise on the book row —
+// every response is a complete list (never a merged one).
+func TestAddressBook_ReplacePeers_ConcurrentSerialised(t *testing.T) {
+	h := newHarness(t)
+	token, orgID := seedOrgOwner(t, h, "dup9@example.com")
+	book := createBook(t, h, token, orgID, "concurrent", "personal")
+	path := "/api/v1/orgs/" + itoa(orgID) + "/address-books/" + itoa(book.Data.Id) + "/peers"
+
+	var wg sync.WaitGroup
+	errCh := make(chan int, 20)
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			w := h.do(t, http.MethodPut, path, map[string]any{
+				"peers": []map[string]any{{"peer_id": itoa(int64(n))}},
+			}, token)
+			if w.Code != http.StatusOK {
+				errCh <- w.Code
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for code := range errCh {
+		t.Fatalf("concurrent replace returned %d", code)
+	}
+
+	w := h.do(t, http.MethodGet, "/api/v1/orgs/"+itoa(orgID)+"/address-books/"+itoa(book.Data.Id), nil, token)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var got abResp
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	require.NotNil(t, got.Data.Peers)
+	require.Len(t, *got.Data.Peers, 1, "final peer list must be one complete replace, not a merge")
 }
