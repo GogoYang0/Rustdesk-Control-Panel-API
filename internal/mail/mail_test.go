@@ -212,12 +212,15 @@ type fakeSMTP struct {
 	// dropFinalReply simulates a connection loss right after the body was
 	// handed over: the client can never confirm the final DATA reply.
 	dropFinalReply bool
-	certs          []tls.Certificate
-	roots          *x509.CertPool
-	mu             sync.Mutex
-	gotAuth        bool
-	gotMail        string
-	gotBody        string
+	// rejectFinalReply simulates an explicit 5xx rejection as the final
+	// DATA reply: the message was definitively not accepted.
+	rejectFinalReply bool
+	certs            []tls.Certificate
+	roots            *x509.CertPool
+	mu               sync.Mutex
+	gotAuth          bool
+	gotMail          string
+	gotBody          string
 }
 
 func newFakeSMTP(t *testing.T, offerTLS bool) (*fakeSMTP, *x509.CertPool) {
@@ -302,6 +305,10 @@ func (f *fakeSMTP) handle(c net.Conn) {
 			if f.dropFinalReply {
 				// The body arrived, but the final reply is never sent: from
 				// the client's perspective the delivery outcome is unknown.
+				return
+			}
+			if f.rejectFinalReply {
+				f.w(c, "550 mailbox unavailable")
 				return
 			}
 			f.w(c, "250 queued")
@@ -471,4 +478,30 @@ func TestSMTP_Send_UnconfirmedDelivery_WrapsSentinel(t *testing.T) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	require.NotEmpty(t, f.gotBody, "the body did reach the server")
+}
+
+// An explicit 5xx as the final DATA reply is a definite rejection, not an
+// unknown outcome: the error must stay a textproto error and must NOT wrap
+// ErrDeliveryAccepted, so callers can safely treat the message as lost.
+func TestSMTP_Send_ExplicitRejectionAfterBody_NotAcceptedSentinel(t *testing.T) {
+	f, roots := newFakeSMTP(t, true)
+	f.rejectFinalReply = true
+	s := NewSMTP(SMTPConfig{
+		Host: "127.0.0.1", Port: portOf(f.addr()),
+		Username: "user", Password: "pass", From: "f@example.com",
+		tlsRoots: roots,
+	})
+	s.retryBase = time.Millisecond
+
+	err := s.Send(context.Background(), Message{
+		To: []string{"to@example.com"}, Subject: "s", TextBody: "b",
+	})
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrDeliveryAccepted, "an explicit rejection is not an unknown outcome")
+	var tpErr *textproto.Error
+	require.ErrorAs(t, err, &tpErr)
+	require.Equal(t, 550, tpErr.Code, "the 5xx rejection must stay a permanent failure")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	require.NotEmpty(t, f.gotBody, "the body did reach the server before the rejection")
 }

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"regexp"
 	"strings"
 	"sync"
@@ -37,6 +38,14 @@ type ambiguousMailer struct{}
 
 func (ambiguousMailer) Send(context.Context, mail.Message) error {
 	return fmt.Errorf("data close: %w", mail.ErrDeliveryAccepted)
+}
+
+// rejectingMailer simulates an explicit SMTP rejection of the message: the
+// mail was definitively not delivered.
+type rejectingMailer struct{}
+
+func (rejectingMailer) Send(context.Context, mail.Message) error {
+	return &textproto.Error{Code: 550, Msg: "mailbox unavailable"}
 }
 
 // newMailHarness is a harness whose mailer renders every message into a
@@ -235,6 +244,29 @@ func TestSendVerificationMail_AmbiguousOutcome_KeepsToken(t *testing.T) {
 
 	require.NoError(t, h.db.DB.Model(&model.VerificationToken{}).Count(&tokens).Error)
 	require.EqualValues(t, 1, tokens, "cooldown prevents a second token while the mail may be out")
+}
+
+// An explicit SMTP rejection is a definite non-delivery: the token must be
+// deleted so the user's immediate resend is not blocked by the cooldown.
+func TestSendVerificationMail_ExplicitRejection_DeletesToken(t *testing.T) {
+	h := newHarnessWith(t, func(d *api.Deps) {
+		d.Mailer = rejectingMailer{}
+		d.WebBaseURL = "https://panel.example.com"
+	})
+	h.seedUnverifiedUser(t, "rejected@example.com", "password123")
+
+	w := h.do(t, http.MethodPost, "/api/v1/auth/resend-verification",
+		map[string]string{"email": "rejected@example.com"}, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	var tokens int64
+	require.NoError(t, h.db.DB.Model(&model.VerificationToken{}).Count(&tokens).Error)
+	require.Zero(t, tokens, "an explicit rejection must not leave a token behind")
+
+	// The cooldown cannot block the immediate retry: the failed token is gone.
+	w = h.do(t, http.MethodPost, "/api/v1/auth/resend-verification",
+		map[string]string{"email": "rejected@example.com"}, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 }
 
 // Two concurrent redeems of the same token must yield exactly one success:
