@@ -1,12 +1,15 @@
 package compatapi
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
@@ -121,6 +124,21 @@ func (s *Server) login(c *gin.Context) {
 		return
 	}
 
+	// Claim the device before issuing a session: a login presenting a
+	// rustdesk id already claimed by another client instance is refused
+	// here, so it can never drive that device's heartbeat (CWE-863).
+	if req.ID != "" {
+		if err := s.claimDevice(c.Request.Context(), orgID, req.ID, req.UUID); err != nil {
+			if errors.Is(err, errDeviceBound) {
+				compatError(c, http.StatusForbidden,
+					"device is already bound to another client; ask your administrator to reset it")
+				return
+			}
+			compatError(c, http.StatusInternalServerError, "login failed")
+			return
+		}
+	}
+
 	s.deps.Guard.Reset(lockKey, ip)
 
 	token, jti, err := s.deps.Issuer.IssueCompat(user.ID, orgID, s.deps.AccessTTL)
@@ -141,22 +159,54 @@ func (s *Server) login(c *gin.Context) {
 		return
 	}
 
-	// Bind the device to the organization so heartbeats/sysinfo from this
-	// client land on a device row even before the admin registers one. A
-	// failed binding keeps the session valid; heartbeats then simply cannot
-	// resolve a device row yet.
-	if req.ID != "" {
-		_, _ = s.deps.Devices.Register(c.Request.Context(), orgID, device.RegisterInput{
-			Name:       req.ID,
-			RustdeskID: req.ID,
-		})
-	}
+	// The device binding happened in claimDevice before the session was
+	// issued; heartbeats and sysinfo then resolve devices only through the
+	// session-bound id (see device_handler.go).
 
 	c.JSON(http.StatusOK, authBody{
 		AccessToken: token,
 		Type:        "access_token",
 		User:        userPayloadOf(user),
 	})
+}
+
+// errDeviceBound reports a login that tried to bind a rustdesk id already
+// claimed by another client instance.
+var errDeviceBound = errors.New("device already bound")
+
+// claimDevice binds the logging-in device to the organization. The client
+// protocol carries no ownership secret (heartbeat/sysinfo travel without
+// credentials), so the device uuid — a stable hardware identifier — is the
+// strongest ownership signal available: the first client presenting a
+// rustdesk id claims it, an unbound row is claimed on arrival, and a login
+// presenting a different uuid is rejected instead of taking the binding
+// over (CWE-863). Admins recover a lost binding by deleting the device row.
+func (s *Server) claimDevice(ctx context.Context, orgID uint, rustdeskID, uuid string) error {
+	var dev model.Device
+	err := store.ScopedByOrg(s.deps.DB, orgID).
+		Where("rustdesk_id = ?", rustdeskID).First(&dev).Error
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		_, rerr := s.deps.Devices.Register(ctx, orgID, device.RegisterInput{
+			Name:       rustdeskID,
+			RustdeskID: rustdeskID,
+			BoundUUID:  uuid,
+		})
+		return rerr
+	case err != nil:
+		return err
+	}
+	if dev.BoundUUID != "" && uuid != "" && dev.BoundUUID != uuid {
+		return errDeviceBound
+	}
+	if dev.BoundUUID == "" && uuid != "" {
+		// The WHERE guard keeps a concurrent first claim from being
+		// overwritten by a slower request.
+		return store.ScopedByOrg(s.deps.DB, orgID).Model(&model.Device{}).
+			Where("id = ? AND bound_uuid = ''", dev.ID).
+			Update("bound_uuid", uuid).Error
+	}
+	return nil
 }
 
 // resolveOrg applies the C16 disambiguation: no selector requires exactly

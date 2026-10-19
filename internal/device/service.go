@@ -24,12 +24,17 @@ var ErrInvalidInput = errors.New("invalid device input")
 const (
 	maxNameLen       = 128
 	maxRustdeskIDLen = 64
+	maxBoundUUIDLen  = 255
 )
 
 // RegisterInput carries the fields accepted by the contract.
 type RegisterInput struct {
 	Name       string
 	RustdeskID string
+	// BoundUUID records the client instance claiming the device; it is
+	// only written on first registration — the upsert never overwrites an
+	// existing binding (compat layer ownership anchor, CWE-863).
+	BoundUUID string
 }
 
 // Service owns device persistence.
@@ -60,11 +65,15 @@ func (s *Service) Register(ctx context.Context, orgID uint, in RegisterInput) (*
 	if len(in.RustdeskID) > maxRustdeskIDLen {
 		return nil, fmt.Errorf("%w: rustdesk_id exceeds %d characters", ErrInvalidInput, maxRustdeskIDLen)
 	}
+	if len(in.BoundUUID) > maxBoundUUIDLen {
+		return nil, fmt.Errorf("%w: bound uuid exceeds %d characters", ErrInvalidInput, maxBoundUUIDLen)
+	}
 
 	row := model.Device{
 		OrganizationID: orgID,
 		RustdeskID:     in.RustdeskID,
 		Name:           in.Name,
+		BoundUUID:      in.BoundUUID,
 	}
 	err := store.ScopedByOrg(s.db.WithContext(ctx), orgID).
 		Clauses(clause.OnConflict{

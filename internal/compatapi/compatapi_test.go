@@ -433,3 +433,79 @@ func sanitize(name string) string {
 	}
 	return string(out)
 }
+
+// A member must not take over a device binding another client instance
+// already claimed: the first uuid to present a rustdesk id owns it, and a
+// foreign-uuid login is refused before any session is issued (CWE-863).
+func TestLogin_RejectsForeignDeviceBinding(t *testing.T) {
+	h := newHarness(t)
+	org := h.seedOrg(t, "acme")
+	// The victim device: registered (e.g. by its real client or the admin)
+	// and bound to a client instance uuid.
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).Create(&model.Device{
+		OrganizationID: org.ID,
+		RustdeskID:     "111111111",
+		Name:           "office-pc",
+		BoundUUID:      "victim-device-uuid",
+	}).Error)
+
+	u := h.seedUser(t, "member@example.com", "password123", true)
+	h.seedMembership(t, u.ID, org.ID)
+
+	w := h.do(t, http.MethodPost, "/api/login", map[string]string{
+		"username": "member@example.com", "password": "password123",
+		"id": "111111111", "uuid": "attacker-uuid",
+	}, "")
+	require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+	require.Contains(t, w.Body.String(), "already bound")
+
+	// The binding is untouched and no session exists for the attacker.
+	var dev model.Device
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).
+		Where("rustdesk_id = ?", "111111111").First(&dev).Error)
+	require.Equal(t, "victim-device-uuid", dev.BoundUUID)
+
+	var sessions int64
+	require.NoError(t, store.WithoutTenantScope(h.db.DB).
+		Model(&model.CompatSession{}).Count(&sessions).Error)
+	require.Zero(t, sessions, "a refused login must not leave a session")
+}
+
+// A device row that exists without a bound uuid (admin-registered or legacy)
+// is claimed by the first client login that presents it.
+func TestLogin_ClaimsUnboundDevice(t *testing.T) {
+	h := newHarness(t)
+	org := h.seedOrg(t, "acme")
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).Create(&model.Device{
+		OrganizationID: org.ID,
+		RustdeskID:     "222222222",
+		Name:           "unclaimed",
+	}).Error)
+
+	u := h.seedUser(t, "claim@example.com", "password123", true)
+	h.seedMembership(t, u.ID, org.ID)
+
+	_, _ = h.login(t, "claim@example.com", "password123", "222222222", "real-uuid")
+
+	var dev model.Device
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).
+		Where("rustdesk_id = ?", "222222222").First(&dev).Error)
+	require.Equal(t, "real-uuid", dev.BoundUUID, "the first login claims the device")
+}
+
+// The legitimate client can re-login with the same uuid: the binding is
+// idempotent for the owning instance.
+func TestLogin_AllowsSameUUIDRelogin(t *testing.T) {
+	h := newHarness(t)
+	u := h.seedUser(t, "owner@example.com", "password123", true)
+	org := h.seedOrg(t, "acme")
+	h.seedMembership(t, u.ID, org.ID)
+
+	h.login(t, "owner@example.com", "password123", "333333333", "same-uuid")
+	h.login(t, "owner@example.com", "password123", "333333333", "same-uuid")
+
+	var dev model.Device
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).
+		Where("rustdesk_id = ?", "333333333").First(&dev).Error)
+	require.Equal(t, "same-uuid", dev.BoundUUID)
+}

@@ -8,13 +8,19 @@ import "time"
 // key per organization: re-registering the same id updates the existing row
 // instead of creating a duplicate.
 type Device struct {
-	ID             uint       `gorm:"primaryKey" json:"id"`
-	OrganizationID uint       `gorm:"uniqueIndex:idx_device_org_rustdesk;not null" json:"organization_id"`
-	RustdeskID     string     `gorm:"uniqueIndex:idx_device_org_rustdesk;size:64;not null" json:"rustdesk_id"`
-	Name           string     `gorm:"size:128;not null" json:"name"`
-	LastSeenAt     *time.Time `json:"last_seen_at"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	ID             uint   `gorm:"primaryKey" json:"id"`
+	OrganizationID uint   `gorm:"uniqueIndex:idx_device_org_rustdesk;not null" json:"organization_id"`
+	RustdeskID     string `gorm:"uniqueIndex:idx_device_org_rustdesk;size:64;not null" json:"rustdesk_id"`
+	Name           string `gorm:"size:128;not null" json:"name"`
+	// BoundUUID records the client instance uuid that first presented this
+	// rustdesk id (empty until a compat login claims it). The client
+	// protocol carries no ownership secret, so this hardware-stable uuid is
+	// the ownership anchor: a login presenting a different uuid is refused
+	// instead of taking the binding over (CWE-863).
+	BoundUUID  string     `gorm:"size:255" json:"-"`
+	LastSeenAt *time.Time `json:"last_seen_at"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
 // OnlineWindow is how fresh a heartbeat must be for the device to count as

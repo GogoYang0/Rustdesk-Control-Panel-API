@@ -81,9 +81,11 @@ func (s *Server) touchDevice(c *gin.Context, session *model.CompatSession, rustd
 	if err != nil {
 		// The binding at login creates it; a missing row means the admin
 		// deleted it meanwhile — recreate so the heartbeat is not lost.
+		// The recreated row is claimed by this session's client instance.
 		created, rerr := s.deps.Devices.Register(c.Request.Context(), orgID, device.RegisterInput{
 			Name:       rustdeskID,
 			RustdeskID: rustdeskID,
+			BoundUUID:  session.UUID,
 		})
 		if rerr != nil {
 			return rerr
