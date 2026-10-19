@@ -167,12 +167,19 @@ func (s *Service) Update(userID uint, role string, orgID, bookID uint, name stri
 	if !canWrite(book, userID, role) {
 		return nil, ErrForbidden
 	}
-	if book.Name == name {
-		return book, nil
-	}
 	err = s.db.Transaction(func(tx *gorm.DB) error {
 		if err := lockOrgRow(tx, orgID); err != nil {
 			return err
+		}
+		// Re-read under the book row lock: a concurrent Delete may have
+		// removed the book between the pre-transaction read and here.
+		current, err := lockBook(tx, orgID, book.ID)
+		if err != nil {
+			return err
+		}
+		book = current
+		if book.Name == name {
+			return nil
 		}
 		var count int64
 		q := store.ScopedByOrg(tx, orgID).Model(&model.AddressBook{}).
@@ -186,13 +193,18 @@ func (s *Service) Update(userID uint, role string, orgID, bookID uint, name stri
 		if count > 0 {
 			return ErrDuplicateName
 		}
-		if err := store.ScopedByOrg(tx, orgID).Model(book).
-			Update("name", name).Error; err != nil {
-			if errors.Is(err, gorm.ErrDuplicatedKey) {
+		res := store.ScopedByOrg(tx, orgID).Model(book).
+			Update("name", name)
+		if res.Error != nil {
+			if errors.Is(res.Error, gorm.ErrDuplicatedKey) {
 				return ErrDuplicateName
 			}
-			return err
+			return res.Error
 		}
+		if res.RowsAffected == 0 {
+			return ErrBookNotFound
+		}
+		book.Name = name
 		return nil
 	})
 	if err != nil {

@@ -653,7 +653,7 @@ func TestAddressBook_Update_Create_ConcurrentNoDuplicates(t *testing.T) {
 	}
 	wg.Wait()
 	require.LessOrEqual(t, created, 1, "duplicate shared name must not be created twice")
-	_ = updated // renames may all report 200 as idempotent no-ops
+	require.Greater(t, created+updated, 0, "at least one concurrent write must succeed")
 
 	// Final state: no two same-named shared books.
 	w := h.do(t, http.MethodGet, "/api/v1/orgs/"+itoa(orgID)+"/address-books", nil, token)
@@ -668,5 +668,42 @@ func TestAddressBook_Update_Create_ConcurrentNoDuplicates(t *testing.T) {
 	}
 	for name, n := range names {
 		require.LessOrEqual(t, n, 1, "duplicate shared book name after race: "+name)
+	}
+}
+
+// Review round 4: a rename racing a delete must never report success for a
+// deleted book — the rename re-reads the row under the book lock inside the
+// transaction and maps a vanished row to 404.
+func TestAddressBook_Update_Delete_Race(t *testing.T) {
+	h := newHarness(t)
+	token, orgID := seedOrgOwner(t, h, "uni6@example.com")
+	book := createBook(t, h, token, orgID, "race-del", "shared")
+	path := "/api/v1/orgs/" + itoa(orgID) + "/address-books/" + itoa(book.Data.Id)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w := h.do(t, http.MethodPut, path, map[string]string{"name": "race-del-renamed"}, token)
+			mu := w.Code
+			if mu != http.StatusOK && mu != http.StatusNotFound && mu != http.StatusConflict {
+				t.Errorf("rename returned %d: %s", w.Code, w.Body.String())
+			}
+		}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			h.do(t, http.MethodDelete, path, nil, token)
+		}()
+	}
+	wg.Wait()
+
+	w := h.do(t, http.MethodGet, path, nil, token)
+	if w.Code == http.StatusOK {
+		var got abResp
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+		require.Equal(t, "race-del-renamed", got.Data.Name,
+			"a surviving book must carry the renamed value exactly once")
 	}
 }
