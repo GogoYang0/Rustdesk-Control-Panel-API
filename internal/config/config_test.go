@@ -37,6 +37,11 @@ auth: {secret: "", accessTTL: 15m, refreshTTL: 168h}
 }
 
 func TestLoad_RejectsWeakAuthSecret(t *testing.T) {
+	// Neutralize an inherited PANEL_AUTH_SECRET (e.g. exported per the README
+	// on a dev machine): viper prefers the environment over the file, and an
+	// empty value is treated as unset, so the file's weak key is what gets
+	// validated.
+	t.Setenv("PANEL_AUTH_SECRET", "")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(`
@@ -50,6 +55,8 @@ auth: {secret: "short", accessTTL: 15m, refreshTTL: 168h}
 }
 
 func TestLoad_RejectsPlaceholderSecret(t *testing.T) {
+	// Same env isolation as the weak-secret test above.
+	t.Setenv("PANEL_AUTH_SECRET", "")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(`
