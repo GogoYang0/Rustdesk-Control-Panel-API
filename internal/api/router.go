@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/gen"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
@@ -24,13 +25,18 @@ func NewRouter(d Deps) *gin.Engine {
 	if d.Auditor == nil {
 		d.Auditor = audit.Nop{}
 	}
+	// Normalize the logger before the middleware chain is built so audit
+	// failures are always observable (NewAdminAPI normalizes it again later).
+	if d.Logger == nil {
+		d.Logger = zap.NewNop()
+	}
 
 	r := gin.New()
 	// No reverse proxy is assumed; trusting all proxies would let clients spoof
 	// X-Forwarded-For and dodge the per-IP login limits.
 	_ = r.SetTrustedProxies(nil)
 	r.Use(gin.Recovery())
-	r.Use(newAuditMiddleware(d.Auditor))
+	r.Use(newAuditMiddleware(d.Auditor, d.Logger))
 	r.Use(requireJWTUnlessPublic(d.Issuer))
 
 	gen.RegisterHandlers(r, NewAdminAPI(d))

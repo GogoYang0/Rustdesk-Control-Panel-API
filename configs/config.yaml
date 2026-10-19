@@ -2,7 +2,9 @@ server:
   addr: ":8080"
 
 auth:
-  secret: "local-development-secret-override-me-32"
+  # Injected from PANEL_AUTH_SECRET. Never commit a real signing key: this file
+  # is published, so anyone could forge access tokens with it.
+  secret: ""
   accessTTL: 15m
   refreshTTL: 168h
 
