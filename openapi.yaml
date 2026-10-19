@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Rustdesk-Control-Panel API
-  version: 0.2.0
+  version: 0.3.0
   contact:
     name: Rustdesk-Control-Panel
     url: https://github.com/GogoYang0/Rustdesk-Control-Panel-API
@@ -9,7 +9,9 @@ info:
     Rustdesk-Control-Panel 控制平面 API。
 
     本文件是系列唯一契约事实源：WEB 与 APP 的客户端类型由此生成。
-    破坏性变更需升主版本（见设计文档 C10）。
+    破坏性变更需升主版本（见设计文档 C10）；0.x 阶段破坏性变更以 minor 承载。
+    0.3.0 破坏性变更：Invitation.token 不再随响应返回（邀请令牌仅通过邮件投递，
+    修复 #17 邮箱所有权缺口）。
 
     统一响应包：所有业务响应为 `{code, message, data}`。
     `code` 为机器可读错误码（见 ErrorCode），成功时为 `ok`。
@@ -25,6 +27,10 @@ tags:
     description: 组织与成员
   - name: devices
     description: 设备与心跳
+  - name: addressbooks
+    description: 地址簿（个人/共享）
+  - name: logs
+    description: 采集日志查询
 paths:
   /healthz:
     get:
@@ -282,6 +288,391 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/address-books:
+    get:
+      operationId: listAddressBooks
+      summary: 列出地址簿
+      description: |
+        返回调用者可见的地址簿：个人地址簿（owner 为调用者）与共享地址簿。
+        需要 addressbook 权限。
+      tags:
+        - addressbooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 地址簿列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddressBookListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      operationId: createAddressBook
+      summary: 创建地址簿
+      description: |
+        创建地址簿。personal 由调用者拥有；shared 需要组织管理权限。
+        同名同 scope 重复创建返回 409。
+      tags:
+        - addressbooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddressBookCreateRequest"
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddressBookResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/address-books/{bookId}:
+    get:
+      operationId: getAddressBook
+      summary: 地址簿详情（含 peers 与 tags）
+      description: 返回单个地址簿及其 peers 与 tags；无权访问或不存在返回 404。
+      tags:
+        - addressbooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: bookId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 地址簿详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddressBookResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      operationId: updateAddressBook
+      summary: 更新地址簿名称与共享范围
+      description: personal 仅 owner 可改；shared 需要组织管理权限。
+      tags:
+        - addressbooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: bookId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddressBookUpdateRequest"
+      responses:
+        "200":
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddressBookResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      operationId: deleteAddressBook
+      summary: 删除地址簿（级联删除 peers 与 tags）
+      description: 删除地址簿及其全部 peers 与 tags；不可恢复。
+      tags:
+        - addressbooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: bookId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddressBookResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/address-books/{bookId}/peers:
+    put:
+      operationId: replaceAddressBookPeers
+      summary: 全量替换地址簿 peers
+      description: |
+        以请求体完整替换该地址簿的 peers 列表，revision 递增。
+        并发更新以 revision 兜底（乐观锁语义，供客户端同步对比）。
+      tags:
+        - addressbooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: bookId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddressBookPeersReplaceRequest"
+      responses:
+        "200":
+          description: 已替换
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddressBookResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/address-books/{bookId}/tags:
+    put:
+      operationId: replaceAddressBookTags
+      summary: 全量替换地址簿标签
+      description: 以请求体完整替换该地址簿的标签列表，revision 递增。
+      tags:
+        - addressbooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: bookId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddressBookTagsReplaceRequest"
+      responses:
+        "200":
+          description: 已替换
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddressBookResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/log-events:
+    get:
+      operationId: listLogEvents
+      summary: 查询采集日志事件
+      description: 返回本组织采集的 hbbs/hbbr 日志事件，按发生时间倒序，limit 上限 200。
+      tags:
+        - logs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: deviceId
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: level
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - info
+              - warn
+              - error
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: 日志事件列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogEventListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/auth/verify-email:
+    post:
+      operationId: verifyEmail
+      summary: 邮箱验证
+      description: 使用邮件中的验证令牌完成邮箱验证；令牌过期或已使用返回 409。
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailVerificationRequest"
+      responses:
+        "200":
+          description: 验证成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/auth/resend-verification:
+    post:
+      operationId: resendVerification
+      summary: 重发验证邮件
+      description: |
+        无论邮箱是否存在均返回 200（防枚举）；存在未验证账号时才真正发送。
+        受限流保护。
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResendVerificationRequest"
+      responses:
+        "200":
+          description: 请求已受理
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
 
   /api/v1/orgs/{orgId}/devices/{deviceId}/heartbeat:
     post:
@@ -609,9 +1000,6 @@ components:
         expires_at:
           type: string
           format: date-time
-        token:
-          type: string
-          description: 邀请令牌明文，仅在创建响应中返回一次，服务端只存哈希。
 
     InvitationResponse:
       type: object
@@ -698,3 +1086,261 @@ components:
           type: string
         data:
           $ref: "#/components/schemas/Device"
+
+    OkResponse:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+
+    EmailVerificationRequest:
+      type: object
+      required:
+        - token
+      properties:
+        token:
+          type: string
+          minLength: 16
+
+    ResendVerificationRequest:
+      type: object
+      required:
+        - email
+      properties:
+        email:
+          type: string
+          format: email
+
+    AddressBookCreateRequest:
+      type: object
+      required:
+        - name
+        - scope
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        scope:
+          type: string
+          enum:
+            - personal
+            - shared
+
+    AddressBookUpdateRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+
+    AddressBookPeer:
+      type: object
+      required:
+        - peer_id
+      properties:
+        peer_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: RustDesk 设备 ID
+        alias:
+          type: string
+          maxLength: 128
+        username:
+          type: string
+          maxLength: 128
+        hostname:
+          type: string
+          maxLength: 128
+        platform:
+          type: string
+          maxLength: 64
+        tags:
+          type: array
+          maxItems: 64
+          items:
+            type: string
+            maxLength: 64
+
+    AddressBookTag:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        color:
+          type: integer
+          minimum: 0
+          maximum: 4294967295
+          description: RGB 颜色值（同 RustDesk 客户端 tag_colors 语义）
+
+    AddressBook:
+      type: object
+      required:
+        - id
+        - name
+        - scope
+        - revision
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          maxLength: 128
+        scope:
+          type: string
+          enum:
+            - personal
+            - shared
+        owner_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: personal 时为所有者用户 id；shared 时为 null
+        revision:
+          type: integer
+          format: int64
+          description: 内容修订号，每次 peers/tags 全量替换递增
+        peers:
+          type: array
+          items:
+            $ref: "#/components/schemas/AddressBookPeer"
+        tags:
+          type: array
+          items:
+            $ref: "#/components/schemas/AddressBookTag"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    AddressBookPeersReplaceRequest:
+      type: object
+      required:
+        - peers
+      properties:
+        peers:
+          type: array
+          maxItems: 2000
+          items:
+            $ref: "#/components/schemas/AddressBookPeer"
+
+    AddressBookTagsReplaceRequest:
+      type: object
+      required:
+        - tags
+      properties:
+        tags:
+          type: array
+          maxItems: 256
+          items:
+            $ref: "#/components/schemas/AddressBookTag"
+
+    AddressBookResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/AddressBook"
+
+    AddressBookListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AddressBook"
+
+    LogEvent:
+      type: object
+      required:
+        - id
+        - source
+        - level
+        - kind
+        - occurred_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        device_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: 关联设备；无法解析时为 null
+        source:
+          type: string
+          enum:
+            - hbbs
+            - hbbr
+        level:
+          type: string
+          enum:
+            - info
+            - warn
+            - error
+        kind:
+          type: string
+          enum:
+            - conn
+            - file
+            - error
+            - other
+        detail:
+          type:
+            - object
+            - "null"
+          additionalProperties: true
+        occurred_at:
+          type: string
+          format: date-time
+
+    LogEventListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/LogEvent"
