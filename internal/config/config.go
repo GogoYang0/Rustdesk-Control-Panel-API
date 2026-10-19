@@ -15,6 +15,23 @@ type Config struct {
 	Database  DatabaseConfig  `mapstructure:"database"`
 	Auth      AuthConfig      `mapstructure:"auth"`
 	Provision ProvisionConfig `mapstructure:"provision"`
+	Mail      MailConfig      `mapstructure:"mail"`
+}
+
+// MailConfig selects the delivery backend. In devMode messages are written
+// to stdout instead of being sent; otherwise SMTP settings apply and the
+// password must come from PANEL_SMTP_PASSWORD (never from the tracked file).
+type MailConfig struct {
+	DevMode bool       `mapstructure:"devMode"`
+	SMTP    SMTPConfig `mapstructure:"smtp"`
+}
+
+// SMTPConfig carries the SMTP server settings.
+type SMTPConfig struct {
+	Host     string `mapstructure:"host"`
+	Port     int    `mapstructure:"port"`
+	Username string `mapstructure:"username"`
+	From     string `mapstructure:"from"`
 }
 
 // ServerConfig holds HTTP server settings.
@@ -76,6 +93,12 @@ func Load(path string) (*Config, error) {
 	if err := v.BindEnv("auth.secret", "PANEL_AUTH_SECRET"); err != nil {
 		return nil, fmt.Errorf("bind auth secret env: %w", err)
 	}
+	// Same policy for the SMTP password.
+	if err := v.BindEnv("mail.smtp.password", "PANEL_SMTP_PASSWORD"); err != nil {
+		return nil, fmt.Errorf("bind smtp password env: %w", err)
+	}
+	v.SetDefault("mail.devMode", true)
+	v.SetDefault("mail.smtp.port", 587)
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)

@@ -28,3 +28,15 @@ database:
 log:
   level: info
   format: json
+
+mail:
+  # devMode prints outgoing messages to stdout instead of delivering them;
+  # set false and fill the smtp section for real delivery.
+  devMode: true
+  smtp:
+    host: ""
+    port: 587
+    username: ""
+    # The SMTP password must NOT be stored here: it is injected via the
+    # PANEL_SMTP_PASSWORD environment variable (same policy as the JWT key).
+    from: ""

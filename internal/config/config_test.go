@@ -68,3 +68,15 @@ auth: {secret: "dev-only-change-me", accessTTL: 15m, refreshTTL: 168h}
 	_, err := config.Load(path)
 	require.Error(t, err)
 }
+
+// The SMTP password must come only from PANEL_SMTP_PASSWORD; the tracked
+// file cannot carry it (same policy as the JWT secret).
+func TestLoad_SMTPPasswordFromEnvOnly(t *testing.T) {
+	t.Setenv("PANEL_AUTH_SECRET", "")
+	t.Setenv("PANEL_SMTP_PASSWORD", "smtp-secret-123")
+
+	cfg, err := config.Load("../../configs/config.yaml")
+	require.NoError(t, err)
+	require.True(t, cfg.Mail.DevMode, "default config ships with mail.devMode")
+	require.Equal(t, 587, cfg.Mail.SMTP.Port)
+}

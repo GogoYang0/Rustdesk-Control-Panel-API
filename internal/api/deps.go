@@ -11,6 +11,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
 )
 
 // Deps carries everything the HTTP layer needs.
@@ -27,6 +28,9 @@ type Deps struct {
 	AccessTTL      time.Duration
 	RefreshTTL     time.Duration
 	InvitationTTL  time.Duration
+
+	// Mailer delivers transactional email; tests inject a fake.
+	Mailer mail.Mailer
 }
 
 // Provisioner schedules asynchronous server provisioning.
