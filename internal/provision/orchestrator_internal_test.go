@@ -34,7 +34,7 @@ func TestHBBSArgs_MapPortsAndRelay(t *testing.T) {
 		Name:      "panel-org-7",
 		OrgID:     7,
 		HbbsPort:  21116,
-		HbbrPort:  21118,
+		HbbrPort:  21119,
 		Image:     "img:tag",
 		RelayHost: "relay.example.com",
 		DataDir:   "/data/org-7",
@@ -44,7 +44,8 @@ func TestHBBSArgs_MapPortsAndRelay(t *testing.T) {
 	require.Contains(t, args, "-p 21116:21115")
 	require.Contains(t, args, "-p 21117:21116")
 	require.Contains(t, args, "-p 21117:21116/udp")
-	require.Contains(t, args, "img:tag hbbs -r relay.example.com:21118")
+	require.Contains(t, args, "-p 21118:21118", "21118 is the hbbs web client websocket")
+	require.Contains(t, args, "img:tag hbbs -r relay.example.com:21119")
 	require.Contains(t, args, "-v /data/org-7:/root")
 }
 
@@ -54,16 +55,16 @@ func TestHBBRArgs_MapRelayPorts(t *testing.T) {
 		Name:      "panel-org-7",
 		OrgID:     7,
 		HbbsPort:  21116,
-		HbbrPort:  21118,
+		HbbrPort:  21119,
 		Image:     "img:tag",
 		RelayHost: "relay.example.com",
 		DataDir:   "/data/org-7",
 	}
 
 	args := strings.Join(d.hbbrArgs(spec, "panel-org-7-hbbr"), " ")
-	require.Contains(t, args, "-p 21118:21117")
-	require.Contains(t, args, "-p 21119:21118")
-	require.Contains(t, args, "-p 21120:21119")
+	require.Contains(t, args, "-p 21119:21117")
+	require.Contains(t, args, "-p 21120:21119", "21119 is the hbbr web client relay websocket")
+	require.NotContains(t, args, "21118", "21118 belongs to hbbs")
 	require.Contains(t, args, "img:tag hbbr")
 }
 
@@ -71,11 +72,11 @@ func TestHBBRArgs_MapRelayPorts(t *testing.T) {
 func TestHBBSArgs_IPv6RelayHost(t *testing.T) {
 	d := &DockerOrchestrator{OrgLabel: "org", RoleLabel: "role"}
 	spec := InstanceSpec{
-		Name: "n", HbbsPort: 21116, HbbrPort: 21118,
+		Name: "n", HbbsPort: 21116, HbbrPort: 21119,
 		Image: "img:tag", RelayHost: "2001:db8::1", DataDir: "/d",
 	}
 	args := strings.Join(d.hbbsArgs(spec, "n-hbbs"), " ")
-	require.Contains(t, args, "[2001:db8::1]:21118")
+	require.Contains(t, args, "[2001:db8::1]:21119")
 }
 
 // A port pair that is not part of one contiguous block would bind a host port
@@ -109,7 +110,7 @@ func TestDeploy_RequiresConfiguration(t *testing.T) {
 func TestHostPorts_AreUniquePerProtocol(t *testing.T) {
 	d := &DockerOrchestrator{OrgLabel: "org", RoleLabel: "role"}
 	spec := InstanceSpec{
-		Name: "n", HbbsPort: 21116, HbbrPort: 21118,
+		Name: "n", HbbsPort: 21116, HbbrPort: 21119,
 		Image: "img:tag", RelayHost: "relay", DataDir: "/d",
 	}
 

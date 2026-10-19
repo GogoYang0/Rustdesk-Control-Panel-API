@@ -131,8 +131,9 @@ func (d *DockerOrchestrator) Deploy(ctx context.Context, spec InstanceSpec) erro
 	return nil
 }
 
-// hbbsArgs renders the hbbs container arguments. Ports 21115/21116 (tcp and udp)
-// belong to hbbs; the relay port belongs to hbbr.
+// hbbsArgs renders the hbbs container arguments. hbbs serves 21115 (NAT type
+// test), 21116 (tcp and udp, id registry) and 21118 (web client websocket). The
+// relay port belongs to hbbr.
 func (d *DockerOrchestrator) hbbsArgs(spec InstanceSpec, name string) []string {
 	relay := net.JoinHostPort(spec.RelayHost, strconv.Itoa(int(spec.HbbrPort)))
 	return []string{
@@ -143,12 +144,14 @@ func (d *DockerOrchestrator) hbbsArgs(spec InstanceSpec, name string) []string {
 		"-p", fmt.Sprintf("%d:21115", spec.HbbsPort),
 		"-p", fmt.Sprintf("%d:21116", spec.HbbsPort+1),
 		"-p", fmt.Sprintf("%d:21116/udp", spec.HbbsPort+1),
+		"-p", fmt.Sprintf("%d:21118", spec.HbbsPort+2),
 		spec.Image,
 		"hbbs", "-r", relay,
 	}
 }
 
-// hbbrArgs renders the hbbr container arguments.
+// hbbrArgs renders the hbbr container arguments. hbbr serves 21117 (relay) and
+// 21119 (web client relay websocket); 21118 belongs to hbbs.
 func (d *DockerOrchestrator) hbbrArgs(spec InstanceSpec, name string) []string {
 	return []string{
 		"run", "-d", "--name", name,
@@ -156,8 +159,7 @@ func (d *DockerOrchestrator) hbbrArgs(spec InstanceSpec, name string) []string {
 		"--label", fmt.Sprintf("%s=hbbr", d.RoleLabel),
 		"-v", spec.DataDir + ":/root",
 		"-p", fmt.Sprintf("%d:21117", spec.HbbrPort),
-		"-p", fmt.Sprintf("%d:21118", spec.HbbrPort+1),
-		"-p", fmt.Sprintf("%d:21119", spec.HbbrPort+2),
+		"-p", fmt.Sprintf("%d:21119", spec.HbbrPort+1),
 		spec.Image,
 		"hbbr",
 	}

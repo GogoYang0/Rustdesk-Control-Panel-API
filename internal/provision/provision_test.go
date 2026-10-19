@@ -101,7 +101,7 @@ func TestPortPool_ConcurrentAllocate_NoDup(t *testing.T) {
 		key := fmt.Sprintf("%d-%d", results[i].HbbsPort, results[i].HbbrPort)
 		require.False(t, seen[key], "duplicate port pair %s", key)
 		seen[key] = true
-		require.EqualValues(t, results[i].HbbsPort+2, results[i].HbbrPort, "hbbr starts two ports after hbbs")
+		require.EqualValues(t, results[i].HbbsPort+3, results[i].HbbrPort, "hbbs owns three host ports before hbbr starts")
 	}
 }
 
@@ -188,6 +188,10 @@ func TestProvision_SuccessStoresPublicKeyOnly(t *testing.T) {
 	require.NotEmpty(t, row.Fingerprint)
 	require.NotEmpty(t, row.ConfigSnapshot)
 	require.NotContains(t, row.ConfigSnapshot, "PRIVATE KEY")
+	// The snapshot records the whole block so clients can be pointed at it.
+	// 21118 is the hbbs websocket, 21119 the hbbr websocket.
+	require.Contains(t, row.ConfigSnapshot, fmt.Sprintf(`"hbbs_ws_port":%d`, row.HbbsPort+2))
+	require.Contains(t, row.ConfigSnapshot, fmt.Sprintf(`"hbbr_ws_port":%d`, row.HbbrPort+1))
 
 	require.Len(t, f.orch.Deployed, 1)
 	require.NotEmpty(t, f.orch.Deployed[0].PrivateKey, "the key pair must reach the orchestrator")

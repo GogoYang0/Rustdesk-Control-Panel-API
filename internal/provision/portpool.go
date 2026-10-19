@@ -36,8 +36,9 @@ type PortPool struct {
 const PortBlockSize = 5
 
 // hbbrPortOffset is where the hbbr sub-block starts inside the organization's
-// five-port block, so HbbrPort is always HbbsPort+hbbrPortOffset.
-const hbbrPortOffset = 2
+// five-port block, so HbbrPort is always HbbsPort+hbbrPortOffset. hbbs owns the
+// first three host ports (21115, 21116 tcp/udp, 21118 websocket).
+const hbbrPortOffset = 3
 
 // NewPortPool builds a pool covering [start, end] in blocks of PortBlockSize.
 func NewPortPool(db *gorm.DB, start, end uint16) *PortPool {

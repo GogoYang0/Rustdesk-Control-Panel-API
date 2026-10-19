@@ -46,11 +46,11 @@ func NewService(db *gorm.DB, pool *PortPool, orch Orchestrator, logger *zap.Logg
 // snapshot is the subset written to ServerGroup.ConfigSnapshot. It never
 // contains the private key.
 type snapshot struct {
-	HbbsPort    uint16 `json:"hbbs_port"`
-	HbbsMain    uint16 `json:"hbbs_main_port"`
-	HbbrPort    uint16 `json:"hbbr_port"`
-	HbbrWS1     uint16 `json:"hbbr_ws1_port"`
-	HbbrWS2     uint16 `json:"hbbr_ws2_port"`
+	HbbsPort    uint16 `json:"hbbs_port"`      // 21115, NAT type test
+	HbbsMain    uint16 `json:"hbbs_main_port"` // 21116, id registry (tcp and udp)
+	HbbsWS      uint16 `json:"hbbs_ws_port"`   // 21118, web client websocket
+	HbbrPort    uint16 `json:"hbbr_port"`      // 21117, relay
+	HbbrWS      uint16 `json:"hbbr_ws_port"`   // 21119, web client relay websocket
 	PublicKey   string `json:"public_key"`
 	Fingerprint string `json:"fingerprint"`
 }
@@ -93,9 +93,9 @@ func (s *Service) ProvisionForOrg(ctx context.Context, orgID uint) (*model.Serve
 	snap, err := json.Marshal(snapshot{
 		HbbsPort:    row.HbbsPort,
 		HbbsMain:    row.HbbsPort + 1,
+		HbbsWS:      row.HbbsPort + 2,
 		HbbrPort:    row.HbbrPort,
-		HbbrWS1:     row.HbbrPort + 1,
-		HbbrWS2:     row.HbbrPort + 2,
+		HbbrWS:      row.HbbrPort + 1,
 		PublicKey:   keys.PublicKey,
 		Fingerprint: keys.Fingerprint,
 	})
