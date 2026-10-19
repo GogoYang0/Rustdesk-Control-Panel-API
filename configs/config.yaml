@@ -6,6 +6,19 @@ auth:
   accessTTL: 15m
   refreshTTL: 168h
 
+provision:
+  portStart: 21116
+  portEnd: 22115
+  orgLabel: "com.rustdesk-panel.org"
+  roleLabel: "com.rustdesk-panel.role"
+  # Must be an address clients can reach; there is no loopback fallback.
+  relayHost: "panel.example.com"
+  # Pin the image tag so deployments are reproducible.
+  image: "rustdesk/rustdesk-server:1.1.11"
+  dataDir: "./data/servergroups"
+  maxOrgsPerUser: 5
+  workers: 2
+
 database:
   driver: sqlite
   dsn: "file:data/panel.db"

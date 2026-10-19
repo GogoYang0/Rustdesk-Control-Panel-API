@@ -14,16 +14,23 @@ import (
 
 // Deps carries everything the HTTP layer needs.
 type Deps struct {
-	DB            *gorm.DB
-	Auth          *auth.Service
-	Devices       *device.Service
-	Issuer        *auth.Issuer
-	Auditor       audit.Auditor
-	Logger        *zap.Logger
-	Now           func() time.Time
-	AccessTTL     time.Duration
-	RefreshTTL    time.Duration
-	InvitationTTL time.Duration
+	DB             *gorm.DB
+	Auth           *auth.Service
+	Devices        *device.Service
+	ProvisionQueue Provisioner
+	OrgsPerUser    int
+	Issuer         *auth.Issuer
+	Auditor        audit.Auditor
+	Logger         *zap.Logger
+	Now            func() time.Time
+	AccessTTL      time.Duration
+	RefreshTTL     time.Duration
+	InvitationTTL  time.Duration
+}
+
+// Provisioner schedules asynchronous server provisioning.
+type Provisioner interface {
+	Enqueue(orgID uint) error
 }
 
 // AdminAPI implements the generated gen.ServerInterface.

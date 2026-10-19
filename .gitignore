@@ -6,7 +6,8 @@
 *.dll
 *.so
 *.dylib
-server
+# built binary only; a bare "server" rule also ignores cmd/server/
+/server
 
 # test / coverage
 *.test

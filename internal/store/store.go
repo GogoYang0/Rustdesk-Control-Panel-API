@@ -44,7 +44,17 @@ func Open(cfg config.DatabaseConfig) (*Store, error) {
 				return nil, fmt.Errorf("prepare sqlite directory: %w", err)
 			}
 		}
-		dial = sqlite.Open(cfg.DSN)
+		// A busy timeout keeps concurrent writers from failing with SQLITE_BUSY
+		// on the development SQLite driver.
+		dsn := cfg.DSN
+		if !strings.Contains(dsn, "busy_timeout") {
+			sep := "?"
+			if strings.Contains(dsn, "?") {
+				sep = "&"
+			}
+			dsn += sep + "_pragma=busy_timeout(5000)"
+		}
+		dial = sqlite.Open(dsn)
 	case "postgres":
 		dial = postgres.Open(applyDialTimeouts(cfg.Driver, cfg.DSN))
 	case "mysql":
