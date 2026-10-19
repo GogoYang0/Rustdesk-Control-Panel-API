@@ -69,6 +69,7 @@ func (m *MockOrchestrator) Status(_ context.Context, name string) (InstanceState
 type DockerOrchestrator struct {
 	OrgLabel   string
 	RoleLabel  string
+	RelayHost  string
 	ComposeDir string
 }
 
@@ -85,7 +86,7 @@ func (d *DockerOrchestrator) Deploy(ctx context.Context, spec InstanceSpec) erro
 		"-p", fmt.Sprintf("%d:21118", spec.HbbrPort),
 		"-p", fmt.Sprintf("%d:21119", spec.HbbrPort),
 		"rustdesk/rustdesk-server:latest",
-		"hbbs", "-r", fmt.Sprintf("relay.example:21117"),
+		"hbbs", "-r", fmt.Sprintf("%s:%d", d.relayHost(), spec.HbbrPort),
 	}
 	return runDocker(ctx, args...)
 }
@@ -115,4 +116,12 @@ func runDocker(ctx context.Context, args ...string) error {
 		return fmt.Errorf("docker %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
+}
+
+// relayHost falls back to loopback when the deployment runs on one host.
+func (d *DockerOrchestrator) relayHost() string {
+	if d.RelayHost == "" {
+		return "127.0.0.1"
+	}
+	return d.RelayHost
 }

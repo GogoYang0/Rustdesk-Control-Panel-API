@@ -34,6 +34,7 @@ type ProvisionConfig struct {
 	PortEnd   uint16 `mapstructure:"portEnd"`
 	OrgLabel  string `mapstructure:"orgLabel"`
 	RoleLabel string `mapstructure:"roleLabel"`
+	RelayHost string `mapstructure:"relayHost"`
 }
 
 // AuthConfig holds JWT and token lifetime settings.
@@ -62,6 +63,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("provision.portEnd", 22115)
 	v.SetDefault("provision.orgLabel", "com.rustdesk-panel.org")
 	v.SetDefault("provision.roleLabel", "com.rustdesk-panel.role")
+	v.SetDefault("provision.relayHost", "127.0.0.1")
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
