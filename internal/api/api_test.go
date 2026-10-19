@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -468,4 +469,54 @@ func TestCreateOrg_QuotaEnforced(t *testing.T) {
 
 	w = h.do(t, http.MethodPost, "/api/v1/orgs", map[string]string{"name": "second"}, token)
 	require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
+}
+
+// Concurrent creations must not exceed the quota: the check runs inside the
+// creation transaction with the caller's user row locked.
+func TestCreateOrg_ConcurrentRequestsRespectQuota(t *testing.T) {
+	h := newHarness(t)
+	h.router = api.NewRouter(api.Deps{
+		DB:            h.db.DB,
+		Auth:          auth.NewService(h.db.DB, h.issuer, nil),
+		Issuer:        h.issuer,
+		Devices:       device.NewService(h.db.DB, nil),
+		AccessTTL:     time.Minute,
+		RefreshTTL:    time.Hour,
+		InvitationTTL: time.Hour,
+		OrgsPerUser:   1,
+	})
+
+	h.seedUser(t, "race@example.com", "password123")
+	token := h.login(t, "race@example.com", "password123")
+
+	const attempts = 4
+	results := make([]*httptest.ResponseRecorder, attempts)
+	var wg sync.WaitGroup
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i] = h.do(t, http.MethodPost, "/api/v1/orgs",
+				map[string]string{"name": "race-" + itoa(int64(i))}, token)
+		}(i)
+	}
+	wg.Wait()
+
+	created, conflict := 0, 0
+	for _, rec := range results {
+		switch rec.Code {
+		case http.StatusCreated:
+			created++
+		case http.StatusConflict:
+			conflict++
+		default:
+			require.Failf(t, "unexpected status", "got %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+	require.Equal(t, 1, created, "exactly one organization may be created")
+	require.Equal(t, attempts-1, conflict)
+
+	var orgs int64
+	require.NoError(t, h.db.DB.Model(&model.Organization{}).Count(&orgs).Error)
+	require.EqualValues(t, 1, orgs, "the quota must hold in the database, not just in the responses")
 }

@@ -12,6 +12,7 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/gen"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
@@ -19,6 +20,23 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
+
+// errOrgQuotaReached aborts the transaction that would exceed the per-user
+// organization quota.
+var errOrgQuotaReached = errors.New("organization quota reached")
+
+// lockUserRow takes a write lock on the caller's row so concurrent creations
+// serialise on the quota check instead of both reading the same count. SQLite
+// has no SELECT ... FOR UPDATE and serialises writers itself, so the clause is
+// skipped there.
+func (a *AdminAPI) lockUserRow(tx *gorm.DB, uid uint) error {
+	query := tx
+	if tx.Dialector.Name() != "sqlite" {
+		query = tx.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	var user model.User
+	return query.Select("id").First(&user, uid).Error
+}
 
 // CreateOrg creates an organization and makes the caller its owner.
 func (a *AdminAPI) CreateOrg(c *gin.Context) {
@@ -32,25 +50,26 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 		return
 	}
 
-	// Per-user organization quota: every creation reserves a port pair and a
-	// container pair, so it must be bounded (CWE-770).
-	if a.deps.OrgsPerUser > 0 {
-		var owned int64
-		if err := store.WithoutTenantScope(a.deps.DB).
-			Model(&model.Membership{}).
-			Where("user_id = ? AND role = ?", uid, model.RoleOwner).
-			Count(&owned).Error; err != nil {
-			abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not create organization")
-			return
-		}
-		if owned >= int64(a.deps.OrgsPerUser) {
-			abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "organization quota reached")
-			return
-		}
-	}
-
 	org := model.Organization{Name: req.Name}
+	// The quota is checked inside the transaction with the user row locked.
+	// Reading the count outside would let two concurrent requests both pass the
+	// check and create an organization each (CWE-770, TOCTOU).
 	err := a.deps.DB.Transaction(func(tx *gorm.DB) error {
+		if a.deps.OrgsPerUser > 0 {
+			if err := a.lockUserRow(tx, uid); err != nil {
+				return err
+			}
+			var owned int64
+			if err := store.WithoutTenantScope(tx).
+				Model(&model.Membership{}).
+				Where("user_id = ? AND role = ?", uid, model.RoleOwner).
+				Count(&owned).Error; err != nil {
+				return err
+			}
+			if owned >= int64(a.deps.OrgsPerUser) {
+				return errOrgQuotaReached
+			}
+		}
 		if err := tx.Create(&org).Error; err != nil {
 			return err
 		}
@@ -60,7 +79,11 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 			Role:           model.RoleOwner,
 		}).Error
 	})
-	if err != nil {
+	switch {
+	case errors.Is(err, errOrgQuotaReached):
+		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "organization quota reached")
+		return
+	case err != nil:
 		a.deps.Logger.Error("create org failed")
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not create organization")
 		return
