@@ -747,7 +747,7 @@ type ServerInterface interface {
 	// GetAddressBook 地址簿详情（含 peers 与 tags）
 	// (GET /api/v1/orgs/{orgId}/address-books/{bookId})
 	GetAddressBook(c *gin.Context, orgId int64, bookId int64)
-	// UpdateAddressBook 更新地址簿名称与共享范围
+	// UpdateAddressBook 更新地址簿名称
 	// (PUT /api/v1/orgs/{orgId}/address-books/{bookId})
 	UpdateAddressBook(c *gin.Context, orgId int64, bookId int64)
 	// ReplaceAddressBookPeers 全量替换地址簿 peers
