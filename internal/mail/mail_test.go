@@ -251,7 +251,7 @@ func (f *fakeSMTP) serve() {
 }
 
 func (f *fakeSMTP) handle(c net.Conn) {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	f.w(c, "220 fake ready")
 	for {
 		line, ok := f.r(c)

@@ -1,7 +1,6 @@
 package mail
 
 import (
-	"crypto/tls"
 	"io"
 	"net/smtp"
 )
@@ -9,16 +8,6 @@ import (
 // clientConn adapts *smtp.Client to the testable conn interface.
 type clientConn struct {
 	cl *smtp.Client
-}
-
-// startTLSIfPossible upgrades the session to TLS when the server offers it.
-func (c clientConn) startTLSIfPossible(host string) (clientConn, error) {
-	if ok, _ := c.cl.Extension("STARTTLS"); ok {
-		if err := c.cl.StartTLS(&tls.Config{ServerName: host}); err != nil {
-			return clientConn{}, err
-		}
-	}
-	return c, nil
 }
 
 func (c clientConn) Mail(from string) error { return c.cl.Mail(from) }
