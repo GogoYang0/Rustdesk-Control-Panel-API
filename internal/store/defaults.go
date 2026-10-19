@@ -11,4 +11,6 @@ func registerDefaultScopedModels() {
 	RegisterScopedModel(&model.Membership{})
 	RegisterScopedModel(&model.Invitation{})
 	RegisterScopedModel(&model.AuditLog{})
+	RegisterScopedModel(&model.Device{})
+	RegisterScopedModel(&model.DeviceHeartbeat{})
 }

@@ -9,12 +9,14 @@ import (
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 )
 
 // Deps carries everything the HTTP layer needs.
 type Deps struct {
 	DB            *gorm.DB
 	Auth          *auth.Service
+	Devices       *device.Service
 	Issuer        *auth.Issuer
 	Auditor       audit.Auditor
 	Logger        *zap.Logger
