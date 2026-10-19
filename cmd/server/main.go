@@ -78,6 +78,13 @@ func main() {
 
 	srv := &http.Server{
 		Addr: cfg.Server.Addr,
+		// Timeouts are mandatory: without a read header deadline an unauthenticated
+		// client can hold connections and goroutines open with a slow request
+		// (Slowloris). Provisioning is asynchronous, so writes stay short.
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 		Handler: api.NewRouter(api.Deps{
 			DB:             st.DB,
 			Auth:           authSvc,

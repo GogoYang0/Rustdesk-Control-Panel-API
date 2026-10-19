@@ -14,7 +14,7 @@ type fakeProvisioner struct {
 	all []uint
 }
 
-func (f *fakeProvisioner) ProvisionForOrg(context.Context, uint) (*model.ServerGroup, error) {
+func (f *fakeProvisioner) ProvisionQueued(context.Context, uint) (*model.ServerGroup, error) {
 	return &model.ServerGroup{}, nil
 }
 
@@ -90,4 +90,27 @@ func TestReconcile_RotatesThroughBacklog(t *testing.T) {
 	queued, err = queue.Reconcile(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, reconcileBatch, queued, "a new scan starts from the beginning")
+}
+
+// A sweep that fills the queue must advance past the ids it already accepted:
+// otherwise the same prefix is retried forever and starves the rest of the page.
+func TestReconcile_FullQueueAdvancesPastAcceptedIDs(t *testing.T) {
+	queue := NewQueue(&fakeProvisioner{all: []uint{1, 2, 3}}, 1, 2, nil)
+	require.NoError(t, queue.Enqueue(99)) // leaves one slot
+
+	queued, err := queue.Reconcile(context.Background())
+	require.ErrorIs(t, err, ErrQueueFull)
+	require.Equal(t, 1, queued)
+	require.EqualValues(t, 1, queue.cursorValue(), "the accepted id must be skipped")
+
+	for len(queue.jobs) > 0 {
+		<-queue.jobs
+	}
+
+	// The failed id and the remainder are retried by the next sweep.
+	queued, err = queue.Reconcile(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 2, queued)
+	require.EqualValues(t, 2, <-queue.jobs)
+	require.EqualValues(t, 3, <-queue.jobs)
 }

@@ -26,7 +26,7 @@ const reconcileBatch = 100
 // provisioner is the part of Service the queue needs, kept as an interface so
 // the retry behaviour can be tested without a database.
 type provisioner interface {
-	ProvisionForOrg(ctx context.Context, orgID uint) (*model.ServerGroup, error)
+	ProvisionQueued(ctx context.Context, orgID uint) (*model.ServerGroup, error)
 	PendingOrgIDs(ctx context.Context, afterID uint, limit int) ([]uint, uint, error)
 }
 
@@ -72,11 +72,18 @@ func (q *Queue) Start(ctx context.Context) {
 						return
 					}
 					jobCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jobTimeout)
-					if _, err := q.svc.ProvisionForOrg(jobCtx, orgID); err != nil {
+					_, err := q.svc.ProvisionQueued(jobCtx, orgID)
+					cancel()
+					switch {
+					case errors.Is(err, ErrProvisioningDisabled):
+						// The organization was deprovisioned after this job was
+						// enqueued; the removal wins.
+						q.logger.Info("skipping provisioning: organization deprovisioned",
+							zap.Uint("org_id", orgID))
+					case err != nil:
 						q.logger.Error("provision hbbs/hbbr failed",
 							zap.Uint("org_id", orgID), zap.Error(err))
 					}
-					cancel()
 				}
 			}
 		}()
@@ -111,7 +118,12 @@ func (q *Queue) Reconcile(ctx context.Context) (int, error) {
 	queued := 0
 	for _, id := range ids {
 		if err := q.Enqueue(id); err != nil {
-			// Leave the cursor untouched so this page is retried as a whole.
+			// Skip the ids already accepted: they would be retried first on the
+			// next sweep, refill the queue and keep starving the rest of the
+			// page. The failed id and the remainder stay behind the cursor.
+			if queued > 0 {
+				q.advanceCursor(ids[queued-1])
+			}
 			return queued, err
 		}
 		queued++

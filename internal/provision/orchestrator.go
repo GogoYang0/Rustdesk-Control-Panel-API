@@ -138,6 +138,9 @@ func (d *DockerOrchestrator) hbbsArgs(spec InstanceSpec, name string) []string {
 	relay := net.JoinHostPort(spec.RelayHost, strconv.Itoa(int(spec.HbbrPort)))
 	return []string{
 		"run", "-d", "--name", name,
+		// Containers must survive a host or daemon restart: nothing else
+		// restarts a deployed pair, and the row would still say deployed.
+		"--restart", "unless-stopped",
 		"--label", fmt.Sprintf("%s=%d", d.OrgLabel, spec.OrgID),
 		"--label", fmt.Sprintf("%s=hbbs", d.RoleLabel),
 		"-v", spec.DataDir + ":/root",
@@ -155,6 +158,9 @@ func (d *DockerOrchestrator) hbbsArgs(spec InstanceSpec, name string) []string {
 func (d *DockerOrchestrator) hbbrArgs(spec InstanceSpec, name string) []string {
 	return []string{
 		"run", "-d", "--name", name,
+		// Containers must survive a host or daemon restart: nothing else
+		// restarts a deployed pair, and the row would still say deployed.
+		"--restart", "unless-stopped",
 		"--label", fmt.Sprintf("%s=%d", d.OrgLabel, spec.OrgID),
 		"--label", fmt.Sprintf("%s=hbbr", d.RoleLabel),
 		"-v", spec.DataDir + ":/root",

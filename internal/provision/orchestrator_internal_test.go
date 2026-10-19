@@ -47,6 +47,7 @@ func TestHBBSArgs_MapPortsAndRelay(t *testing.T) {
 	require.Contains(t, args, "-p 21118:21118", "21118 is the hbbs web client websocket")
 	require.Contains(t, args, "img:tag hbbs -r relay.example.com:21119")
 	require.Contains(t, args, "-v /data/org-7:/root")
+	require.Contains(t, args, "--restart unless-stopped", "a host restart must not stop the deployment")
 }
 
 func TestHBBRArgs_MapRelayPorts(t *testing.T) {
@@ -66,6 +67,7 @@ func TestHBBRArgs_MapRelayPorts(t *testing.T) {
 	require.Contains(t, args, "-p 21120:21119", "21119 is the hbbr web client relay websocket")
 	require.NotContains(t, args, "21118", "21118 belongs to hbbs")
 	require.Contains(t, args, "img:tag hbbr")
+	require.Contains(t, args, "--restart unless-stopped")
 }
 
 // IPv6 relay hosts must be bracketed by net.JoinHostPort.

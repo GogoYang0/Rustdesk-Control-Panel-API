@@ -55,23 +55,58 @@ type snapshot struct {
 	Fingerprint string `json:"fingerprint"`
 }
 
-// ProvisionForOrg allocates ports, generates keys, deploys and persists the
-// result. Any failure releases the ports and removes the containers.
+// ErrProvisioningDisabled is returned when a queued job finds that the
+// organization was deprovisioned after the job was enqueued.
+var ErrProvisioningDisabled = errors.New("provisioning disabled for this organization")
+
+// ProvisionForOrg provisions an organization on behalf of an explicit request.
+// It clears an earlier deprovision, so a deliberate removal can be followed by a
+// deliberate re-deploy.
 func (s *Service) ProvisionForOrg(ctx context.Context, orgID uint) (*model.ServerGroup, error) {
 	if err := store.RequireOrgID(orgID); err != nil {
 		return nil, err
 	}
+	if err := s.setProvisioningDisabled(orgID, false); err != nil {
+		return nil, err
+	}
+	return s.provision(ctx, orgID)
+}
 
-	// An explicit provisioning request clears an earlier deprovision, so a
-	// deliberate removal can be followed by a deliberate re-deploy. The write
-	// is deliberately detached from the request context: bookkeeping must not
-	// depend on the caller still being around.
+// ProvisionQueued provisions an organization from the worker queue. Unlike an
+// explicit request it honours an existing deprovision: the job may have been
+// enqueued before the operator removed the deployment, and running it would
+// silently undo the removal.
+func (s *Service) ProvisionQueued(ctx context.Context, orgID uint) (*model.ServerGroup, error) {
+	if err := store.RequireOrgID(orgID); err != nil {
+		return nil, err
+	}
+	var org model.Organization
+	if err := s.db.WithContext(ctx).
+		Select("id", "provisioning_disabled").
+		First(&org, orgID).Error; err != nil {
+		return nil, fmt.Errorf("load organization: %w", err)
+	}
+	if org.ProvisioningDisabled {
+		return nil, ErrProvisioningDisabled
+	}
+	return s.provision(ctx, orgID)
+}
+
+// setProvisioningDisabled flips the deprovision marker. The write is detached
+// from the caller context: bookkeeping must not depend on the caller still being
+// around.
+func (s *Service) setProvisioningDisabled(orgID uint, disabled bool) error {
 	if err := s.db.Model(&model.Organization{}).
 		Where("id = ?", orgID).
-		Update("provisioning_disabled", false).Error; err != nil {
-		return nil, fmt.Errorf("reset provisioning state: %w", err)
+		Update("provisioning_disabled", disabled).Error; err != nil {
+		return fmt.Errorf("update provisioning state: %w", err)
 	}
+	return nil
+}
 
+// provision allocates ports, generates keys, deploys and persists the result.
+// Any failure releases the ports and removes the containers.
+func (s *Service) provision(ctx context.Context, orgID uint) (*model.ServerGroup, error) {
 	row, err := s.pool.Allocate(orgID)
 	if err != nil {
 		return nil, err
@@ -202,7 +237,9 @@ func (s *Service) Deprovision(ctx context.Context, orgID uint) error {
 	var row model.ServerGroup
 	if err := store.ScopedByOrg(s.db, orgID).First(&row).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil
+			// Nothing is deployed yet, but the intent still has to stop the
+			// reconciler from provisioning this organization later.
+			return s.setProvisioningDisabled(orgID, true)
 		}
 		return fmt.Errorf("load server group: %w", err)
 	}

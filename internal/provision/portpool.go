@@ -98,6 +98,21 @@ func (p *PortPool) Allocate(orgID uint) (*model.ServerGroup, error) {
 		if !errors.Is(err, gorm.ErrDuplicatedKey) {
 			return nil, fmt.Errorf("allocate ports: %w", err)
 		}
+
+		// The collision may be the organization rather than the ports: two
+		// workers can race for the same organization. Re-read the row and report
+		// the real conflict instead of scanning the whole pool and claiming
+		// exhaustion.
+		var existing model.ServerGroup
+		switch lookupErr := store.ScopedByOrg(p.db, orgID).First(&existing).Error; {
+		case lookupErr == nil && existing.State == model.ServerGroupDeployed:
+			return nil, fmt.Errorf("%w", ErrAlreadyProvisioned)
+		case lookupErr == nil:
+			return nil, fmt.Errorf("%w: state=%s", ErrProvisioningInProgress, existing.State)
+		case !errors.Is(lookupErr, gorm.ErrRecordNotFound):
+			return nil, fmt.Errorf("look up server group: %w", lookupErr)
+		}
+		// No row for this organization: the ports really are taken.
 		lastErr = err
 	}
 	return nil, fmt.Errorf("%w: %v", ErrPortPoolExhausted, lastErr)

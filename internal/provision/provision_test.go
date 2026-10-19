@@ -294,3 +294,66 @@ func TestDeprovision_IsNotReconciled(t *testing.T) {
 	_, err = f.svc.ProvisionForOrg(context.Background(), org.ID)
 	require.NoError(t, err)
 }
+
+// Deprovisioning an organization that has no server group row must still record
+// the intent, otherwise the reconciler provisions it right away.
+func TestDeprovision_WithoutRowStillMarksDisabled(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "queued-org") // provisioning is still queued, no row yet
+
+	require.NoError(t, f.svc.Deprovision(context.Background(), org.ID))
+
+	queue := provision.NewQueue(f.svc, 1, 4, nil)
+	queued, err := queue.Reconcile(context.Background())
+	require.NoError(t, err)
+	require.Zero(t, queued, "a deprovision before the first deploy must stick")
+}
+
+// A job that was enqueued before the removal must not undo it.
+func TestProvisionQueued_RespectsDeprovision(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "removed-org")
+
+	_, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.NoError(t, err)
+	require.NoError(t, f.svc.Deprovision(context.Background(), org.ID))
+
+	_, err = f.svc.ProvisionQueued(context.Background(), org.ID)
+	require.ErrorIs(t, err, provision.ErrProvisioningDisabled)
+	require.Len(t, f.orch.Deployed, 1, "the deprovisioned organization must not be deployed again")
+}
+
+// Two workers racing for the same organization must report an organization
+// conflict, never a bogus port pool exhaustion.
+func TestPortPool_ConcurrentAllocateSameOrg_ReportsConflict(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "race-org")
+
+	const attempts = 8
+	errs := make(chan error, attempts)
+	var wg sync.WaitGroup
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := f.pool.Allocate(org.ID)
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	won, conflict := 0, 0
+	for err := range errs {
+		switch {
+		case err == nil:
+			won++
+		case errors.Is(err, provision.ErrAlreadyProvisioned), errors.Is(err, provision.ErrProvisioningInProgress):
+			conflict++
+		default:
+			require.Failf(t, "unexpected error", "%v", err)
+		}
+	}
+	require.Equal(t, 1, won, "exactly one allocation may win")
+	require.Equal(t, attempts-1, conflict)
+}
