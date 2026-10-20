@@ -158,7 +158,6 @@ func (s *Service) heartbeatLog(ctx context.Context, orgID uint, dev model.Device
 		if result.RowsAffected == 0 {
 			return nil
 		}
-		refreshed = true
 		return store.ScopedByOrg(tx, orgID).Create(&model.DeviceHeartbeat{
 			OrganizationID: orgID,
 			DeviceID:       dev.ID,
@@ -206,7 +205,6 @@ const apiHeartbeatMinInterval = 30 * time.Second
 // auxiliary log-derived source (C11).
 func (s *Service) heartbeat(ctx context.Context, orgID uint, dev model.Device, source string) (*model.Device, error) {
 	now := s.now()
-	refreshed := false
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// The RowsAffected guard is the real coalescing: two concurrent reports
 		// can both read the same stale last_seen_at, so the outer fast path is
@@ -224,7 +222,6 @@ func (s *Service) heartbeat(ctx context.Context, orgID uint, dev model.Device, s
 		if result.RowsAffected == 0 {
 			return nil
 		}
-		refreshed = true
 		return store.ScopedByOrg(tx, orgID).Create(&model.DeviceHeartbeat{
 			OrganizationID: orgID,
 			DeviceID:       dev.ID,
@@ -235,15 +232,10 @@ func (s *Service) heartbeat(ctx context.Context, orgID uint, dev model.Device, s
 	if err != nil {
 		return nil, err
 	}
-	if !refreshed {
-		// A report within the window of an earlier one: the device is already
-		// online and its durable row exists.
-		return &dev, nil
-	}
-	if err != nil {
-		return nil, err
-	}
 
+	// Return the stored state in both branches: a coalesced caller raced
+	// against the winner and must not answer with its own stale copy, which
+	// for a first heartbeat still carries last_seen_at == nil.
 	var stored model.Device
 	if err := store.ScopedByOrg(s.db.WithContext(ctx), orgID).First(&stored, dev.ID).Error; err != nil {
 		return nil, fmt.Errorf("load device: %w", err)

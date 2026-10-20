@@ -273,13 +273,16 @@ func TestHeartbeat_ConcurrentReports_WriteOneRow(t *testing.T) {
 
 	const callers = 8
 	start := make(chan struct{})
+	results := make([]*model.Device, callers)
 	var wg sync.WaitGroup
 	for i := 0; i < callers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			<-start
-			_, _ = f.svc.Heartbeat(ctx, f.orgA.ID, dev.ID)
+			got, err := f.svc.Heartbeat(ctx, f.orgA.ID, dev.ID)
+			require.NoError(t, err)
+			results[i] = got
 		}()
 	}
 	close(start)
@@ -289,4 +292,10 @@ func TestHeartbeat_ConcurrentReports_WriteOneRow(t *testing.T) {
 	require.NoError(t, store.ScopedByOrg(f.st.DB, f.orgA.ID).
 		Model(&model.DeviceHeartbeat{}).Count(&beats).Error)
 	require.EqualValues(t, 1, beats, "concurrent reports must coalesce into one row")
+
+	// A coalesced caller must still see the device as online: returning the
+	// caller's own stale copy would report last_seen_at == nil.
+	for i, got := range results {
+		require.NotNil(t, got.LastSeenAt, "caller %d must observe the refreshed device", i)
+	}
 }
