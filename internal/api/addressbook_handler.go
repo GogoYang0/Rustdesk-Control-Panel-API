@@ -225,15 +225,11 @@ func tooManyRunes(s string, max int) bool {
 // uniqueness so a bad payload comes back as 400 instead of surfacing as a
 // 500 from a varchar or unique-index failure mid-transaction.
 // Contract bounds enforced here because no request validator is mounted: the
-// generated binder accepts any array length and any integer.
-const (
-	maxPeersPerRequest = 2000
-	maxTagsPerPeer     = 64
-	maxTagsPerRequest  = 256
-)
+// generated binder accepts any array length and any integer. The limits live in
+// the addressbook package so the compat write path enforces the same numbers.
 
 func validatePeers(peers []gen.AddressBookPeer) bool {
-	if len(peers) > maxPeersPerRequest {
+	if len(peers) > addressbook.MaxPeersPerBook {
 		return false
 	}
 	seen := make(map[string]struct{}, len(peers))
@@ -241,7 +237,7 @@ func validatePeers(peers []gen.AddressBookPeer) bool {
 		if p.PeerId == "" || tooManyRunes(p.PeerId, 64) {
 			return false
 		}
-		if p.Tags != nil && len(*p.Tags) > maxTagsPerPeer {
+		if p.Tags != nil && len(*p.Tags) > addressbook.MaxTagsPerPeer {
 			return false
 		}
 		if tooManyRunes(deref(p.Alias), 128) ||
@@ -265,7 +261,7 @@ func validatePeers(peers []gen.AddressBookPeer) bool {
 
 // validateTags is the tag-name counterpart of validatePeers.
 func validateTags(tags []gen.AddressBookTag) bool {
-	if len(tags) > maxTagsPerRequest {
+	if len(tags) > addressbook.MaxTagsPerBook {
 		return false
 	}
 	seen := make(map[string]struct{}, len(tags))

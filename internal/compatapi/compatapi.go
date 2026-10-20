@@ -44,10 +44,10 @@ type Server struct {
 	deps Deps
 }
 
-// Client identity bounds. Device.BoundUUID and CompatSession.UUID share the
-// same 128 byte column, so a longer uuid would bind the device and then fail to
-// create the session, leaving the device claimed by an identity the client can
-// never present again.
+// Client identity bounds. The uuid also lands in CompatSession.UUID (128 byte
+// column), so anything longer must be refused before the device is claimed --
+// otherwise the device stays bound to an identity whose session can never be
+// created.
 const (
 	maxDeviceIDLen   = 64
 	maxDeviceUUIDLen = 128

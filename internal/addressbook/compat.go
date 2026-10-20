@@ -276,6 +276,7 @@ func (s *Service) AddPeer(userID uint, orgID, bookID uint, in PeerJSON) error {
 	if _, err := normalizePeers([]LegacyPeer{{
 		ID: in.ID, Username: in.Username, Hostname: in.Hostname,
 		Platform: in.Platform, Alias: in.Alias, Tags: in.Tags,
+		Hash: &in.Hash, Note: &in.Note,
 	}}); err != nil {
 		return err
 	}
@@ -420,6 +421,10 @@ func (s *Service) RenameTag(userID uint, orgID, bookID uint, oldName, newName st
 		if err != nil {
 			return err
 		}
+		if oldName == newName {
+			// A client retrying a rename it already performed must succeed.
+			return nil
+		}
 		if _, err := normalizeTags([]TagInput{{Name: newName}}); err != nil {
 			return err
 		}
@@ -495,34 +500,61 @@ func (s *Service) DeleteTag(userID uint, orgID, bookID uint, name string) error 
 // database answer with 500.
 var ErrInvalidContent = errors.New("address book content is invalid")
 
-// Column bounds shared with the management API: the compat path writes the same
-// rows, so both enforce the same limits.
+// Content limits shared by the management API and the client compat path: both
+// write the same rows, so a value accepted by one must be accepted by the other.
 const (
+	// MaxPeersPerBook and MaxTagsPerBook bound one whole-book write.
+	MaxPeersPerBook = 2000
+	MaxTagsPerBook  = 256
+	// MaxTagsPerPeer bounds the tag list carried by a single peer.
+	MaxTagsPerPeer = 64
+
 	maxPeerIDRunes   = 64
 	maxPeerTextRunes = 128
 	maxPlatformRunes = 64
-	maxTagsJSONBytes = 2048
+	maxTagsJSONRunes = 2048
+	maxPeerHashRunes = 128
+	maxPeerNoteRunes = 512
 	maxTagNameRunes  = 64
 )
 
+// validatePeerContent checks one peer against the column bounds. Lengths are
+// counted in runes, matching the management API: the columns hold characters,
+// not bytes, so a multi-byte tag list must not be rejected on one path only.
+func validatePeerContent(id, alias, username, hostname, platform string, tags []string, hash, note string) error {
+	if id == "" || utf8.RuneCountInString(id) > maxPeerIDRunes {
+		return fmt.Errorf("%w: peer id", ErrInvalidContent)
+	}
+	if utf8.RuneCountInString(alias) > maxPeerTextRunes ||
+		utf8.RuneCountInString(username) > maxPeerTextRunes ||
+		utf8.RuneCountInString(hostname) > maxPeerTextRunes ||
+		utf8.RuneCountInString(platform) > maxPlatformRunes {
+		return fmt.Errorf("%w: peer fields", ErrInvalidContent)
+	}
+	if utf8.RuneCountInString(TagsJSON(tags)) > maxTagsJSONRunes {
+		return fmt.Errorf("%w: peer tags", ErrInvalidContent)
+	}
+	if len(tags) > MaxTagsPerPeer {
+		return fmt.Errorf("%w: too many tags on one peer", ErrInvalidContent)
+	}
+	if utf8.RuneCountInString(hash) > maxPeerHashRunes ||
+		utf8.RuneCountInString(note) > maxPeerNoteRunes {
+		return fmt.Errorf("%w: peer hash or note", ErrInvalidContent)
+	}
+	return nil
+}
+
 // normalizePeers deduplicates by id (the last occurrence wins, matching the
-// legacy whole-book semantics) and validates the column bounds, so a client
-// push can never reach the unique index or an over-long column.
+// legacy whole-book semantics) and validates the column bounds and the per-book
+// limit, so a client push can never reach the unique index, an over-long column
+// or a collection the management API would reject.
 func normalizePeers(peers []LegacyPeer) ([]LegacyPeer, error) {
 	out := make([]LegacyPeer, 0, len(peers))
 	index := make(map[string]int, len(peers))
 	for _, p := range peers {
-		if p.ID == "" || utf8.RuneCountInString(p.ID) > maxPeerIDRunes {
-			return nil, fmt.Errorf("%w: peer id", ErrInvalidContent)
-		}
-		if utf8.RuneCountInString(p.Alias) > maxPeerTextRunes ||
-			utf8.RuneCountInString(p.Username) > maxPeerTextRunes ||
-			utf8.RuneCountInString(p.Hostname) > maxPeerTextRunes ||
-			utf8.RuneCountInString(p.Platform) > maxPlatformRunes {
-			return nil, fmt.Errorf("%w: peer fields", ErrInvalidContent)
-		}
-		if len(TagsJSON(p.Tags)) > maxTagsJSONBytes {
-			return nil, fmt.Errorf("%w: peer tags", ErrInvalidContent)
+		if err := validatePeerContent(p.ID, p.Alias, p.Username, p.Hostname, p.Platform,
+			p.Tags, derefString(p.Hash), derefString(p.Note)); err != nil {
+			return nil, err
 		}
 		if at, seen := index[p.ID]; seen {
 			out[at] = p
@@ -531,10 +563,14 @@ func normalizePeers(peers []LegacyPeer) ([]LegacyPeer, error) {
 		index[p.ID] = len(out)
 		out = append(out, p)
 	}
+	if len(out) > MaxPeersPerBook {
+		return nil, fmt.Errorf("%w: too many peers", ErrInvalidContent)
+	}
 	return out, nil
 }
 
-// normalizeTags deduplicates by name and validates the name bound.
+// normalizeTags deduplicates by name, validates the name bound and enforces the
+// per-book limit.
 func normalizeTags(tags []TagInput) ([]TagInput, error) {
 	out := make([]TagInput, 0, len(tags))
 	index := make(map[string]int, len(tags))
@@ -549,7 +585,18 @@ func normalizeTags(tags []TagInput) ([]TagInput, error) {
 		index[tg.Name] = len(out)
 		out = append(out, tg)
 	}
+	if len(out) > MaxTagsPerBook {
+		return nil, fmt.Errorf("%w: too many tags", ErrInvalidContent)
+	}
 	return out, nil
+}
+
+// derefString resolves an optional string field, treating nil as absent.
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // ReplaceBookContent swaps peers and tags in one transaction (legacy /api/ab

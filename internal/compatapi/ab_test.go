@@ -7,6 +7,7 @@ package compatapi_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/addressbook"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
@@ -437,4 +439,68 @@ func TestABPost_DeduplicatesAndRejectsOversizedFields(t *testing.T) {
 	require.NoError(t, err)
 	w = h.do(t, http.MethodPost, "/api/ab", map[string]any{"data": string(oversized), "hash": ""}, tok)
 	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+}
+
+// A login without a device id still writes the uuid into CompatSession.UUID, so
+// the identity bound has to be checked outside the device-claim branch.
+func TestLogin_OversizedUUIDWithoutDeviceID_Rejected(t *testing.T) {
+	h := newHarness(t)
+	u := h.seedUser(t, "nouuidid@example.com", "password123", true)
+	org := h.seedOrg(t, "acme")
+	h.seedMembership(t, u.ID, org.ID)
+
+	w := h.do(t, http.MethodPost, "/api/login", map[string]string{
+		"username": "nouuidid@example.com", "password": "password123",
+		"uuid": strings.Repeat("u", 129),
+	}, "")
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+}
+
+// The whole-book compat push writes the same rows as the management API, so it
+// has to enforce the same collection and field limits instead of accepting a
+// book the standard API would reject.
+func TestABPost_EnforcesCollectionAndFieldLimits(t *testing.T) {
+	h := newHarness(t)
+	u := h.seedUser(t, "ablimits@example.com", "password123", true)
+	org := h.seedOrg(t, "acme")
+	h.seedMembership(t, u.ID, org.ID)
+	tok, _ := h.login(t, "ablimits@example.com", "password123", "777777777", "ablimits-uuid")
+
+	post := func(t *testing.T, content map[string]any) int {
+		t.Helper()
+		raw, err := json.Marshal(content)
+		require.NoError(t, err)
+		w := h.do(t, http.MethodPost, "/api/ab", map[string]any{"data": string(raw), "hash": ""}, tok)
+		return w.Code
+	}
+
+	tooManyPeers := make([]map[string]any, addressbook.MaxPeersPerBook+1)
+	for i := range tooManyPeers {
+		tooManyPeers[i] = map[string]any{"id": fmt.Sprintf("p%06d", i)}
+	}
+	require.Equal(t, http.StatusBadRequest, post(t, map[string]any{"peers": tooManyPeers}),
+		"more peers than the contract allows must be rejected")
+
+	tooManyTags := make([]string, addressbook.MaxTagsPerBook+1)
+	for i := range tooManyTags {
+		tooManyTags[i] = fmt.Sprintf("tag%03d", i)
+	}
+	require.Equal(t, http.StatusBadRequest, post(t, map[string]any{"tags": tooManyTags}),
+		"more tags than the contract allows must be rejected")
+
+	perPeer := make([]string, addressbook.MaxTagsPerPeer+1)
+	for i := range perPeer {
+		perPeer[i] = fmt.Sprintf("t%d", i)
+	}
+	require.Equal(t, http.StatusBadRequest, post(t, map[string]any{
+		"peers": []map[string]any{{"id": "111111", "tags": perPeer}},
+	}), "more tags on one peer than the contract allows must be rejected")
+
+	require.Equal(t, http.StatusBadRequest, post(t, map[string]any{
+		"peers": []map[string]any{{"id": "222222", "hash": strings.Repeat("h", 129)}},
+	}), "an oversized hash must be rejected")
+
+	require.Equal(t, http.StatusBadRequest, post(t, map[string]any{
+		"peers": []map[string]any{{"id": "333333", "note": strings.Repeat("n", 513)}},
+	}), "an oversized note must be rejected")
 }

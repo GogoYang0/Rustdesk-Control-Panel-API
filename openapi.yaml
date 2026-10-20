@@ -482,7 +482,7 @@ paths:
       description: |
         以请求体完整替换该地址簿的 peers 列表，revision 递增。
         并发替换为最后写入者生效；revision 只用于客户端同步对比，服务端不校验客户端提交的版本。
-        需要客户端冲突检测时请走 `/api/ab`（legacy 整本写入带 content hash，冲突返回 409）。
+        需要冲突检测时请走 `/api/ab`（legacy 整本写入带 content hash，冲突返回 409）——该路径只服务个人地址簿，共享地址簿没有冲突检测。
       tags:
         - addressbooks
       security:

@@ -124,17 +124,18 @@ func (s *Server) login(c *gin.Context) {
 		return
 	}
 
+	// The identity bounds apply to the session row too, so they are checked even
+	// when the client sent no device id: the uuid still lands in
+	// CompatSession.UUID, and an over-long value would fail that insert.
+	if len(req.ID) > maxDeviceIDLen || len(req.UUID) > maxDeviceUUIDLen {
+		compatError(c, http.StatusBadRequest, "invalid device identity")
+		return
+	}
+
 	// Claim the device before issuing a session: a login presenting a
 	// rustdesk id already claimed by another client instance is refused
 	// here, so it can never drive that device's heartbeat (CWE-863).
 	if req.ID != "" {
-		// BoundUUID and CompatSession.UUID share the 128 byte column, so a
-		// longer value would bind the device and then fail to create the
-		// session: the client could never present that identity again.
-		if len(req.ID) > maxDeviceIDLen || len(req.UUID) > maxDeviceUUIDLen {
-			compatError(c, http.StatusBadRequest, "invalid device identity")
-			return
-		}
 		if err := s.claimDevice(c.Request.Context(), orgID, req.ID, req.UUID); err != nil {
 			if errors.Is(err, errDeviceBound) {
 				compatError(c, http.StatusForbidden,
