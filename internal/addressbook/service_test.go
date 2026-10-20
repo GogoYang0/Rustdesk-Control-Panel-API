@@ -78,3 +78,39 @@ func TestReplacePeers_PreservesOpaqueFields(t *testing.T) {
 	require.Equal(t, "client-hash", peers[0].Hash, "the hash must survive a management replace")
 	require.Equal(t, "front desk", peers[0].Note, "the note must survive a management replace")
 }
+
+// The legacy whole-book push inherits the stored Hash/Note for peers whose
+// fields the payload omits (the client's _serialize never emits note), and
+// an explicit value — including the empty string — replaces the stored one.
+func TestReplaceBookContent_InheritsOpaqueFieldsWhenOmitted(t *testing.T) {
+	svc, orgID, uid := newServiceFixture(t)
+
+	book, err := svc.EnsurePersonalBook(uid, orgID)
+	require.NoError(t, err)
+	require.NoError(t, svc.AddPeer(uid, orgID, book.ID, PeerJSON{
+		ID: "111111111", Alias: "alpha", Hash: "stored-hash", Note: "stored note",
+	}))
+
+	// Legacy push: peer 111 omits both optional fields; peer 222 is new with
+	// an explicit empty hash (clearing semantics for a brand-new row).
+	emptyHash := ""
+	_, err = svc.ReplaceBookContent(uid, orgID, book.ID, "", []LegacyPeer{
+		{ID: "111111111", Alias: "alpha-renamed"},
+		{ID: "222222222", Alias: "beta", Hash: &emptyHash},
+	}, nil)
+	require.NoError(t, err)
+
+	_, peers, _, err := svc.Get(uid, orgID, book.ID)
+	require.NoError(t, err)
+	byID := map[string]model.AddressBookPeer{}
+	for _, p := range peers {
+		byID[p.PeerID] = p
+	}
+	require.Len(t, byID, 2)
+	require.Equal(t, "stored-hash", byID["111111111"].Hash,
+		"an omitted hash must inherit the stored value")
+	require.Equal(t, "stored note", byID["111111111"].Note,
+		"an omitted note must inherit the stored value")
+	require.Equal(t, "alpha-renamed", byID["111111111"].Alias)
+	require.Empty(t, byID["222222222"].Hash, "an explicit empty value clears")
+}

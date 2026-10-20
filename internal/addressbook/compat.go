@@ -128,37 +128,73 @@ func (s *Service) SnapshotForCompatPersonal(userID, orgID uint) (*BookSnapshot, 
 	return s.SnapshotForCompat(userID, orgID, book.ID)
 }
 
+// LegacyPeer is one peer entry of the legacy /api/ab payload. Hash and Note
+// are pointers so "omitted" and "explicitly empty" stay distinguishable: an
+// omitted field inherits the stored value (the client's _serialize never
+// emits note, and older clients may omit hash), while an explicit empty
+// string clears it.
+type LegacyPeer struct {
+	ID       string
+	Username string
+	Hostname string
+	Platform string
+	Alias    string
+	Tags     []string
+	Hash     *string
+	Note     *string
+}
+
 // LegacyContent is the decoded legacy /api/ab data payload: tag_colors is a
 // JSON-encoded STRING of {tag: color} (the client jsonEncodes the map before
 // embedding it), which DecodeLegacyContent resolves into Colors.
 type LegacyContent struct {
 	Tags      []string
-	Peers     []PeerJSON
+	Peers     []LegacyPeer
 	TagColors string
 	Colors    map[string]uint32
+}
+
+// legacyPeerRaw mirrors the wire shape with optional fields as pointers.
+type legacyPeerRaw struct {
+	ID       string   `json:"id"`
+	Username string   `json:"username"`
+	Hostname string   `json:"hostname"`
+	Platform string   `json:"platform"`
+	Alias    string   `json:"alias"`
+	Tags     []string `json:"tags"`
+	Hash     *string  `json:"hash"`
+	Note     *string  `json:"note"`
 }
 
 // DecodeLegacyContent parses the client's serialized book payload.
 func DecodeLegacyContent(raw string) (*LegacyContent, error) {
 	var rawContent struct {
-		Tags      []string   `json:"tags"`
-		Peers     []PeerJSON `json:"peers"`
-		TagColors string     `json:"tag_colors"`
+		Tags      []string        `json:"tags"`
+		Peers     []legacyPeerRaw `json:"peers"`
+		TagColors string          `json:"tag_colors"`
 	}
 	if err := json.Unmarshal([]byte(raw), &rawContent); err != nil {
 		return nil, fmt.Errorf("decode legacy address book data: %w", err)
 	}
 	content := &LegacyContent{
 		Tags:      rawContent.Tags,
-		Peers:     rawContent.Peers,
 		TagColors: rawContent.TagColors,
 		Colors:    map[string]uint32{},
 	}
 	if content.Tags == nil {
 		content.Tags = []string{}
 	}
-	if content.Peers == nil {
-		content.Peers = []PeerJSON{}
+	content.Peers = make([]LegacyPeer, 0, len(rawContent.Peers))
+	for _, p := range rawContent.Peers {
+		tags := p.Tags
+		if tags == nil {
+			tags = []string{}
+		}
+		content.Peers = append(content.Peers, LegacyPeer{
+			ID: p.ID, Username: p.Username, Hostname: p.Hostname,
+			Platform: p.Platform, Alias: p.Alias, Tags: tags,
+			Hash: p.Hash, Note: p.Note,
+		})
 	}
 	if content.TagColors != "" && content.TagColors != "null" {
 		var colors map[string]uint32
@@ -431,13 +467,15 @@ func (s *Service) DeleteTag(userID uint, orgID, bookID uint, name string) error 
 }
 
 // ReplaceBookContent swaps peers and tags in one transaction (legacy /api/ab
-// POST semantics) and bumps the revision once. The peer wire shape is used
-// directly so the opaque hash/note fields round-trip. When expectedHash is
+// POST semantics) and bumps the revision once. Peers use the legacy wire
+// shape with optional Hash/Note: an omitted field inherits the stored value
+// (the client's _serialize never emits note, and older clients may omit
+// hash), while an explicit empty string clears it. When expectedHash is
 // non-empty it is compared against the content hash recomputed under the
 // book row lock — the optimistic-concurrency check runs inside the same
 // transaction as the replace, so a stale push cannot slip through a
 // check-then-replace race.
-func (s *Service) ReplaceBookContent(userID uint, orgID, bookID uint, expectedHash string, peers []PeerJSON, tags []TagInput) (*model.AddressBook, error) {
+func (s *Service) ReplaceBookContent(userID uint, orgID, bookID uint, expectedHash string, peers []LegacyPeer, tags []TagInput) (*model.AddressBook, error) {
 	book, err := s.getBook(userID, orgID, bookID)
 	if err != nil {
 		return nil, err
@@ -461,6 +499,17 @@ func (s *Service) ReplaceBookContent(userID uint, orgID, bookID uint, expectedHa
 				return ErrContentConflict
 			}
 		}
+		// Load the stored opaque fields before the delete: omitted legacy
+		// fields inherit them, explicit empty strings clear them.
+		var stored []model.AddressBookPeer
+		if err := store.ScopedByOrg(tx, orgID).
+			Where("book_id = ?", book.ID).Find(&stored).Error; err != nil {
+			return err
+		}
+		opaque := make(map[string]model.AddressBookPeer, len(stored))
+		for _, row := range stored {
+			opaque[row.PeerID] = row
+		}
 		if err := store.ScopedByOrg(tx, orgID).
 			Where("book_id = ?", book.ID).Delete(&model.AddressBookPeer{}).Error; err != nil {
 			return err
@@ -479,8 +528,13 @@ func (s *Service) ReplaceBookContent(userID uint, orgID, bookID uint, expectedHa
 				Hostname:       p.Hostname,
 				Platform:       p.Platform,
 				TagsJSON:       TagsJSON(p.Tags),
-				Hash:           p.Hash,
-				Note:           p.Note,
+			}
+			if old, ok := opaque[p.ID]; ok {
+				row.Hash = resolveOptional(p.Hash, old.Hash)
+				row.Note = resolveOptional(p.Note, old.Note)
+			} else {
+				row.Hash = resolveOptional(p.Hash, "")
+				row.Note = resolveOptional(p.Note, "")
 			}
 			if err := store.ScopedByOrg(tx, orgID).Create(&row).Error; err != nil {
 				return err
@@ -506,6 +560,16 @@ func (s *Service) ReplaceBookContent(userID uint, orgID, bookID uint, expectedHa
 		return nil, err
 	}
 	return &fresh, nil
+}
+
+// resolveOptional applies the legacy inheritance rule: a nil pointer means
+// the field was omitted and the stored value carries over; an explicit
+// value (including the empty string) replaces it.
+func resolveOptional(incoming *string, stored string) string {
+	if incoming == nil {
+		return stored
+	}
+	return *incoming
 }
 
 // snapshotTx loads the book's peers and tags on the given transaction and
