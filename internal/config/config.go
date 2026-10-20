@@ -10,14 +10,35 @@ import (
 
 // Config is the root configuration tree.
 type Config struct {
-	Server    ServerConfig    `mapstructure:"server"`
-	Log       LogConfig       `mapstructure:"log"`
-	Database  DatabaseConfig  `mapstructure:"database"`
-	Auth      AuthConfig      `mapstructure:"auth"`
-	Provision ProvisionConfig `mapstructure:"provision"`
-	Mail      MailConfig      `mapstructure:"mail"`
-	Web       WebConfig       `mapstructure:"web"`
-	Compat    CompatConfig    `mapstructure:"compat"`
+	Server     ServerConfig     `mapstructure:"server"`
+	Log        LogConfig        `mapstructure:"log"`
+	Database   DatabaseConfig   `mapstructure:"database"`
+	Auth       AuthConfig       `mapstructure:"auth"`
+	Provision  ProvisionConfig  `mapstructure:"provision"`
+	Mail       MailConfig       `mapstructure:"mail"`
+	Web        WebConfig        `mapstructure:"web"`
+	Compat     CompatConfig     `mapstructure:"compat"`
+	Logcollect LogcollectConfig `mapstructure:"logcollect"`
+}
+
+// LogcollectConfig tunes the hbbs/hbbr log collector. Rules are evaluated in
+// order and the first match wins; lines that match no rule are counted and
+// dropped (C7). Device association uses the named capture group "device"
+// (the RustDesk id); every other named group lands in the event detail.
+type LogcollectConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+	// ContainerPrefix matches the provisioned container names
+	// (panel-org-<orgID>-hbbs / -hbbr).
+	ContainerPrefix string           `mapstructure:"containerPrefix"`
+	Rules           []LogcollectRule `mapstructure:"rules"`
+}
+
+// LogcollectRule is one configurable parsing rule.
+type LogcollectRule struct {
+	Name    string `mapstructure:"name"`
+	Pattern string `mapstructure:"pattern"`
+	Level   string `mapstructure:"level"`
+	Kind    string `mapstructure:"kind"`
 }
 
 // CompatConfig tunes the RustDesk client compatibility endpoints. The
@@ -114,6 +135,9 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("mail.devMode", true)
 	v.SetDefault("mail.smtp.port", 587)
 	v.SetDefault("compat.accessTTL", "720h")
+	// Log collection is opt-in: without rules nothing can be parsed.
+	v.SetDefault("logcollect.enabled", false)
+	v.SetDefault("logcollect.containerprefix", "panel-org")
 	// Frontend origin for links inside outgoing emails.
 	v.SetDefault("web.baseurl", "http://localhost:5173")
 	if err := v.BindEnv("web.baseurl", "PANEL_WEB_BASE_URL"); err != nil {

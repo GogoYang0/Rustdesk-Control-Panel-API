@@ -94,6 +94,35 @@ func (s *Service) Register(ctx context.Context, orgID uint, in RegisterInput) (*
 	return &stored, nil
 }
 
+// RecordLogActivity refreshes the heartbeat of the device that owns the given
+// RustDesk id (C11 auxiliary source): a parsed hbbs/hbbr connection line is
+// proof of liveness even when the client's own heartbeat is in flight. A log
+// line older than the online window is ignored, and an unknown device is not
+// an error — the collector stores the event without the association.
+func (s *Service) RecordLogActivity(ctx context.Context, orgID uint, rustdeskID string, at time.Time) (*model.Device, error) {
+	if err := store.RequireOrgID(orgID); err != nil {
+		return nil, err
+	}
+	if rustdeskID == "" {
+		return nil, ErrInvalidInput
+	}
+	if s.now().Sub(at) > model.OnlineWindow {
+		// Replayed/backfilled lines must not resurrect stale liveness.
+		return nil, nil
+	}
+
+	var dev model.Device
+	err := store.ScopedByOrg(s.db.WithContext(ctx), orgID).
+		Where("rustdesk_id = ?", rustdeskID).First(&dev).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s.Heartbeat(ctx, orgID, dev.ID)
+}
+
 // Heartbeat records a heartbeat and refreshes last_seen_at.
 func (s *Service) Heartbeat(ctx context.Context, orgID, deviceID uint) (*model.Device, error) {
 	if err := store.RequireOrgID(orgID); err != nil {

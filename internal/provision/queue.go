@@ -43,6 +43,8 @@ type Queue struct {
 	// sweeps so a page of organizations that keep failing cannot starve the
 	// ones behind it.
 	cursor uint
+	// onProvisioned runs after a successful deployment (log collector hook).
+	onProvisioned func(orgID uint)
 }
 
 // NewQueue builds a queue with the given worker count and buffer depth.
@@ -57,6 +59,15 @@ func NewQueue(svc provisioner, workers, depth int, logger *zap.Logger) *Queue {
 		logger = zap.NewNop()
 	}
 	return &Queue{svc: svc, jobs: make(chan uint, depth), workers: workers, logger: logger}
+}
+
+// OnProvisioned registers a callback invoked after every successful
+// deployment. The log collector uses it to start tailing the new containers;
+// the callback must be safe to call repeatedly.
+func (q *Queue) OnProvisioned(fn func(orgID uint)) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.onProvisioned = fn
 }
 
 // Start launches the workers; they stop when ctx is cancelled.
@@ -83,10 +94,22 @@ func (q *Queue) Start(ctx context.Context) {
 					case err != nil:
 						q.logger.Error("provision hbbs/hbbr failed",
 							zap.Uint("org_id", orgID), zap.Error(err))
+					default:
+						q.notifyProvisioned(orgID)
 					}
 				}
 			}
 		}()
+	}
+}
+
+// notifyProvisioned runs the deployment hook outside the queue lock.
+func (q *Queue) notifyProvisioned(orgID uint) {
+	q.mu.Lock()
+	fn := q.onProvisioned
+	q.mu.Unlock()
+	if fn != nil {
+		fn(orgID)
 	}
 }
 

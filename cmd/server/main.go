@@ -21,6 +21,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logcollect"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logger"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
@@ -65,6 +66,7 @@ func main() {
 		&model.VerificationToken{},
 		&model.MigrationMark{},
 		&model.CompatSession{},
+		&model.LogEvent{},
 	); err != nil {
 		lg.Fatal("migrate database", zap.Error(err))
 	}
@@ -117,6 +119,24 @@ func main() {
 		},
 	)
 	provQueue := provision.NewQueue(provSvc, cfg.Provision.Workers, 0, lg)
+
+	// Log collection: one tailer pair per provisioned organization. The queue
+	// hook starts the tailers of a fresh deployment immediately instead of
+	// waiting for the next process start.
+	if cfg.Logcollect.Enabled {
+		parser, perr := logcollect.NewParser(logcollectRules(cfg.Logcollect.Rules))
+		if perr != nil {
+			lg.Fatal("invalid logcollect rules", zap.Error(perr))
+		}
+		collector := logcollect.NewService(
+			st.DB, parser, logcollect.DockerCLIStreamer{}, deviceSvc,
+			logcollect.Options{ContainerPrefix: cfg.Logcollect.ContainerPrefix}, lg,
+		)
+		collector.Start(context.Background())
+		provQueue.OnProvisioned(collector.Watch)
+		lg.Info("log collector enabled", zap.Int("rules", parser.Rules()))
+	}
+
 	provQueue.Start(context.Background())
 	// The organization row is the durable record of a provisioning intent, so a
 	// sweep re-enqueues anything that never reached a worker (full queue, crash).
@@ -191,6 +211,20 @@ type zapLogger struct{ lg *zap.Logger }
 
 func (l zapLogger) Info(msg string, keysAndValues ...any) {
 	l.lg.Sugar().Infow(msg, keysAndValues...)
+}
+
+// logcollectRules converts the config shape into parser rules.
+func logcollectRules(rules []config.LogcollectRule) []logcollect.Rule {
+	out := make([]logcollect.Rule, 0, len(rules))
+	for _, r := range rules {
+		out = append(out, logcollect.Rule{
+			Name:    r.Name,
+			Pattern: r.Pattern,
+			Level:   r.Level,
+			Kind:    r.Kind,
+		})
+	}
+	return out
 }
 
 // isPublicHTTPSOrigin reports whether raw is a well-formed https origin

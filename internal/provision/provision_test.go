@@ -357,3 +357,26 @@ func TestPortPool_ConcurrentAllocateSameOrg_ReportsConflict(t *testing.T) {
 	require.Equal(t, 1, won, "exactly one allocation may win")
 	require.Equal(t, attempts-1, conflict)
 }
+
+// The queue notifies the deployment hook once per successful provisioning so
+// the log collector starts tailing the new containers immediately.
+func TestQueue_NotifiesAfterProvisioning(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "hooked-org")
+
+	queue := provision.NewQueue(f.svc, 1, 4, zap.NewNop())
+	notified := make(chan uint, 4)
+	queue.OnProvisioned(func(orgID uint) { notified <- orgID })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	queue.Start(ctx)
+
+	require.NoError(t, queue.Enqueue(org.ID))
+	select {
+	case got := <-notified:
+		require.Equal(t, org.ID, got)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the provisioning hook was not called")
+	}
+	require.Len(t, f.orch.Deployed, 1)
+}

@@ -45,3 +45,27 @@ web:
   # Frontend origin used to build the links inside outgoing emails
   # (verify-email, invitation accept). Override with PANEL_WEB_BASE_URL.
   baseURL: "http://localhost:5173"
+
+# hbbs/hbbr log collection. Disabled by default: without rules every line is
+# counted as a parse error and dropped. Rules are evaluated in order, the first
+# match wins. Named capture groups become the event detail; the special group
+# "device" carries the RustDesk id and links the event (and a heartbeat) to the
+# device. RustDesk server images log with their own format — verify against the
+# pinned image before enabling:
+#
+#   logcollect:
+#     enabled: true
+#     containerPrefix: "panel-org"
+#     rules:
+#       - name: connection
+#         pattern: '^\[\d{4}-\d{2}-\d{2}[^\]]*\]\s+INFO\s+(?:punch hole|connection).*?(?P<device>\d{6,12})'
+#         level: info
+#         kind: conn
+#       - name: errors
+#         pattern: '^\[[^\]]*\]\s+ERROR\s+(?P<msg>.*)$'
+#         level: error
+#         kind: error
+logcollect:
+  enabled: false
+  containerPrefix: "panel-org"
+  rules: []
