@@ -199,53 +199,100 @@ func (t *Tailer) Run(ctx context.Context) {
 	}
 }
 
-// consume reads one stream, returning how many lines were delivered. A single
-// over-long line must not freeze the container's tail forever: the scanner
-// stops with ErrTooLong and, without advancing the resume point, every retry
-// would replay the same poison line. Skipping forward is the documented C7
-// behaviour (bad input is dropped, never fatal).
+// consume reads one stream, returning how many lines were delivered. An
+// over-long line is skipped and the rest of the stream keeps flowing (C7: bad
+// input is dropped, never fatal). Stopping at the first oversized record would
+// drop every line after it, and moving the resume point to now() would make the
+// reconnect skip them as well.
 func (t *Tailer) consume(ctx context.Context, stream io.Reader, now func() time.Time, lastSeen *time.Time, logger *zap.Logger) int {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	scanner := bufio.NewScanner(stream)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
+	reader := bufio.NewReaderSize(stream, 64*1024)
 	lines := 0
-	for scanner.Scan() {
-		at, line, stamped := splitTimestamp(scanner.Text(), now)
-		if line == "" {
-			continue
-		}
-		if !stamped && isDockerCLIError(line) {
-			// The container's stderr shares this pipe (RustDesk logs there),
-			// so docker's own diagnostics arrive here too. They are not events
-			// and they are not progress: counting them would reset the backoff
-			// for a container that does not exist.
-			logger.Warn("docker CLI error while following the container",
-				zap.String("container", t.Container), zap.String("line", truncateValue(line)))
-			continue
-		}
-		if at.After(*lastSeen) {
-			*lastSeen = at
-		}
-		lines++
-		t.Handler(ctx, t.OrgID, t.Source, line, at)
-	}
-	if err := scanner.Err(); err != nil {
-		if errors.Is(err, bufio.ErrTooLong) {
-			// Advance past the poison line so the reconnect skips it instead
-			// of replaying it forever.
+	for {
+		raw, tooLong, err := readBoundedLine(reader, maxLineBytes)
+		if tooLong {
 			logger.Warn("log line exceeds the size limit, skipping",
 				zap.String("container", t.Container), zap.Int("limit_bytes", maxLineBytes))
-			if now().After(*lastSeen) {
-				*lastSeen = now()
+			// Advance only to this line's own timestamp: now() would be later
+			// than the valid lines that follow it in this stream, and the
+			// reconnect would skip them for good.
+			if at, _, stamped := splitTimestamp(raw, now); stamped && at.After(*lastSeen) {
+				*lastSeen = at
+			}
+			if err != nil {
+				if !errors.Is(err, io.EOF) {
+					logger.Warn("log stream read failed",
+						zap.String("container", t.Container), zap.Error(err))
+				}
+				return lines
+			}
+			continue
+		}
+
+		at, line, stamped := splitTimestamp(raw, now)
+		if line != "" {
+			switch {
+			case !stamped && isDockerCLIError(line):
+				// The container's stderr shares this pipe (RustDesk logs
+				// there), so docker's own diagnostics arrive here too. They
+				// are not events and they are not progress: counting them
+				// would reset the backoff for a container that does not exist.
+				logger.Warn("docker CLI error while following the container",
+					zap.String("container", t.Container), zap.String("line", truncateValue(line)))
+			default:
+				if at.After(*lastSeen) {
+					*lastSeen = at
+				}
+				lines++
+				t.Handler(ctx, t.OrgID, t.Source, line, at)
+			}
+		}
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				logger.Warn("log stream read failed",
+					zap.String("container", t.Container), zap.Error(err))
 			}
 			return lines
 		}
-		logger.Warn("log stream read failed",
-			zap.String("container", t.Container), zap.Error(err))
 	}
-	return lines
+}
+
+// maxLinePrefixBytes bounds how much of an oversized line is kept: only the
+// leading timestamp is needed to move the resume point past it.
+const maxLinePrefixBytes = 512
+
+// readBoundedLine reads one newline-terminated line. A line longer than limit
+// is reported as tooLong and its excess is discarded, but the reader keeps its
+// position: the next call continues with the following line, so one oversized
+// record cannot end the tail.
+func readBoundedLine(r *bufio.Reader, limit int) (line string, tooLong bool, err error) {
+	buf := make([]byte, 0, maxLinePrefixBytes)
+	for {
+		chunk, readErr := r.ReadSlice('\n')
+		if len(chunk) > 0 {
+			switch {
+			case tooLong:
+				// Discard the rest of the record.
+			case len(buf)+len(chunk) > limit:
+				tooLong = true
+				if len(buf) > maxLinePrefixBytes {
+					buf = buf[:maxLinePrefixBytes]
+				}
+			default:
+				buf = append(buf, chunk...)
+			}
+		}
+		switch {
+		case errors.Is(readErr, bufio.ErrBufferFull):
+			continue
+		case readErr != nil:
+			return strings.TrimRight(string(buf), "\r\n"), tooLong, readErr
+		default:
+			return strings.TrimRight(string(buf), "\r\n"), tooLong, nil
+		}
+	}
 }
 
 // splitTimestamp strips the `docker logs -t` RFC3339Nano prefix. stamped

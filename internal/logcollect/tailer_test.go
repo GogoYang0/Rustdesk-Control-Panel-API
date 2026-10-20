@@ -232,7 +232,8 @@ func TestTailer_OverlongLine_Skipped(t *testing.T) {
 	mu.Lock()
 	require.Empty(t, got)
 	mu.Unlock()
-	require.False(t, lastSeen.IsZero(), "the resume point advances past the poison line")
+	require.True(t, lastSeen.IsZero(),
+		"a poison line without a timestamp must not move the resume point: now() would skip the lines that follow it")
 }
 
 // docker's own diagnostics share the pipe with the container's stderr (RustDesk
@@ -274,4 +275,40 @@ func TestTailer_CLIError_NotDeliveredAndNotProgress(t *testing.T) {
 	require.Empty(t, got, "a docker CLI error must not become an event")
 	mu.Unlock()
 	require.True(t, lastSeen.IsZero(), "a docker CLI error must not move the resume point")
+}
+
+// A poison line must not end the stream. Stopping at bufio.ErrTooLong also
+// advanced the resume point to now(), so the valid lines that follow were
+// dropped here and then skipped by the reconnect (--since now()+1ns): a
+// permanent loss from one oversized record.
+func TestTailer_OverlongLine_ContinuesStream(t *testing.T) {
+	huge := strings.Repeat("x", maxLineBytes+1024)
+	next := "2026-10-20T07:00:01.000000001Z INFO connection from 123456790"
+	body := strings.Join([]string{huge, next}, "\n") + "\n"
+
+	var mu sync.Mutex
+	var got []string
+	tailer := &Tailer{
+		Container: "c",
+		Source:    "hbbs",
+		now:       func() time.Time { return time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC) },
+		Handler: func(_ context.Context, _ uint, _ string, line string, _ time.Time) {
+			mu.Lock()
+			got = append(got, line)
+			mu.Unlock()
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var lastSeen time.Time
+	delivered := tailer.consume(ctx, io.NopCloser(strings.NewReader(body)),
+		tailer.now, &lastSeen, zap.NewNop())
+
+	require.Equal(t, 1, delivered, "the line after the poison line must be delivered")
+	mu.Lock()
+	require.Equal(t, []string{"INFO connection from 123456790"}, got)
+	mu.Unlock()
+	require.Equal(t, time.Date(2026, 10, 20, 7, 0, 1, 1, time.UTC), lastSeen.UTC(),
+		"the resume point must be the last delivered line, not now()")
 }
