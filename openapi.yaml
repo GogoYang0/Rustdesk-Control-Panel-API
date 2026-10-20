@@ -299,7 +299,7 @@ paths:
       summary: 列出地址簿
       description: |
         返回调用者可见的地址簿：个人地址簿（owner 为调用者）与共享地址簿。
-        需要 addressbook 权限。
+        需要组织成员身份；shared 地址簿的写操作才需要 addressbook 权限。
       tags:
         - addressbooks
       security:
@@ -481,7 +481,8 @@ paths:
       summary: 全量替换地址簿 peers
       description: |
         以请求体完整替换该地址簿的 peers 列表，revision 递增。
-        并发更新以 revision 兜底（乐观锁语义，供客户端同步对比）。
+        并发替换为最后写入者生效；revision 只用于客户端同步对比，服务端不校验客户端提交的版本。
+        需要客户端冲突检测时请走 `/api/ab`（legacy 整本写入带 content hash，冲突返回 409）。
       tags:
         - addressbooks
       security:

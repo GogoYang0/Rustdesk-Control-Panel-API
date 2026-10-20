@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 
@@ -272,6 +273,12 @@ func tagNamesOf(tags []model.AddressBookTag) []string {
 // AddPeer upserts one peer entry: an existing peer id merges the provided
 // fields, a new one is created. Revision bumps once per call.
 func (s *Service) AddPeer(userID uint, orgID, bookID uint, in PeerJSON) error {
+	if _, err := normalizePeers([]LegacyPeer{{
+		ID: in.ID, Username: in.Username, Hostname: in.Hostname,
+		Platform: in.Platform, Alias: in.Alias, Tags: in.Tags,
+	}}); err != nil {
+		return err
+	}
 	return s.mutateBook(userID, orgID, bookID, func(tx *gorm.DB, book *model.AddressBook) error {
 		var row model.AddressBookPeer
 		err := store.ScopedByOrg(tx, orgID).
@@ -373,6 +380,9 @@ func (s *Service) DeletePeers(userID uint, orgID, bookID uint, peerIDs []string)
 // (the client pre-checks duplicates; idempotent behaviour avoids error
 // loops across concurrent clients).
 func (s *Service) AddTag(userID uint, orgID, bookID uint, name string, color uint32) error {
+	if _, err := normalizeTags([]TagInput{{Name: name, Color: color}}); err != nil {
+		return err
+	}
 	return s.mutateBook(userID, orgID, bookID, func(tx *gorm.DB, book *model.AddressBook) error {
 		var row model.AddressBookTag
 		err := store.ScopedByOrg(tx, orgID).
@@ -408,6 +418,20 @@ func (s *Service) RenameTag(userID uint, orgID, bookID uint, oldName, newName st
 			return ErrBookNotFound
 		}
 		if err != nil {
+			return err
+		}
+		if _, err := normalizeTags([]TagInput{{Name: newName}}); err != nil {
+			return err
+		}
+		// Renaming onto an existing name would hit the unique index and
+		// answer 500; report it as invalid content instead.
+		var clash model.AddressBookTag
+		err = store.ScopedByOrg(tx, orgID).
+			Where("book_id = ? AND name = ?", book.ID, newName).First(&clash).Error
+		switch {
+		case err == nil:
+			return fmt.Errorf("%w: tag name already exists", ErrInvalidContent)
+		case !errors.Is(err, gorm.ErrRecordNotFound):
 			return err
 		}
 		if err := store.ScopedByOrg(tx, orgID).Model(&row).
@@ -466,6 +490,68 @@ func (s *Service) DeleteTag(userID uint, orgID, bookID uint, name string) error 
 	})
 }
 
+// ErrInvalidContent reports address book content that violates a column bound or
+// a uniqueness rule. The API layer maps it to 400 instead of letting the
+// database answer with 500.
+var ErrInvalidContent = errors.New("address book content is invalid")
+
+// Column bounds shared with the management API: the compat path writes the same
+// rows, so both enforce the same limits.
+const (
+	maxPeerIDRunes   = 64
+	maxPeerTextRunes = 128
+	maxPlatformRunes = 64
+	maxTagsJSONBytes = 2048
+	maxTagNameRunes  = 64
+)
+
+// normalizePeers deduplicates by id (the last occurrence wins, matching the
+// legacy whole-book semantics) and validates the column bounds, so a client
+// push can never reach the unique index or an over-long column.
+func normalizePeers(peers []LegacyPeer) ([]LegacyPeer, error) {
+	out := make([]LegacyPeer, 0, len(peers))
+	index := make(map[string]int, len(peers))
+	for _, p := range peers {
+		if p.ID == "" || utf8.RuneCountInString(p.ID) > maxPeerIDRunes {
+			return nil, fmt.Errorf("%w: peer id", ErrInvalidContent)
+		}
+		if utf8.RuneCountInString(p.Alias) > maxPeerTextRunes ||
+			utf8.RuneCountInString(p.Username) > maxPeerTextRunes ||
+			utf8.RuneCountInString(p.Hostname) > maxPeerTextRunes ||
+			utf8.RuneCountInString(p.Platform) > maxPlatformRunes {
+			return nil, fmt.Errorf("%w: peer fields", ErrInvalidContent)
+		}
+		if len(TagsJSON(p.Tags)) > maxTagsJSONBytes {
+			return nil, fmt.Errorf("%w: peer tags", ErrInvalidContent)
+		}
+		if at, seen := index[p.ID]; seen {
+			out[at] = p
+			continue
+		}
+		index[p.ID] = len(out)
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// normalizeTags deduplicates by name and validates the name bound.
+func normalizeTags(tags []TagInput) ([]TagInput, error) {
+	out := make([]TagInput, 0, len(tags))
+	index := make(map[string]int, len(tags))
+	for _, tg := range tags {
+		if tg.Name == "" || utf8.RuneCountInString(tg.Name) > maxTagNameRunes {
+			return nil, fmt.Errorf("%w: tag name", ErrInvalidContent)
+		}
+		if at, seen := index[tg.Name]; seen {
+			out[at] = tg
+			continue
+		}
+		index[tg.Name] = len(out)
+		out = append(out, tg)
+	}
+	return out, nil
+}
+
 // ReplaceBookContent swaps peers and tags in one transaction (legacy /api/ab
 // POST semantics) and bumps the revision once. Peers use the legacy wire
 // shape with optional Hash/Note: an omitted field inherits the stored value
@@ -482,6 +568,17 @@ func (s *Service) ReplaceBookContent(userID uint, orgID, bookID uint, expectedHa
 	}
 	if !canWrite(book, userID, "") {
 		return nil, ErrForbidden
+	}
+	// Client pushes are untrusted input: apply the same column bounds and
+	// uniqueness rules as the management API, deduplicating rather than
+	// failing the whole push on a repeated id or tag name.
+	peers, err = normalizePeers(peers)
+	if err != nil {
+		return nil, err
+	}
+	tags, err = normalizeTags(tags)
+	if err != nil {
+		return nil, err
 	}
 
 	var fresh model.AddressBook

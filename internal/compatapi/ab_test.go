@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -401,4 +402,39 @@ func TestABLookup_DBFailureIs500(t *testing.T) {
 		abFixtureMap(t, "ab_peer_add.json"), tok)
 	require.Equal(t, http.StatusInternalServerError, w.Code, w.Body.String())
 	require.Contains(t, w.Body.String(), "address book lookup failed")
+}
+
+// The compat path writes the same rows as the management API, so it has to
+// apply the same limits: a duplicate id in one legacy push would violate the
+// unique index (500 for the whole push), and an oversized field passes on
+// SQLite but fails on MySQL/PostgreSQL.
+func TestABPost_DeduplicatesAndRejectsOversizedFields(t *testing.T) {
+	h := newHarness(t)
+	u := h.seedUser(t, "abbounds@example.com", "password123", true)
+	org := h.seedOrg(t, "acme")
+	h.seedMembership(t, u.ID, org.ID)
+	tok, _ := h.login(t, "abbounds@example.com", "password123", "777777776", "abbounds-uuid")
+
+	data, err := json.Marshal(map[string]any{
+		"tags": []string{"infra"},
+		"peers": []map[string]any{
+			{"id": "111111", "alias": "first"},
+			{"id": "111111", "alias": "second"},
+		},
+	})
+	require.NoError(t, err)
+	w := h.do(t, http.MethodPost, "/api/ab", map[string]any{"data": string(data), "hash": ""}, tok)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	var peers int64
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).
+		Model(&model.AddressBookPeer{}).Count(&peers).Error)
+	require.EqualValues(t, 1, peers, "a duplicate peer id must be deduplicated, not fail the push")
+
+	oversized, err := json.Marshal(map[string]any{
+		"peers": []map[string]any{{"id": "222222", "alias": strings.Repeat("a", 129)}},
+	})
+	require.NoError(t, err)
+	w = h.do(t, http.MethodPost, "/api/ab", map[string]any{"data": string(oversized), "hash": ""}, tok)
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 }

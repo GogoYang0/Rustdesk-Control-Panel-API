@@ -299,6 +299,10 @@ func abLookupError(c *gin.Context, err error) {
 
 // abActionError maps service errors onto the client's {"error": msg} shape.
 func (s *Server) abActionError(c *gin.Context, err error) {
+	if errors.Is(err, addressbook.ErrInvalidContent) {
+		compatError(c, http.StatusBadRequest, "address book content is invalid")
+		return
+	}
 	switch err {
 	case addressbook.ErrBookNotFound:
 		compatError(c, http.StatusNotFound, "address book entry not found")

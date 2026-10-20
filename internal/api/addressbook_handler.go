@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"math"
 	"net/http"
 
 	"unicode/utf8"
@@ -223,10 +224,24 @@ func tooManyRunes(s string, max int) bool {
 // validatePeers enforces the column widths (in characters) and per-request
 // uniqueness so a bad payload comes back as 400 instead of surfacing as a
 // 500 from a varchar or unique-index failure mid-transaction.
+// Contract bounds enforced here because no request validator is mounted: the
+// generated binder accepts any array length and any integer.
+const (
+	maxPeersPerRequest = 2000
+	maxTagsPerPeer     = 64
+	maxTagsPerRequest  = 256
+)
+
 func validatePeers(peers []gen.AddressBookPeer) bool {
+	if len(peers) > maxPeersPerRequest {
+		return false
+	}
 	seen := make(map[string]struct{}, len(peers))
 	for _, p := range peers {
 		if p.PeerId == "" || tooManyRunes(p.PeerId, 64) {
+			return false
+		}
+		if p.Tags != nil && len(*p.Tags) > maxTagsPerPeer {
 			return false
 		}
 		if tooManyRunes(deref(p.Alias), 128) ||
@@ -250,9 +265,17 @@ func validatePeers(peers []gen.AddressBookPeer) bool {
 
 // validateTags is the tag-name counterpart of validatePeers.
 func validateTags(tags []gen.AddressBookTag) bool {
+	if len(tags) > maxTagsPerRequest {
+		return false
+	}
 	seen := make(map[string]struct{}, len(tags))
 	for _, tg := range tags {
 		if tg.Name == "" || tooManyRunes(tg.Name, 64) {
+			return false
+		}
+		// The colour is stored as uint32; an out-of-range value would be
+		// silently truncated instead of rejected.
+		if tg.Color != nil && (*tg.Color < 0 || int64(*tg.Color) > math.MaxUint32) {
 			return false
 		}
 		if _, dup := seen[tg.Name]; dup {
