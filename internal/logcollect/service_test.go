@@ -269,3 +269,39 @@ func TestWatchUnwatch_StopsTailers(t *testing.T) {
 		t.Fatal("tailers did not stop after Unwatch")
 	}
 }
+
+// A line that was already read must still be persisted when the collector is
+// shutting down: the shutdown signal cancels the following context, and an
+// event that is parsed but not stored is a silent data loss. This regressed in
+// CI under -race, where cancelling the context between the heartbeat refresh
+// and the event insert dropped the event entirely.
+func TestHandleLine_CancelledContext_StillPersists(t *testing.T) {
+	st, orgs := serviceFixture(t, "org-a")
+	org := orgs[0]
+
+	dev, err := device.NewService(st.DB, nil).Register(context.Background(), org.ID, device.RegisterInput{
+		Name: "office-pc", RustdeskID: "123456789",
+	})
+	require.NoError(t, err)
+
+	parser, err := NewParser(testRules())
+	require.NoError(t, err)
+	svc := NewService(st.DB, parser, newMapStreamer(nil), device.NewService(st.DB, nil),
+		Options{InitialBackoff: time.Millisecond, MaxBackoff: 2 * time.Millisecond}, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	svc.handleLine(ctx, org.ID, model.LogSourceHbbs,
+		"INFO connection from 123456789 via 10.0.0.1:1", time.Now().UTC())
+
+	var events int64
+	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).
+		Model(&model.LogEvent{}).Where("device_id = ?", dev.ID).Count(&events).Error)
+	require.NotZero(t, events, "an already-read line must not be lost on shutdown")
+
+	var beats int64
+	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).
+		Model(&model.DeviceHeartbeat{}).Where("device_id = ?", dev.ID).Count(&beats).Error)
+	require.NotZero(t, beats, "the auxiliary heartbeat must not be lost either")
+}

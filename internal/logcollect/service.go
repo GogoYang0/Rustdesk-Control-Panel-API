@@ -21,6 +21,10 @@ import (
 // the signal; the log line only makes it discoverable).
 const parseErrorLogInterval = time.Minute
 
+// persistTimeout bounds one event write. The write itself is detached from the
+// tailer's cancellation (see handleLine), so it needs its own upper bound.
+const persistTimeout = 5 * time.Second
+
 // Options tunes the collector.
 type Options struct {
 	// ContainerPrefix matches the provisioned container names
@@ -193,6 +197,13 @@ func (s *Service) handleLine(ctx context.Context, orgID uint, source, line strin
 		return
 	}
 
+	// A line that was already read must reach the store even when the collector
+	// is shutting down (Unwatch cancels the tailer context), otherwise the last
+	// lines before a restart or a deprovisioning are lost silently. The detach
+	// keeps a bound so a stuck database cannot block shutdown forever.
+	persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
+	defer cancelPersist()
+
 	var deviceID *uint
 	if event.DeviceRustdeskID != "" {
 		var dev model.Device
@@ -205,7 +216,7 @@ func (s *Service) handleLine(ctx context.Context, orgID uint, source, line strin
 			// connection proves the device is alive even if its client's
 			// heartbeat is in flight.
 			if s.devices != nil {
-				if _, herr := s.devices.RecordLogActivity(ctx, orgID, event.DeviceRustdeskID, at); herr != nil {
+				if _, herr := s.devices.RecordLogActivity(persistCtx, orgID, event.DeviceRustdeskID, at); herr != nil {
 					s.logger.Debug("log activity heartbeat failed",
 						zap.Uint("org_id", orgID), zap.String("device", event.DeviceRustdeskID), zap.Error(herr))
 				}
@@ -234,7 +245,7 @@ func (s *Service) handleLine(ctx context.Context, orgID uint, source, line strin
 		DetailJSON:     detail,
 		OccurredAt:     event.OccurredAt,
 	}
-	if err := store.ScopedByOrg(s.db, orgID).WithContext(ctx).Create(&row).Error; err != nil {
+	if err := store.ScopedByOrg(s.db, orgID).WithContext(persistCtx).Create(&row).Error; err != nil {
 		s.logger.Error("store log event failed", zap.Uint("org_id", orgID), zap.Error(err))
 	}
 }
