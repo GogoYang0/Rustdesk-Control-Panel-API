@@ -12,6 +12,7 @@
 package compatapi
 
 import (
+	"errors"
 	"math"
 	"net/http"
 	"strconv"
@@ -38,7 +39,7 @@ func (s *Server) resolvePersonalBook(c *gin.Context) (*model.AddressBook, bool) 
 	}
 	book, _, _, err := s.deps.Books.Get(uid, orgID, uint(id))
 	if err != nil {
-		compatError(c, http.StatusNotFound, "address book not found")
+		abLookupError(c, err)
 		return nil, false
 	}
 	// The compat layer maps onto the user's personal book only: Books.Get
@@ -86,7 +87,7 @@ func (s *Server) abPeersPage(c *gin.Context) {
 
 	snap, err := s.deps.Books.SnapshotForCompat(uid, orgID, uint(id))
 	if err != nil {
-		compatError(c, http.StatusNotFound, "address book not found")
+		abLookupError(c, err)
 		return
 	}
 	// Personal-only, same as the path-parameter endpoints: a shared book's
@@ -125,7 +126,7 @@ func (s *Server) abTagsList(c *gin.Context) {
 	uid, orgID, _ := sessionFrom(c)
 	_, _, tags, err := s.deps.Books.Get(uid, orgID, book.ID)
 	if err != nil {
-		compatError(c, http.StatusNotFound, "address book not found")
+		abLookupError(c, err)
 		return
 	}
 	out := make([]gin.H, 0, len(tags))
@@ -283,6 +284,17 @@ func (s *Server) abTagDelete(c *gin.Context) {
 		}
 	}
 	ok(c)
+}
+
+// abLookupError maps address book lookup failures: a missing (or foreign)
+// book is a 404 for the client, while a database failure must surface as
+// 500 so operations can tell resource absence from service faults.
+func abLookupError(c *gin.Context, err error) {
+	if errors.Is(err, addressbook.ErrBookNotFound) {
+		compatError(c, http.StatusNotFound, "address book not found")
+		return
+	}
+	compatError(c, http.StatusInternalServerError, "address book lookup failed")
 }
 
 // abActionError maps service errors onto the client's {"error": msg} shape.

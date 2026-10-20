@@ -311,6 +311,19 @@ func (s *Service) ReplacePeers(userID uint, role string, orgID, bookID uint, pee
 		if _, err := lockBook(tx, orgID, book.ID); err != nil {
 			return err
 		}
+		// The management contract does not carry the compat layer's opaque
+		// Hash/Note fields (the client's unattended-access password hash and
+		// its note). Preserve them across the delete-and-recreate cycle for
+		// every peer id that survives the replace.
+		var current []model.AddressBookPeer
+		if err := store.ScopedByOrg(tx, orgID).
+			Where("book_id = ?", book.ID).Find(&current).Error; err != nil {
+			return err
+		}
+		opaque := make(map[string]model.AddressBookPeer, len(current))
+		for _, row := range current {
+			opaque[row.PeerID] = row
+		}
 		if err := store.ScopedByOrg(tx, orgID).
 			Where("book_id = ?", book.ID).Delete(&model.AddressBookPeer{}).Error; err != nil {
 			return err
@@ -325,6 +338,10 @@ func (s *Service) ReplacePeers(userID uint, role string, orgID, bookID uint, pee
 				Hostname:       p.Hostname,
 				Platform:       p.Platform,
 				TagsJSON:       TagsJSON(p.Tags),
+			}
+			if old, ok := opaque[p.PeerID]; ok {
+				row.Hash = old.Hash
+				row.Note = old.Note
 			}
 			if err := store.ScopedByOrg(tx, orgID).Create(&row).Error; err != nil {
 				return err
