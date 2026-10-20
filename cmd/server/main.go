@@ -126,6 +126,11 @@ func main() {
 	// their docker child processes are not orphaned.
 	rootCtx, stopRoot := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopRoot()
+	// Handling the first signal disables the default termination for the whole
+	// shutdown window, so a second Ctrl-C would be swallowed while a request or
+	// a tailer is still draining. Restoring the default handling as soon as the
+	// context is cancelled keeps the operator's force-quit escape hatch.
+	context.AfterFunc(rootCtx, stopRoot)
 
 	// Log collection: one tailer pair per provisioned organization. The queue
 	// hook starts the tailers of a fresh deployment immediately instead of
@@ -265,7 +270,19 @@ func serveUntilShutdown(
 		lg.Warn("graceful shutdown did not finish", zap.Error(err))
 	}
 	if drain != nil {
-		drain()
+		// A docker CLI child that cannot be killed leaves Wait blocked, so the
+		// drain gets the same bound: the process is exiting anyway and the
+		// children are terminated with it.
+		drained := make(chan struct{})
+		go func() {
+			drain()
+			close(drained)
+		}()
+		select {
+		case <-drained:
+		case <-time.After(timeout):
+			lg.Warn("background workers did not stop in time", zap.Duration("timeout", timeout))
+		}
 	}
 	return nil
 }

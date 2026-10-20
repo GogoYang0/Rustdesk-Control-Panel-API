@@ -118,3 +118,31 @@ func TestServeUntilShutdown_NoDrainConfigured(t *testing.T) {
 		t.Fatal("serveUntilShutdown did not return with log collection disabled")
 	}
 }
+
+// The drain runs after the HTTP server stopped, but it must not be able to hang
+// the process forever: a docker CLI child that ignores SIGKILL leaves
+// collector.Wait() blocked, and shutdown would never complete.
+func TestServeUntilShutdown_DrainTimeout(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	srv := &http.Server{Handler: http.NotFoundHandler()}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	block := make(chan struct{})
+	defer close(block)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- serveUntilShutdown(ctx, srv, ln, func() { <-block }, zap.NewNop(), 100*time.Millisecond)
+	}()
+	cancel()
+
+	select {
+	case serveErr := <-done:
+		require.NoError(t, serveErr)
+	case <-time.After(2 * time.Second):
+		t.Fatal("a stuck drain must not block shutdown forever")
+	}
+}
