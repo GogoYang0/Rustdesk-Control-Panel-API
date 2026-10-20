@@ -236,6 +236,9 @@ func (s *Service) handleLine(ctx context.Context, orgID uint, source, line strin
 			detail = string(b)
 		}
 	}
+	// Stored as UTC: docker timestamps may carry an offset and untimestamped
+	// lines fall back to the local zone, but SQLite orders these values as
+	// text, so every row must share one offset.
 	row := model.LogEvent{
 		OrganizationID: orgID,
 		DeviceID:       deviceID,
@@ -243,7 +246,7 @@ func (s *Service) handleLine(ctx context.Context, orgID uint, source, line strin
 		Level:          event.Level,
 		Kind:           event.Kind,
 		DetailJSON:     detail,
-		OccurredAt:     event.OccurredAt,
+		OccurredAt:     event.OccurredAt.UTC(),
 	}
 	if err := store.ScopedByOrg(s.db, orgID).WithContext(persistCtx).Create(&row).Error; err != nil {
 		s.logger.Error("store log event failed", zap.Uint("org_id", orgID), zap.Error(err))

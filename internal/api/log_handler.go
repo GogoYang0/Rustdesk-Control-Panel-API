@@ -70,7 +70,10 @@ func (a *AdminAPI) ListLogEvents(c *gin.Context, orgId int64, params gen.ListLog
 		q = q.Where("level = ?", string(*params.Level))
 	}
 	if params.Since != nil {
-		q = q.Where("occurred_at >= ?", *params.Since)
+		// SQLite keeps time.Time as text and compares it lexicographically, so
+		// a cutoff with an offset ("03:00:00+00:00") would not order correctly
+		// against a row stored as "10:00:00+08:00". Compare instants instead.
+		q = q.Where("occurred_at >= ?", params.Since.UTC())
 	}
 
 	var rows []model.LogEvent

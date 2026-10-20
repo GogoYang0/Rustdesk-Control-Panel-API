@@ -107,3 +107,53 @@ func TestListLogEvents_FiltersAndIsolation(t *testing.T) {
 	w = h.do(t, http.MethodGet, "/api/v1/orgs/"+itoa(int64(foreign.ID))+"/log-events", nil, token)
 	require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
 }
+
+// SQLite keeps time.Time as text and compares it lexicographically, so a
+// cutoff carrying an offset ("09:00:00+08:00") does not order against a row
+// stored as "02:00:00+00:00" even though the row is later. The handler
+// normalises the cutoff to UTC before the comparison.
+func TestListLogEvents_SinceComparesInstantsNotOffsets(t *testing.T) {
+	h := newHarness(t)
+	h.seedUser(t, "tz@example.com", "password123")
+	token := h.login(t, "tz@example.com", "password123")
+
+	w := h.do(t, http.MethodPost, "/api/v1/orgs", map[string]string{"name": "tz-org"}, token)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	var orgResp struct {
+		Data struct {
+			Id int64 `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &orgResp))
+	orgID := uint(orgResp.Data.Id)
+
+	// Rows are always stored as UTC (the collector normalises them).
+	stored := time.Date(2026, 10, 20, 2, 0, 0, 0, time.UTC)
+	require.NoError(t, store.ScopedByOrg(h.db.DB, orgID).Create(&model.LogEvent{
+		OrganizationID: orgID,
+		Source:         model.LogSourceHbbs,
+		Level:          model.LogLevelInfo,
+		Kind:           model.LogKindConn,
+		DetailJSON:     `{"raw":"line"}`,
+		OccurredAt:     stored,
+	}).Error)
+
+	// A cutoff one hour earlier, expressed in +08:00 (09:00+08:00 == 01:00Z):
+	// the event must be included.
+	w = h.do(t, http.MethodGet,
+		"/api/v1/orgs/"+itoa(int64(orgID))+"/log-events?since=2026-10-20T09:00:00%2B08:00", nil, token)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var resp struct {
+		Data []map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Len(t, resp.Data, 1, "since must compare instants, not the serialised offset")
+
+	// A cutoff one hour later, also in +08:00 (11:00+08:00 == 03:00Z): the
+	// event must be excluded.
+	w = h.do(t, http.MethodGet,
+		"/api/v1/orgs/"+itoa(int64(orgID))+"/log-events?since=2026-10-20T11:00:00%2B08:00", nil, token)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Empty(t, resp.Data)
+}

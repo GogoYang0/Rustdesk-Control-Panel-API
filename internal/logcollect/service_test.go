@@ -305,3 +305,25 @@ func TestHandleLine_CancelledContext_StillPersists(t *testing.T) {
 		Model(&model.DeviceHeartbeat{}).Where("device_id = ?", dev.ID).Count(&beats).Error)
 	require.NotZero(t, beats, "the auxiliary heartbeat must not be lost either")
 }
+
+// docker timestamps may carry an offset, and untimestamped lines fall back to
+// the local zone. Rows are always stored as UTC because SQLite orders them as
+// text and mixed offsets would break the since filter (see the api handler).
+func TestHandleLine_StoresOccurredAtInUTC(t *testing.T) {
+	st, orgs := serviceFixture(t, "org-a")
+	org := orgs[0]
+
+	parser, err := NewParser(testRules())
+	require.NoError(t, err)
+	svc := NewService(st.DB, parser, newMapStreamer(nil), nil,
+		Options{InitialBackoff: time.Millisecond, MaxBackoff: 2 * time.Millisecond}, nil)
+
+	at := time.Date(2026, 10, 20, 10, 0, 0, 0, time.FixedZone("CST", 8*3600))
+	svc.handleLine(context.Background(), org.ID, model.LogSourceHbbs,
+		"INFO connection from 123456789 via 10.0.0.1:1", at)
+
+	var row model.LogEvent
+	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).First(&row).Error)
+	require.Equal(t, time.UTC, row.OccurredAt.Location(), "rows must be stored in UTC")
+	require.True(t, row.OccurredAt.Equal(at), "the instant must be preserved")
+}
