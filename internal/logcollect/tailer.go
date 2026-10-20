@@ -251,6 +251,13 @@ func (t *Tailer) consume(ctx context.Context, stream io.Reader, now func() time.
 				if herr := t.Handler(ctx, t.OrgID, t.Source, line, at); herr != nil {
 					logger.Warn("log line handler failed, reconnecting from the last confirmed position",
 						zap.String("container", t.Container), zap.Error(herr))
+					// With nothing confirmed yet, a zero resume point means
+					// --tail 0: a fresh follow that would drop this line and
+					// everything produced during the backoff. Anchor just before
+					// it so the reconnect (--since lastSeen+1ns) starts at it.
+					if stamped && lastSeen.IsZero() {
+						*lastSeen = at.Add(-time.Nanosecond)
+					}
 					return lines
 				}
 				if at.After(*lastSeen) {

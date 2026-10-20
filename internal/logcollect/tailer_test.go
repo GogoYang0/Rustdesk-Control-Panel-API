@@ -344,5 +344,32 @@ func TestTailer_HandlerFailure_DoesNotAdvanceResumePoint(t *testing.T) {
 
 	require.Equal(t, 0, lines, "a failed write must not count as progress")
 	require.Equal(t, 1, delivered, "the stream must stop after the failed line")
-	require.True(t, lastSeen.IsZero(), "the resume point must stay behind the failed line")
+	require.True(t, lastSeen.Before(time.Date(2026, 10, 20, 7, 0, 1, 1, time.UTC)),
+		"the resume point must stay behind the failed line")
+}
+
+// A failure on the very first timestamped line leaves lastSeen at its zero
+// value, and dockerLogsArgs turns a zero resume point into --tail 0 (a fresh
+// follow): neither the failed line nor anything produced during the backoff
+// would be replayed. The resume point must anchor just before the failed line.
+func TestTailer_FirstLineFailure_AnchorsResumePoint(t *testing.T) {
+	line := "2026-10-20T07:00:01.000000001Z INFO connection from 123456789"
+	at := time.Date(2026, 10, 20, 7, 0, 1, 1, time.UTC)
+
+	tailer := &Tailer{
+		Container: "c",
+		Source:    "hbbs",
+		now:       func() time.Time { return time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC) },
+		Handler: func(_ context.Context, _ uint, _ string, _ string, _ time.Time) error {
+			return errors.New("database unavailable")
+		},
+	}
+
+	var lastSeen time.Time
+	lines := tailer.consume(context.Background(), io.NopCloser(strings.NewReader(line+"\n")),
+		tailer.now, &lastSeen, zap.NewNop())
+
+	require.Equal(t, 0, lines)
+	require.Equal(t, at.Add(-time.Nanosecond), lastSeen,
+		"the resume point must sit just before the failed line so it is replayed")
 }
