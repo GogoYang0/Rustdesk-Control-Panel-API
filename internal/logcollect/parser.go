@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 )
@@ -118,12 +119,18 @@ func (p *Parser) Parse(line string, at time.Time) (ParsedEvent, bool) {
 const maxDetailValueBytes = 4096
 
 // truncateValue bounds one detail string: storing megabyte lines is a privacy
-// and storage risk even when a single line is legitimate.
+// and storage risk even when a single line is legitimate. The cut backs off to
+// a character boundary, because slicing inside a multi-byte rune would store
+// invalid UTF-8 that JSON encoding turns into a replacement character.
 func truncateValue(s string) string {
 	if len(s) <= maxDetailValueBytes {
 		return s
 	}
-	return s[:maxDetailValueBytes] + "...(truncated)"
+	cut := maxDetailValueBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "...(truncated)"
 }
 
 // normalizeLevel clamps unknown levels to info.

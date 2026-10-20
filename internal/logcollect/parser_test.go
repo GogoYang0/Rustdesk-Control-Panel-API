@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/require"
@@ -149,4 +150,17 @@ func TestParser_TruncatesCapturedValues(t *testing.T) {
 	require.LessOrEqual(t, len(msg), maxDetailValueBytes+len("...(truncated)"),
 		"a captured value must be bounded")
 	require.Contains(t, msg, "(truncated)")
+}
+
+// Cutting at a byte offset can split a multi-byte character, and the resulting
+// invalid UTF-8 would be stored as a replacement character once the detail is
+// encoded as JSON: truncation must back off to a character boundary.
+func TestParser_TruncationKeepsValidUTF8(t *testing.T) {
+	// maxDetailValueBytes-1 ASCII bytes followed by a two-byte rune: the byte
+	// limit lands inside that rune.
+	long := strings.Repeat("a", maxDetailValueBytes-1) + "é" + strings.Repeat("b", 100)
+
+	got := truncateValue(long)
+	require.True(t, utf8.ValidString(got), "truncation must not split a multi-byte character")
+	require.Contains(t, got, "...(truncated)")
 }
