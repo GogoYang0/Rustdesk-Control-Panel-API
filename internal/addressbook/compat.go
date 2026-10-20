@@ -286,6 +286,9 @@ func (s *Service) AddPeer(userID uint, orgID, bookID uint, in PeerJSON) error {
 			Where("book_id = ? AND peer_id = ?", book.ID, in.ID).First(&row).Error
 		switch {
 		case errors.Is(err, gorm.ErrRecordNotFound):
+			if err := ensurePeerCapacity(tx, orgID, book.ID); err != nil {
+				return err
+			}
 			row = model.AddressBookPeer{
 				OrganizationID: orgID,
 				BookID:         book.ID,
@@ -390,6 +393,9 @@ func (s *Service) AddTag(userID uint, orgID, bookID uint, name string, color uin
 			Where("book_id = ? AND name = ?", book.ID, name).First(&row).Error
 		switch {
 		case errors.Is(err, gorm.ErrRecordNotFound):
+			if err := ensureTagCapacity(tx, orgID, book.ID); err != nil {
+				return err
+			}
 			row = model.AddressBookTag{
 				OrganizationID: orgID,
 				BookID:         book.ID,
@@ -597,6 +603,34 @@ func derefString(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// ensurePeerCapacity enforces the per-book peer limit for granular writes. The
+// whole-book path checks it after normalisation, but AddPeer hands
+// normalizePeers a single element, so that check can never trip there.
+func ensurePeerCapacity(tx *gorm.DB, orgID, bookID uint) error {
+	var n int64
+	if err := store.ScopedByOrg(tx, orgID).Model(&model.AddressBookPeer{}).
+		Where("book_id = ?", bookID).Count(&n).Error; err != nil {
+		return err
+	}
+	if n >= MaxPeersPerBook {
+		return fmt.Errorf("%w: too many peers", ErrInvalidContent)
+	}
+	return nil
+}
+
+// ensureTagCapacity mirrors ensurePeerCapacity for tags.
+func ensureTagCapacity(tx *gorm.DB, orgID, bookID uint) error {
+	var n int64
+	if err := store.ScopedByOrg(tx, orgID).Model(&model.AddressBookTag{}).
+		Where("book_id = ?", bookID).Count(&n).Error; err != nil {
+		return err
+	}
+	if n >= MaxTagsPerBook {
+		return fmt.Errorf("%w: too many tags", ErrInvalidContent)
+	}
+	return nil
 }
 
 // ReplaceBookContent swaps peers and tags in one transaction (legacy /api/ab

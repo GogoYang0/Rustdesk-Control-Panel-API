@@ -1,6 +1,7 @@
 package addressbook
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -116,4 +117,40 @@ func TestReplaceBookContent_InheritsOpaqueFieldsWhenOmitted(t *testing.T) {
 		"an omitted note must inherit the stored value")
 	require.Equal(t, "alpha-renamed", byID["111111111"].Alias)
 	require.Empty(t, byID["222222222"].Hash, "an explicit empty value clears")
+}
+
+// The granular endpoints add one peer or tag at a time, so the collection
+// limits inside normalizePeers/normalizeTags can never trigger there. Without a
+// count check the book grows past the limit, and a legacy whole-book push of
+// that book is rejected -- the client can no longer sync at all.
+func TestGranularWrites_EnforceBookLimits(t *testing.T) {
+	svc, orgID, uid := newServiceFixture(t)
+	book, err := svc.EnsurePersonalBook(uid, orgID)
+	require.NoError(t, err)
+
+	peers := make([]model.AddressBookPeer, MaxPeersPerBook)
+	for i := range peers {
+		peers[i] = model.AddressBookPeer{
+			OrganizationID: orgID, BookID: book.ID, PeerID: fmt.Sprintf("p%06d", i),
+		}
+	}
+	require.NoError(t, store.ScopedByOrg(svc.db, orgID).CreateInBatches(&peers, 200).Error)
+
+	require.ErrorIs(t, svc.AddPeer(uid, orgID, book.ID, PeerJSON{ID: "overflow"}), ErrInvalidContent,
+		"a new peer beyond the book limit must be refused")
+	require.NoError(t, svc.AddPeer(uid, orgID, book.ID, PeerJSON{ID: "p000000", Alias: "renamed"}),
+		"updating an existing peer must still work at the limit")
+
+	tags := make([]model.AddressBookTag, MaxTagsPerBook)
+	for i := range tags {
+		tags[i] = model.AddressBookTag{
+			OrganizationID: orgID, BookID: book.ID, Name: fmt.Sprintf("tag%03d", i),
+		}
+	}
+	require.NoError(t, store.ScopedByOrg(svc.db, orgID).CreateInBatches(&tags, 100).Error)
+
+	require.ErrorIs(t, svc.AddTag(uid, orgID, book.ID, "overflow", 0), ErrInvalidContent,
+		"a new tag beyond the book limit must be refused")
+	require.NoError(t, svc.AddTag(uid, orgID, book.ID, "tag000", 16711680),
+		"updating an existing tag must still work at the limit")
 }
