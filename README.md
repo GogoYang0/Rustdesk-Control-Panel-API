@@ -154,3 +154,11 @@ gen/                 # oapi-codegen 生成产物（提交入库）
 ## 许可
 
 私有项目，保留所有权利（见 `LICENSE`）。
+
+## 文档
+
+- [部署指南](docs/deployment.md)：系统要求、配置全表、数据库与迁移、邮件与日志采集启用清单、上线安全清单
+- [运维指南](docs/operations.md)：设备与心跳、审计巡检、日志采集运维、供应对账、备份恢复、故障排查速查
+- [后端 API 规范](docs/api-spec.md)：两族认证、管理端点语义、compat 协议边界、错误码与冲突语义
+
+三份文档随版本演进持续更新；契约变更必须同步 `docs/api-spec.md` 与 `openapi.yaml`。
