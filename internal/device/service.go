@@ -135,7 +135,49 @@ func (s *Service) RecordLogActivity(ctx context.Context, orgID uint, rustdeskID 
 	if dev.LastSeenAt != nil && now.Sub(*dev.LastSeenAt) < logHeartbeatMinInterval {
 		return &dev, nil
 	}
-	return s.heartbeat(ctx, orgID, dev, heartbeatSourceLog)
+	return s.heartbeatLog(ctx, orgID, dev, now)
+}
+
+// heartbeatLog records the auxiliary log heartbeat only when the device has not
+// been refreshed within logHeartbeatMinInterval. The window check and the
+// insert share one transaction and the update itself is conditional, so two
+// tailers (hbbs and hbbr) handling the same device concurrently cannot both
+// pass the check and write a row each.
+func (s *Service) heartbeatLog(ctx context.Context, orgID uint, dev model.Device, now time.Time) (*model.Device, error) {
+	refreshed := false
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// The RowsAffected guard is the real deduplication: the outer check is
+		// only a fast path and can be raced.
+		result := store.ScopedByOrg(tx, orgID).Model(&model.Device{}).
+			Where("id = ?", dev.ID).
+			Where("last_seen_at IS NULL OR last_seen_at <= ?", now.Add(-logHeartbeatMinInterval)).
+			Update("last_seen_at", now)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return nil
+		}
+		refreshed = true
+		return store.ScopedByOrg(tx, orgID).Create(&model.DeviceHeartbeat{
+			OrganizationID: orgID,
+			DeviceID:       dev.ID,
+			At:             now,
+			Source:         heartbeatSourceLog,
+		}).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !refreshed {
+		// Another tailer refreshed the device inside the window.
+		return &dev, nil
+	}
+	var stored model.Device
+	if err := store.ScopedByOrg(s.db.WithContext(ctx), orgID).First(&stored, dev.ID).Error; err != nil {
+		return nil, fmt.Errorf("load device: %w", err)
+	}
+	return &stored, nil
 }
 
 // Heartbeat records a client-reported heartbeat and refreshes last_seen_at.
