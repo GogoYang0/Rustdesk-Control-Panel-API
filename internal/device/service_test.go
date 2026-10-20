@@ -175,3 +175,26 @@ func TestOnline_FutureTimestampIsOffline(t *testing.T) {
 	slightFuture := now.Add(2 * time.Second)
 	require.True(t, (&model.Device{LastSeenAt: &slightFuture}).Online(now), "small clock skew stays online")
 }
+
+// Client heartbeats and log-derived heartbeats must stay distinguishable:
+// DeviceHeartbeat.Source records the provenance, so the auxiliary source (C11)
+// is not reported as if the client had checked in.
+func TestHeartbeat_SourceDistinguishesClientFromLog(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	dev, err := f.svc.Register(ctx, f.orgA.ID, device.RegisterInput{Name: "pc", RustdeskID: "987654321"})
+	require.NoError(t, err)
+
+	// Log activity first: the auxiliary source is deduplicated within 30s, so
+	// a client report has to follow it to get its own row.
+	_, err = f.svc.RecordLogActivity(ctx, f.orgA.ID, dev.RustdeskID, time.Now())
+	require.NoError(t, err)
+	_, err = f.svc.Heartbeat(ctx, f.orgA.ID, dev.ID)
+	require.NoError(t, err)
+
+	var sources []string
+	require.NoError(t, store.ScopedByOrg(f.st.DB, f.orgA.ID).
+		Model(&model.DeviceHeartbeat{}).Order("id").Pluck("source", &sources).Error)
+	require.Equal(t, []string{"log", "api"}, sources)
+}
