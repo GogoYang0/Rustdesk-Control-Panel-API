@@ -17,6 +17,11 @@ type Device struct {
 	// protocol carries no ownership secret, so this hardware-stable uuid is
 	// the ownership anchor: a login presenting a different uuid is refused
 	// instead of taking the binding over (CWE-863).
+	//
+	// The column stays at 255 while CompatSession.UUID is 128: the login path
+	// rejects anything longer than 128 before writing here, so the wider column
+	// only avoids a schema shrink that could fail on rows written by an earlier
+	// build.
 	BoundUUID  string     `gorm:"size:255" json:"-"`
 	LastSeenAt *time.Time `json:"last_seen_at"`
 	CreatedAt  time.Time  `json:"created_at"`

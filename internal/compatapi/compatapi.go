@@ -44,6 +44,15 @@ type Server struct {
 	deps Deps
 }
 
+// Client identity bounds. The uuid also lands in CompatSession.UUID (128 byte
+// column), so anything longer must be refused before the device is claimed --
+// otherwise the device stays bound to an identity whose session can never be
+// created.
+const (
+	maxDeviceIDLen   = 64
+	maxDeviceUUIDLen = 128
+)
+
 // Mount registers the compat routes on the given router. It must NOT be
 // placed behind the management JWT middleware: the compat endpoints
 // authenticate with their own compat tokens.

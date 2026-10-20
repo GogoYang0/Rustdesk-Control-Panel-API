@@ -112,16 +112,19 @@ func TestExampleConfigRules_MatchServerFormat(t *testing.T) {
 	p, err := NewParser(cfg.Logcollect.Rules)
 	require.NoError(t, err)
 
+	// Lines in flexi_logger's opt_format, which rustdesk-server 1.1.11 uses via
+	// `.log_to_stdout().format(opt_format)`:
+	//   [<timestamp with spaces>] <LEVEL> [<file>:<line>] <message>
 	cases := []struct {
 		line   string
 		level  string
 		kind   string
 		device string
 	}{
-		{"[2026-10-20T06:00:00Z INFO  hbbs] connection from 123456789", model.LogLevelInfo, model.LogKindConn, "123456789"},
-		{"[2026-10-20T06:00:02Z INFO  hbbs] file transfer 123456789 -> 987654321", model.LogLevelInfo, model.LogKindFile, "123456789"},
-		{"[2026-10-20T06:00:03Z WARN  hbbr] slow client", model.LogLevelWarn, model.LogKindOther, ""},
-		{"[2026-10-20T06:00:04Z ERROR hbbs] relay quota exceeded", model.LogLevelError, model.LogKindError, ""},
+		{"[2026-10-20 06:00:00.640870 +00:00] INFO [src/rendezvous_mediator.rs:100] connection from 123456789", model.LogLevelInfo, model.LogKindConn, "123456789"},
+		{"[2026-10-20 06:00:02.640870 +00:00] INFO [src/rendezvous_mediator.rs:200] file transfer 123456789 -> 987654321", model.LogLevelInfo, model.LogKindFile, "123456789"},
+		{"[2026-10-20 06:00:03.640870 +00:00] WARN [src/relay_server.rs:50] slow client", model.LogLevelWarn, model.LogKindOther, ""},
+		{"[2026-10-20 06:00:04.640870 +00:00] ERROR [src/rendezvous_mediator.rs:300] relay quota exceeded", model.LogLevelError, model.LogKindError, ""},
 	}
 	for _, tc := range cases {
 		event, ok := p.Parse(tc.line, time.Now())

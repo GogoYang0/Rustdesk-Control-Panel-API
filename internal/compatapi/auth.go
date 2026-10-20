@@ -65,15 +65,19 @@ func sessionFrom(c *gin.Context) (uid, orgID uint, jti string) {
 }
 
 // activeSessionByUUID returns the still-active session bound to the given
-// device UUID (used by the unauthenticated heartbeat/sysinfo calls: the
-// client posted its device binding at login, the session fixes the org).
-func (s *Server) activeSessionByUUID(uuid string) (*model.CompatSession, bool) {
-	if uuid == "" {
+// device UUID and rustdesk id (used by the unauthenticated heartbeat/sysinfo
+// calls: the client posted its device binding at login, the session fixes the
+// org). The device id is part of the lookup on purpose: the uuid is neither a
+// secret nor verified at login, so filtering by uuid alone would let any
+// account shadow another device's session and suppress its heartbeat.
+func (s *Server) activeSessionByUUID(uuid, deviceID string) (*model.CompatSession, bool) {
+	if uuid == "" || deviceID == "" {
 		return nil, false
 	}
 	var session model.CompatSession
 	if err := store.WithoutTenantScope(s.deps.DB).
-		Where("uuid = ? AND revoked_at IS NULL AND expires_at > ?", uuid, s.deps.Now()).
+		Where("uuid = ? AND device_id = ? AND revoked_at IS NULL AND expires_at > ?",
+			uuid, deviceID, s.deps.Now()).
 		Order("id DESC").
 		First(&session).Error; err != nil {
 		return nil, false

@@ -380,3 +380,34 @@ func TestQueue_NotifiesAfterProvisioning(t *testing.T) {
 	}
 	require.Len(t, f.orch.Deployed, 1)
 }
+
+// After a successful deprovision the containers are gone, so anything following
+// them has to stop: the log collector registers its Unwatch here.
+func TestDeprovision_NotifiesHook(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "acme")
+	_, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.NoError(t, err)
+
+	var got []uint
+	f.svc.OnDeprovisioned(func(orgID uint) { got = append(got, orgID) })
+
+	require.NoError(t, f.svc.Deprovision(context.Background(), org.ID))
+	require.Equal(t, []uint{org.ID}, got)
+}
+
+// A failed removal keeps the row and its ports because the containers may still
+// be running: the hook must not fire.
+func TestDeprovision_RemovalFailure_DoesNotNotify(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "acme")
+	_, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.NoError(t, err)
+
+	called := false
+	f.svc.OnDeprovisioned(func(uint) { called = true })
+	f.orch.RemoveErr = errors.New("docker unavailable")
+
+	require.Error(t, f.svc.Deprovision(context.Background(), org.ID))
+	require.False(t, called, "a failed removal must not stop the tailers")
+}

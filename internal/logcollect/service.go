@@ -53,6 +53,9 @@ type Service struct {
 	wg      sync.WaitGroup
 	ctx     context.Context
 	watched map[uint]context.CancelFunc
+	// closed is set by Wait: while it holds the lock, Watch can no longer
+	// register work, which keeps Add strictly before Wait.
+	closed bool
 
 	// parseLogMu guards the rate-limited parse-error warning state.
 	parseLogMu   sync.Mutex
@@ -111,7 +114,10 @@ func (s *Service) Start(ctx context.Context) {
 // background scheduler yet, so the sweep runs once per process start; it is
 // idempotent and bounded by the occurred_at index.
 func (s *Service) pruneExpired() {
-	cutoff := s.now().Add(-time.Duration(model.DefaultLogEventRetentionDays) * 24 * time.Hour)
+	// occurred_at is stored as UTC text and compared lexicographically, so the
+	// cutoff must share that timeline: a local-zone value shifts the window by
+	// the host's offset.
+	cutoff := s.now().UTC().Add(-time.Duration(model.DefaultLogEventRetentionDays) * 24 * time.Hour)
 	res := store.WithoutTenantScope(s.db).
 		Where("occurred_at < ?", cutoff).
 		Delete(&model.LogEvent{})
@@ -132,7 +138,14 @@ func (s *Service) Watch(orgID uint) {
 	if orgID == 0 {
 		return
 	}
+	roles := []string{model.LogSourceHbbs, model.LogSourceHbbr}
+
 	s.mu.Lock()
+	if s.closed {
+		// Wait has started: registering would break the WaitGroup contract.
+		s.mu.Unlock()
+		return
+	}
 	if _, running := s.watched[orgID]; running {
 		s.mu.Unlock()
 		return
@@ -141,11 +154,30 @@ func (s *Service) Watch(orgID uint) {
 	if root == nil {
 		root = context.Background()
 	}
+	// A provisioning worker detached with WithoutCancel can finish after
+	// shutdown began and call Watch while main is draining.
+	if root.Err() != nil {
+		s.mu.Unlock()
+		return
+	}
 	orgCtx, cancel := context.WithCancel(root)
 	s.watched[orgID] = cancel
+	// Add under the same lock that closes registration, so no Add can race
+	// with Wait once it has started.
+	s.wg.Add(len(roles))
 	s.mu.Unlock()
 
-	for _, role := range []string{model.LogSourceHbbs, model.LogSourceHbbr} {
+	// A provisioning notification can also arrive after the organization was
+	// deprovisioned (the row was deleted and Unwatch already ran): following
+	// containers that no longer exist would leave two tailers retrying forever.
+	// Only a successful lookup may cancel: a transient database error would
+	// otherwise stop collection until the process restarts, because nothing
+	// re-runs Watch for this organization.
+	if deployed, err := s.deployed(orgID); err == nil && !deployed {
+		s.Unwatch(orgID)
+	}
+
+	for _, role := range roles {
 		tailer := &Tailer{
 			Container:      s.containerName(orgID, role),
 			Source:         role,
@@ -157,12 +189,27 @@ func (s *Service) Watch(orgID uint) {
 			MaxBackoff:     s.opts.MaxBackoff,
 			now:            s.now,
 		}
-		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
 			tailer.Run(orgCtx)
 		}()
 	}
+}
+
+// deployed reports whether the organization still has a deployed server group.
+// The error is returned separately from the answer: a failed lookup says nothing
+// about the deployment state.
+func (s *Service) deployed(orgID uint) (bool, error) {
+	var count int64
+	err := store.WithoutTenantScope(s.db).Model(&model.ServerGroup{}).
+		Where("organization_id = ? AND state = ?", orgID, model.ServerGroupDeployed).
+		Count(&count).Error
+	if err != nil {
+		s.logger.Warn("check server group state failed",
+			zap.Uint("org_id", orgID), zap.Error(err))
+		return false, err
+	}
+	return count > 0, nil
 }
 
 // Unwatch stops the tailers of one organization (deprovisioning): without it a
@@ -180,7 +227,13 @@ func (s *Service) Unwatch(orgID uint) {
 }
 
 // Wait blocks until every tailer goroutine has stopped (tests and shutdown).
-func (s *Service) Wait() { s.wg.Wait() }
+// It closes registration first, so a late Watch cannot Add while Wait runs.
+func (s *Service) Wait() {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
+	s.wg.Wait()
+}
 
 // containerName renders the provisioned container name for one role.
 func (s *Service) containerName(orgID uint, role string) string {

@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -713,4 +714,63 @@ func TestAddressBook_Update_Delete_Race(t *testing.T) {
 		require.Equal(t, "race-del-renamed", got.Data.Name,
 			"a surviving book must carry the renamed value exactly once")
 	}
+}
+
+// The contract declares maxItems/minimum/maximum, but no request validator is
+// mounted, so the handlers have to enforce them: an unbounded peers list keeps a
+// write transaction open for an arbitrary number of rows, and a colour outside
+// the uint32 range would be truncated into a wrong value.
+func TestAddressBook_EnforcesContractBounds(t *testing.T) {
+	h := newHarness(t)
+	h.seedUser(t, "bounds@example.com", "password123")
+	token := h.login(t, "bounds@example.com", "password123")
+
+	w := h.do(t, http.MethodPost, "/api/v1/orgs", map[string]string{"name": "bounds-org"}, token)
+	require.Equal(t, http.StatusCreated, w.Code)
+	var orgResp struct {
+		Data struct {
+			Id int64 `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &orgResp))
+	orgID := orgResp.Data.Id
+
+	book := createBook(t, h, token, orgID, "bounds-book", "personal")
+	bookPath := "/api/v1/orgs/" + itoa(orgID) + "/address-books/" + itoa(book.Data.Id)
+
+	peers := make([]map[string]any, 2001)
+	for i := range peers {
+		peers[i] = map[string]any{"peer_id": fmt.Sprintf("p%06d", i)}
+	}
+	w = h.do(t, http.MethodPut, bookPath+"/peers", map[string]any{"peers": peers}, token)
+	require.Equal(t, http.StatusBadRequest, w.Code, "more than 2000 peers must be rejected")
+
+	tooManyTags := make([]string, 65)
+	for i := range tooManyTags {
+		tooManyTags[i] = fmt.Sprintf("t%d", i)
+	}
+	w = h.do(t, http.MethodPut, bookPath+"/peers", map[string]any{
+		"peers": []map[string]any{{"peer_id": "111111", "tags": tooManyTags}},
+	}, token)
+	require.Equal(t, http.StatusBadRequest, w.Code, "more than 64 tags on one peer must be rejected")
+
+	tags := make([]map[string]any, 257)
+	for i := range tags {
+		tags[i] = map[string]any{"name": fmt.Sprintf("tag%03d", i)}
+	}
+	w = h.do(t, http.MethodPut, bookPath+"/tags", map[string]any{"tags": tags}, token)
+	require.Equal(t, http.StatusBadRequest, w.Code, "more than 256 tags must be rejected")
+
+	for _, color := range []int{-1, 4294967296} {
+		w = h.do(t, http.MethodPut, bookPath+"/tags", map[string]any{
+			"tags": []map[string]any{{"name": "infra", "color": color}},
+		}, token)
+		require.Equal(t, http.StatusBadRequest, w.Code, "colour %d is outside the contract range", color)
+	}
+
+	// The declared maximum itself is valid.
+	w = h.do(t, http.MethodPut, bookPath+"/tags", map[string]any{
+		"tags": []map[string]any{{"name": "infra", "color": 4294967295}},
+	}, token)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 }
