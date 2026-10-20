@@ -158,6 +158,7 @@ func (s *Service) heartbeatLog(ctx context.Context, orgID uint, dev model.Device
 		if result.RowsAffected == 0 {
 			return nil
 		}
+		refreshed = true
 		return store.ScopedByOrg(tx, orgID).Create(&model.DeviceHeartbeat{
 			OrganizationID: orgID,
 			DeviceID:       dev.ID,

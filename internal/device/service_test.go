@@ -299,3 +299,20 @@ func TestHeartbeat_ConcurrentReports_WriteOneRow(t *testing.T) {
 		require.NotNil(t, got.LastSeenAt, "caller %d must observe the refreshed device", i)
 	}
 }
+
+// Regression: a lost refreshed flag made heartbeatLog always return the
+// caller's stale copy, so a first log-derived heartbeat reported
+// last_seen_at == nil even though the row had been stored.
+func TestRecordLogActivity_ReturnsRefreshedDevice(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	dev, err := f.svc.Register(ctx, f.orgA.ID, device.RegisterInput{Name: "pc", RustdeskID: "987654321"})
+	require.NoError(t, err)
+	require.Nil(t, dev.LastSeenAt)
+
+	got, err := f.svc.RecordLogActivity(ctx, f.orgA.ID, dev.RustdeskID, time.Now())
+	require.NoError(t, err)
+	require.NotNil(t, got.LastSeenAt,
+		"the returned device must carry the refreshed timestamp, not the stale caller copy")
+}
