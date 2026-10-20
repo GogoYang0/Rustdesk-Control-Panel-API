@@ -53,6 +53,9 @@ type Service struct {
 	wg      sync.WaitGroup
 	ctx     context.Context
 	watched map[uint]context.CancelFunc
+	// closed is set by Wait: while it holds the lock, Watch can no longer
+	// register work, which keeps Add strictly before Wait.
+	closed bool
 
 	// parseLogMu guards the rate-limited parse-error warning state.
 	parseLogMu   sync.Mutex
@@ -135,7 +138,14 @@ func (s *Service) Watch(orgID uint) {
 	if orgID == 0 {
 		return
 	}
+	roles := []string{model.LogSourceHbbs, model.LogSourceHbbr}
+
 	s.mu.Lock()
+	if s.closed {
+		// Wait has started: registering would break the WaitGroup contract.
+		s.mu.Unlock()
+		return
+	}
 	if _, running := s.watched[orgID]; running {
 		s.mu.Unlock()
 		return
@@ -145,17 +155,26 @@ func (s *Service) Watch(orgID uint) {
 		root = context.Background()
 	}
 	// A provisioning worker detached with WithoutCancel can finish after
-	// shutdown began and call Watch while main is draining: adding to the
-	// WaitGroup then is a documented misuse, and the tailer would exit at once.
+	// shutdown began and call Watch while main is draining.
 	if root.Err() != nil {
 		s.mu.Unlock()
 		return
 	}
 	orgCtx, cancel := context.WithCancel(root)
 	s.watched[orgID] = cancel
+	// Add under the same lock that closes registration, so no Add can race
+	// with Wait once it has started.
+	s.wg.Add(len(roles))
 	s.mu.Unlock()
 
-	for _, role := range []string{model.LogSourceHbbs, model.LogSourceHbbr} {
+	// A provisioning notification can also arrive after the organization was
+	// deprovisioned (the row was deleted and Unwatch already ran): following
+	// containers that no longer exist would leave two tailers retrying forever.
+	if !s.deployed(orgID) {
+		s.Unwatch(orgID)
+	}
+
+	for _, role := range roles {
 		tailer := &Tailer{
 			Container:      s.containerName(orgID, role),
 			Source:         role,
@@ -167,12 +186,25 @@ func (s *Service) Watch(orgID uint) {
 			MaxBackoff:     s.opts.MaxBackoff,
 			now:            s.now,
 		}
-		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
 			tailer.Run(orgCtx)
 		}()
 	}
+}
+
+// deployed reports whether the organization still has a deployed server group.
+func (s *Service) deployed(orgID uint) bool {
+	var count int64
+	err := store.WithoutTenantScope(s.db).Model(&model.ServerGroup{}).
+		Where("organization_id = ? AND state = ?", orgID, model.ServerGroupDeployed).
+		Count(&count).Error
+	if err != nil {
+		s.logger.Warn("check server group state failed",
+			zap.Uint("org_id", orgID), zap.Error(err))
+		return false
+	}
+	return count > 0
 }
 
 // Unwatch stops the tailers of one organization (deprovisioning): without it a
@@ -190,7 +222,13 @@ func (s *Service) Unwatch(orgID uint) {
 }
 
 // Wait blocks until every tailer goroutine has stopped (tests and shutdown).
-func (s *Service) Wait() { s.wg.Wait() }
+// It closes registration first, so a late Watch cannot Add while Wait runs.
+func (s *Service) Wait() {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
+	s.wg.Wait()
+}
 
 // containerName renders the provisioned container name for one role.
 func (s *Service) containerName(orgID uint, role string) string {

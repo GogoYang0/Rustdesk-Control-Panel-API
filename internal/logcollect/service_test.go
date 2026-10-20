@@ -446,3 +446,31 @@ func TestPruneExpired_ComparesOnUTCTimeline(t *testing.T) {
 	require.True(t, rows[0].OccurredAt.Equal(keep.OccurredAt),
 		"the event one hour inside the window must survive")
 }
+
+// A provisioning notification can arrive after the organization was
+// deprovisioned: the server group row is gone and Unwatch already ran, so a
+// late Watch must not resurrect tailers for containers that no longer exist.
+func TestWatch_SkipsDeprovisionedOrganization(t *testing.T) {
+	st, orgs := serviceFixture(t, "org-a")
+	org := orgs[0]
+	require.NoError(t, store.WithoutTenantScope(st.DB).
+		Where("organization_id = ?", org.ID).Delete(&model.ServerGroup{}).Error)
+
+	parser, err := NewParser(testRules())
+	require.NoError(t, err)
+	svc := NewService(st.DB, parser, newMapStreamer(nil), nil,
+		Options{InitialBackoff: time.Millisecond, MaxBackoff: 2 * time.Millisecond}, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	svc.Start(ctx)
+	svc.Watch(org.ID)
+
+	svc.mu.Lock()
+	_, registered := svc.watched[org.ID]
+	svc.mu.Unlock()
+	require.False(t, registered, "a deprovisioned organization must not be watched")
+
+	cancel()
+	svc.Wait()
+}
