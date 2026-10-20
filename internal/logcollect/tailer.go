@@ -212,8 +212,17 @@ func (t *Tailer) consume(ctx context.Context, stream io.Reader, now func() time.
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
 	lines := 0
 	for scanner.Scan() {
-		at, line := splitTimestamp(scanner.Text(), now)
+		at, line, stamped := splitTimestamp(scanner.Text(), now)
 		if line == "" {
+			continue
+		}
+		if !stamped && isDockerCLIError(line) {
+			// The container's stderr shares this pipe (RustDesk logs there),
+			// so docker's own diagnostics arrive here too. They are not events
+			// and they are not progress: counting them would reset the backoff
+			// for a container that does not exist.
+			logger.Warn("docker CLI error while following the container",
+				zap.String("container", t.Container), zap.String("line", truncateValue(line)))
 			continue
 		}
 		if at.After(*lastSeen) {
@@ -239,18 +248,42 @@ func (t *Tailer) consume(ctx context.Context, stream io.Reader, now func() time.
 	return lines
 }
 
-// splitTimestamp strips the `docker logs -t` RFC3339Nano prefix. Lines without
-// a parseable prefix are passed through with the current time.
-func splitTimestamp(raw string, now func() time.Time) (time.Time, string) {
+// splitTimestamp strips the `docker logs -t` RFC3339Nano prefix. stamped
+// reports whether the prefix was present: docker always emits it for container
+// lines, so its absence identifies the CLI's own diagnostics. Lines without a
+// parseable prefix are still passed through (stamped == false) stamped with the
+// current time.
+func splitTimestamp(raw string, now func() time.Time) (time.Time, string, bool) {
 	idx := strings.IndexByte(raw, ' ')
 	if idx <= 0 {
-		return now(), strings.TrimSpace(raw)
+		return now(), strings.TrimSpace(raw), false
 	}
 	at, err := time.Parse(time.RFC3339Nano, raw[:idx])
 	if err != nil {
-		return now(), strings.TrimSpace(raw)
+		return now(), strings.TrimSpace(raw), false
 	}
-	return at, strings.TrimSpace(raw[idx+1:])
+	return at, strings.TrimSpace(raw[idx+1:]), true
+}
+
+// dockerCLIErrorPrefixes are the diagnostics the docker CLI prints on its own
+// stderr. Container lines always carry the -t timestamp, so these never collide
+// with real log content.
+var dockerCLIErrorPrefixes = []string{
+	"Cannot connect to the Docker daemon",
+	"Error response from daemon:",
+	"Error:",
+	"docker:",
+}
+
+// isDockerCLIError reports whether line is a docker CLI diagnostic rather than
+// a container log line.
+func isDockerCLIError(line string) bool {
+	for _, prefix := range dockerCLIErrorPrefixes {
+		if strings.HasPrefix(line, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // nextBackoff doubles the wait up to the cap.

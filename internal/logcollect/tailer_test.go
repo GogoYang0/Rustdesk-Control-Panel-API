@@ -234,3 +234,44 @@ func TestTailer_OverlongLine_Skipped(t *testing.T) {
 	mu.Unlock()
 	require.False(t, lastSeen.IsZero(), "the resume point advances past the poison line")
 }
+
+// docker's own diagnostics share the pipe with the container's stderr (RustDesk
+// logs to stderr, so both streams feed one pipe), but they never carry the -t
+// timestamp. They must not be stored as events, must not move the resume point
+// and must not count as progress: a missing container would otherwise reset the
+// backoff to the minimum and hammer the daemon every 5s.
+func TestTailer_CLIError_NotDeliveredAndNotProgress(t *testing.T) {
+	streamer := &fakeStreamer{batches: [][]string{
+		{"Error response from daemon: No such container: panel-org-1-hbbs"},
+	}}
+	fixed := time.Date(2026, 10, 20, 7, 0, 0, 0, time.UTC)
+
+	var mu sync.Mutex
+	var got []string
+	tailer := &Tailer{
+		Container:      "panel-org-1-hbbs",
+		Source:         "hbbs",
+		Streamer:       streamer,
+		InitialBackoff: time.Millisecond,
+		MaxBackoff:     2 * time.Millisecond,
+		now:            func() time.Time { return fixed },
+		Handler: func(_ context.Context, _ uint, _ string, line string, _ time.Time) {
+			mu.Lock()
+			got = append(got, line)
+			mu.Unlock()
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var lastSeen time.Time
+	rc, err := streamer.Stream(ctx, "c", time.Time{})
+	require.NoError(t, err)
+	delivered := tailer.consume(ctx, rc, tailer.now, &lastSeen, zap.NewNop())
+
+	require.Zero(t, delivered, "a docker CLI error is not a log line")
+	mu.Lock()
+	require.Empty(t, got, "a docker CLI error must not become an event")
+	mu.Unlock()
+	require.True(t, lastSeen.IsZero(), "a docker CLI error must not move the resume point")
+}

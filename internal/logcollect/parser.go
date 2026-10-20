@@ -87,7 +87,7 @@ func (p *Parser) Parse(line string, at time.Time) (ParsedEvent, bool) {
 		if m == nil {
 			continue
 		}
-		detail := map[string]any{"raw": truncateLine(line)}
+		detail := map[string]any{"raw": truncateValue(line)}
 		device := ""
 		for i, name := range r.groups {
 			if i == 0 || name == "" || i >= len(m) {
@@ -97,7 +97,7 @@ func (p *Parser) Parse(line string, at time.Time) (ParsedEvent, bool) {
 				device = m[i]
 				continue
 			}
-			detail[name] = m[i]
+			detail[name] = truncateValue(m[i])
 		}
 		return ParsedEvent{
 			Rule:             r.name,
@@ -112,15 +112,18 @@ func (p *Parser) Parse(line string, at time.Time) (ParsedEvent, bool) {
 	return ParsedEvent{}, false
 }
 
-// truncateLine bounds the raw copy kept in the event detail: the scanner
-// accepts up to maxLineBytes, but storing megabyte lines is a privacy and
-// storage risk.
-func truncateLine(line string) string {
-	const maxRawDetailBytes = 4096
-	if len(line) <= maxRawDetailBytes {
-		return line
+// maxDetailValueBytes bounds every string stored in the event detail. The
+// scanner accepts up to maxLineBytes, and a rule such as (?P<msg>.*) captures
+// the whole line, so unbounded values would store megabytes per event.
+const maxDetailValueBytes = 4096
+
+// truncateValue bounds one detail string: storing megabyte lines is a privacy
+// and storage risk even when a single line is legitimate.
+func truncateValue(s string) string {
+	if len(s) <= maxDetailValueBytes {
+		return s
 	}
-	return line[:maxRawDetailBytes] + "...(truncated)"
+	return s[:maxDetailValueBytes] + "...(truncated)"
 }
 
 // normalizeLevel clamps unknown levels to info.

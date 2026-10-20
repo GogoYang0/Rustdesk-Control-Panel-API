@@ -2,6 +2,7 @@ package logcollect
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -128,4 +129,24 @@ func TestExampleConfigRules_MatchServerFormat(t *testing.T) {
 		require.Equal(t, tc.kind, event.Kind, tc.line)
 		require.Equal(t, tc.device, event.DeviceRustdeskID, tc.line)
 	}
+}
+
+// A rule like (?P<msg>.*) captures the whole line, so an oversized log line
+// would be stored verbatim in the detail: every captured value is bounded,
+// not just the raw copy (the scanner accepts up to maxLineBytes).
+func TestParser_TruncatesCapturedValues(t *testing.T) {
+	parser, err := NewParser([]Rule{
+		{Name: "errors", Pattern: `^ERROR (?P<msg>.*)$`, Level: "error", Kind: "error"},
+	})
+	require.NoError(t, err)
+
+	long := strings.Repeat("x", 3*maxDetailValueBytes)
+	ev, ok := parser.Parse("ERROR "+long, time.Now())
+	require.True(t, ok)
+
+	msg, isString := ev.Detail["msg"].(string)
+	require.True(t, isString)
+	require.LessOrEqual(t, len(msg), maxDetailValueBytes+len("...(truncated)"),
+		"a captured value must be bounded")
+	require.Contains(t, msg, "(truncated)")
 }
