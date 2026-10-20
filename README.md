@@ -161,4 +161,9 @@ gen/                 # oapi-codegen 生成产物（提交入库）
 - [运维指南](docs/operations.md)：设备与心跳、审计巡检、日志采集运维、供应对账、备份恢复、故障排查速查
 - [后端 API 规范](docs/api-spec.md)：两族认证、管理端点语义、compat 协议边界、错误码与冲突语义
 
-三份文档随版本演进持续更新；契约变更必须同步 `docs/api-spec.md` 与 `openapi.yaml`。
+三份文档必须**边做边总结、沉淀、更新**：
+
+- 契约变更 → 同步 `docs/api-spec.md` 与 `openapi.yaml`；
+- 配置或部署面变更 → 更新 `docs/deployment.md`；
+- 运维语义（心跳、采集、审计、备份）变更 → 更新 `docs/operations.md`；
+- 每个 release PR 合并前复核三份文档一遍。

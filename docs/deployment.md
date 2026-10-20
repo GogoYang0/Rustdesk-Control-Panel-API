@@ -48,7 +48,7 @@ go build -o panel ./cmd/server
 | `database.driver` | | `sqlite` | `sqlite` \| `postgres` \| `mysql` |
 | `database.dsn` | | `file:data/panel.db` | 生产建议 PostgreSQL；SQLite 只适合单实例小规模部署 |
 | `log.level` / `log.format` | | `info` / `json` | zap 结构化日志；`json` 便于采集 |
-| `provision.portStart/End` | | `21116–22115` | 每组织占用一对端口，从池中分配；范围决定可承载组织数（1000 个） |
+| `provision.portStart/End` | | `21116–22115` | 每组织占用**连续 5 个**主机端口（`PortBlockSize=5`，见 §7 协议分布）；默认范围最多支持 200 个组织 |
 | `provision.relayHost` | | — | **必须是客户端可达的公网地址**，无回退 |
 | `provision.image` | | `rustdesk/rustdesk-server:1.1.11` | 固定 tag 保证可复现；**日志采集规则按此镜像的日志格式编写**，换镜像必须重新校准 |
 | `provision.dataDir` | | `./data/servergroups` | 各组织 hbbs/hbbr 的密钥与数据目录（挂载进容器） |
@@ -90,6 +90,9 @@ database:
   driver: postgres
   dsn: "host=127.0.0.1 user=panel password=... dbname=panel port=5432 sslmode=disable"
 ```
+
+> ⚠️ 上面带 `sslmode=disable` 的片段**仅适用于 panel 与 PostgreSQL 同机的场景**。PostgreSQL 在其他主机时凭据与数据会明文传输（CWE-319），必须启用 TLS 校验：
+> `sslmode=verify-full`（校验证书链与主机名），并提供 `sslrootcert=/path/to/ca.crt` 指向受信任 CA、确认 `host` 与证书 SAN 匹配。
 
 ---
 
@@ -133,7 +136,7 @@ server {
 ```
 
 - `web.baseURL`（或 `PANEL_WEB_BASE_URL`）必须是用户浏览器可达的 **https** 地址——邮件里的验证码/邀请链接指向它
-- hbbs/hbbr 的端口（21116/21117/21118/21119）需要直接暴露（TCP+UDP），不经反代
+- `provision.portStart..portEnd` 分配的主机端口需要直接暴露，不经反代。每个组织占用连续 5 个端口，协议分布不同：`HbbsPort`（TCP，nat-test）、`HbbsPort+1`（**TCP+UDP**，id registry/heartbeat）、`HbbsPort+2`（TCP，web client websocket）、`HbbrPort`（TCP，relay）、`HbbrPort+1`（TCP，web client relay ws）。只放行 21116–21119 会导致第二个组织起无法连接
 
 ---
 
@@ -143,7 +146,7 @@ server {
 - [ ] `mail.devMode=false`，SMTP 凭据走环境变量
 - [ ] `web.baseURL` 是公网 https
 - [ ] 数据库口令、`data/servergroups/`（含各组织密钥）权限已收紧
-- [ ] Docker socket 仅授予 panel 必需权限（或用 rootless docker）
+- [ ] **禁止直接挂载 rootful Docker 的原始 socket**（`/var/run/docker.sock`）：拿到它即可控制宿主机。生产环境使用 rootless Docker，或经由受限的 docker socket proxy（按需白名单 API）授予 panel 访问
 - [ ] 审计表与 `panel.db` 的备份策略已建立（审计是安全证据，见运维指南 §7）
 
 ---

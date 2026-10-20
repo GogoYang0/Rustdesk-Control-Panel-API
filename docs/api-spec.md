@@ -50,7 +50,7 @@
 | `email_not_verified` | 403 | 未验证邮箱登录 |
 | `forbidden` | 403 | 角色不足、设备已绑定（compat） |
 | `not_found` | 404 | 跨组织访问 / 不存在的资源 |
-| `conflict` | 409 | 重名、设备已被认领、ab content hash 冲突 |
+| `conflict` | 409 | 管理 API 资源冲突；compat 地址簿的 hash 冲突使用 compat 专用错误 `ab_conflict`（见 §4.3），不走此包络 |
 | `rate_limited` | 429 | 登录锁定（LoginGuard） |
 
 ### 2.4 分页
@@ -150,7 +150,7 @@ compat 地址簿**只服务个人地址簿**（`EnsurePersonalBook`），共享�
 | 端点 | 说明 |
 |---|---|
 | `GET /api/ab`（别名 `GET /api/ab/get`） | 整本快照（BookSnapshot：book + peers + tags，含 hash/note 不透明字段） |
-| `POST /api/ab` | 整本写入：`{data: <json 字符串>, hash}`。`hash` 非空时与服务器重算的 content hash 比对，不一致 → **409 `ab_conflict`**（乐观并发检查）；缺省 hash 时直接覆盖 |
+| `POST /api/ab` | 整本写入：`{data: <json 字符串>, hash}`。`hash` 非空时与服务器重算的 content hash 比对，不一致 → **409，响应体为 compat 专用形状 `{"error":"ab_conflict"}`**（不走管理 API 包络；乐观并发检查）；缺省 hash 时直接覆盖 |
 | `POST /api/ab/personal` | 同整本写入（个人语义显式化） |
 | `POST /api/ab/peers` | 分页读 peers |
 | `POST /api/ab/tags/:guid` | 某标签组列表 |

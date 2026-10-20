@@ -96,7 +96,7 @@
 - 每组织一对容器：`panel-org-<orgId>-hbbs` / `-hbbr`，端口从 `provision.portStart..portEnd` 池分配并持久化在 `ServerGroup` 行
 - 供应队列：`provision.workers` 并发；失败的部署保留行与端口（不回收），由对账 reconciler（2 分钟周期）重新入队——**不要手工删除 `ServerGroup` 行**，会造成端口重复分配
 - 下线：`Deprovision` 删除容器 → 删行 → `Unwatch` 采集器；失败时行保留（failed 状态），端口继续被占用
-- `dataDir/servergroups/<org>/` 含各组织密钥：**备份范围必须包含它**，否则重建容器后客户端 ID 不变但密钥丢失
+- `provision.dataDir/org-<orgId>/` 含各组织密钥与数据（`dataDir` 可配置，默认根目录为 `./data/servergroups`）：**备份范围必须包含它**，否则重建容器后客户端 ID 不变但密钥丢失
 
 ---
 
@@ -105,7 +105,7 @@
 | 数据 | 位置 | 频率建议 |
 |---|---|---|
 | 关系数据（用户/组织/设备/审计/日志事件/供应状态） | `panel.db` 或外部 DB | 每日；审计行是安全证据，保留期越长越好 |
-| 各组织 hbbs/hbbr 密钥与数据 | `data/servergroups/` | 每日（与 DB 同步点） |
+| 各组织 hbbs/hbbr 密钥与数据 | `provision.dataDir`（默认 `./data/servergroups`，组织子目录为 `org-<orgId>/`） | 每日（与 DB 同步点） |
 
 恢复：恢复 DB + 数据目录 → 启动 panel → AutoMigrate 幂等 → 供应状态从 `ServerGroup` 行恢复（reconciler 会对账）。
 
