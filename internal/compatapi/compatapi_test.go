@@ -8,11 +8,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/compatapi"
@@ -621,4 +623,62 @@ func TestLogin_ConcurrentClaim_ExactlyOneWinner(t *testing.T) {
 		Where("rustdesk_id = ?", "666666666").First(&dev).Error)
 	require.Equal(t, winner, dev.BoundUUID,
 		"the stored binding must belong to the winning login")
+}
+
+// The uuid is not a secret and is not verified at login, so two client
+// instances can present the same one. If the session lookup filters by uuid
+// alone, the newest session shadows the older one and the older device's
+// heartbeat is silently dropped: any account can take a known device offline by
+// logging in with its uuid and a different device id.
+func TestHeartbeat_SharedUUID_DoesNotSuppressOtherDevice(t *testing.T) {
+	h := newHarness(t)
+	org := h.seedOrg(t, "acme")
+
+	victim := h.seedUser(t, "victim@example.com", "password123", true)
+	h.seedMembership(t, victim.ID, org.ID)
+	attacker := h.seedUser(t, "attacker@example.com", "password123", true)
+	h.seedMembership(t, attacker.ID, org.ID)
+
+	const sharedUUID = "shared-hardware-uuid"
+
+	// The victim logs in first and owns its device binding.
+	h.login(t, "victim@example.com", "password123", "111111111", sharedUUID)
+	// The attacker logs in with its own device id but the victim's uuid: this
+	// session is the newest row for that uuid.
+	h.login(t, "attacker@example.com", "password123", "222222222", sharedUUID)
+
+	w := h.do(t, http.MethodPost, "/api/heartbeat", map[string]any{
+		"id": "111111111", "uuid": sharedUUID,
+	}, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	var dev model.Device
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).
+		Where("rustdesk_id = ?", "111111111").First(&dev).Error)
+	require.NotNil(t, dev.LastSeenAt,
+		"the victim's heartbeat must not be suppressed by another session sharing the uuid")
+}
+
+// claimDevice stores the uuid in Device.BoundUUID (size 255) before the session
+// row is created (CompatSession.UUID, size 128). On MySQL/PostgreSQL a uuid
+// longer than 128 therefore binds the device and then fails to create the
+// session: the client gets a 500 and the device stays bound to a value it can
+// never present again, so only an administrator delete can recover it.
+func TestLogin_RejectsOversizedDeviceIdentity(t *testing.T) {
+	h := newHarness(t)
+	u := h.seedUser(t, "long@example.com", "password123", true)
+	org := h.seedOrg(t, "acme")
+	h.seedMembership(t, u.ID, org.ID)
+
+	w := h.do(t, http.MethodPost, "/api/login", map[string]string{
+		"username": "long@example.com", "password": "password123",
+		"id": "111111111", "uuid": strings.Repeat("u", 129),
+	}, "")
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+
+	var dev model.Device
+	err := store.ScopedByOrg(h.db.DB, org.ID).
+		Where("rustdesk_id = ?", "111111111").First(&dev).Error
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound,
+		"an oversized identity must be rejected before the device is claimed")
 }

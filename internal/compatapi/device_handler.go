@@ -33,7 +33,7 @@ func (s *Server) heartbeat(c *gin.Context) {
 		compatError(c, http.StatusBadRequest, "invalid heartbeat payload")
 		return
 	}
-	session, found := s.activeSessionByUUID(req.UUID)
+	session, found := s.activeSessionByUUID(req.UUID, req.ID)
 	if !found || session.DeviceID == "" || session.DeviceID != req.ID {
 		// Fire-and-forget endpoint: an unknown device must not produce
 		// client-visible errors, the client just retries later.
@@ -62,7 +62,7 @@ func (s *Server) sysinfo(c *gin.Context) {
 		compatError(c, http.StatusBadRequest, "invalid sysinfo payload")
 		return
 	}
-	session, found := s.activeSessionByUUID(uuid)
+	session, found := s.activeSessionByUUID(uuid, id)
 	if !found || session.DeviceID == "" || session.DeviceID != id {
 		ok(c)
 		return

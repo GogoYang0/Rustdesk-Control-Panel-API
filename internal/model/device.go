@@ -17,7 +17,7 @@ type Device struct {
 	// protocol carries no ownership secret, so this hardware-stable uuid is
 	// the ownership anchor: a login presenting a different uuid is refused
 	// instead of taking the binding over (CWE-863).
-	BoundUUID  string     `gorm:"size:255" json:"-"`
+	BoundUUID  string     `gorm:"size:128" json:"-"`
 	LastSeenAt *time.Time `json:"last_seen_at"`
 	CreatedAt  time.Time  `json:"created_at"`
 	UpdatedAt  time.Time  `json:"updated_at"`
