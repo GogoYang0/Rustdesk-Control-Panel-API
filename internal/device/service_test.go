@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -174,4 +175,58 @@ func TestOnline_FutureTimestampIsOffline(t *testing.T) {
 
 	slightFuture := now.Add(2 * time.Second)
 	require.True(t, (&model.Device{LastSeenAt: &slightFuture}).Online(now), "small clock skew stays online")
+}
+
+// Client heartbeats and log-derived heartbeats must stay distinguishable:
+// DeviceHeartbeat.Source records the provenance, so the auxiliary source (C11)
+// is not reported as if the client had checked in.
+func TestHeartbeat_SourceDistinguishesClientFromLog(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	dev, err := f.svc.Register(ctx, f.orgA.ID, device.RegisterInput{Name: "pc", RustdeskID: "987654321"})
+	require.NoError(t, err)
+
+	// Log activity first: the auxiliary source is deduplicated within 30s, so
+	// a client report has to follow it to get its own row.
+	_, err = f.svc.RecordLogActivity(ctx, f.orgA.ID, dev.RustdeskID, time.Now())
+	require.NoError(t, err)
+	_, err = f.svc.Heartbeat(ctx, f.orgA.ID, dev.ID)
+	require.NoError(t, err)
+
+	var sources []string
+	require.NoError(t, store.ScopedByOrg(f.st.DB, f.orgA.ID).
+		Model(&model.DeviceHeartbeat{}).Order("id").Pluck("source", &sources).Error)
+	require.Equal(t, []string{"log", "api"}, sources)
+}
+
+// The hbbs and hbbr tailers can process lines of the same device at the same
+// time. The 30s deduplication has to be atomic with the heartbeat insert:
+// reading last_seen_at outside the transaction lets several calls observe the
+// same stale value, pass the check and each write a row.
+func TestRecordLogActivity_ConcurrentCallsWriteOneHeartbeat(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	dev, err := f.svc.Register(ctx, f.orgA.ID, device.RegisterInput{Name: "pc", RustdeskID: "123123123"})
+	require.NoError(t, err)
+
+	const callers = 8
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, _ = f.svc.RecordLogActivity(ctx, f.orgA.ID, dev.RustdeskID, time.Now())
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	var beats int64
+	require.NoError(t, store.ScopedByOrg(f.st.DB, f.orgA.ID).
+		Model(&model.DeviceHeartbeat{}).Where("source = ?", "log").Count(&beats).Error)
+	require.EqualValues(t, 1, beats, "the 30s window allows exactly one log heartbeat")
 }

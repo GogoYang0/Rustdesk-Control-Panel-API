@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"go.uber.org/zap"
@@ -21,6 +23,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logcollect"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logger"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
@@ -65,6 +68,7 @@ func main() {
 		&model.VerificationToken{},
 		&model.MigrationMark{},
 		&model.CompatSession{},
+		&model.LogEvent{},
 	); err != nil {
 		lg.Fatal("migrate database", zap.Error(err))
 	}
@@ -117,10 +121,47 @@ func main() {
 		},
 	)
 	provQueue := provision.NewQueue(provSvc, cfg.Provision.Workers, 0, lg)
-	provQueue.Start(context.Background())
+
+	// rootCtx stops the long-running background workers on SIGINT/SIGTERM so
+	// their docker child processes are not orphaned.
+	rootCtx, stopRoot := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopRoot()
+	// Handling the first signal disables the default termination for the whole
+	// shutdown window, so a second Ctrl-C would be swallowed while a request or
+	// a tailer is still draining. Restoring the default handling as soon as the
+	// context is cancelled keeps the operator's force-quit escape hatch.
+	context.AfterFunc(rootCtx, stopRoot)
+
+	// Log collection: one tailer pair per provisioned organization. The queue
+	// hook starts the tailers of a fresh deployment immediately instead of
+	// waiting for the next process start.
+	var collector *logcollect.Service
+	if cfg.Logcollect.Enabled {
+		parser, perr := logcollect.NewParser(logcollectRules(cfg.Logcollect.Rules))
+		if perr != nil {
+			lg.Fatal("invalid logcollect rules", zap.Error(perr))
+		}
+		collector = logcollect.NewService(
+			st.DB, parser, logcollect.DockerCLIStreamer{}, deviceSvc,
+			logcollect.Options{ContainerPrefix: cfg.Logcollect.ContainerPrefix}, lg,
+		)
+		collector.Start(rootCtx)
+		provQueue.OnProvisioned(collector.Watch)
+		lg.Info("log collector enabled", zap.Int("rules", parser.Rules()))
+	}
+
+	provQueue.Start(rootCtx)
+
+	// Drain the tailers on shutdown: exec.CommandContext kills the
+	// `docker logs -f` children only when their context is cancelled, and
+	// waiting here keeps them from outliving the panel.
+	var drainCollector func()
+	if collector != nil {
+		drainCollector = collector.Wait
+	}
 	// The organization row is the durable record of a provisioning intent, so a
 	// sweep re-enqueues anything that never reached a worker (full queue, crash).
-	go provQueue.RunReconciler(context.Background(), 2*time.Minute)
+	go provQueue.RunReconciler(rootCtx, 2*time.Minute)
 
 	// Mail delivery: devMode prints to stdout; otherwise real SMTP. The
 	// SMTP password comes only from PANEL_SMTP_PASSWORD.
@@ -180,10 +221,70 @@ func main() {
 		}),
 	}
 
-	lg.Info("api listening", zap.String("addr", cfg.Server.Addr))
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	ln, err := net.Listen("tcp", cfg.Server.Addr)
+	if err != nil {
+		lg.Fatal("listen", zap.String("addr", cfg.Server.Addr), zap.Error(err))
+	}
+	lg.Info("api listening", zap.String("addr", ln.Addr().String()))
+	if err := serveUntilShutdown(rootCtx, srv, ln, drainCollector, lg, gracefulShutdownTimeout); err != nil {
 		lg.Fatal("server stopped", zap.Error(err))
 	}
+}
+
+// gracefulShutdownTimeout bounds how long in-flight requests may keep the
+// process alive once a termination signal arrives.
+const gracefulShutdownTimeout = 15 * time.Second
+
+// serveUntilShutdown serves srv on ln and returns either when the listener
+// fails or when ctx is cancelled. Draining on cancellation keeps two promises
+// that signal.NotifyContext alone breaks: once a signal is notified the runtime
+// no longer terminates the process by default, so a main that only blocks in
+// ListenAndServe ignores SIGINT/SIGTERM entirely (the default configuration has
+// log collection disabled and therefore no other goroutine watching ctx), and
+// returning instead of calling os.Exit lets every deferred cleanup run.
+func serveUntilShutdown(
+	ctx context.Context,
+	srv *http.Server,
+	ln net.Listener,
+	drain func(),
+	lg *zap.Logger,
+	timeout time.Duration,
+) error {
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(ln) }()
+
+	select {
+	case err := <-serveErr:
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+	}
+
+	// Stop accepting new connections and let in-flight requests finish
+	// (provisioning is asynchronous, so this is short).
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		lg.Warn("graceful shutdown did not finish", zap.Error(err))
+	}
+	if drain != nil {
+		// A docker CLI child that cannot be killed leaves Wait blocked, so the
+		// drain gets the same bound: the process is exiting anyway and the
+		// children are terminated with it.
+		drained := make(chan struct{})
+		go func() {
+			drain()
+			close(drained)
+		}()
+		select {
+		case <-drained:
+		case <-time.After(timeout):
+			lg.Warn("background workers did not stop in time", zap.Duration("timeout", timeout))
+		}
+	}
+	return nil
 }
 
 // zapLogger adapts *zap.Logger to auth.Logger without widening the interface.
@@ -191,6 +292,20 @@ type zapLogger struct{ lg *zap.Logger }
 
 func (l zapLogger) Info(msg string, keysAndValues ...any) {
 	l.lg.Sugar().Infow(msg, keysAndValues...)
+}
+
+// logcollectRules converts the config shape into parser rules.
+func logcollectRules(rules []config.LogcollectRule) []logcollect.Rule {
+	out := make([]logcollect.Rule, 0, len(rules))
+	for _, r := range rules {
+		out = append(out, logcollect.Rule{
+			Name:    r.Name,
+			Pattern: r.Pattern,
+			Level:   r.Level,
+			Kind:    r.Kind,
+		})
+	}
+	return out
 }
 
 // isPublicHTTPSOrigin reports whether raw is a well-formed https origin
