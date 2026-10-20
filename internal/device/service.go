@@ -195,19 +195,33 @@ func (s *Service) Heartbeat(ctx context.Context, orgID, deviceID uint) (*model.D
 	return s.heartbeat(ctx, orgID, dev, "api")
 }
 
+// apiHeartbeatMinInterval bounds the durable history of the credential-free
+// compat reports: one DeviceHeartbeat row per device per window. The client
+// treats heartbeats as idempotent, so coalescing is invisible to it; the
+// log-derived source keeps its own (equal) window in RecordLogActivity.
+const apiHeartbeatMinInterval = 30 * time.Second
+
 // heartbeat records one heartbeat row for an already loaded device. The
 // source column keeps the provenance: "api" for client reports, "log" for the
 // auxiliary log-derived source (C11).
 func (s *Service) heartbeat(ctx context.Context, orgID uint, dev model.Device, source string) (*model.Device, error) {
 	now := s.now()
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Only move the timestamp forward: a slower in-flight heartbeat must not
+		// The RowsAffected guard is the real coalescing: two concurrent reports
+		// can both read the same stale last_seen_at, so the outer fast path is
+		// only an optimization and the window check has to be atomic with the
+		// insert (the heartbeatLog path uses the same pattern). It also keeps
+		// the timestamp forward-only: a slower in-flight heartbeat must not
 		// overwrite a newer one and make the device look offline.
-		if err := store.ScopedByOrg(tx, orgID).Model(&model.Device{}).
+		result := store.ScopedByOrg(tx, orgID).Model(&model.Device{}).
 			Where("id = ?", dev.ID).
-			Where("last_seen_at IS NULL OR last_seen_at < ?", now).
-			Update("last_seen_at", now).Error; err != nil {
-			return err
+			Where("last_seen_at IS NULL OR last_seen_at <= ?", now.Add(-apiHeartbeatMinInterval)).
+			Update("last_seen_at", now)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return nil
 		}
 		return store.ScopedByOrg(tx, orgID).Create(&model.DeviceHeartbeat{
 			OrganizationID: orgID,
@@ -220,6 +234,9 @@ func (s *Service) heartbeat(ctx context.Context, orgID uint, dev model.Device, s
 		return nil, err
 	}
 
+	// Return the stored state in both branches: a coalesced caller raced
+	// against the winner and must not answer with its own stale copy, which
+	// for a first heartbeat still carries last_seen_at == nil.
 	var stored model.Device
 	if err := store.ScopedByOrg(s.db.WithContext(ctx), orgID).First(&stored, dev.ID).Error; err != nil {
 		return nil, fmt.Errorf("load device: %w", err)
