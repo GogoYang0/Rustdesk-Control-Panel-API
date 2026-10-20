@@ -12,6 +12,7 @@
 package compatapi
 
 import (
+	"math"
 	"net/http"
 	"strconv"
 
@@ -31,7 +32,7 @@ type abPeer = addressbook.PeerJSON
 func (s *Server) resolvePersonalBook(c *gin.Context) (*model.AddressBook, bool) {
 	uid, orgID, _ := sessionFrom(c)
 	id, err := strconv.ParseUint(c.Param("guid"), 10, 64)
-	if err != nil || id > uint64(^uint(0)>>1) {
+	if err != nil || id > math.MaxUint32 {
 		compatError(c, http.StatusNotFound, "address book not found")
 		return nil, false
 	}
@@ -67,7 +68,7 @@ func (s *Server) abPersonal(c *gin.Context) {
 func (s *Server) abPeersPage(c *gin.Context) {
 	uid, orgID, _ := sessionFrom(c)
 	id, err := strconv.ParseUint(c.Query("ab"), 10, 64)
-	if err != nil || id > uint64(^uint(0)>>1) {
+	if err != nil || id > math.MaxUint32 {
 		compatError(c, http.StatusNotFound, "address book not found")
 		return
 	}
