@@ -163,9 +163,11 @@ func TestHeartbeat_NeverMovesLastSeenBackwards(t *testing.T) {
 	require.NotNil(t, after.LastSeenAt)
 	require.WithinDuration(t, later, *after.LastSeenAt, time.Second)
 
+	// The earlier-started report lands inside the 30s window and is coalesced:
+	// one durable row, and last_seen did not move backwards.
 	var beats int64
 	require.NoError(t, store.ScopedByOrg(f.st.DB, f.orgA.ID).Model(&model.DeviceHeartbeat{}).Count(&beats).Error)
-	require.EqualValues(t, 2, beats, "every heartbeat event is still recorded")
+	require.EqualValues(t, 1, beats, "an in-window report must be coalesced, not appended")
 }
 
 func TestOnline_FutureTimestampIsOffline(t *testing.T) {
@@ -187,10 +189,14 @@ func TestHeartbeat_SourceDistinguishesClientFromLog(t *testing.T) {
 	dev, err := f.svc.Register(ctx, f.orgA.ID, device.RegisterInput{Name: "pc", RustdeskID: "987654321"})
 	require.NoError(t, err)
 
-	// Log activity first: the auxiliary source is deduplicated within 30s, so
-	// a client report has to follow it to get its own row.
-	_, err = f.svc.RecordLogActivity(ctx, f.orgA.ID, dev.RustdeskID, time.Now())
+	// Log activity first, at t0: the auxiliary source is deduplicated within
+	// 30s. The client then checks in after that window has passed, so both
+	// sources get their own row and the provenance stays distinguishable.
+	base := time.Now()
+	f.svc = device.NewService(f.st.DB, func() time.Time { return base })
+	_, err = f.svc.RecordLogActivity(ctx, f.orgA.ID, dev.RustdeskID, base)
 	require.NoError(t, err)
+	f.svc = device.NewService(f.st.DB, func() time.Time { return base.Add(31 * time.Second) })
 	_, err = f.svc.Heartbeat(ctx, f.orgA.ID, dev.ID)
 	require.NoError(t, err)
 
@@ -229,4 +235,28 @@ func TestRecordLogActivity_ConcurrentCallsWriteOneHeartbeat(t *testing.T) {
 	require.NoError(t, store.ScopedByOrg(f.st.DB, f.orgA.ID).
 		Model(&model.DeviceHeartbeat{}).Where("source = ?", "log").Count(&beats).Error)
 	require.EqualValues(t, 1, beats, "the 30s window allows exactly one log heartbeat")
+}
+
+// The compat heartbeat is credential-free, so the durable write must be bounded
+// the same way the log-derived source is: one DeviceHeartbeat row per device per
+// window no matter how often the client reports, while the device stays online.
+func TestHeartbeat_CoalescesWithinWindow(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	dev, err := f.svc.Register(ctx, f.orgA.ID, device.RegisterInput{Name: "pc", RustdeskID: "987654321"})
+	require.NoError(t, err)
+
+	_, err = f.svc.Heartbeat(ctx, f.orgA.ID, dev.ID)
+	require.NoError(t, err)
+	_, err = f.svc.Heartbeat(ctx, f.orgA.ID, dev.ID)
+	require.NoError(t, err)
+
+	var beats int64
+	require.NoError(t, store.ScopedByOrg(f.st.DB, f.orgA.ID).Model(&model.DeviceHeartbeat{}).Count(&beats).Error)
+	require.EqualValues(t, 1, beats, "heartbeats within the window must coalesce into one row")
+
+	var live model.Device
+	require.NoError(t, store.ScopedByOrg(f.st.DB, f.orgA.ID).First(&live, dev.ID).Error)
+	require.NotNil(t, live.LastSeenAt, "the device must remain online")
 }

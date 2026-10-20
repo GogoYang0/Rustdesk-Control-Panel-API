@@ -195,11 +195,23 @@ func (s *Service) Heartbeat(ctx context.Context, orgID, deviceID uint) (*model.D
 	return s.heartbeat(ctx, orgID, dev, "api")
 }
 
+// apiHeartbeatMinInterval bounds the durable history of the credential-free
+// compat reports: one DeviceHeartbeat row per device per window. The client
+// treats heartbeats as idempotent, so coalescing is invisible to it; the
+// log-derived source keeps its own (equal) window in RecordLogActivity.
+const apiHeartbeatMinInterval = 30 * time.Second
+
 // heartbeat records one heartbeat row for an already loaded device. The
 // source column keeps the provenance: "api" for client reports, "log" for the
 // auxiliary log-derived source (C11).
 func (s *Service) heartbeat(ctx context.Context, orgID uint, dev model.Device, source string) (*model.Device, error) {
 	now := s.now()
+	// Bound the durable history of the credential-free reports: within the
+	// window the device is already marked online and its heartbeat row exists.
+	// Without this a caller reporting at request rate appends rows forever.
+	if dev.LastSeenAt != nil && now.Sub(*dev.LastSeenAt) < apiHeartbeatMinInterval {
+		return &dev, nil
+	}
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Only move the timestamp forward: a slower in-flight heartbeat must not
 		// overwrite a newer one and make the device look offline.

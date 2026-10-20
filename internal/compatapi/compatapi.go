@@ -19,9 +19,14 @@ import (
 
 // Context keys for the authenticated compat session.
 const (
-	ctxUserID = "compat.userID"
-	ctxOrgID  = "compat.orgID"
-	ctxJTI    = "compat.jti"
+	// ContextUserID / ContextOrgID / ContextJTI are the gin context keys the
+	// compat session middleware sets. They are exported because the audit
+	// middleware must read them to attribute compat mutations; they stay in a
+	// separate namespace from the management keys so the two token families can
+	// never be confused for each other.
+	ContextUserID = "compat.userID"
+	ContextOrgID  = "compat.orgID"
+	ContextJTI    = "compat.jti"
 )
 
 // Deps carries everything the compat endpoints need.

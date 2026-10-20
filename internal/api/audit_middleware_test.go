@@ -20,10 +20,12 @@ import (
 type spyAuditor struct {
 	inner   audit.Auditor
 	records int
+	entries []audit.Entry
 }
 
 func (s *spyAuditor) Record(ctx context.Context, e audit.Entry) error {
 	s.records++
+	s.entries = append(s.entries, e)
 	return s.inner.Record(ctx, e)
 }
 
@@ -107,4 +109,56 @@ func TestMiddleware_FallbackWithoutTxRecorder(t *testing.T) {
 
 	require.Equal(t, recordsAfterLogin+1, spy.records,
 		"the middleware fallback must record exactly once for the auditable request")
+}
+
+// A compat mutation sets its own context keys ("compat.*") and never the
+// management keys: without reading them the fallback attributes every client
+// address-book change to organization zero, which the persistent auditor
+// silently drops. The fallback must carry the compat actor and organization.
+func TestMiddleware_AttributesCompatMutations(t *testing.T) {
+	spy := &spyAuditor{}
+	h := newHarnessWith(t, func(d *api.Deps) { d.Auditor = spy })
+	h.seedUser(t, "compat-audit@example.com", "password123")
+
+	// Management side: create the organization and make the user a member.
+	adminToken := h.login(t, "compat-audit@example.com", "password123")
+	w := h.do(t, http.MethodPost, "/api/v1/orgs", map[string]string{"name": "compat-audit-org"}, adminToken)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	var orgResp struct {
+		Data struct {
+			Id int64 `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &orgResp))
+
+	// Compat side: the native client logs in and pushes a personal book change.
+	w = h.do(t, http.MethodPost, "/api/login", map[string]string{
+		"username": "compat-audit@example.com", "password": "password123",
+		"id": "123456789", "uuid": "compat-audit-uuid",
+	}, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var compatLogin struct {
+		AccessToken string `json:"access_token"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &compatLogin))
+	require.NotEmpty(t, compatLogin.AccessToken)
+
+	w = h.do(t, http.MethodPost, "/api/ab/personal", map[string]any{
+		"data": `{"tags":["ops"],"peers":[{"id":"111111","alias":"alpha"}],"tag_colors":"{}"}`,
+		"hash": "",
+	}, compatLogin.AccessToken)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	var compatEntry *audit.Entry
+	for i := range spy.entries {
+		// The management org-creation request is audited correctly; the entry
+		// under test is the one the compat write produces.
+		if spy.entries[i].Action == "POST /api/ab/personal" {
+			compatEntry = &spy.entries[i]
+		}
+	}
+	require.NotNil(t, compatEntry, "the compat mutation must produce an audit entry")
+	require.Equal(t, uint(orgResp.Data.Id), compatEntry.OrganizationID,
+		"the compat organization must be carried into the audit entry")
+	require.NotZero(t, compatEntry.ActorUserID, "the compat actor must be attributed")
 }

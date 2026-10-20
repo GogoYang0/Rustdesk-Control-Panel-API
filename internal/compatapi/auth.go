@@ -37,9 +37,9 @@ func (s *Server) requireSession() gin.HandlerFunc {
 			abortUnauthorized(c, "session revoked or expired")
 			return
 		}
-		c.Set(ctxUserID, uid)
-		c.Set(ctxOrgID, orgID)
-		c.Set(ctxJTI, jti)
+		c.Set(ContextUserID, uid)
+		c.Set(ContextOrgID, orgID)
+		c.Set(ContextJTI, jti)
 		c.Next()
 	}
 }
@@ -52,13 +52,13 @@ func abortUnauthorized(c *gin.Context, msg string) {
 
 // sessionFrom returns the authenticated identity stored by requireSession.
 func sessionFrom(c *gin.Context) (uid, orgID uint, jti string) {
-	if v, ok := c.Get(ctxUserID); ok {
+	if v, ok := c.Get(ContextUserID); ok {
 		uid, _ = v.(uint)
 	}
-	if v, ok := c.Get(ctxOrgID); ok {
+	if v, ok := c.Get(ContextOrgID); ok {
 		orgID, _ = v.(uint)
 	}
-	if v, ok := c.Get(ctxJTI); ok {
+	if v, ok := c.Get(ContextJTI); ok {
 		jti, _ = v.(string)
 	}
 	return uid, orgID, jti
