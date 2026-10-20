@@ -367,3 +367,38 @@ func TestABCompat_SharedBookUnreachable(t *testing.T) {
 	w = h.do(t, http.MethodPost, "/api/ab/tags/"+guid, nil, tok)
 	require.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
 }
+
+// A storage fault during the book lookup must surface as 500 "address book
+// lookup failed", not 404 — operations have to be able to tell a missing
+// book from a service failure.
+func TestABLookup_DBFailureIs500(t *testing.T) {
+	h := newHarness(t)
+	u := h.seedUser(t, "fault@example.com", "password123", true)
+	org := h.seedOrg(t, "acme")
+	h.seedMembership(t, u.ID, org.ID)
+	tok, _ := h.login(t, "fault@example.com", "password123", "777777778", "fault-uuid")
+
+	// The book exists (so the book row query succeeds) and then the peers
+	// table is dropped to simulate a storage fault under it.
+	w := h.do(t, http.MethodPost, "/api/ab/personal", nil, tok)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var personal map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &personal))
+	guid, _ := personal["guid"].(string)
+	require.NotEmpty(t, guid)
+
+	require.NoError(t, h.db.DB.Exec("DROP TABLE address_book_peers").Error)
+
+	w = h.do(t, http.MethodPost, "/api/ab/peers?current=1&pageSize=100&ab="+guid, nil, tok)
+	require.Equal(t, http.StatusInternalServerError, w.Code, w.Body.String())
+	require.Contains(t, w.Body.String(), "address book lookup failed")
+
+	w = h.do(t, http.MethodPost, "/api/ab/tags/"+guid, nil, tok)
+	require.Equal(t, http.StatusInternalServerError, w.Code, w.Body.String())
+	require.Contains(t, w.Body.String(), "address book lookup failed")
+
+	w = h.do(t, http.MethodPost, "/api/ab/peer/add/"+guid,
+		abFixtureMap(t, "ab_peer_add.json"), tok)
+	require.Equal(t, http.StatusInternalServerError, w.Code, w.Body.String())
+	require.Contains(t, w.Body.String(), "address book lookup failed")
+}

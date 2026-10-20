@@ -64,11 +64,14 @@ func TestReplacePeers_PreservesOpaqueFields(t *testing.T) {
 
 	// The management contract replaces the list without Hash/Note and drops
 	// the second peer entirely.
+	beforeBook, _, _, err := svc.Get(uid, orgID, book.ID)
+	require.NoError(t, err)
 	fresh, err := svc.ReplacePeers(uid, "", orgID, book.ID, []PeerInput{
 		{PeerID: "111111111", Alias: "alpha-renamed"},
 	})
 	require.NoError(t, err)
-	require.Greater(t, fresh.Revision, book.Revision, "the replace bumps the revision")
+	require.EqualValues(t, beforeBook.Revision+1, fresh.Revision,
+		"the replace bumps the revision by exactly one")
 
 	_, peers, _, err := svc.Get(uid, orgID, book.ID)
 	require.NoError(t, err)
