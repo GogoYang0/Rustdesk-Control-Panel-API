@@ -293,7 +293,7 @@ func TestHandleLine_CancelledContext_StillPersists(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	svc.handleLine(ctx, org.ID, model.LogSourceHbbs,
+	_ = svc.handleLine(ctx, org.ID, model.LogSourceHbbs,
 		"INFO connection from 123456789 via 10.0.0.1:1", time.Now().UTC())
 
 	var events int64
@@ -320,7 +320,7 @@ func TestHandleLine_StoresOccurredAtInUTC(t *testing.T) {
 		Options{InitialBackoff: time.Millisecond, MaxBackoff: 2 * time.Millisecond}, nil)
 
 	at := time.Date(2026, 10, 20, 10, 0, 0, 0, time.FixedZone("CST", 8*3600))
-	svc.handleLine(context.Background(), org.ID, model.LogSourceHbbs,
+	_ = svc.handleLine(context.Background(), org.ID, model.LogSourceHbbs,
 		"INFO connection from 123456789 via 10.0.0.1:1", at)
 
 	var row model.LogEvent
@@ -366,7 +366,7 @@ func TestHandleLine_DeviceLookupHonoursPersistDeadline(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		svc.handleLine(context.Background(), org.ID, model.LogSourceHbbs,
+		_ = svc.handleLine(context.Background(), org.ID, model.LogSourceHbbs,
 			"INFO connection from 123456789 via 10.0.0.1:1", time.Now().UTC())
 	}()
 
@@ -378,7 +378,7 @@ func TestHandleLine_DeviceLookupHonoursPersistDeadline(t *testing.T) {
 
 	// The connection is released again, so a later line still persists.
 	require.NoError(t, conn.Close())
-	svc.handleLine(context.Background(), org.ID, model.LogSourceHbbs,
+	_ = svc.handleLine(context.Background(), org.ID, model.LogSourceHbbs,
 		"INFO connection from 123456789 via 10.0.0.1:1", time.Now().UTC())
 	var events int64
 	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).

@@ -2,6 +2,7 @@ package logcollect
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -70,11 +71,12 @@ func TestTailer_ReconnectsAfterContainerRestart(t *testing.T) {
 		Streamer:       streamer,
 		InitialBackoff: time.Millisecond,
 		MaxBackoff:     5 * time.Millisecond,
-		Handler: func(_ context.Context, _ uint, _ string, line string, _ time.Time) {
+		Handler: func(_ context.Context, _ uint, _ string, line string, _ time.Time) error {
 			mu.Lock()
 			got = append(got, line)
 			mu.Unlock()
 			lines <- struct{}{}
+			return nil
 		},
 	}
 
@@ -125,9 +127,10 @@ func TestTailer_LineWithoutTimestamp_UsesNow(t *testing.T) {
 		InitialBackoff: time.Millisecond,
 		MaxBackoff:     2 * time.Millisecond,
 		now:            func() time.Time { return fixed },
-		Handler: func(_ context.Context, _ uint, _ string, line string, at time.Time) {
+		Handler: func(_ context.Context, _ uint, _ string, line string, at time.Time) error {
 			require.Equal(t, "plain line", line)
 			got <- at
+			return nil
 		},
 	}
 
@@ -213,10 +216,11 @@ func TestTailer_OverlongLine_Skipped(t *testing.T) {
 		Streamer:       streamer,
 		InitialBackoff: time.Millisecond,
 		MaxBackoff:     2 * time.Millisecond,
-		Handler: func(_ context.Context, _ uint, _ string, line string, _ time.Time) {
+		Handler: func(_ context.Context, _ uint, _ string, line string, _ time.Time) error {
 			mu.Lock()
 			got = append(got, line)
 			mu.Unlock()
+			return nil
 		},
 	}
 
@@ -256,10 +260,11 @@ func TestTailer_CLIError_NotDeliveredAndNotProgress(t *testing.T) {
 		InitialBackoff: time.Millisecond,
 		MaxBackoff:     2 * time.Millisecond,
 		now:            func() time.Time { return fixed },
-		Handler: func(_ context.Context, _ uint, _ string, line string, _ time.Time) {
+		Handler: func(_ context.Context, _ uint, _ string, line string, _ time.Time) error {
 			mu.Lock()
 			got = append(got, line)
 			mu.Unlock()
+			return nil
 		},
 	}
 
@@ -292,10 +297,11 @@ func TestTailer_OverlongLine_ContinuesStream(t *testing.T) {
 		Container: "c",
 		Source:    "hbbs",
 		now:       func() time.Time { return time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC) },
-		Handler: func(_ context.Context, _ uint, _ string, line string, _ time.Time) {
+		Handler: func(_ context.Context, _ uint, _ string, line string, _ time.Time) error {
 			mu.Lock()
 			got = append(got, line)
 			mu.Unlock()
+			return nil
 		},
 	}
 
@@ -311,4 +317,32 @@ func TestTailer_OverlongLine_ContinuesStream(t *testing.T) {
 	mu.Unlock()
 	require.Equal(t, time.Date(2026, 10, 20, 7, 0, 1, 1, time.UTC), lastSeen.UTC(),
 		"the resume point must be the last delivered line, not now()")
+}
+
+// A line whose persistence failed must not advance the resume point: the
+// reconnect uses --since lastSeen+1ns, so advancing first would skip that event
+// permanently. The stream has to stop so the reconnect replays it.
+func TestTailer_HandlerFailure_DoesNotAdvanceResumePoint(t *testing.T) {
+	first := "2026-10-20T07:00:01.000000001Z INFO connection from 123456789"
+	second := "2026-10-20T07:00:02.000000001Z INFO connection from 987654321"
+	body := strings.Join([]string{first, second}, "\n") + "\n"
+
+	delivered := 0
+	tailer := &Tailer{
+		Container: "c",
+		Source:    "hbbs",
+		now:       func() time.Time { return time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC) },
+		Handler: func(_ context.Context, _ uint, _ string, _ string, _ time.Time) error {
+			delivered++
+			return errors.New("database unavailable")
+		},
+	}
+
+	var lastSeen time.Time
+	lines := tailer.consume(context.Background(), io.NopCloser(strings.NewReader(body)),
+		tailer.now, &lastSeen, zap.NewNop())
+
+	require.Equal(t, 0, lines, "a failed write must not count as progress")
+	require.Equal(t, 1, delivered, "the stream must stop after the failed line")
+	require.True(t, lastSeen.IsZero(), "the resume point must stay behind the failed line")
 }
