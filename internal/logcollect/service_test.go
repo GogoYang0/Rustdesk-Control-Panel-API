@@ -175,3 +175,35 @@ func TestLogActivity_UpdatesHeartbeat(t *testing.T) {
 		Model(&model.LogEvent{}).Where("device_id = ?", dev.ID).Count(&events).Error)
 	require.NotZero(t, events, "the event is associated with the device")
 }
+
+// A replayed or backfilled line older than the online window must not
+// resurrect a device: the auxiliary source only trusts fresh activity.
+func TestLogActivity_StaleLine_Ignored(t *testing.T) {
+	st, orgs := serviceFixture(t, "org-a")
+	org := orgs[0]
+	devices := device.NewService(st.DB, nil)
+
+	dev, err := devices.Register(context.Background(), org.ID, device.RegisterInput{
+		Name: "office-pc", RustdeskID: "123456789",
+	})
+	require.NoError(t, err)
+
+	stale := time.Now().Add(-2 * model.OnlineWindow)
+	got, err := devices.RecordLogActivity(context.Background(), org.ID, "123456789", stale)
+	require.NoError(t, err)
+	require.Nil(t, got, "a stale line is ignored")
+
+	var row model.Device
+	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).First(&row, dev.ID).Error)
+	require.Nil(t, row.LastSeenAt, "stale activity must not move last_seen_at")
+
+	var beats int64
+	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).
+		Model(&model.DeviceHeartbeat{}).Count(&beats).Error)
+	require.Zero(t, beats, "stale activity must not write a heartbeat")
+
+	// A fresh line for an unknown device is not an error either.
+	got, err = devices.RecordLogActivity(context.Background(), org.ID, "999999999", time.Now())
+	require.NoError(t, err)
+	require.Nil(t, got)
+}

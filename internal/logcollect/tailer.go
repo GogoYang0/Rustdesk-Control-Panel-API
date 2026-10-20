@@ -33,11 +33,7 @@ type DockerCLIStreamer struct{}
 
 // Stream implements LineStreamer.
 func (DockerCLIStreamer) Stream(ctx context.Context, container string, since time.Time) (io.ReadCloser, error) {
-	args := []string{"logs", "-f", "-t"}
-	if !since.IsZero() {
-		args = append(args, "--since", since.UTC().Format(time.RFC3339Nano))
-	}
-	args = append(args, container)
+	args := dockerLogsArgs(container, since)
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -47,6 +43,18 @@ func (DockerCLIStreamer) Stream(ctx context.Context, container string, since tim
 		return nil, fmt.Errorf("docker logs start: %w", err)
 	}
 	return &cmdReader{ReadCloser: stdout, cmd: cmd}, nil
+}
+
+// dockerLogsArgs renders the follow-mode arguments. The resume point is part
+// of the contract: a reconnect must not replay the whole log, so a non-zero
+// since becomes --since with nanosecond precision. Extracted from Stream so the
+// rendering is testable without a docker binary.
+func dockerLogsArgs(container string, since time.Time) []string {
+	args := []string{"logs", "-f", "-t"}
+	if !since.IsZero() {
+		args = append(args, "--since", since.UTC().Format(time.RFC3339Nano))
+	}
+	return append(args, container)
 }
 
 // cmdReader closes the underlying process when the caller stops reading, so a

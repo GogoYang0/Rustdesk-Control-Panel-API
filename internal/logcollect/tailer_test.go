@@ -139,3 +139,24 @@ func TestTailer_LineWithoutTimestamp_UsesNow(t *testing.T) {
 		t.Fatal("line was not delivered")
 	}
 }
+
+// The docker CLI arguments carry the resume point: the first connection has no
+// --since, a reconnect passes the last observed timestamp with nanosecond
+// precision so the whole log is not replayed.
+func TestDockerLogsArgs_ResumePoint(t *testing.T) {
+	first := dockerLogsArgs("panel-org-1-hbbs", time.Time{})
+	require.Equal(t, []string{"logs", "-f", "-t", "panel-org-1-hbbs"}, first)
+	require.NotContains(t, first, "--since")
+
+	resume := time.Date(2026, 10, 20, 6, 0, 1, 123456789, time.UTC)
+	second := dockerLogsArgs("panel-org-1-hbbs", resume)
+	require.Contains(t, second, "--since")
+	idx := 0
+	for i, arg := range second {
+		if arg == "--since" {
+			idx = i
+		}
+	}
+	require.Equal(t, "2026-10-20T06:00:01.123456789Z", second[idx+1])
+	require.Equal(t, "panel-org-1-hbbs", second[len(second)-1])
+}
