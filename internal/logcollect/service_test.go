@@ -385,3 +385,64 @@ func TestHandleLine_DeviceLookupHonoursPersistDeadline(t *testing.T) {
 		Model(&model.LogEvent{}).Where("device_id = ?", dev.ID).Count(&events).Error)
 	require.NotZero(t, events, "a later line must still be stored")
 }
+
+// A provisioning worker detached with WithoutCancel can notify the collector
+// after shutdown started: main is already draining (wg.Wait) while the
+// callback calls Watch. Registering a tailer then is a documented WaitGroup
+// misuse (Add concurrent with Wait) and the tailer would exit immediately, so
+// a cancelled root must make Watch a no-op.
+func TestWatch_AfterShutdown_DoesNotRegisterTailers(t *testing.T) {
+	st, _ := serviceFixture(t, "org-a")
+	parser, err := NewParser(testRules())
+	require.NoError(t, err)
+	svc := NewService(st.DB, parser, newMapStreamer(nil), nil,
+		Options{InitialBackoff: time.Millisecond, MaxBackoff: 2 * time.Millisecond}, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	svc.Start(ctx)
+	cancel()
+	svc.Wait()
+
+	svc.Watch(9999)
+
+	svc.mu.Lock()
+	_, registered := svc.watched[9999]
+	svc.mu.Unlock()
+	require.False(t, registered, "Watch must not register work after the root context was cancelled")
+}
+
+// Rows are stored with UTC occurred_at because SQLite compares the column as
+// text; the retention cutoff has to be normalised the same way, otherwise a
+// host east of UTC prunes events that are still inside the window (and a host
+// west of it keeps them too long).
+func TestPruneExpired_ComparesOnUTCTimeline(t *testing.T) {
+	st, orgs := serviceFixture(t, "org-a")
+	org := orgs[0]
+
+	// 10:00+08:00 is 02:00Z; with the 30 day retention the cutoff is
+	// 2026-09-20T02:00:00Z.
+	local := time.FixedZone("CST", 8*3600)
+	now := time.Date(2026, 10, 20, 10, 0, 0, 0, local)
+	cutoff := now.UTC().Add(-time.Duration(model.DefaultLogEventRetentionDays) * 24 * time.Hour)
+
+	keep := model.LogEvent{
+		OrganizationID: org.ID, Source: model.LogSourceHbbs, Level: model.LogLevelInfo,
+		Kind: model.LogKindConn, DetailJSON: "{}", OccurredAt: cutoff.Add(time.Hour),
+	}
+	drop := keep
+	drop.OccurredAt = cutoff.Add(-time.Hour)
+	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).Create(&keep).Error)
+	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).Create(&drop).Error)
+
+	parser, err := NewParser(testRules())
+	require.NoError(t, err)
+	svc := NewService(st.DB, parser, newMapStreamer(nil), nil, Options{}, nil)
+	svc.now = func() time.Time { return now }
+	svc.pruneExpired()
+
+	var rows []model.LogEvent
+	require.NoError(t, store.WithoutTenantScope(st.DB).Find(&rows).Error)
+	require.Len(t, rows, 1, "only the event outside the window is pruned")
+	require.True(t, rows[0].OccurredAt.Equal(keep.OccurredAt),
+		"the event one hour inside the window must survive")
+}

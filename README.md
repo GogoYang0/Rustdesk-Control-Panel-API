@@ -107,21 +107,21 @@ logcollect:
   containerPrefix: "panel-org" # 容器名 <prefix>-<orgID>-hbbs / -hbbr
   rules:
     - name: connection
-      pattern: '^\[\S+\s+INFO\s+[^\]]*\]\s+.*?(?P<device>\d{6,12})'
+      pattern: '^\[[^\]]+\]\s+INFO\s+\[[^\]]+\]\s+.*?(?P<device>\d{6,12})'
       level: info
       kind: conn
 ```
 
 行为说明：
 
-- 走 `docker logs -f -t`，**同时读容器的 stdout 与 stderr**（RustDesk 服务端默认写 stderr）。
+- 走 `docker logs -f -t`，容器的 stdout 与 stderr **两个流都读**：Docker 把它们分开存放，而 CLI 自身的诊断也写 stderr，只读一个流会静默丢掉另一半。
 - 首次连接只跟随新日志（`--tail 0`），**不回填历史**——面板不是日志归档系统。重连从最后观测时间戳继续（`+1ns`，因为 docker 的 `--since` 是闭区间）。
 - 规则按顺序匹配，首个命中生效；命名捕获组进入事件 `detail`，特殊组 `device` 提取 RustDesk ID 用于设备关联。未匹配行只计数、不中断采集；规则配错会每分钟告警一次。
 - 容器重启时按 5s → 60s 指数退避重连；组织下线时其 tailer 立即退场。
 - 事件保留 30 天，启动时清理。
 - 连接类日志会顺带刷新设备心跳（`DeviceHeartbeat.Source = "log"`，与客户端上报的 `"api"` 区分），同一设备 30 秒内只记一次。
 
-`configs/config.yaml` 内置的规则与 `rustdesk/rustdesk-server:1.1.11` 的 env_logger 格式对齐，并有测试加载该文件、验证能匹配样例行；换成其他镜像时请按 `docker logs -t <container>` 的真实输出校准。
+`configs/config.yaml` 内置的规则与 `rustdesk/rustdesk-server:1.1.11` 的 `flexi_logger::opt_format` 对齐（`[时间戳] 级别 [源文件:行] 消息`，注意级别在第一个方括号**之外**、时间戳本身含空格），并有测试加载该文件、用该格式的样例行验证；换成其他镜像时请按 `docker logs -t <container>` 的真实输出校准。
 
 ## 目录结构
 

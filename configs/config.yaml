@@ -61,9 +61,11 @@ web:
 # lines are counted and dropped; the panel warns once a minute when that
 # happens, so a wrong rule set cannot stay silent.
 #
-# The defaults below follow env_logger's format used by the pinned
-# rustdesk-server image:
-#   [2026-10-20T06:00:00Z INFO  hbbs] connection from 123456789
+# The defaults below follow flexi_logger's opt_format, which the pinned
+# rustdesk-server image installs with `.log_to_stdout().format(opt_format)`:
+#   [2026-10-20 06:00:00.640870 +00:00] INFO [src/rendezvous_mediator.rs:100] connection from 123456789
+# Note the level sits *outside* the first bracket and sits ahead of a second
+# bracket holding the source location; the timestamp itself contains spaces.
 # Verify against `docker logs -t panel-org-<id>-hbbs` before enabling.
 # Collected events are kept for 30 days (pruned at startup).
 logcollect:
@@ -71,18 +73,18 @@ logcollect:
   containerPrefix: "panel-org"
   rules:
     - name: file-transfer
-      pattern: '^\[\S+\s+INFO\s+[^\]]*\].*(?:file|transfer).*?(?P<device>\d{6,12})'
+      pattern: '^\[[^\]]+\]\s+INFO\s+\[[^\]]+\]\s+.*(?:file|transfer).*?(?P<device>\d{6,12})'
       level: info
       kind: file
     - name: connection
-      pattern: '^\[\S+\s+INFO\s+[^\]]*\]\s+.*?(?P<device>\d{6,12})'
+      pattern: '^\[[^\]]+\]\s+INFO\s+\[[^\]]+\]\s+.*?(?P<device>\d{6,12})'
       level: info
       kind: conn
     - name: warnings
-      pattern: '^\[\S+\s+WARN\s+[^\]]*\]\s+(?P<msg>.*)$'
+      pattern: '^\[[^\]]+\]\s+WARN\s+\[[^\]]+\]\s+(?P<msg>.*)$'
       level: warn
       kind: other
     - name: errors
-      pattern: '^\[\S+\s+ERROR\s+[^\]]*\]\s+(?P<msg>.*)$'
+      pattern: '^\[[^\]]+\]\s+ERROR\s+\[[^\]]+\]\s+(?P<msg>.*)$'
       level: error
       kind: error

@@ -132,38 +132,10 @@ func main() {
 	// context is cancelled keeps the operator's force-quit escape hatch.
 	context.AfterFunc(rootCtx, stopRoot)
 
-	// Log collection: one tailer pair per provisioned organization. The queue
-	// hook starts the tailers of a fresh deployment immediately instead of
-	// waiting for the next process start.
-	var collector *logcollect.Service
-	if cfg.Logcollect.Enabled {
-		parser, perr := logcollect.NewParser(logcollectRules(cfg.Logcollect.Rules))
-		if perr != nil {
-			lg.Fatal("invalid logcollect rules", zap.Error(perr))
-		}
-		collector = logcollect.NewService(
-			st.DB, parser, logcollect.DockerCLIStreamer{}, deviceSvc,
-			logcollect.Options{ContainerPrefix: cfg.Logcollect.ContainerPrefix}, lg,
-		)
-		collector.Start(rootCtx)
-		provQueue.OnProvisioned(collector.Watch)
-		lg.Info("log collector enabled", zap.Int("rules", parser.Rules()))
-	}
-
-	provQueue.Start(rootCtx)
-
-	// Drain the tailers on shutdown: exec.CommandContext kills the
-	// `docker logs -f` children only when their context is cancelled, and
-	// waiting here keeps them from outliving the panel.
-	var drainCollector func()
-	if collector != nil {
-		drainCollector = collector.Wait
-	}
-	// The organization row is the durable record of a provisioning intent, so a
-	// sweep re-enqueues anything that never reached a worker (full queue, crash).
-	go provQueue.RunReconciler(rootCtx, 2*time.Minute)
-
 	// Mail delivery: devMode prints to stdout; otherwise real SMTP. The
+	// validation below exits the process on misconfiguration, so it runs before
+	// any background worker: lg.Fatal skips every defer and would otherwise
+	// leave docker children and in-flight provisions behind.
 	// SMTP password comes only from PANEL_SMTP_PASSWORD.
 	var mailer mail.Mailer
 	if cfg.Mail.DevMode {
@@ -193,6 +165,39 @@ func main() {
 			From:     cfg.Mail.SMTP.From,
 		})
 	}
+
+	// Log collection: one tailer pair per provisioned organization. The queue
+	// hook starts the tailers of a fresh deployment immediately instead of
+	// waiting for the next process start.
+	var collector *logcollect.Service
+	if cfg.Logcollect.Enabled {
+		parser, perr := logcollect.NewParser(logcollectRules(cfg.Logcollect.Rules))
+		if perr != nil {
+			lg.Fatal("invalid logcollect rules", zap.Error(perr))
+		}
+		collector = logcollect.NewService(
+			st.DB, parser, logcollect.DockerCLIStreamer{}, deviceSvc,
+			logcollect.Options{ContainerPrefix: cfg.Logcollect.ContainerPrefix}, lg,
+		)
+		collector.Start(rootCtx)
+		provQueue.OnProvisioned(collector.Watch)
+		// A deprovisioned organization no longer has containers to follow.
+		provSvc.OnDeprovisioned(collector.Unwatch)
+		lg.Info("log collector enabled", zap.Int("rules", parser.Rules()))
+	}
+
+	provQueue.Start(rootCtx)
+
+	// Drain the tailers on shutdown: exec.CommandContext kills the
+	// `docker logs -f` children only when their context is cancelled, and
+	// waiting here keeps them from outliving the panel.
+	var drainCollector func()
+	if collector != nil {
+		drainCollector = collector.Wait
+	}
+	// The organization row is the durable record of a provisioning intent, so a
+	// sweep re-enqueues anything that never reached a worker (full queue, crash).
+	go provQueue.RunReconciler(rootCtx, 2*time.Minute)
 
 	srv := &http.Server{
 		Addr: cfg.Server.Addr,

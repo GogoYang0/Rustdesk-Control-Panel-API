@@ -111,7 +111,10 @@ func (s *Service) Start(ctx context.Context) {
 // background scheduler yet, so the sweep runs once per process start; it is
 // idempotent and bounded by the occurred_at index.
 func (s *Service) pruneExpired() {
-	cutoff := s.now().Add(-time.Duration(model.DefaultLogEventRetentionDays) * 24 * time.Hour)
+	// occurred_at is stored as UTC text and compared lexicographically, so the
+	// cutoff must share that timeline: a local-zone value shifts the window by
+	// the host's offset.
+	cutoff := s.now().UTC().Add(-time.Duration(model.DefaultLogEventRetentionDays) * 24 * time.Hour)
 	res := store.WithoutTenantScope(s.db).
 		Where("occurred_at < ?", cutoff).
 		Delete(&model.LogEvent{})
@@ -140,6 +143,13 @@ func (s *Service) Watch(orgID uint) {
 	root := s.ctx
 	if root == nil {
 		root = context.Background()
+	}
+	// A provisioning worker detached with WithoutCancel can finish after
+	// shutdown began and call Watch while main is draining: adding to the
+	// WaitGroup then is a documented misuse, and the tailer would exit at once.
+	if root.Err() != nil {
+		s.mu.Unlock()
+		return
 	}
 	orgCtx, cancel := context.WithCancel(root)
 	s.watched[orgID] = cancel
