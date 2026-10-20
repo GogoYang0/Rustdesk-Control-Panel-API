@@ -293,7 +293,7 @@ func TestHandleLine_CancelledContext_StillPersists(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	svc.handleLine(ctx, org.ID, model.LogSourceHbbs,
+	_ = svc.handleLine(ctx, org.ID, model.LogSourceHbbs,
 		"INFO connection from 123456789 via 10.0.0.1:1", time.Now().UTC())
 
 	var events int64
@@ -320,7 +320,7 @@ func TestHandleLine_StoresOccurredAtInUTC(t *testing.T) {
 		Options{InitialBackoff: time.Millisecond, MaxBackoff: 2 * time.Millisecond}, nil)
 
 	at := time.Date(2026, 10, 20, 10, 0, 0, 0, time.FixedZone("CST", 8*3600))
-	svc.handleLine(context.Background(), org.ID, model.LogSourceHbbs,
+	_ = svc.handleLine(context.Background(), org.ID, model.LogSourceHbbs,
 		"INFO connection from 123456789 via 10.0.0.1:1", at)
 
 	var row model.LogEvent
@@ -363,23 +363,26 @@ func TestHandleLine_DeviceLookupHonoursPersistDeadline(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = conn.Close() }()
 
-	done := make(chan struct{})
+	result := make(chan error, 1)
 	go func() {
-		defer close(done)
-		svc.handleLine(context.Background(), org.ID, model.LogSourceHbbs,
+		result <- svc.handleLine(context.Background(), org.ID, model.LogSourceHbbs,
 			"INFO connection from 123456789 via 10.0.0.1:1", time.Now().UTC())
 	}()
 
 	select {
-	case <-done:
+	case err := <-result:
+		// The insert runs on the same expired context, so the failure has to be
+		// reported: swallowing it would let the tailer advance past a line that
+		// was never stored.
+		require.Error(t, err, "a line that could not be stored must report the failure")
 	case <-time.After(3 * time.Second):
 		t.Fatal("the device lookup must honour the persist deadline instead of waiting forever")
 	}
 
 	// The connection is released again, so a later line still persists.
 	require.NoError(t, conn.Close())
-	svc.handleLine(context.Background(), org.ID, model.LogSourceHbbs,
-		"INFO connection from 123456789 via 10.0.0.1:1", time.Now().UTC())
+	require.NoError(t, svc.handleLine(context.Background(), org.ID, model.LogSourceHbbs,
+		"INFO connection from 123456789 via 10.0.0.1:1", time.Now().UTC()))
 	var events int64
 	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).
 		Model(&model.LogEvent{}).Where("device_id = ?", dev.ID).Count(&events).Error)

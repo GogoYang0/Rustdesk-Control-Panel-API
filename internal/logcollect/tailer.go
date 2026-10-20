@@ -116,7 +116,10 @@ func dockerLogsArgs(container string, since time.Time) []string {
 }
 
 // LineHandler receives one parsed-from-wire log line.
-type LineHandler func(ctx context.Context, orgID uint, source, line string, at time.Time)
+// LineHandler consumes one log line. Returning an error means the line was not
+// durably handled: the tailer stops the stream and reconnects from the last
+// confirmed position instead of advancing past it.
+type LineHandler func(ctx context.Context, orgID uint, source, line string, at time.Time) error
 
 // Tailer follows one container and feeds its lines to the handler, surviving
 // container restarts: the docker CLI exits when the container is recreated and
@@ -242,11 +245,18 @@ func (t *Tailer) consume(ctx context.Context, stream io.Reader, now func() time.
 				logger.Warn("docker CLI error while following the container",
 					zap.String("container", t.Container), zap.String("line", truncateValue(line)))
 			default:
+				// Advance the resume point only after the line was handled: the
+				// reconnect uses --since lastSeen+1ns, so advancing first would
+				// skip an event whose write failed, for good.
+				if herr := t.Handler(ctx, t.OrgID, t.Source, line, at); herr != nil {
+					logger.Warn("log line handler failed, reconnecting from the last confirmed position",
+						zap.String("container", t.Container), zap.Error(herr))
+					return lines
+				}
 				if at.After(*lastSeen) {
 					*lastSeen = at
 				}
 				lines++
-				t.Handler(ctx, t.OrgID, t.Source, line, at)
 			}
 		}
 		if err != nil {

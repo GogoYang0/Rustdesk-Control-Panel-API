@@ -242,14 +242,15 @@ func (s *Service) containerName(orgID uint, role string) string {
 
 // handleLine parses one wire line and stores the event. Unparseable lines are
 // counted by the parser and dropped (C7): the tailer never dies on bad input.
-func (s *Service) handleLine(ctx context.Context, orgID uint, source, line string, at time.Time) {
+func (s *Service) handleLine(ctx context.Context, orgID uint, source, line string, at time.Time) error {
 	before := s.parser.ParseErrors()
 	event, ok := s.parser.Parse(line, at)
 	if !ok {
 		if s.parser.ParseErrors() > before {
 			s.logParseError(orgID, source)
 		}
-		return
+		// A line that matches no rule is dropped by design (C7), not retried.
+		return nil
 	}
 
 	// A line that was already read must reach the store even when the collector
@@ -312,7 +313,11 @@ func (s *Service) handleLine(ctx context.Context, orgID uint, source, line strin
 	// plugin would fail closed on every query.
 	if err := store.ScopedByOrg(s.db.WithContext(persistCtx), orgID).Create(&row).Error; err != nil {
 		s.logger.Error("store log event failed", zap.Uint("org_id", orgID), zap.Error(err))
+		// Report the failure so the tailer keeps the resume point behind this
+		// line and replays it after reconnecting.
+		return err
 	}
+	return nil
 }
 
 // logParseError emits the unparseable-line signal at most once per interval.
