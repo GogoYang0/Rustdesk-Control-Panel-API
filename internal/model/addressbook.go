@@ -39,7 +39,9 @@ func (b *AddressBook) Valid() error {
 
 // AddressBookPeer is one RustDesk device entry inside an address book. Tags
 // are stored as a JSON array of tag names referencing AddressBookTag rows of
-// the same book.
+// the same book. Hash (unattended-access password hash) and Note are round-
+// tripped for the client compat layer (task 9): the personal book carries
+// them opaquely, the management contract does not expose them.
 type AddressBookPeer struct {
 	ID             uint      `gorm:"primaryKey" json:"id"`
 	OrganizationID uint      `gorm:"index;not null" json:"organization_id"`
@@ -50,6 +52,8 @@ type AddressBookPeer struct {
 	Hostname       string    `gorm:"size:128" json:"hostname"`
 	Platform       string    `gorm:"size:64" json:"platform"`
 	TagsJSON       string    `gorm:"size:2048" json:"tags_json"`
+	Hash           string    `gorm:"size:128" json:"-"`
+	Note           string    `gorm:"size:512" json:"-"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }

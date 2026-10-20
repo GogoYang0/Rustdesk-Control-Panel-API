@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/addressbook"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/limit"
@@ -29,8 +30,11 @@ type Deps struct {
 	Issuer *auth.Issuer
 	// Devices persists devices and heartbeats; nil falls back to a service
 	// on the same DB.
-	Devices   *device.Service
-	Guard     *limit.LoginGuard
+	Devices *device.Service
+	Guard   *limit.LoginGuard
+	// Books owns the address book domain; nil falls back to a service on
+	// the same DB.
+	Books     *addressbook.Service
 	Now       func() time.Time
 	AccessTTL time.Duration
 }
@@ -53,6 +57,9 @@ func Mount(r gin.IRouter, d Deps) *Server {
 	if d.Devices == nil && d.DB != nil {
 		d.Devices = device.NewService(d.DB, nil)
 	}
+	if d.Books == nil && d.DB != nil {
+		d.Books = addressbook.NewService(d.DB)
+	}
 	if d.AccessTTL == 0 {
 		d.AccessTTL = 720 * time.Hour
 	}
@@ -70,6 +77,23 @@ func Mount(r gin.IRouter, d Deps) *Server {
 	authed.POST("/logout", s.logout)
 	authed.POST("/currentUser", s.currentUser)
 	authed.GET("/peers", s.peers)
+
+	// Address book client sync (task 9): mode detection plus the legacy
+	// whole-book endpoints and the granular 1.4+ client endpoints.
+	ab := authed.Group("/ab")
+	ab.GET("", s.abLegacyGet)
+	ab.GET("/get", s.abLegacyGet) // Sciter-era alias
+	ab.POST("", s.abLegacyPost)
+	ab.POST("/personal", s.abPersonal)
+	ab.POST("/peers", s.abPeersPage)
+	ab.POST("/tags/:guid", s.abTagsList)
+	ab.POST("/peer/add/:guid", s.abPeerAdd)
+	ab.PUT("/peer/update/:guid", s.abPeerUpdate)
+	ab.DELETE("/peer/:guid", s.abPeerDelete)
+	ab.POST("/tag/add/:guid", s.abTagAdd)
+	ab.PUT("/tag/rename/:guid", s.abTagRename)
+	ab.PUT("/tag/update/:guid", s.abTagUpdate)
+	ab.DELETE("/tag/:guid", s.abTagDelete)
 	return s
 }
 
