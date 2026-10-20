@@ -44,6 +44,7 @@ func newHarness(t *testing.T) *harness {
 		&model.AuditLog{},
 		&model.Device{}, &model.DeviceHeartbeat{},
 		&model.CompatSession{},
+		&model.AddressBook{}, &model.AddressBookPeer{}, &model.AddressBookTag{},
 	))
 
 	issuer := auth.NewIssuer("test-secret", time.Minute, time.Hour)
