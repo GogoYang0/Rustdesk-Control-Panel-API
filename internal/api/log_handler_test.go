@@ -96,6 +96,13 @@ func TestListLogEvents_FiltersAndIsolation(t *testing.T) {
 	clamped := get("?limit=0")
 	require.Len(t, clamped, 1)
 
+	// Contract enum violations are rejected instead of silently returning an
+	// empty list (the generated binder does not validate enums).
+	w = h.do(t, http.MethodGet, "/api/v1/orgs/"+itoa(int64(orgID))+"/log-events?level=bogus", nil, token)
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+	w = h.do(t, http.MethodGet, "/api/v1/orgs/"+itoa(int64(orgID))+"/log-events?deviceId=0", nil, token)
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+
 	// A foreign organization is forbidden for this caller.
 	w = h.do(t, http.MethodGet, "/api/v1/orgs/"+itoa(int64(foreign.ID))+"/log-events", nil, token)
 	require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())

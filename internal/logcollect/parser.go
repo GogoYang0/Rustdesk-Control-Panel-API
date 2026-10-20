@@ -87,7 +87,7 @@ func (p *Parser) Parse(line string, at time.Time) (ParsedEvent, bool) {
 		if m == nil {
 			continue
 		}
-		detail := map[string]any{"raw": line}
+		detail := map[string]any{"raw": truncateLine(line)}
 		device := ""
 		for i, name := range r.groups {
 			if i == 0 || name == "" || i >= len(m) {
@@ -110,6 +110,17 @@ func (p *Parser) Parse(line string, at time.Time) (ParsedEvent, bool) {
 	}
 	p.parseErrors.Add(1)
 	return ParsedEvent{}, false
+}
+
+// truncateLine bounds the raw copy kept in the event detail: the scanner
+// accepts up to maxLineBytes, but storing megabyte lines is a privacy and
+// storage risk.
+func truncateLine(line string) string {
+	const maxRawDetailBytes = 4096
+	if len(line) <= maxRawDetailBytes {
+		return line
+	}
+	return line[:maxRawDetailBytes] + "...(truncated)"
 }
 
 // normalizeLevel clamps unknown levels to info.

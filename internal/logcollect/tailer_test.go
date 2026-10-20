@@ -2,13 +2,17 @@ package logcollect
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 // fakeStreamer replays canned line batches, one per Stream call, and records
@@ -66,7 +70,7 @@ func TestTailer_ReconnectsAfterContainerRestart(t *testing.T) {
 		Streamer:       streamer,
 		InitialBackoff: time.Millisecond,
 		MaxBackoff:     5 * time.Millisecond,
-		Handler: func(_ uint, _ string, line string, _ time.Time) {
+		Handler: func(_ context.Context, _ uint, _ string, line string, _ time.Time) {
 			mu.Lock()
 			got = append(got, line)
 			mu.Unlock()
@@ -121,7 +125,7 @@ func TestTailer_LineWithoutTimestamp_UsesNow(t *testing.T) {
 		InitialBackoff: time.Millisecond,
 		MaxBackoff:     2 * time.Millisecond,
 		now:            func() time.Time { return fixed },
-		Handler: func(_ uint, _ string, line string, at time.Time) {
+		Handler: func(_ context.Context, _ uint, _ string, line string, at time.Time) {
 			require.Equal(t, "plain line", line)
 			got <- at
 		},
@@ -129,9 +133,7 @@ func TestTailer_LineWithoutTimestamp_UsesNow(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go tailer.Run(ctx)
-	defer func() {
-		cancel()
-	}()
+	defer cancel()
 	select {
 	case at := <-got:
 		require.Equal(t, fixed, at)
@@ -140,12 +142,13 @@ func TestTailer_LineWithoutTimestamp_UsesNow(t *testing.T) {
 	}
 }
 
-// The docker CLI arguments carry the resume point: the first connection has no
-// --since, a reconnect passes the last observed timestamp with nanosecond
-// precision so the whole log is not replayed.
+// The docker CLI arguments carry the resume point: the first connection of a
+// process follows only new lines (history is not backfilled) and a reconnect
+// passes the last observed timestamp plus one nanosecond (docker's --since is
+// inclusive, so the last collected line must not repeat).
 func TestDockerLogsArgs_ResumePoint(t *testing.T) {
 	first := dockerLogsArgs("panel-org-1-hbbs", time.Time{})
-	require.Equal(t, []string{"logs", "-f", "-t", "panel-org-1-hbbs"}, first)
+	require.Equal(t, []string{"logs", "-f", "-t", "--tail", "0", "panel-org-1-hbbs"}, first)
 	require.NotContains(t, first, "--since")
 
 	resume := time.Date(2026, 10, 20, 6, 0, 1, 123456789, time.UTC)
@@ -157,6 +160,77 @@ func TestDockerLogsArgs_ResumePoint(t *testing.T) {
 			idx = i
 		}
 	}
-	require.Equal(t, "2026-10-20T06:00:01.123456789Z", second[idx+1])
+	require.Equal(t, "2026-10-20T06:00:01.12345679Z", second[idx+1],
+		"the resume point is exclusive of the last collected line")
 	require.Equal(t, "panel-org-1-hbbs", second[len(second)-1])
+}
+
+// The backoff doubles up to the cap, so a vanished container is not retried
+// at line speed.
+func TestNextBackoff_CapsAtMaximum(t *testing.T) {
+	require.Equal(t, 10*time.Second, nextBackoff(5*time.Second, time.Minute))
+	require.Equal(t, 20*time.Second, nextBackoff(10*time.Second, time.Minute))
+	require.Equal(t, 40*time.Second, nextBackoff(20*time.Second, time.Minute))
+	require.Equal(t, time.Minute, nextBackoff(40*time.Second, time.Minute))
+	require.Equal(t, time.Minute, nextBackoff(time.Minute, time.Minute))
+}
+
+// The child process helper for TestStreamCommand_MergesStdoutAndStderr: the
+// test binary re-executes itself and writes one line to each stream.
+func TestStreamCommand_MergesStdoutAndStderr(t *testing.T) {
+	const envKey = "LOGCOLLECT_STREAM_HELPER"
+	if os.Getenv(envKey) == "1" {
+		_, _ = fmt.Fprintln(os.Stdout, "out line")
+		_, _ = fmt.Fprintln(os.Stderr, "err line")
+		os.Exit(0)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestStreamCommand_MergesStdoutAndStderr")
+	cmd.Env = append(os.Environ(), envKey+"=1")
+	rc, err := streamCommand(cmd)
+	require.NoError(t, err)
+	defer func() { _ = rc.Close() }()
+
+	out, err := io.ReadAll(rc)
+	require.NoError(t, err)
+	body := string(out)
+	require.Contains(t, body, "out line", "container stdout must be collected")
+	require.Contains(t, body, "err line",
+		"container stderr must be collected: the RustDesk server logs there")
+}
+
+// An over-long line must be skipped, not replayed forever: the scanner errors
+// with ErrTooLong and the tailer advances the resume point past it.
+func TestTailer_OverlongLine_Skipped(t *testing.T) {
+	huge := strings.Repeat("x", maxLineBytes+1024)
+	streamer := &fakeStreamer{batches: [][]string{{huge}}}
+
+	var mu sync.Mutex
+	var got []string
+	tailer := &Tailer{
+		Container:      "c",
+		Source:         "hbbs",
+		Streamer:       streamer,
+		InitialBackoff: time.Millisecond,
+		MaxBackoff:     2 * time.Millisecond,
+		Handler: func(_ context.Context, _ uint, _ string, line string, _ time.Time) {
+			mu.Lock()
+			got = append(got, line)
+			mu.Unlock()
+		},
+	}
+
+	// Drive one stream directly: the poison line must not reach the handler,
+	// and lastSeen must move so the reconnect does not fetch it again.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var lastSeen time.Time
+	rc, err := streamer.Stream(ctx, "c", time.Time{})
+	require.NoError(t, err)
+	lines := tailer.consume(ctx, rc, time.Now, &lastSeen, zap.NewNop())
+	require.Zero(t, lines, "the over-long line is dropped")
+	mu.Lock()
+	require.Empty(t, got)
+	mu.Unlock()
+	require.False(t, lastSeen.IsZero(), "the resume point advances past the poison line")
 }

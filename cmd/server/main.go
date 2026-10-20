@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"go.uber.org/zap"
@@ -120,24 +122,40 @@ func main() {
 	)
 	provQueue := provision.NewQueue(provSvc, cfg.Provision.Workers, 0, lg)
 
+	// rootCtx stops the long-running background workers on SIGINT/SIGTERM so
+	// their docker child processes are not orphaned.
+	rootCtx, stopRoot := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopRoot()
+
 	// Log collection: one tailer pair per provisioned organization. The queue
 	// hook starts the tailers of a fresh deployment immediately instead of
 	// waiting for the next process start.
+	var collector *logcollect.Service
 	if cfg.Logcollect.Enabled {
 		parser, perr := logcollect.NewParser(logcollectRules(cfg.Logcollect.Rules))
 		if perr != nil {
 			lg.Fatal("invalid logcollect rules", zap.Error(perr))
 		}
-		collector := logcollect.NewService(
+		collector = logcollect.NewService(
 			st.DB, parser, logcollect.DockerCLIStreamer{}, deviceSvc,
 			logcollect.Options{ContainerPrefix: cfg.Logcollect.ContainerPrefix}, lg,
 		)
-		collector.Start(context.Background())
+		collector.Start(rootCtx)
 		provQueue.OnProvisioned(collector.Watch)
 		lg.Info("log collector enabled", zap.Int("rules", parser.Rules()))
 	}
 
-	provQueue.Start(context.Background())
+	provQueue.Start(rootCtx)
+
+	// Shut the tailers down before exiting: exec.CommandContext kills the
+	// `docker logs -f` children only when their context is cancelled.
+	if collector != nil {
+		go func() {
+			<-rootCtx.Done()
+			collector.Wait()
+			os.Exit(0)
+		}()
+	}
 	// The organization row is the durable record of a provisioning intent, so a
 	// sweep re-enqueues anything that never reached a worker (full queue, crash).
 	go provQueue.RunReconciler(context.Background(), 2*time.Minute)

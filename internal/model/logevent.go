@@ -34,7 +34,8 @@ type LogEvent struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
-// DefaultLogEventRetentionDays is how long collected events are kept before
-// the maintenance sweep drops them (M2 keeps pruning out of scope; the
-// constant documents the intended policy for M3).
+// DefaultLogEventRetentionDays is how long collected events are kept. The
+// collector enforces it with a sweep at process start; a background scheduler
+// is M3 work, so a long-running process can exceed the window between
+// restarts (documented capacity note in the deployment config).
 const DefaultLogEventRetentionDays = 30

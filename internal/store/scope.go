@@ -79,9 +79,12 @@ var crossTenantKey = crossTenantKeyT{}
 
 // WithoutTenantScope disables tenant filtering for a single query chain.
 //
-// It exists only for lookups that are inherently cross-org: resolving the
-// current user's memberships and accepting an invitation token. Every use
-// must be obvious at the call site; business data must never use it.
+// It exists only for operations that are inherently cross-org: resolving the
+// current user's memberships, accepting an invitation token, startup scans of
+// per-organization infrastructure (deployed server groups), and system
+// maintenance such as the log retention sweep. Every use must be obvious at
+// the call site and read-only or system-scoped; request-driven tenant data
+// must never use it.
 func WithoutTenantScope(db *gorm.DB) *gorm.DB {
 	parent := context.Background()
 	if db.Statement != nil && db.Statement.Context != nil {

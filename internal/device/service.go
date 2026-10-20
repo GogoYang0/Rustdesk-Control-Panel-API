@@ -94,11 +94,22 @@ func (s *Service) Register(ctx context.Context, orgID uint, in RegisterInput) (*
 	return &stored, nil
 }
 
+// heartbeatSourceLog marks heartbeats derived from collected server logs, so
+// the audit trail can tell them apart from client-reported ones.
+const heartbeatSourceLog = "log"
+
+// logHeartbeatMinInterval deduplicates log-derived heartbeats: a busy device
+// can emit many matching lines per minute, and each one must not add a
+// device_heartbeat row on top of the client's own heartbeat stream.
+const logHeartbeatMinInterval = 30 * time.Second
+
 // RecordLogActivity refreshes the heartbeat of the device that owns the given
 // RustDesk id (C11 auxiliary source): a parsed hbbs/hbbr connection line is
 // proof of liveness even when the client's own heartbeat is in flight. A log
-// line older than the online window is ignored, and an unknown device is not
-// an error — the collector stores the event without the association.
+// line older than the online window is ignored, an unknown device is not an
+// error (the collector stores the event without the association), and a
+// device refreshed within logHeartbeatMinInterval is left alone to keep the
+// heartbeat table bounded.
 func (s *Service) RecordLogActivity(ctx context.Context, orgID uint, rustdeskID string, at time.Time) (*model.Device, error) {
 	if err := store.RequireOrgID(orgID); err != nil {
 		return nil, err
@@ -106,7 +117,8 @@ func (s *Service) RecordLogActivity(ctx context.Context, orgID uint, rustdeskID 
 	if rustdeskID == "" {
 		return nil, ErrInvalidInput
 	}
-	if s.now().Sub(at) > model.OnlineWindow {
+	now := s.now()
+	if now.Sub(at) > model.OnlineWindow {
 		// Replayed/backfilled lines must not resurrect stale liveness.
 		return nil, nil
 	}
@@ -120,24 +132,33 @@ func (s *Service) RecordLogActivity(ctx context.Context, orgID uint, rustdeskID 
 	if err != nil {
 		return nil, err
 	}
-	return s.Heartbeat(ctx, orgID, dev.ID)
+	if dev.LastSeenAt != nil && now.Sub(*dev.LastSeenAt) < logHeartbeatMinInterval {
+		return &dev, nil
+	}
+	return s.heartbeat(ctx, orgID, dev, heartbeatSourceLog)
 }
 
-// Heartbeat records a heartbeat and refreshes last_seen_at.
+// Heartbeat records a client-reported heartbeat and refreshes last_seen_at.
 func (s *Service) Heartbeat(ctx context.Context, orgID, deviceID uint) (*model.Device, error) {
 	if err := store.RequireOrgID(orgID); err != nil {
 		return nil, err
 	}
+	var dev model.Device
+	if err := store.ScopedByOrg(s.db.WithContext(ctx), orgID).First(&dev, deviceID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrDeviceNotFound
+		}
+		return nil, err
+	}
+	return s.heartbeat(ctx, orgID, dev, "api")
+}
 
+// heartbeat records one heartbeat row for an already loaded device. The
+// source column keeps the provenance: "api" for client reports, "log" for the
+// auxiliary log-derived source (C11).
+func (s *Service) heartbeat(ctx context.Context, orgID uint, dev model.Device, source string) (*model.Device, error) {
 	now := s.now()
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var dev model.Device
-		if err := store.ScopedByOrg(tx, orgID).First(&dev, deviceID).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrDeviceNotFound
-			}
-			return err
-		}
 		// Only move the timestamp forward: a slower in-flight heartbeat must not
 		// overwrite a newer one and make the device look offline.
 		if err := store.ScopedByOrg(tx, orgID).Model(&model.Device{}).
@@ -150,7 +171,7 @@ func (s *Service) Heartbeat(ctx context.Context, orgID, deviceID uint) (*model.D
 			OrganizationID: orgID,
 			DeviceID:       dev.ID,
 			At:             now,
-			Source:         "api",
+			Source:         source,
 		}).Error
 	})
 	if err != nil {
@@ -158,7 +179,7 @@ func (s *Service) Heartbeat(ctx context.Context, orgID, deviceID uint) (*model.D
 	}
 
 	var stored model.Device
-	if err := store.ScopedByOrg(s.db.WithContext(ctx), orgID).First(&stored, deviceID).Error; err != nil {
+	if err := store.ScopedByOrg(s.db.WithContext(ctx), orgID).First(&stored, dev.ID).Error; err != nil {
 		return nil, fmt.Errorf("load device: %w", err)
 	}
 	return &stored, nil

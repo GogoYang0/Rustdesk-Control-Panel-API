@@ -46,26 +46,43 @@ web:
   # (verify-email, invitation accept). Override with PANEL_WEB_BASE_URL.
   baseURL: "http://localhost:5173"
 
-# hbbs/hbbr log collection. Disabled by default: without rules every line is
-# counted as a parse error and dropped. Rules are evaluated in order, the first
-# match wins. Named capture groups become the event detail; the special group
-# "device" carries the RustDesk id and links the event (and a heartbeat) to the
-# device. RustDesk server images log with their own format — verify against the
-# pinned image before enabling:
+# hbbs/hbbr log collection.
 #
-#   logcollect:
-#     enabled: true
-#     containerPrefix: "panel-org"
-#     rules:
-#       - name: connection
-#         pattern: '^\[\d{4}-\d{2}-\d{2}[^\]]*\]\s+INFO\s+(?:punch hole|connection).*?(?P<device>\d{6,12})'
-#         level: info
-#         kind: conn
-#       - name: errors
-#         pattern: '^\[[^\]]*\]\s+ERROR\s+(?P<msg>.*)$'
-#         level: error
-#         kind: error
+# The collector follows `docker logs -f -t <container>` and merges the
+# container's stdout AND stderr (the RustDesk server logs to stderr by
+# default). On the first connection it follows only new lines (--tail 0):
+# history is not backfilled, so enabling the collector does not replay the
+# existing log into duplicate rows. A reconnect resumes from the last
+# observed timestamp.
+#
+# Rules are evaluated in order, the first match wins. Named capture groups
+# become the event detail; the special group "device" carries the RustDesk id
+# and links the event (plus an auxiliary heartbeat) to the device. Unmatched
+# lines are counted and dropped; the panel warns once a minute when that
+# happens, so a wrong rule set cannot stay silent.
+#
+# The defaults below follow env_logger's format used by the pinned
+# rustdesk-server image:
+#   [2026-10-20T06:00:00Z INFO  hbbs] connection from 123456789
+# Verify against `docker logs -t panel-org-<id>-hbbs` before enabling.
+# Collected events are kept for 30 days (pruned at startup).
 logcollect:
   enabled: false
   containerPrefix: "panel-org"
-  rules: []
+  rules:
+    - name: file-transfer
+      pattern: '^\[\S+\s+INFO\s+[^\]]*\].*(?:file|transfer).*?(?P<device>\d{6,12})'
+      level: info
+      kind: file
+    - name: connection
+      pattern: '^\[\S+\s+INFO\s+[^\]]*\]\s+.*?(?P<device>\d{6,12})'
+      level: info
+      kind: conn
+    - name: warnings
+      pattern: '^\[\S+\s+WARN\s+[^\]]*\]\s+(?P<msg>.*)$'
+      level: warn
+      kind: other
+    - name: errors
+      pattern: '^\[\S+\s+ERROR\s+[^\]]*\]\s+(?P<msg>.*)$'
+      level: error
+      kind: error

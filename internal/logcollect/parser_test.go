@@ -1,9 +1,11 @@
 package logcollect
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/require"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
@@ -88,4 +90,42 @@ func TestParser_NormalizesLevelAndKind(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, model.LogLevelInfo, event.Level)
 	require.Equal(t, model.LogKindOther, event.Kind)
+}
+
+// The rules shipped in configs/config.yaml must actually match the pinned
+// server's log format: a silently wrong default would collect nothing while
+// reporting "enabled".
+func TestExampleConfigRules_MatchServerFormat(t *testing.T) {
+	v := viper.New()
+	v.SetConfigFile(filepath.Join("..", "..", "configs", "config.yaml"))
+	require.NoError(t, v.ReadInConfig())
+	var cfg struct {
+		Logcollect struct {
+			Rules []Rule `mapstructure:"rules"`
+		} `mapstructure:"logcollect"`
+	}
+	require.NoError(t, v.Unmarshal(&cfg))
+	require.NotEmpty(t, cfg.Logcollect.Rules, "the deployment config ships default rules")
+
+	p, err := NewParser(cfg.Logcollect.Rules)
+	require.NoError(t, err)
+
+	cases := []struct {
+		line   string
+		level  string
+		kind   string
+		device string
+	}{
+		{"[2026-10-20T06:00:00Z INFO  hbbs] connection from 123456789", model.LogLevelInfo, model.LogKindConn, "123456789"},
+		{"[2026-10-20T06:00:02Z INFO  hbbs] file transfer 123456789 -> 987654321", model.LogLevelInfo, model.LogKindFile, "123456789"},
+		{"[2026-10-20T06:00:03Z WARN  hbbr] slow client", model.LogLevelWarn, model.LogKindOther, ""},
+		{"[2026-10-20T06:00:04Z ERROR hbbs] relay quota exceeded", model.LogLevelError, model.LogKindError, ""},
+	}
+	for _, tc := range cases {
+		event, ok := p.Parse(tc.line, time.Now())
+		require.True(t, ok, "the shipped rules must match %q", tc.line)
+		require.Equal(t, tc.level, event.Level, tc.line)
+		require.Equal(t, tc.kind, event.Kind, tc.line)
+		require.Equal(t, tc.device, event.DeviceRustdeskID, tc.line)
+	}
 }

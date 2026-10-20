@@ -33,6 +33,22 @@ func (a *AdminAPI) ListLogEvents(c *gin.Context, orgId int64, params gen.ListLog
 		return
 	}
 
+	// The contract declares an enum for level and a positive device id; the
+	// generated binder does not enforce either, so validate here instead of
+	// silently returning an empty list.
+	if params.Level != nil {
+		switch string(*params.Level) {
+		case model.LogLevelInfo, model.LogLevelWarn, model.LogLevelError:
+		default:
+			abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid level filter")
+			return
+		}
+	}
+	if params.DeviceId != nil && *params.DeviceId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid device id")
+		return
+	}
+
 	limit := logEventDefaultLimit
 	if params.Limit != nil {
 		limit = *params.Limit
