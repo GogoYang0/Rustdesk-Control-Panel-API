@@ -170,7 +170,10 @@ func (s *Service) Watch(orgID uint) {
 	// A provisioning notification can also arrive after the organization was
 	// deprovisioned (the row was deleted and Unwatch already ran): following
 	// containers that no longer exist would leave two tailers retrying forever.
-	if !s.deployed(orgID) {
+	// Only a successful lookup may cancel: a transient database error would
+	// otherwise stop collection until the process restarts, because nothing
+	// re-runs Watch for this organization.
+	if deployed, err := s.deployed(orgID); err == nil && !deployed {
 		s.Unwatch(orgID)
 	}
 
@@ -194,7 +197,9 @@ func (s *Service) Watch(orgID uint) {
 }
 
 // deployed reports whether the organization still has a deployed server group.
-func (s *Service) deployed(orgID uint) bool {
+// The error is returned separately from the answer: a failed lookup says nothing
+// about the deployment state.
+func (s *Service) deployed(orgID uint) (bool, error) {
 	var count int64
 	err := store.WithoutTenantScope(s.db).Model(&model.ServerGroup{}).
 		Where("organization_id = ? AND state = ?", orgID, model.ServerGroupDeployed).
@@ -202,9 +207,9 @@ func (s *Service) deployed(orgID uint) bool {
 	if err != nil {
 		s.logger.Warn("check server group state failed",
 			zap.Uint("org_id", orgID), zap.Error(err))
-		return false
+		return false, err
 	}
-	return count > 0
+	return count > 0, nil
 }
 
 // Unwatch stops the tailers of one organization (deprovisioning): without it a

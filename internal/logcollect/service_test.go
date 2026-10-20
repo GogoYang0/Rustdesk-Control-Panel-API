@@ -474,3 +474,34 @@ func TestWatch_SkipsDeprovisionedOrganization(t *testing.T) {
 	cancel()
 	svc.Wait()
 }
+
+// A transient database error must not stop collection. Start and the
+// provisioning callback each call Watch once and do not retry, so treating
+// "state query failed" as "not deployed" would cancel the tailers until the
+// process restarts; only a successful query that finds no deployment may.
+func TestWatch_KeepsTailersWhenStateQueryFails(t *testing.T) {
+	st, orgs := serviceFixture(t, "org-a")
+	org := orgs[0]
+
+	parser, err := NewParser(testRules())
+	require.NoError(t, err)
+	svc := NewService(st.DB, parser, newMapStreamer(nil), nil,
+		Options{InitialBackoff: time.Millisecond, MaxBackoff: 2 * time.Millisecond}, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	svc.Start(ctx)
+
+	// Force the state lookup to fail, then re-register the organization.
+	svc.Unwatch(org.ID)
+	require.NoError(t, st.Close())
+	svc.Watch(org.ID)
+
+	svc.mu.Lock()
+	_, registered := svc.watched[org.ID]
+	svc.mu.Unlock()
+	require.True(t, registered, "a failed state query must not cancel collection")
+
+	cancel()
+	svc.Wait()
+}
