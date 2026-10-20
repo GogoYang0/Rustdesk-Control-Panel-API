@@ -206,21 +206,25 @@ const apiHeartbeatMinInterval = 30 * time.Second
 // auxiliary log-derived source (C11).
 func (s *Service) heartbeat(ctx context.Context, orgID uint, dev model.Device, source string) (*model.Device, error) {
 	now := s.now()
-	// Bound the durable history of the credential-free reports: within the
-	// window the device is already marked online and its heartbeat row exists.
-	// Without this a caller reporting at request rate appends rows forever.
-	if dev.LastSeenAt != nil && now.Sub(*dev.LastSeenAt) < apiHeartbeatMinInterval {
-		return &dev, nil
-	}
+	refreshed := false
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// Only move the timestamp forward: a slower in-flight heartbeat must not
+		// The RowsAffected guard is the real coalescing: two concurrent reports
+		// can both read the same stale last_seen_at, so the outer fast path is
+		// only an optimization and the window check has to be atomic with the
+		// insert (the heartbeatLog path uses the same pattern). It also keeps
+		// the timestamp forward-only: a slower in-flight heartbeat must not
 		// overwrite a newer one and make the device look offline.
-		if err := store.ScopedByOrg(tx, orgID).Model(&model.Device{}).
+		result := store.ScopedByOrg(tx, orgID).Model(&model.Device{}).
 			Where("id = ?", dev.ID).
-			Where("last_seen_at IS NULL OR last_seen_at < ?", now).
-			Update("last_seen_at", now).Error; err != nil {
-			return err
+			Where("last_seen_at IS NULL OR last_seen_at <= ?", now.Add(-apiHeartbeatMinInterval)).
+			Update("last_seen_at", now)
+		if result.Error != nil {
+			return result.Error
 		}
+		if result.RowsAffected == 0 {
+			return nil
+		}
+		refreshed = true
 		return store.ScopedByOrg(tx, orgID).Create(&model.DeviceHeartbeat{
 			OrganizationID: orgID,
 			DeviceID:       dev.ID,
@@ -228,6 +232,14 @@ func (s *Service) heartbeat(ctx context.Context, orgID uint, dev model.Device, s
 			Source:         source,
 		}).Error
 	})
+	if err != nil {
+		return nil, err
+	}
+	if !refreshed {
+		// A report within the window of an earlier one: the device is already
+		// online and its durable row exists.
+		return &dev, nil
+	}
 	if err != nil {
 		return nil, err
 	}

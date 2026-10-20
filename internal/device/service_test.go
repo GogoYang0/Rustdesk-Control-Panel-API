@@ -260,3 +260,33 @@ func TestHeartbeat_CoalescesWithinWindow(t *testing.T) {
 	require.NoError(t, store.ScopedByOrg(f.st.DB, f.orgA.ID).First(&live, dev.ID).Error)
 	require.NotNil(t, live.LastSeenAt, "the device must remain online")
 }
+
+// The coalescing window has to be atomic: two concurrent reports that both read
+// the same stale last_seen_at would each pass the fast-path check and each
+// append a row. The rows-affected guard inside the transaction decides.
+func TestHeartbeat_ConcurrentReports_WriteOneRow(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	dev, err := f.svc.Register(ctx, f.orgA.ID, device.RegisterInput{Name: "pc", RustdeskID: "123123123"})
+	require.NoError(t, err)
+
+	const callers = 8
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, _ = f.svc.Heartbeat(ctx, f.orgA.ID, dev.ID)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	var beats int64
+	require.NoError(t, store.ScopedByOrg(f.st.DB, f.orgA.ID).
+		Model(&model.DeviceHeartbeat{}).Count(&beats).Error)
+	require.EqualValues(t, 1, beats, "concurrent reports must coalesce into one row")
+}

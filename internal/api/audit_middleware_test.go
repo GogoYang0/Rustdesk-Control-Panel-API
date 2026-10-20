@@ -116,7 +116,7 @@ func TestMiddleware_FallbackWithoutTxRecorder(t *testing.T) {
 // address-book change to organization zero, which the persistent auditor
 // silently drops. The fallback must carry the compat actor and organization.
 func TestMiddleware_AttributesCompatMutations(t *testing.T) {
-	spy := &spyAuditor{}
+	spy := &spyAuditor{inner: audit.Nop{}}
 	h := newHarnessWith(t, func(d *api.Deps) { d.Auditor = spy })
 	h.seedUser(t, "compat-audit@example.com", "password123")
 
