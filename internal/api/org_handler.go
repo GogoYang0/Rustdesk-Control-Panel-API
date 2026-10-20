@@ -339,11 +339,11 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 	// shares the login guard: otherwise the invitation token would become an
 	// unlimited password oracle (CWE-307).
 	ip := c.ClientIP()
-	if !a.guard.allowIP(ip) {
+	if !a.guard.AllowIP(ip) {
 		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "too many attempts")
 		return
 	}
-	if a.guard.locked(inv.Email, ip) {
+	if a.guard.Locked(inv.Email, ip) {
 		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "account temporarily locked")
 		return
 	}
@@ -410,7 +410,7 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 			Updates(map[string]any{"accepted_at": now, "accepted_by": user.ID}).Error
 	})
 	if errors.Is(err, errInvitationCredentials) {
-		a.guard.recordFailure(inv.Email, ip)
+		a.guard.RecordFailure(inv.Email, ip)
 		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "invalid credentials for this email")
 		return
 	}
@@ -418,7 +418,7 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "could not accept invitation")
 		return
 	}
-	a.guard.reset(inv.Email, ip)
+	a.guard.Reset(inv.Email, ip)
 
 	if needVerify {
 		if err := a.sendVerificationMail(c.Request.Context(), joined); err != nil {

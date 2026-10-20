@@ -1,0 +1,9 @@
+{
+  "peers": [
+    {
+      "id": "123456789",
+      "name": "office-pc",
+      "online": true
+    }
+  ]
+}

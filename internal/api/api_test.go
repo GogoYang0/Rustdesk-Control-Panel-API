@@ -52,6 +52,7 @@ func newHarnessWith(t *testing.T, tune func(*api.Deps)) *harness {
 		&model.AuditLog{}, &model.Device{}, &model.DeviceHeartbeat{},
 		&model.AddressBook{}, &model.AddressBookPeer{},
 		&model.AddressBookTag{}, &model.SyncCursor{}, &model.VerificationToken{},
+		&model.MigrationMark{}, &model.CompatSession{},
 	))
 
 	issuer := auth.NewIssuer("test-secret", time.Minute, time.Hour)

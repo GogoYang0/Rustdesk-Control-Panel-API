@@ -28,6 +28,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
 
+// main loads configuration, prepares persistence and services, and starts the API server.
 func main() {
 	cfg, err := config.Load("configs/config.yaml")
 	if err != nil {
@@ -63,6 +64,7 @@ func main() {
 		&model.AddressBookTag{}, &model.SyncCursor{},
 		&model.VerificationToken{},
 		&model.MigrationMark{},
+		&model.CompatSession{},
 	); err != nil {
 		lg.Fatal("migrate database", zap.Error(err))
 	}
@@ -174,6 +176,7 @@ func main() {
 			RefreshTTL:     cfg.Auth.RefreshTTL,
 			InvitationTTL:  7 * 24 * time.Hour,
 			WebBaseURL:     cfg.Web.BaseURL,
+			CompatTTL:      cfg.Compat.AccessTTL,
 		}),
 	}
 

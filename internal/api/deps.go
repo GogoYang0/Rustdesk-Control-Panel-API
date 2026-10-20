@@ -40,6 +40,10 @@ type Deps struct {
 	VerificationTTL time.Duration
 	// ResendCooldown throttles repeated verification mails per account.
 	ResendCooldown time.Duration
+
+	// CompatTTL bounds the RustDesk compatibility session/token lifetime
+	// (config compat.accessTTL, default 720h).
+	CompatTTL time.Duration
 }
 
 // Provisioner schedules asynchronous server provisioning.

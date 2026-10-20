@@ -17,6 +17,14 @@ type Config struct {
 	Provision ProvisionConfig `mapstructure:"provision"`
 	Mail      MailConfig      `mapstructure:"mail"`
 	Web       WebConfig       `mapstructure:"web"`
+	Compat    CompatConfig    `mapstructure:"compat"`
+}
+
+// CompatConfig tunes the RustDesk client compatibility endpoints. The
+// access token is long-lived by design: desktop clients hold it until
+// logout, and there is no refresh flow in the client protocol.
+type CompatConfig struct {
+	AccessTTL time.Duration `mapstructure:"accessTTL"`
 }
 
 // WebConfig points at the panel frontend so emails can link back to it.
@@ -105,6 +113,7 @@ func Load(path string) (*Config, error) {
 	}
 	v.SetDefault("mail.devMode", true)
 	v.SetDefault("mail.smtp.port", 587)
+	v.SetDefault("compat.accessTTL", "720h")
 	// Frontend origin for links inside outgoing emails.
 	v.SetDefault("web.baseurl", "http://localhost:5173")
 	if err := v.BindEnv("web.baseurl", "PANEL_WEB_BASE_URL"); err != nil {
