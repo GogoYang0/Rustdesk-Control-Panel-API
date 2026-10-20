@@ -147,18 +147,16 @@ func main() {
 
 	provQueue.Start(rootCtx)
 
-	// Shut the tailers down before exiting: exec.CommandContext kills the
-	// `docker logs -f` children only when their context is cancelled.
+	// Drain the tailers on shutdown: exec.CommandContext kills the
+	// `docker logs -f` children only when their context is cancelled, and
+	// waiting here keeps them from outliving the panel.
+	var drainCollector func()
 	if collector != nil {
-		go func() {
-			<-rootCtx.Done()
-			collector.Wait()
-			os.Exit(0)
-		}()
+		drainCollector = collector.Wait
 	}
 	// The organization row is the durable record of a provisioning intent, so a
 	// sweep re-enqueues anything that never reached a worker (full queue, crash).
-	go provQueue.RunReconciler(context.Background(), 2*time.Minute)
+	go provQueue.RunReconciler(rootCtx, 2*time.Minute)
 
 	// Mail delivery: devMode prints to stdout; otherwise real SMTP. The
 	// SMTP password comes only from PANEL_SMTP_PASSWORD.
@@ -218,10 +216,58 @@ func main() {
 		}),
 	}
 
-	lg.Info("api listening", zap.String("addr", cfg.Server.Addr))
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	ln, err := net.Listen("tcp", cfg.Server.Addr)
+	if err != nil {
+		lg.Fatal("listen", zap.String("addr", cfg.Server.Addr), zap.Error(err))
+	}
+	lg.Info("api listening", zap.String("addr", ln.Addr().String()))
+	if err := serveUntilShutdown(rootCtx, srv, ln, drainCollector, lg, gracefulShutdownTimeout); err != nil {
 		lg.Fatal("server stopped", zap.Error(err))
 	}
+}
+
+// gracefulShutdownTimeout bounds how long in-flight requests may keep the
+// process alive once a termination signal arrives.
+const gracefulShutdownTimeout = 15 * time.Second
+
+// serveUntilShutdown serves srv on ln and returns either when the listener
+// fails or when ctx is cancelled. Draining on cancellation keeps two promises
+// that signal.NotifyContext alone breaks: once a signal is notified the runtime
+// no longer terminates the process by default, so a main that only blocks in
+// ListenAndServe ignores SIGINT/SIGTERM entirely (the default configuration has
+// log collection disabled and therefore no other goroutine watching ctx), and
+// returning instead of calling os.Exit lets every deferred cleanup run.
+func serveUntilShutdown(
+	ctx context.Context,
+	srv *http.Server,
+	ln net.Listener,
+	drain func(),
+	lg *zap.Logger,
+	timeout time.Duration,
+) error {
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(ln) }()
+
+	select {
+	case err := <-serveErr:
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+	}
+
+	// Stop accepting new connections and let in-flight requests finish
+	// (provisioning is asynchronous, so this is short).
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		lg.Warn("graceful shutdown did not finish", zap.Error(err))
+	}
+	if drain != nil {
+		drain()
+	}
+	return nil
 }
 
 // zapLogger adapts *zap.Logger to auth.Logger without widening the interface.
