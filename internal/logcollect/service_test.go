@@ -3,6 +3,7 @@ package logcollect
 import (
 	"context"
 	"io"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -326,4 +327,61 @@ func TestHandleLine_StoresOccurredAtInUTC(t *testing.T) {
 	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).First(&row).Error)
 	require.Equal(t, time.UTC, row.OccurredAt.Location(), "rows must be stored in UTC")
 	require.True(t, row.OccurredAt.Equal(at), "the instant must be preserved")
+}
+
+// The persist bound must cover the whole write path, including the device
+// lookup that runs before the insert: a query without a context waits for a
+// free connection indefinitely (sqlite runs with a single connection), and a
+// stuck database would then hold the tailer forever.
+func TestHandleLine_DeviceLookupHonoursPersistDeadline(t *testing.T) {
+	// A file-backed database: the test holds the only connection for a while,
+	// and an in-memory one would be dropped once every connection closes.
+	dsn := "file:" + filepath.ToSlash(filepath.Join(t.TempDir(), "lookup.db"))
+	st, err := store.Open(config.DatabaseConfig{Driver: "sqlite", DSN: dsn})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	require.NoError(t, st.DB.AutoMigrate(
+		&model.Organization{}, &model.Device{}, &model.DeviceHeartbeat{}, &model.LogEvent{},
+	))
+	org := model.Organization{Name: "org-a"}
+	require.NoError(t, st.DB.Create(&org).Error)
+
+	dev, err := device.NewService(st.DB, nil).Register(context.Background(), org.ID, device.RegisterInput{
+		Name: "office-pc", RustdeskID: "123456789",
+	})
+	require.NoError(t, err)
+
+	parser, err := NewParser(testRules())
+	require.NoError(t, err)
+	svc := NewService(st.DB, parser, newMapStreamer(nil), nil,
+		Options{PersistTimeout: 100 * time.Millisecond}, nil)
+
+	// Take the only connection so every further query has to wait for it.
+	sqlDB, err := st.DB.DB()
+	require.NoError(t, err)
+	conn, err := sqlDB.Conn(context.Background())
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		svc.handleLine(context.Background(), org.ID, model.LogSourceHbbs,
+			"INFO connection from 123456789 via 10.0.0.1:1", time.Now().UTC())
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the device lookup must honour the persist deadline instead of waiting forever")
+	}
+
+	// The connection is released again, so a later line still persists.
+	require.NoError(t, conn.Close())
+	svc.handleLine(context.Background(), org.ID, model.LogSourceHbbs,
+		"INFO connection from 123456789 via 10.0.0.1:1", time.Now().UTC())
+	var events int64
+	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).
+		Model(&model.LogEvent{}).Where("device_id = ?", dev.ID).Count(&events).Error)
+	require.NotZero(t, events, "a later line must still be stored")
 }

@@ -1,8 +1,10 @@
 package scopetest
 
 import (
+	"context"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -332,4 +334,34 @@ func TestAddressBookPeer_UniqueConstraint(t *testing.T) {
 
 	err := db.Create(&model.AddressBookPeer{OrganizationID: org.ID, BookID: book.ID, PeerID: "222222"}).Error
 	require.ErrorIs(t, err, gorm.ErrDuplicatedKey, "duplicate (book_id, peer_id) must raise ErrDuplicatedKey")
+}
+
+// ScopedByOrg carries the tenant id in the context, so a WithContext applied
+// after it replaces that context and silently drops the scope: the plugin then
+// fails closed and every query matches no rows. This bit the log collector,
+// where the failure looked like "device not found" instead of a scoping bug.
+func TestScopedByOrg_WithContextAfterScopeDropsTheScope(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	org := model.Organization{Name: "org-a"}
+	require.NoError(t, db.Create(&org).Error)
+	require.NoError(t, db.Create(&model.Membership{
+		OrganizationID: org.ID, UserID: 1, Role: model.RoleOwner,
+	}).Error)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	// Correct order: the caller context goes in first, then the tenant id.
+	right := store.ScopedByOrg(db.WithContext(ctx), org.ID)
+	var rows []model.Membership
+	require.NoError(t, right.Find(&rows).Error)
+	require.Len(t, rows, 1)
+
+	// Wrong order: WithContext wipes the tenant id out of the context.
+	wrong := store.ScopedByOrg(db, org.ID).WithContext(ctx)
+	rows = nil
+	require.NoError(t, wrong.Find(&rows).Error)
+	require.Empty(t, rows, "the tenant scope must be applied after the caller context")
 }

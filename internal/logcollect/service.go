@@ -34,6 +34,8 @@ type Options struct {
 	MaxBackoff      time.Duration
 	// Streamer overrides the docker CLI streamer (tests).
 	Streamer LineStreamer
+	// PersistTimeout overrides the event-write bound (tests shorten it).
+	PersistTimeout time.Duration
 }
 
 // Service runs one tailer pair per provisioned organization, parses the lines
@@ -201,13 +203,17 @@ func (s *Service) handleLine(ctx context.Context, orgID uint, source, line strin
 	// is shutting down (Unwatch cancels the tailer context), otherwise the last
 	// lines before a restart or a deprovisioning are lost silently. The detach
 	// keeps a bound so a stuck database cannot block shutdown forever.
-	persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
+	persistDeadline := s.opts.PersistTimeout
+	if persistDeadline <= 0 {
+		persistDeadline = persistTimeout
+	}
+	persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), persistDeadline)
 	defer cancelPersist()
 
 	var deviceID *uint
 	if event.DeviceRustdeskID != "" {
 		var dev model.Device
-		err := store.ScopedByOrg(s.db, orgID).
+		err := store.ScopedByOrg(s.db.WithContext(persistCtx), orgID).
 			Where("rustdesk_id = ?", event.DeviceRustdeskID).First(&dev).Error
 		switch {
 		case err == nil:
@@ -248,7 +254,10 @@ func (s *Service) handleLine(ctx context.Context, orgID uint, source, line strin
 		DetailJSON:     detail,
 		OccurredAt:     event.OccurredAt.UTC(),
 	}
-	if err := store.ScopedByOrg(s.db, orgID).WithContext(persistCtx).Create(&row).Error; err != nil {
+	// ScopedByOrg stores the tenant id in the context, so WithContext has to be
+	// applied first: chaining it afterwards would drop the scope and the tenant
+	// plugin would fail closed on every query.
+	if err := store.ScopedByOrg(s.db.WithContext(persistCtx), orgID).Create(&row).Error; err != nil {
 		s.logger.Error("store log event failed", zap.Uint("org_id", orgID), zap.Error(err))
 	}
 }
