@@ -18,9 +18,10 @@ import (
 
 // Service-level errors mapped to HTTP statuses by the handler.
 var (
-	ErrBookNotFound  = errors.New("address book not found")
-	ErrDuplicateName = errors.New("address book name already exists")
-	ErrForbidden     = errors.New("not allowed to access this address book")
+	ErrBookNotFound    = errors.New("address book not found")
+	ErrDuplicateName   = errors.New("address book name already exists")
+	ErrForbidden       = errors.New("not allowed to access this address book")
+	ErrContentConflict = errors.New("address book content conflict")
 )
 
 // Service carries the scoped handle; every query goes through

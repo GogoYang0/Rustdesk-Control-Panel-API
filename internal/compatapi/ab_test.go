@@ -312,3 +312,58 @@ func abFixtureList(t *testing.T, name string) []map[string]any {
 	require.NoError(t, json.Unmarshal(b, &l))
 	return l
 }
+
+// A huge `current` must not overflow the offset multiplication into a
+// negative slice index (runtime panic): out-of-range pages answer 200 with
+// an empty page.
+func TestABPeersPage_OverflowCurrentIsSafe(t *testing.T) {
+	h := newHarness(t)
+	u := h.seedUser(t, "page@example.com", "password123", true)
+	org := h.seedOrg(t, "acme")
+	h.seedMembership(t, u.ID, org.ID)
+	tok, _ := h.login(t, "page@example.com", "password123", "777777776", "page-uuid")
+
+	w := h.do(t, http.MethodPost, "/api/ab/personal", nil, tok)
+	var personal map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &personal))
+	guid, _ := personal["guid"].(string)
+
+	w = h.do(t, http.MethodPost,
+		"/api/ab/peers?current=36893488147419104&pageSize=500&ab="+guid, nil, tok)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var page struct {
+		Total int              `json:"total"`
+		Data  []map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &page))
+	require.Zero(t, page.Total)
+	require.Empty(t, page.Data)
+}
+
+// The compat layer maps onto the user's personal book only: a shared book's
+// guid must not resolve through any compat endpoint (CWE-639).
+func TestABCompat_SharedBookUnreachable(t *testing.T) {
+	h := newHarness(t)
+	u := h.seedUser(t, "shared@example.com", "password123", true)
+	org := h.seedOrg(t, "acme")
+	h.seedMembership(t, u.ID, org.ID)
+	tok, _ := h.login(t, "shared@example.com", "password123", "777777777", "shared-uuid")
+
+	// A shared book of the same organization (visible to members through
+	// the management API, never through the compat dialect).
+	shared := model.AddressBook{
+		OrganizationID: org.ID,
+		Scope:          model.AddressBookScopeShared,
+		Name:           "Team Book",
+	}
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).Create(&shared).Error)
+	guid := strconv.FormatUint(uint64(shared.ID), 10)
+
+	w := h.do(t, http.MethodPost, "/api/ab/peers?current=1&pageSize=100&ab="+guid, nil, tok)
+	require.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
+	w = h.do(t, http.MethodPost, "/api/ab/peer/add/"+guid,
+		abFixtureMap(t, "ab_peer_add.json"), tok)
+	require.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
+	w = h.do(t, http.MethodPost, "/api/ab/tags/"+guid, nil, tok)
+	require.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
+}

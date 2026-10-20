@@ -31,12 +31,19 @@ type abPeer = addressbook.PeerJSON
 func (s *Server) resolvePersonalBook(c *gin.Context) (*model.AddressBook, bool) {
 	uid, orgID, _ := sessionFrom(c)
 	id, err := strconv.ParseUint(c.Param("guid"), 10, 64)
-	if err != nil {
+	if err != nil || id > uint64(^uint(0)>>1) {
 		compatError(c, http.StatusNotFound, "address book not found")
 		return nil, false
 	}
 	book, _, _, err := s.deps.Books.Get(uid, orgID, uint(id))
 	if err != nil {
+		compatError(c, http.StatusNotFound, "address book not found")
+		return nil, false
+	}
+	// The compat layer maps onto the user's personal book only: Books.Get
+	// would also hand shared books to every member of the organization,
+	// which the client dialect never addresses (CWE-639).
+	if book.Scope != model.AddressBookScopePersonal || book.OwnerID == nil || *book.OwnerID != uid {
 		compatError(c, http.StatusNotFound, "address book not found")
 		return nil, false
 	}
@@ -60,7 +67,7 @@ func (s *Server) abPersonal(c *gin.Context) {
 func (s *Server) abPeersPage(c *gin.Context) {
 	uid, orgID, _ := sessionFrom(c)
 	id, err := strconv.ParseUint(c.Query("ab"), 10, 64)
-	if err != nil {
+	if err != nil || id > uint64(^uint(0)>>1) {
 		compatError(c, http.StatusNotFound, "address book not found")
 		return
 	}
@@ -81,10 +88,21 @@ func (s *Server) abPeersPage(c *gin.Context) {
 		compatError(c, http.StatusNotFound, "address book not found")
 		return
 	}
+	// Personal-only, same as the path-parameter endpoints: a shared book's
+	// guid must not resolve here (CWE-639).
+	if snap.Book.Scope != model.AddressBookScopePersonal || snap.Book.OwnerID == nil || *snap.Book.OwnerID != uid {
+		compatError(c, http.StatusNotFound, "address book not found")
+		return
+	}
 	total := len(snap.Peers)
-	offset := (current - 1) * pageSize
-	if offset > total {
-		offset = total
+	// (current-1)*pageSize overflows int for huge currents; bound the
+	// multiplication by the page count so offset stays non-negative.
+	offset := total
+	if current-1 <= total/pageSize {
+		offset = (current - 1) * pageSize
+		if offset > total {
+			offset = total
+		}
 	}
 	end := offset + pageSize
 	if end > total {
@@ -306,25 +324,14 @@ func (s *Server) abLegacyGet(c *gin.Context) {
 	})
 }
 
-// abLegacyPost replaces the whole book (legacy push). A stale content hash
-// in the request aborts with 409 ab_conflict (Review Focus #5).
+// abLegacyPost replaces the whole book (legacy push). The content hash is
+// verified inside the replace transaction, so a stale push aborts with 409
+// ab_conflict without a check-then-replace race (Review Focus #5).
 func (s *Server) abLegacyPost(c *gin.Context) {
 	uid, orgID, _ := sessionFrom(c)
 	var env legacyEnvelope
 	if err := c.ShouldBindJSON(&env); err != nil || env.Data == "" {
 		compatError(c, http.StatusBadRequest, "invalid address book payload")
-		return
-	}
-
-	snap, err := s.deps.Books.SnapshotForCompatPersonal(uid, orgID)
-	if err != nil {
-		compatError(c, http.StatusInternalServerError, "could not open address book")
-		return
-	}
-	if snap != nil && env.Hash != "" && env.Hash != legacyHash(snap) {
-		// The client's copy is based on another revision; replacing would
-		// silently drop whichever side pushed last.
-		compatError(c, http.StatusConflict, "ab_conflict")
 		return
 	}
 
@@ -343,7 +350,13 @@ func (s *Server) abLegacyPost(c *gin.Context) {
 		compatError(c, http.StatusInternalServerError, "could not open address book")
 		return
 	}
-	if _, err := s.deps.Books.ReplaceBookContent(uid, orgID, book.ID, content.Peers, tags); err != nil {
+	if _, err := s.deps.Books.ReplaceBookContent(uid, orgID, book.ID, env.Hash, content.Peers, tags); err != nil {
+		if err == addressbook.ErrContentConflict {
+			// The client's copy is based on another revision; replacing
+			// would silently drop whichever side pushed last.
+			compatError(c, http.StatusConflict, "ab_conflict")
+			return
+		}
 		s.abActionError(c, err)
 		return
 	}

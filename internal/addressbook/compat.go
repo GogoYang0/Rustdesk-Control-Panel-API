@@ -432,8 +432,12 @@ func (s *Service) DeleteTag(userID uint, orgID, bookID uint, name string) error 
 
 // ReplaceBookContent swaps peers and tags in one transaction (legacy /api/ab
 // POST semantics) and bumps the revision once. The peer wire shape is used
-// directly so the opaque hash/note fields round-trip.
-func (s *Service) ReplaceBookContent(userID uint, orgID, bookID uint, peers []PeerJSON, tags []TagInput) (*model.AddressBook, error) {
+// directly so the opaque hash/note fields round-trip. When expectedHash is
+// non-empty it is compared against the content hash recomputed under the
+// book row lock — the optimistic-concurrency check runs inside the same
+// transaction as the replace, so a stale push cannot slip through a
+// check-then-replace race.
+func (s *Service) ReplaceBookContent(userID uint, orgID, bookID uint, expectedHash string, peers []PeerJSON, tags []TagInput) (*model.AddressBook, error) {
 	book, err := s.getBook(userID, orgID, bookID)
 	if err != nil {
 		return nil, err
@@ -444,8 +448,18 @@ func (s *Service) ReplaceBookContent(userID uint, orgID, bookID uint, peers []Pe
 
 	var fresh model.AddressBook
 	err = s.db.Transaction(func(tx *gorm.DB) error {
-		if _, err := lockBook(tx, orgID, book.ID); err != nil {
+		current, err := lockBook(tx, orgID, book.ID)
+		if err != nil {
 			return err
+		}
+		if expectedHash != "" {
+			snap, err := s.snapshotTx(tx, orgID, current)
+			if err != nil {
+				return err
+			}
+			if ContentHash(snap) != expectedHash {
+				return ErrContentConflict
+			}
 		}
 		if err := store.ScopedByOrg(tx, orgID).
 			Where("book_id = ?", book.ID).Delete(&model.AddressBookPeer{}).Error; err != nil {
@@ -492,6 +506,26 @@ func (s *Service) ReplaceBookContent(userID uint, orgID, bookID uint, peers []Pe
 		return nil, err
 	}
 	return &fresh, nil
+}
+
+// snapshotTx loads the book's peers and tags on the given transaction and
+// maps them onto the compat wire shape.
+func (s *Service) snapshotTx(tx *gorm.DB, orgID uint, book *model.AddressBook) (*BookSnapshot, error) {
+	var peerRows []model.AddressBookPeer
+	if err := store.ScopedByOrg(tx, orgID).
+		Where("book_id = ?", book.ID).Order("id").Find(&peerRows).Error; err != nil {
+		return nil, err
+	}
+	var tagRows []model.AddressBookTag
+	if err := store.ScopedByOrg(tx, orgID).
+		Where("book_id = ?", book.ID).Order("name").Find(&tagRows).Error; err != nil {
+		return nil, err
+	}
+	peers := make([]PeerJSON, 0, len(peerRows))
+	for _, p := range peerRows {
+		peers = append(peers, peerToJSON(p))
+	}
+	return &BookSnapshot{Book: book, Peers: peers, Tags: tagRows}, nil
 }
 
 // mutateBook loads the book, checks ownership and runs fn inside a
