@@ -64,7 +64,7 @@ make run
 | 变量 | 必填 | 说明 |
 |---|---|---|
 | `PANEL_AUTH_SECRET` | 是 | 访问/刷新令牌签名密钥，至少 32 字节；缺失则启动失败 |
-| `PANEL_SMTP_PASSWORD` | 视配置 | `mail.smtp.username` 非空时必须提供；缺失则启动失败（避免用空密码发起 AUTH） |
+| `PANEL_SMTP_PASSWORD` | 视配置 | `mail.devMode=false` 且 `mail.smtp.username` 非空时必须提供；缺失则启动失败（避免用空密码发起 AUTH）。`devMode=true` 时不读取该变量 |
 | `PANEL_WEB_BASE_URL` | 生产建议 | 覆盖 `web.baseURL`：验证邮件与邀请链接的前端源。`mail.devMode=false` 时必须是 **https 公共源**（拒绝 localhost 与私有 IP），否则启动失败 |
 
 ## 配置要点
@@ -95,7 +95,7 @@ make run
 两点需要知道：
 
 - **兼容层只提供个人地址簿**。共享地址簿返回 404（personal-only），避免跨用户数据被客户端方言意外读写。
-- **心跳与 sysinfo 的归属是推断的**：协议里这两个请求不带凭据，服务端用请求中的 `uuid` 匹配最近的活跃会话来确定组织与设备。这是协议限制，攻击面收敛为「需要 uuid + 设备 ID + 有效账号，且仅能污染 `last_seen_at` 的归属」。
+- **心跳与 sysinfo 的归属是推断的**：协议里这两个请求不带凭据，服务端用请求中的 `uuid` 找到一个**活跃会话**，并要求请求的 `id` 与该会话登录时绑定的设备一致，才刷新心跳。也就是说，这条路径不需要调用者自己持有账号，前置条件只是「存在匹配该 `uuid` 的活跃会话 + 设备 ID 对得上」——`uuid` 是稳定的硬件标识，不是秘密。这是协议限制，影响面收敛为「仅能刷新已绑定设备的 `last_seen_at`」。
 
 ## 日志采集
 
