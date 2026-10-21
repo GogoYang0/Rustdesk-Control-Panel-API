@@ -67,7 +67,8 @@ web:
 # Note the level sits *outside* the first bracket and sits ahead of a second
 # bracket holding the source location; the timestamp itself contains spaces.
 # Verify against `docker logs -t panel-org-<id>-hbbs` before enabling.
-# Collected events are kept for 30 days (pruned at startup).
+# Collected events are kept for 30 days: pruned on start and every
+# retentionSweepInterval (see below), independently of logcollect.enabled.
 logcollect:
   enabled: false
   containerPrefix: "panel-org"
@@ -88,3 +89,8 @@ logcollect:
       pattern: '^\[[^\]]+\]\s+ERROR\s+\[[^\]]+\]\s+(?P<msg>.*)$'
       level: error
       kind: error
+  # Period of the log-event retention sweep (30-day window), minimum 1m.
+  # 0 disables retention cleanup entirely (no periodic sweep, no startup
+  # sweep). With a non-zero value the sweep runs on start and every interval,
+  # independently of logcollect.enabled.
+  retentionSweepInterval: 6h

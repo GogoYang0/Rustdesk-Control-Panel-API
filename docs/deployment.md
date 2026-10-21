@@ -58,6 +58,7 @@ go build -o panel ./cmd/server
 | `web.baseURL` | | `http://localhost:5173` | 前端 origin，用于构造邮件链接 |
 | `logcollect.enabled` | | `false` | 日志采集总开关（见运维指南 §4） |
 | `logcollect.containerPrefix` | | `panel-org` | 容器命名前缀，实际为 `panel-org-<orgId>-hbbs/hbbr` |
+| `logcollect.retentionSweepInterval` | | `6h` | 日志事件保留期（30 天）的清扫间隔，最小 `1m`；`0` 表示**完全停用保留期清理**。非 0 时启动即清扫一次并按间隔周期执行，与 `logcollect.enabled` 无关，见运维指南 §4.2 |
 | `logcollect.rules` | | **空（无内置默认）** | 省略即零规则：所有行按 unparseable 计数丢弃。必须显式配置（示例 `configs/config.yaml` 含 4 条经 1.1.11/1.1.16 实测的规则）；规则按序匹配、首条命中即停；命名捕获组 `device` 关联设备 |
 
 ---
@@ -73,12 +74,12 @@ go build -o panel ./cmd/server
 3. **AutoMigrate** 全部模型（GORM 自动建表/加列）
 4. **一次性回填**：`email_verified` 历史数据回填，成功后写迁移标记（MigrationMark）；已有标记则跳过
 5. 校验邮件配置（`mail.devMode=false` 时的三项检查）
-6. 启动后台 worker（日志采集 tailer、provision 队列、对账 reconciler）
+6. 启动后台 worker（日志采集 tailer、provision 队列、**worker 调度器**（保留期清扫等周期任务）、对账 reconciler）
 7. 监听
 
 ### 4.2 升级
 
-- 新版本新增列时 AutoMigrate 自动处理；**删除列/收窄列不会自动执行**（如 `Device.BoundUUID` 保持 255 的原因）
+- 新版本新增列时 AutoMigrate 自动处理（**含新增索引**——已有大表的 MySQL/PostgreSQL 上首次启动会执行建索引 DDL，可能短暂持写锁，请避开业务高峰）；**删除列/收窄列不会自动执行**（如 `Device.BoundUUID` 保持 255 的原因）
 - **升级期间禁止并行启动实例**：回填会把当前所有未验证账户标为已验证——若另一实例在回填完成前启动并创建了新的未验证账户，该账户也会被误标为已验证，**绕过邮箱验证边界**。正确流程：先停止或隔离其他实例 → 启动一个实例完成回填并写入迁移标记 → 再启动其余实例
 - 升级前备份 `panel.db`（或数据库快照）与 `data/servergroups/`
 
@@ -118,7 +119,7 @@ database:
 2. `provision.image` 是 `rustdesk/rustdesk-server:1.1.11`（或已按其真实日志格式校准规则）
 3. 用 `docker logs -t panel-org-<id>-hbbs` 抽样验证规则能匹配真实行（本地可跑 `TestExampleConfigRules_MatchServerFormat` 参照）
 4. 首次连接只跟随新行（`--tail 0`），历史日志不会回灌——需要历史数据请在启用前导出
-5. 启用后 30 天内的事件自动保留，超期在启动时清扫（见运维指南 §4）
+5. 启用后 30 天内的事件自动保留，超期事件在启动时及每个 `logcollect.retentionSweepInterval` 周期清扫——与采集启停无关（见运维指南 §4.2）
 
 ---
 
