@@ -37,8 +37,8 @@ const (
 // concurrency policy (native is record-only, design D10).
 type Session struct {
 	ID             uint       `gorm:"primaryKey" json:"id"`
-	OrganizationID uint       `gorm:"index;index:idx_session_org_status,priority:1;index:idx_session_org_started,priority:1;not null" json:"organization_id"`
-	DeviceID       uint       `gorm:"index;index:idx_session_device;not null" json:"device_id"`
+	OrganizationID uint       `gorm:"index:idx_session_org_status,priority:1;index:idx_session_org_started,priority:1;not null" json:"organization_id"`
+	DeviceID       uint       `gorm:"index:idx_session_device;not null" json:"device_id"`
 	RustdeskID     string     `gorm:"size:64" json:"rustdesk_id"`
 	ActorUserID    *uint      `gorm:"index" json:"actor_user_id"`
 	Origin         string     `gorm:"size:16;not null" json:"origin"`
@@ -49,8 +49,10 @@ type Session struct {
 	EndedAt        *time.Time `json:"ended_at"`
 	LastActivityAt *time.Time `gorm:"index" json:"last_activity_at"`
 	EndReason      *string    `gorm:"size:64" json:"end_reason"`
-	// Revision increments on every state change; readers use it to detect
-	// concurrent transitions without locking.
+	// Revision increments on every state change. Optimistic concurrency must be
+	// spelled `WHERE id = ? AND revision = ?` plus `SET revision = revision + 1`;
+	// writing a loaded absolute value back (Save, Select("*")) silently defeats
+	// it, so state transitions belong in an explicit update, not in a save.
 	Revision  uint64    `gorm:"not null;default:0" json:"revision"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -61,13 +63,13 @@ type Session struct {
 // events are append-only.
 type SessionEvent struct {
 	ID             uint      `gorm:"primaryKey" json:"id"`
-	OrganizationID uint      `gorm:"index;index:idx_session_event_session,priority:1;not null" json:"organization_id"`
+	OrganizationID uint      `gorm:"index:idx_session_event_session,priority:1;not null" json:"organization_id"`
 	SessionID      uint      `gorm:"not null;index:idx_session_event_session,priority:2" json:"session_id"`
 	Kind           string    `gorm:"size:64;not null" json:"kind"`
 	At             time.Time `gorm:"not null;index:idx_session_event_session,priority:3" json:"at"`
-	// Detail is a JSON object with event-specific context (peer address, log
-	// line, decider, ...). Stored as text so both SQLite and MySQL behave the
-	// same way.
-	Detail    string    `gorm:"type:text" json:"detail"`
-	CreatedAt time.Time `json:"created_at"`
+	// DetailJSON is a JSON object with event-specific context (peer address,
+	// log line, decider, ...). Stored as text so SQLite and MySQL behave the
+	// same way; the JSON suffix marks it as "marshal before use".
+	DetailJSON string    `gorm:"type:text" json:"detail"`
+	CreatedAt  time.Time `json:"created_at"`
 }

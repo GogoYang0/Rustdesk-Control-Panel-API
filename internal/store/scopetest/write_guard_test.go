@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
@@ -100,10 +101,12 @@ func TestAllowTenantTransfer_PermitsTenantColumn(t *testing.T) {
 	m := model.Membership{OrganizationID: orgA.ID, UserID: 4, Role: model.RoleMember}
 	require.NoError(t, db.Create(&m).Error)
 
-	require.NoError(t, store.AllowTenantTransfer(store.ScopedByOrg(db, orgA.ID)).
-		Model(&model.Membership{}).
-		Where("id = ?", m.ID).
-		Update("organization_id", orgB.ID).Error)
+	require.NoError(t, store.AllowTenantTransfer(db, func(tx *gorm.DB) error {
+		return store.ScopedByOrg(tx, orgA.ID).
+			Model(&model.Membership{}).
+			Where("id = ?", m.ID).
+			Update("organization_id", orgB.ID).Error
+	}))
 
 	var reloaded model.Membership
 	require.NoError(t, store.WithoutTenantScope(db).Where("id = ?", m.ID).First(&reloaded).Error)

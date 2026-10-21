@@ -4,6 +4,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"gorm.io/gorm"
@@ -52,9 +53,12 @@ func ScopedModels() []any {
 }
 
 func tableIsScoped(table string) bool {
+	// Table names reach here from Table(...) or a raw expression, so case and
+	// surrounding whitespace are caller-controlled. A case-sensitive lookup let
+	// Table("MEMBERSHIPS") skip both the tenant condition and the write guard.
 	businessModelsMu.RLock()
 	defer businessModelsMu.RUnlock()
-	return scopedTables[table]
+	return scopedTables[strings.ToLower(strings.TrimSpace(table))]
 }
 
 // ScopedByOrg attaches the tenant context to the query. The condition itself is

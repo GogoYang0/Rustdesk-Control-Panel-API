@@ -24,7 +24,7 @@ const (
 // acknowledge it" (ratification).
 type Approval struct {
 	ID             uint       `gorm:"primaryKey" json:"id"`
-	OrganizationID uint       `gorm:"index;not null;index:idx_approval_org_status,priority:1" json:"organization_id"`
+	OrganizationID uint       `gorm:"not null;index:idx_approval_org_status,priority:1" json:"organization_id"`
 	DeviceID       uint       `gorm:"not null;index" json:"device_id"`
 	Kind           string     `gorm:"size:16;not null" json:"kind"`
 	SessionID      *uint      `gorm:"index" json:"session_id"`

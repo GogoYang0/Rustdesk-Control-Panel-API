@@ -26,18 +26,23 @@ type tenantTransferKeyT struct{}
 
 var tenantTransferKey = tenantTransferKeyT{}
 
-// AllowTenantTransfer marks a single statement as a deliberate tenant move.
+// AllowTenantTransfer runs fn with permission to reassign the tenant column.
 //
-// It is the only way through the write guard, so every transfer is visible at
-// the call site and in review. Nothing in the request path should need it: a row
-// belongs to the organization that created it, and "moving" it is a data repair,
-// not a feature.
-func AllowTenantTransfer(db *gorm.DB) *gorm.DB {
+// The permission is scoped to fn's handle and nothing else: a returned handle
+// could be stored, passed to a helper or used to open a transaction, which would
+// silently turn a one-off repair into a standing licence for every later
+// statement. Callers must also record an audit entry in the same transaction —
+// the store package cannot do it itself (audit imports store, not the other way
+// round), so the requirement is stated here and enforced at the call site.
+//
+// Nothing in the request path should need this: a row belongs to the
+// organization that created it, and "moving" it is a data repair, not a feature.
+func AllowTenantTransfer(db *gorm.DB, fn func(tx *gorm.DB) error) error {
 	parent := context.Background()
 	if db.Statement != nil && db.Statement.Context != nil {
 		parent = db.Statement.Context
 	}
-	return db.WithContext(context.WithValue(parent, tenantTransferKey, true))
+	return fn(db.WithContext(context.WithValue(parent, tenantTransferKey, true)))
 }
 
 func isTenantTransfer(stmt *gorm.Statement) bool {
@@ -84,7 +89,7 @@ func assignsTenantColumn(stmt *gorm.Statement) (string, bool) {
 		}
 	}
 
-	if dest, ok := stmt.Dest.(map[string]any); ok {
+	if dest, ok := asStringMap(stmt.Dest); ok {
 		for key := range dest {
 			if isTenantColumnKey(stmt, key) {
 				return key, true
@@ -103,7 +108,11 @@ func assignsTenantColumn(stmt *gorm.Statement) (string, bool) {
 	if !ok || field.FieldType.Kind() == reflect.Struct {
 		return "", false
 	}
-	if !selected(stmt, field.Name) {
+	if omitted(stmt, field.Name) {
+		return "", false
+	}
+	explicit := selected(stmt, field.Name)
+	if !explicit {
 		return "", false
 	}
 	value := reflect.ValueOf(stmt.Dest)
@@ -117,10 +126,64 @@ func assignsTenantColumn(stmt *gorm.Statement) (string, bool) {
 		return "", false
 	}
 	fieldValue := value.FieldByName(field.Name)
-	if !fieldValue.IsValid() || fieldValue.IsZero() {
+	if !fieldValue.IsValid() {
+		return "", false
+	}
+	// Without an explicit Select GORM skips zero values, so an unset
+	// OrganizationID is simply not part of the write. With Select("*") or
+	// Select("organization_id") the column IS written, and a zero value would
+	// hide the row from every tenant — that must be rejected.
+	if fieldValue.IsZero() && !explicitSelect(stmt) {
 		return "", false
 	}
 	return tenantColumn, true
+}
+
+// explicitSelect reports whether the caller asked for this column by name (or
+// asked for all of them), as opposed to relying on GORM's "all non-zero fields"
+// default.
+func explicitSelect(stmt *gorm.Statement) bool {
+	for _, sel := range stmt.Selects {
+		if sel == "*" || normalizeColumn(sel) == tenantColumn {
+			return true
+		}
+		if stmt.Schema != nil {
+			if field := stmt.Schema.LookUpField(sel); field != nil && field.DBName == tenantColumn {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// asStringMap normalises the map shapes GORM accepts for Updates, including the
+// pointer form: Updates(&payload) is one character away from the value form and
+// would otherwise skip the guard entirely.
+func asStringMap(dest any) (map[string]any, bool) {
+	switch v := dest.(type) {
+	case map[string]any:
+		return v, true
+	case *map[string]any:
+		if v != nil {
+			return *v, true
+		}
+	}
+	return nil, false
+}
+
+// omitted reports whether the field is excluded from the write.
+func omitted(stmt *gorm.Statement, fieldName string) bool {
+	for _, omit := range stmt.Omits {
+		if normalizeColumn(omit) == tenantColumn {
+			return true
+		}
+		if stmt.Schema != nil {
+			if field := stmt.Schema.LookUpField(omit); field != nil && field.Name == fieldName {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // setClauseTenantColumn looks for the tenant column in a prebuilt SET clause.

@@ -6,7 +6,7 @@ import "time"
 // dimension takes the strictest bound, so a ticket needs no policy selector.
 type Policy struct {
 	ID             uint   `gorm:"primaryKey" json:"id"`
-	OrganizationID uint   `gorm:"index;not null;uniqueIndex:idx_policy_org_name,priority:1" json:"organization_id"`
+	OrganizationID uint   `gorm:"not null;uniqueIndex:idx_policy_org_name,priority:1" json:"organization_id"`
 	Name           string `gorm:"size:128;not null;uniqueIndex:idx_policy_org_name,priority:2" json:"name"`
 	Enabled        bool   `gorm:"not null" json:"enabled"`
 	// Nil means "no limit" for every numeric bound below.
