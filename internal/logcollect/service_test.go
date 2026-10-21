@@ -403,9 +403,6 @@ func TestPruneExpired_ComparesOnUTCTimeline(t *testing.T) {
 	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).Create(&keep).Error)
 	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).Create(&drop).Error)
 
-	parser, err := NewParser(testRules())
-	require.NoError(t, err)
-	_ = parser // retention is a package-level sweep now (worker scheduler)
 	pruned, err := PruneExpired(st.DB, now)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), pruned)

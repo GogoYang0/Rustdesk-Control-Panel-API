@@ -128,7 +128,7 @@ func (a *GormAuditor) insertSystemAuditRow(tx *gorm.DB, entry Entry, detail stri
 	// error so the caller's retry loop re-reads MAX(seq). Silently dropping
 	// the row would lose an audit entry.
 	if a.insertSystemHook != nil {
-		return a.insertSystemHook(tx, &row)
+		return a.insertSystemHook(tx, &row, maxSeq)
 	}
 	res := tx.Create(&row)
 	if res.Error != nil {

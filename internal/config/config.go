@@ -32,8 +32,8 @@ type LogcollectConfig struct {
 	ContainerPrefix string           `mapstructure:"containerPrefix"`
 	Rules           []LogcollectRule `mapstructure:"rules"`
 	// RetentionSweepInterval is the period of the log-event retention sweep.
-	// Zero disables the periodic sweep (the startup pass still runs when the
-	// collector is enabled).
+	// Zero disables retention cleanup entirely (no periodic sweep and no
+	// startup sweep); any non-zero value must be at least one minute.
 	RetentionSweepInterval time.Duration `mapstructure:"retentionSweepInterval"`
 }
 

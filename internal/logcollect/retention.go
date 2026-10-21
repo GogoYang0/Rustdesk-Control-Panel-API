@@ -49,6 +49,12 @@ func PruneExpired(db *gorm.DB, now time.Time) (int64, error) {
 			return total, res.Error
 		}
 		total += res.RowsAffected
+		if res.RowsAffected == 0 {
+			// No progress (a trigger or a read-only replica swallowing the
+			// delete): stop instead of looping on the same full batch forever.
+			// The next sweep retries the remainder.
+			return total, nil
+		}
 		if len(ids) < pruneBatchSize {
 			return total, nil
 		}

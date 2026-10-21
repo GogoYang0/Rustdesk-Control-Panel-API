@@ -41,9 +41,11 @@ func TestRecordSystem_RetriesAfterSequenceCollision(t *testing.T) {
 
 	require.NoError(t, a.RecordSystem(ctx, Entry{Action: SystemActionPrefix + "first"}))
 
-	calls := 0
-	a.insertSystemHook = func(tx *gorm.DB, row *model.AuditLog) error {
+	var calls int
+	var seenMax []uint64
+	a.insertSystemHook = func(tx *gorm.DB, row *model.AuditLog, maxSeq uint64) error {
 		calls++
+		seenMax = append(seenMax, maxSeq)
 		if calls == 1 {
 			// Exactly what the unique (organization_id, seq) index produces.
 			return gorm.ErrDuplicatedKey
@@ -53,6 +55,8 @@ func TestRecordSystem_RetriesAfterSequenceCollision(t *testing.T) {
 
 	require.NoError(t, a.RecordSystem(ctx, Entry{Action: SystemActionPrefix + "second"}))
 	require.Equal(t, 2, calls, "a collision must be retried exactly once here")
+	require.Equal(t, []uint64{1, 1}, seenMax,
+		"both attempts read the live MAX(seq); a cached sequence would not re-read it")
 
 	var rows []model.AuditLog
 	require.NoError(t, store.WithoutTenantScope(st.DB).Order("seq").Find(&rows).Error)
@@ -65,7 +69,7 @@ func TestRecordSystem_RetriesAfterSequenceCollision(t *testing.T) {
 func TestRecordSystem_NonRetryableErrorSurfaces(t *testing.T) {
 	a, _ := newInternalAuditor(t)
 
-	a.insertSystemHook = func(*gorm.DB, *model.AuditLog) error {
+	a.insertSystemHook = func(*gorm.DB, *model.AuditLog, uint64) error {
 		return fmt.Errorf("schema is broken")
 	}
 	err := a.RecordSystem(context.Background(), Entry{Action: SystemActionPrefix + "sweep"})
@@ -77,7 +81,7 @@ func TestRecordSystem_RetryExhaustion(t *testing.T) {
 	a, _ := newInternalAuditor(t)
 
 	calls := 0
-	a.insertSystemHook = func(*gorm.DB, *model.AuditLog) error {
+	a.insertSystemHook = func(*gorm.DB, *model.AuditLog, uint64) error {
 		calls++
 		return gorm.ErrDuplicatedKey
 	}

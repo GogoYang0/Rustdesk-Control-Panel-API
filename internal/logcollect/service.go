@@ -86,7 +86,7 @@ func NewService(db *gorm.DB, parser *Parser, streamer LineStreamer, devices *dev
 	}
 }
 
-// Start sweeps expired events and begins tailing every organization whose
+// Start begins tailing every organization whose
 // server group is deployed. The tailers stop when ctx is cancelled; Start
 // itself returns immediately.
 func (s *Service) Start(ctx context.Context) {

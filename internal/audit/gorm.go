@@ -30,7 +30,7 @@ type GormAuditor struct {
 	// retry path can be exercised deterministically: a real duplicate-key
 	// collision cannot be produced on demand against SQLite (serialised
 	// writers, and a pre-inserted row is picked up by the MAX(seq) read).
-	insertSystemHook func(tx *gorm.DB, row *model.AuditLog) error
+	insertSystemHook func(tx *gorm.DB, row *model.AuditLog, maxSeq uint64) error
 }
 
 // NewGormAuditor builds a persistent auditor.
