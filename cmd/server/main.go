@@ -71,6 +71,9 @@ func main() {
 		&model.MigrationMark{},
 		&model.CompatSession{},
 		&model.LogEvent{},
+		&model.Session{}, &model.SessionEvent{},
+		&model.Ticket{}, &model.Policy{},
+		&model.Approval{}, &model.Alert{},
 	); err != nil {
 		lg.Fatal("migrate database", zap.Error(err))
 	}
