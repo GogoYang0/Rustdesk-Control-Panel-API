@@ -58,7 +58,7 @@ go build -o panel ./cmd/server
 | `web.baseURL` | | `http://localhost:5173` | 前端 origin，用于构造邮件链接 |
 | `logcollect.enabled` | | `false` | 日志采集总开关（见运维指南 §4） |
 | `logcollect.containerPrefix` | | `panel-org` | 容器命名前缀，实际为 `panel-org-<orgId>-hbbs/hbbr` |
-| `logcollect.rules` | | 内置 4 条 | 规则按序匹配、首条命中即停；命名捕获组 `device` 关联设备 |
+| `logcollect.rules` | | **空（无内置默认）** | 省略即零规则：所有行按 unparseable 计数丢弃。必须显式配置（示例 `configs/config.yaml` 含 4 条经 1.1.11/1.1.16 实测的规则）；规则按序匹配、首条命中即停；命名捕获组 `device` 关联设备 |
 
 ---
 

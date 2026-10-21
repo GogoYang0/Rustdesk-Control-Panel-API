@@ -103,6 +103,7 @@
 
 - 每组织一对容器：`panel-org-<orgId>-hbbs` / `-hbbr`，端口从 `provision.portStart..portEnd` 池分配并持久化在 `ServerGroup` 行
 - 供应队列：`provision.workers` 并发。部署失败后会执行清理：**清理成功 → 删除 `ServerGroup` 行并释放端口；清理失败 → 行保留为 `failed` 状态**。保留的行会被 `PendingOrgIDs` 排除，对账 reconciler（2 分钟周期）**不会**重新入队——清理失败的部署必须人工处理（残留容器、行、端口）
+- ⚠️ **端口规划前提**：`PortPool` 只按 DB `server_groups` 判重，**不感知面板外的宿主端口占用**（手动容器、其他服务）——`portStart..portEnd` 内被外部占用的端口会导致 provision 反复失败（Step 5 云端回归实测：21116 冲突死循环）。规划端口池时确保范围独占；相关可观测/控制缺口跟踪于 [#46](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/46)
 - 下线：`Deprovision` 删除容器 → 删行 → `Unwatch` 采集器；失败时行保留（failed 状态），端口继续被占用，且不会由 reconciler 自动重试
 - `provision.dataDir/org-<orgId>/` 含各组织密钥与数据（`dataDir` 可配置，默认根目录为 `./data/servergroups`）：**备份范围必须包含它**，否则重建容器后客户端 ID 不变但密钥丢失
 
