@@ -57,11 +57,17 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `forbidden` | 403 | 角色不足、设备已绑定（compat） |
 | `not_found` | 404 | 跨组织访问 / 不存在的资源 |
 | `conflict` | 409 | 管理 API 资源冲突；compat 地址簿的 hash 冲突使用 compat 专用错误 `ab_conflict`（见 §4.3），不走此包络 |
+| `unauthorized` | 401 | 登录/刷新的凭据拒绝 |
 | `rate_limited` | 429 | 登录锁定（LoginGuard） |
+| `internal` | 500 | 未预期的服务端错误（不向客户端泄露细节） |
 
 ### 2.4 分页
 
-列表端点（**日志事件、地址簿 peers**）使用 `page`/`pageSize`（契约定义）；日志事件支持按时间与来源过滤。设备暂无列表端点（见 §3.3 与 [#43](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/43)）。
+分页参数**按端点各自定义**，不要混用：
+
+- **日志事件**（`GET .../log-events`）：`since` + `limit`（`limit` 取值 1–200，默认 50），支持按时间与来源过滤
+- **compat 地址簿 peers**（`POST /api/ab/peers`）：分页参数见契约
+- 设备暂无列表端点（见 §3.3 与 [#43](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/43)）
 
 ---
 
