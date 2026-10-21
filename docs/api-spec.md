@@ -38,13 +38,14 @@
 
 `code` 取值（契约枚举）：`ok` `invalid_request` `not_found` `conflict` `forbidden` `email_not_verified` `rate_limited` `internal`。
 
-### 2.2 租户隔离
+### 2.2 租户隔离（管理 API）
 
-一切组织内资源都带 `{orgId}` 路径参数；服务端通过 `ScopedByOrg` 强制租户过滤，跨组织访问返回 `404 not_found`（不泄露存在性）。
+管理 API 的一切组织内资源都带 `{orgId}` 路径参数；服务端通过 `ScopedByOrg` 强制租户过滤，跨组织访问返回 `404 not_found`（不泄露存在性）。compat 层不带 `{orgId}`：组织由 compat 会话承载，服务端从会话取 `OrganizationID` 后执行组织范围查询（见 §4）。
 
-fail-closed 的适用范围必须分清：
+fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件注册为准）：
 
-- **ORM 作用域查询**（经 `ScopedByOrg` 包装的 Query/Create/Update/Delete）由租户插件注入条件；`orgID=0` 时注入的条件匹配不到任何行，即 fail-closed。
+- **ORM 作用域查询**（经 `ScopedByOrg` 包装的 Query/Row/Update/Delete）由租户插件注入条件；`orgID=0` 时注入的条件匹配不到任何行，即 fail-closed。
+- **`Create` 不经过租户插件回调**：创建必须显式设置 `organization_id` 并校验 `orgID`；`orgID=0` 没有插件提供的 fail-closed 保证。
 - **`Raw()` / `Exec()` 不经过租户插件**，不会被自动注入租户条件——未显式写入租户过滤的原始 SQL **不具备** fail-closed 保证，也不得用于访问租户数据（store 层硬性约定）。
 
 ### 2.3 错误码 → HTTP 映射
