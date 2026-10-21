@@ -275,3 +275,75 @@ func TestAllowTenantTransfer_AuditFailureSurfaces(t *testing.T) {
 	require.Equal(t, orgA.ID, reloaded.OrganizationID,
 		"a failed audit must not leave the row in the other organization")
 }
+
+// The permission is bound to the organization the audit names. A caller can
+// otherwise claim the transfer came from org B, move org A's row, and leave an
+// audit trail that points at the wrong organization — worse than no audit,
+// because it looks authoritative.
+func TestAllowTenantTransfer_RejectsAuditSourceMismatch(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	orgA := model.Organization{Name: "transfer-mismatch-a"}
+	orgB := model.Organization{Name: "transfer-mismatch-b"}
+	require.NoError(t, db.Create(&orgA).Error)
+	require.NoError(t, db.Create(&orgB).Error)
+
+	m := model.Membership{OrganizationID: orgA.ID, UserID: 21, Role: model.RoleMember}
+	require.NoError(t, db.Create(&m).Error)
+
+	recorded := false
+	store.RegisterTransferRecorder(func(*gorm.DB, store.TransferAudit) error {
+		recorded = true
+		return nil
+	})
+	t.Cleanup(func() { store.RegisterTransferRecorder(nil) })
+
+	err := store.AllowTenantTransfer(db,
+		// The audit claims org B as the source…
+		store.TransferAudit{OrganizationID: orgB.ID, Reason: "wrong source"},
+		func(tx *gorm.DB) error {
+			// …while the statement moves a row out of org A.
+			return store.ScopedByOrg(tx, orgA.ID).
+				Model(&model.Membership{}).
+				Where("id = ?", m.ID).
+				Update("organization_id", orgB.ID).Error
+		})
+	require.ErrorIs(t, err, store.ErrTenantColumnWrite,
+		"a transfer may only touch rows of the organization its audit names")
+	require.False(t, recorded, "the recorder must not run for a rejected transfer")
+
+	var reloaded model.Membership
+	require.NoError(t, store.WithoutTenantScope(db).Where("id = ?", m.ID).First(&reloaded).Error)
+	require.Equal(t, orgA.ID, reloaded.OrganizationID, "a rejected transfer must not move anything")
+}
+
+// WithoutTenantScope widens a read on purpose; inside a transfer it would turn a
+// single-organization repair into a blanket one, so it must not be a way past
+// the source-organization check.
+func TestAllowTenantTransfer_RejectsUnscopedWrite(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	orgA := model.Organization{Name: "transfer-unscoped-a"}
+	orgB := model.Organization{Name: "transfer-unscoped-b"}
+	require.NoError(t, db.Create(&orgA).Error)
+	require.NoError(t, db.Create(&orgB).Error)
+
+	m := model.Membership{OrganizationID: orgA.ID, UserID: 22, Role: model.RoleMember}
+	require.NoError(t, db.Create(&m).Error)
+
+	store.RegisterTransferRecorder(func(*gorm.DB, store.TransferAudit) error { return nil })
+	t.Cleanup(func() { store.RegisterTransferRecorder(nil) })
+
+	err := store.AllowTenantTransfer(db,
+		store.TransferAudit{OrganizationID: orgA.ID, Reason: "test"},
+		func(tx *gorm.DB) error {
+			return store.WithoutTenantScope(tx).
+				Model(&model.Membership{}).
+				Where("id = ?", m.ID).
+				Update("organization_id", orgB.ID).Error
+		})
+	require.ErrorIs(t, err, store.ErrTenantColumnWrite,
+		"a transfer must be scoped to its source organization")
+}

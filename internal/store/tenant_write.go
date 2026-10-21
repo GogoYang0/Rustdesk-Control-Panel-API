@@ -87,6 +87,12 @@ func currentTransferRecorder() TransferRecorder {
 // source organization, its actor and a reason, and produces an audit row in the
 // same transaction.
 //
+// The permission is bound to aud.OrganizationID: statements inside fn must be
+// scoped with ScopedByOrg(tx, aud.OrganizationID), and WithoutTenantScope is not
+// accepted. A transfer that names one organization while writing another is
+// rejected, because an audit entry pointing at the wrong source is worse than a
+// missing one.
+//
 // A transfer with no registered recorder, no organization or no reason fails
 // before fn runs. Nothing in the request path should need this: a row belongs to
 // the organization that created it, and "moving" it is a data repair, not a
@@ -103,7 +109,10 @@ func AllowTenantTransfer(db *gorm.DB, aud TransferAudit, fn func(tx *gorm.DB) er
 	if db.Statement != nil && db.Statement.Context != nil {
 		parent = db.Statement.Context
 	}
-	tx := db.WithContext(context.WithValue(parent, tenantTransferKey, true))
+	// The context carries the source organization, not a bare "transfer
+	// allowed" flag: the guard can then refuse a statement aimed at a different
+	// organization, which is what keeps the audit entry's source honest.
+	tx := db.WithContext(context.WithValue(parent, tenantTransferKey, aud.OrganizationID))
 	// The move and its audit row must commit or fail together. Without this
 	// transaction the update autocommits, a recorder error leaves the row moved
 	// but unaudited, and the caller only sees an error for a change that already
@@ -116,12 +125,46 @@ func AllowTenantTransfer(db *gorm.DB, aud TransferAudit, fn func(tx *gorm.DB) er
 	})
 }
 
+// isTenantTransfer reports whether the statement is covered by the transfer
+// authorisation in force.
+//
+// Being inside fn is not enough: the statement must also be scoped to exactly
+// the organization the audit names. Otherwise AllowTenantTransfer(aud{OrgB})
+// could move org A's rows and record the move against org B — an audit entry
+// that is not merely missing but wrong, which is worse, because it looks
+// authoritative.
+//
+// WithoutTenantScope is deliberately excluded: widening one repair into an
+// unscoped sweep is not a transfer, and the permission must not be usable that
+// way.
 func isTenantTransfer(stmt *gorm.Statement) bool {
 	if stmt == nil || stmt.Context == nil {
 		return false
 	}
-	v, _ := stmt.Context.Value(tenantTransferKey).(bool)
-	return v
+	transferOrg, ok := stmt.Context.Value(tenantTransferKey).(uint)
+	if !ok || transferOrg == 0 {
+		return false
+	}
+	if isCrossTenant(stmt) {
+		return false
+	}
+	scopedOrg, ok := stmt.Context.Value(orgContextKey).(uint)
+	return ok && scopedOrg == transferOrg
+}
+
+// tenantWriteError explains a rejected write. The mismatch case is worth naming
+// explicitly: it is the one where the caller did almost everything right.
+func tenantWriteError(stmt *gorm.Statement, table, where string) error {
+	if stmt != nil && stmt.Context != nil {
+		if transferOrg, ok := stmt.Context.Value(tenantTransferKey).(uint); ok && transferOrg != 0 {
+			scopedOrg, _ := stmt.Context.Value(orgContextKey).(uint)
+			if isCrossTenant(stmt) {
+				return fmt.Errorf("%w (table %s, %s; transfer authorised for organization %d but the statement is not scoped to it)", ErrTenantColumnWrite, table, where, transferOrg)
+			}
+			return fmt.Errorf("%w (table %s, %s; transfer authorised for organization %d but the statement is scoped to %d)", ErrTenantColumnWrite, table, where, transferOrg, scopedOrg)
+		}
+	}
+	return fmt.Errorf("%w (table %s, %s)", ErrTenantColumnWrite, table, where)
 }
 
 // guardTenantColumnWrite rejects an UPDATE that assigns the tenant column.
@@ -144,7 +187,7 @@ func guardTenantColumnWrite(tx *gorm.DB) {
 	if !ok {
 		return
 	}
-	_ = tx.AddError(fmt.Errorf("%w (table %s, column %s)", ErrTenantColumnWrite, table, column))
+	_ = tx.AddError(tenantWriteError(tx.Statement, table, "column "+column))
 }
 
 // guardUpsertTenantColumn rejects an INSERT ... ON CONFLICT DO UPDATE that
@@ -175,11 +218,11 @@ func guardUpsertTenantColumn(tx *gorm.DB) {
 	// UpdateAll is the shape Save produces: GORM expands it to every column while
 	// building the SQL, so the assignment list is still empty here.
 	if onConflict.UpdateAll {
-		_ = tx.AddError(fmt.Errorf("%w (table %s, column %s in upsert)", ErrTenantColumnWrite, table, tenantColumn))
+		_ = tx.AddError(tenantWriteError(tx.Statement, table, "column "+tenantColumn+" in upsert"))
 		return
 	}
 	if _, found := setClauseTenantColumn(onConflict.DoUpdates); found {
-		_ = tx.AddError(fmt.Errorf("%w (table %s, column %s in upsert)", ErrTenantColumnWrite, table, tenantColumn))
+		_ = tx.AddError(tenantWriteError(tx.Statement, table, "column "+tenantColumn+" in upsert"))
 		return
 	}
 	// Columns is the conflict TARGET (the key that decides whether a row already
