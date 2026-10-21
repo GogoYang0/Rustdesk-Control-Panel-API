@@ -1,6 +1,6 @@
 # 后端 API 规范（Backend API Specification）
 
-> 适用版本：v0.3.0（M2）。本文档是对 `openapi.yaml`（契约 v0.3.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
+> 适用版本：v0.4.0（M3，交付中；已发布版本为 v0.3.0）。本文档是对 `openapi.yaml`（契约 v0.4.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
 > 本文档随版本演进持续更新——契约变更的 PR 必须同步更新 §3/§4。
 > 配套文档：[部署指南](deployment.md) · [运维指南](operations.md)
 
@@ -36,11 +36,13 @@
 { "code": "invalid_request", "message": "human readable", "data": null }
 ```
 
-`code` 取值（契约枚举）：`ok` `invalid_request` `unauthorized` `not_found` `conflict` `forbidden` `email_not_verified` `rate_limited` `internal`。`unauthorized` 映射 **401**（登录/刷新的凭据拒绝路径）；`internal` 映射 **500**（未预期的服务端错误，不向客户端泄露细节）。
+`code` 取值（契约枚举）：`ok` `invalid_request` `unauthorized` `not_found` `conflict` `forbidden` `email_not_verified` `rate_limited` `internal` `approval_required`。`unauthorized` 映射 **401**（登录/刷新的凭据拒绝路径）；`internal` 映射 **500**（未预期的服务端错误，不向客户端泄露细节）。**唯一的例外**：v0.4.0 契约先行、实现按任务落地的过渡期内，会话治理端点尚未实现时返回 `501 / internal`（见 §3.6），实现合并后该状态消失。
+
+`approval_required` 是唯一**必须携带 `data` 对象**的错误码（`data.approval_id` 指向待审批请求），其余错误码的 `data` 为 `null`。
 
 ### 2.2 租户隔离（管理 API）
 
-管理 API 的一切组织内资源都带 `{orgId}` 路径参数；服务端通过 `ScopedByOrg` 强制租户过滤，跨组织访问返回 `404 not_found`（不泄露存在性）。compat 层不带 `{orgId}`：**已认证请求**使用已验证 token 的 `org` claim 作为组织上下文；**无凭据的 heartbeat/sysinfo** 从持久化会话取得 `OrganizationID` 后执行组织范围查询（见 §4）。
+管理 API 的一切组织内资源都带 `{orgId}` 路径参数；服务端通过 `ScopedByOrg` 强制租户过滤，**组织内**跨租户资源访问返回 `404 not_found`（不泄露存在性）；**调用者不属于该组织**时返回 `403 forbidden`（"不是本组织成员"本身不构成信息泄露，且便于前端区分"没权限"与"资源没了"）。compat 层不带 `{orgId}`：**已认证请求**使用已验证 token 的 `org` claim 作为组织上下文；**无凭据的 heartbeat/sysinfo** 从持久化会话取得 `OrganizationID` 后执行组织范围查询（见 §4）。
 
 fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件注册为准）：
 
@@ -57,9 +59,11 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `forbidden` | 403 | 角色不足、设备已绑定（compat） |
 | `not_found` | 404 | 跨组织访问 / 不存在的资源 |
 | `conflict` | 409 | 管理 API 资源冲突；compat 地址簿的 hash 冲突使用 compat 专用错误 `ab_conflict`（见 §4.3），不走此包络 |
+| `approval_required` | 409 | 票据签发被策略的事前审批要求阻断（`data.approval_id` 指向待审批请求，见 §3.6） |
 | `unauthorized` | 401 | 登录/刷新的凭据拒绝 |
 | `rate_limited` | 429 | 登录锁定（LoginGuard） |
 | `internal` | 500 | 未预期的服务端错误（不向客户端泄露细节） |
+| `internal` | **501** | **过渡期专用**：v0.4.0 契约先行、实现未合并的会话治理端点（见 §3.6）。实现合并后消失 |
 
 ### 2.4 分页
 
@@ -67,6 +71,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 
 - **日志事件**（`GET .../log-events`）：`since` + `limit`（`limit` 取值 1–200，默认 50），筛选参数为 `since`、`deviceId`、`level`（`source` 是返回字段，不是筛选参数）
 - **compat 地址簿 peers**（`POST /api/ab/peers`，仅个人簿）：query 参数 `ab`（地址簿 guid，必填）、`current`（页码，默认 1，最小 1）、`pageSize`（默认 100，最小 1，超过 500 截断为 500）
+- **会话 / 审批 / 告警**（§3.6）：`page`（默认 1，最小 1）+ `pageSize`（默认 50，1–200）；响应形状为 `data.items/page/page_size/total`（这三张表无限增长，需要总数支撑翻页）
 - 设备暂无列表端点（见 §3.3 与 [#43](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/43)）
 
 ---
@@ -125,6 +130,60 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `GET .../log-events` | 采集到的事件（level/kind/source/device/时间过滤 + 分页） |
 
 事件由采集器写入（见运维指南 §4），API 只读。
+
+---
+
+### 3.6 会话治理（会话记录 / 策略 / 审批 / 票据 / 告警）
+
+> 契约 v0.4.0 定稿；实现按 M3 任务推进（票据 T4、策略与会话记录 T5、审批 T6、告警 T7）。
+> **对应实现合并前这些端点返回 501 / `internal`**——契约先行，客户端应把 501 视为「未实现」而不是业务错误。
+> 占位实现已完成成员校验，因此非成员拿到的仍是 `403`（租户边界不会因为「还没实现」而失效）。
+
+| 端点 | 权限 | 说明 |
+|---|---|---|
+| `GET .../sessions` | 成员 | 会话记录（按 `started_at` 倒序）：`origin`、`status`、`deviceId`、`since`/`until` 过滤 + 分页 |
+| `GET .../sessions/{sessionId}` | 成员 | 会话详情 + 事件序列（最早 200 条，超出置 `truncated=true`） |
+| `GET .../policies` | 成员 | 策略列表（单次返回全部，不分页） |
+| `POST .../policies` | owner/admin | 创建策略（同组织 `name` 唯一，重复 409） |
+| `PUT .../policies/{policyId}` | owner/admin | **全量替换**：`enabled`/`require_approval` 必填，限额字段 null = 不限 |
+| `DELETE .../policies/{policyId}` | owner/admin | 删除策略（已签票据保留签发时的快照） |
+| `GET .../approvals` | 成员 | 审批列表（`status`/`deviceId` 过滤 + 分页；`status=pending` 即待办） |
+| `GET .../approvals/{approvalId}` | 成员 | 审批详情（深链） |
+| `POST .../approvals` | 成员 | 提交审批（`kind` 决定 `device_id` 还是 `session_id`；按 kind 复用：事前审批看 actor+设备 pending，追认看会话 pending/approved，复用返回 200） |
+| `POST .../approvals/{approvalId}/decision` | owner/admin | approve/deny；只有 `pending` 可决策，否则 409 |
+| `POST .../tickets` | 成员 | 签发一次性票据（`ttl_seconds` 30–900，默认 300）；评估**时段 + 审批要求**（并发不在这里判） |
+| `GET .../tickets/{ticketId}` | 成员 | 票据记账状态（不返回明文 token） |
+| `POST .../tickets/{ticketId}/redeem` | 成员 | 兑换票据 → **复查并发/时段** → 创建 open panel 会话（同一事务） |
+| `GET .../alerts` | 成员 | 违规告警（`severity`/`kind`/`since` 过滤 + 分页） |
+
+会话生命周期（契约语义，实现见 T4/T5/T7）：
+
+- **panel 会话在兑换时创建**：`POST .../tickets/{ticketId}/redeem` 在同一事务里复查并发/时段 → 原子占用 `used_at` → 写入 `open` 会话，`started_at` = 兑换时刻。票据签发本身不建会话、不算并发（否则 TTL 30–900 秒的票据会变成"幽灵并发"）。
+- **并发闸门在兑换，不在签发**：签发时看不到任何新会话，在那里判并发等于恒不超限——"先连签 N 张票再并行兑换"会绕过上限。兑换必须做「count(open,panel) < 上限 → 插入」，且**显式串行化同一组织的兑换**：READ COMMITTED 下仅把两步放进同一事务不够（两个事务都能读到旧计数），实现需先锁组织行/策略行（`SELECT ... FOR UPDATE`）再计数与插入。**不要用按设备的唯一约束代替**——上限是按组织统计的，设备级约束既拦不住不同设备同时占满名额，又会错误拒绝同一设备的第二个合法会话。锁粒度到组织即可，跨组织互不影响。
+- **native 会话由日志推断，归并规则按事件类型分开**：日志里没有连接级标识（连接号/对端地址）时，"同设备 30 秒窗口"证明不了两条**连接**事件来自同一条连接。
+  - **活动事件**（文件传输、错误、心跳类）：**一个**候选时并入它（panel 只刷 `last_activity_at`，不重复记 native、不触发 native 告警；native 则并入并记录事件）；**多个**候选（面板远控与原生直连并发）时**刷新所有候选的活动时间**、事件只记在 native 会话上——不能 panel 优先，否则 native 会被判空闲关闭，之后它的时长超限告警就永远不会产生；没有候选则新建 native。
+  - **连接事件** → **一个会话最多吸收一条**（记 `SessionEvent.kind=connected`）：优先归属尚未吸收连接事件的 panel 会话（即该面板远控本身），其次归属同样条件成立的 native 会话；**候选都已吸收过、或存在多个候选无法判定时，新建 native 会话**。
+  - 取舍单向：宁可多记一条 native 会话，也不漏记一条连接（CWE-778）。面板远控与原生直连并发时，第二条连接会被独立记下来。
+  - 采集规则能提取连接级标识时按标识精确匹配，取代上述保守规则。关联不到组织设备的事件不建会话（`device_id` 必填）。
+- **活动时钟**：`status=open` 的会话 `last_activity_at` 非空，为 null 时以 `started_at` 作为空闲基线；日志事件命中会话即刷新。
+- **关闭**：可识别的连接结束事件（采集规则映射为 `SessionEvent.kind=disconnected`，规则随 T7 落地），或空闲超时（默认 10 分钟无关联事件，可由部署配置覆盖）→ `closed`，`end_reason` 取 `disconnected` / `idle_timeout`。**已关闭的会话不会被重新打开**：窗口内再来的事件新建会话（重连 = 新会话）。没有客户端主动关闭端点——面板不在信令链路上。
+- **时长上限是后置的**：超过 `max_session_minutes` 由后台任务把会话置 `closed`（`end_reason=policy_exceeded`）并告警，**不断开真实连接**。panel 会话的强制手段是"兑换时拦截"，不是"中途掐断"。
+- **并发口径**：`max_concurrent_sessions` 只统计 `status=open` **且** `origin=panel` 的会话。native 只告警不阻断（D10），把 native 计入会让策略不可执行。
+- **`denied` 会话**：仅 panel 来源，由**签发**路径在策略拒绝时写入（`ticket_id=null`、`started_at=ended_at=拒绝时刻`、`end_reason=policy_denied`），不占并发额度；它不经兑换创建。
+
+策略与审批语义：
+
+- **`PUT` 是全量替换，两个布尔字段必须显式给出**：`enabled`/`require_approval` 缺失或 null → 400。服务端要从原始 JSON 判存在性（强类型默认值分不清"没给"与"给了 false"，静默按 false 会把策略关掉或取消审批要求）。
+- **多策略同时生效**：所有 `enabled` 策略参与评估，各维度取最严——并发/时长取最小值、时段取交集（按模 1440 求交，跨零点窗口先展开成区间，**交集为空 = 该时段完全禁止**）、任一条要求审批即需审批；组织没有策略等于不限。`Session.policy_id` 记 id 最小的生效策略（多策略各管不同维度时无法唯一归因，具体约束以交集为准）。
+- **审批分两类**：`pre_approval` 放行**一次**签发（审批本身不出票，客户端重试 `POST .../tickets` 才拿到 token，**签发即消费审批**并回填 `ticket_id`；票据过期不退还审批，需重新申请）；`ratification` 是对**已发生**的原生直连违规会话补追认——请求必须给 `session_id`（会话须属本组织且 `origin=native`，`device_id` 由服务端派生），决策通过即"已追认"，只改状态 + 落审计，不产生票据、不消费额度、`ticket_id` 恒为 null。
+- **`approval_required` 是 409 + 业务码**（不是新 HTTP 状态）：`data.approval_id` 指向新建或复用的待审批请求。
+- **票据不外泄、只用一次**：明文 `token` 只在签发响应出现一次，服务端只存摘要；`used_at` 非 null 即不可再用；重复/过期/撤销兑换一律 `409`（不区分原因，避免探测）。
+
+其它易错点：
+
+- **时段语义**：`allowed_start_minute`/`allowed_end_minute` 是 **UTC 当日分钟数**（0–1439），起点 > 终点表示跨零点窗口（如 `1320`→`360` 即 22:00–06:00）；两者必须同时提供或同时为 `null`；**`start == end` 返回 400**（全天请用 null）。
+- **事前审批阻断不产生告警**：那是正常的受控流程，每次受控远控都告警会把告警列表变成噪音；它体现在 409 与审计里。原生直连无法事前审批（审批是签发的前提），所以 native 会话的告警只用 `duration_exceeded` / `outside_window` 表达实际违规。
+- **`PUT` 是全量替换**：`enabled` 与 `require_approval` 必填，避免"改时段时省略 `enabled` 导致已停用策略被静默重新启用"。
 
 ---
 
@@ -197,6 +256,7 @@ compat 地址簿**只服务个人地址簿**（`EnsurePersonalBook`），共享�
 
 ## 6. 版本与变更管理
 
-- 契约版本随 release 演进：v0.1.0（M0）→ v0.2.0（M1）→ v0.3.0（M2）
+- 契约版本随 release 演进：v0.1.0（M0）→ v0.2.0（M1）→ v0.3.0（M2）→ **v0.4.0（M3，会话治理域）**
+- v0.4.0 的既有端点请求/响应形状与字段零变更，但 **`ErrorCode` 新增了 `approval_required`**（所有响应共用的 `code` 类型）——对穷尽式 `switch` 或严格枚举解码的客户端属于 **breaking**，重新生成类型后必须处理该分支（0.x 阶段按 C10 以 minor 承载，见 §3.6）
 - **契约变更的 PR 必须同步更新本文档 §3/§4 与 `openapi.yaml`**，并保证 `go generate` 零漂移
 - WEB/APP 从 `openapi.yaml` 生成类型：任何字段/形状变更视为 breaking，需在 PR 描述中标注
