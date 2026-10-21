@@ -70,18 +70,21 @@ func Effective(policies []model.Policy) Limits {
 
 // policyWindow returns the policy's window as non-wrapping ranges.
 //
-// constrained is false when the policy allows all day. An unset pair means all
-// day; start == end is an empty window (the write path rejects it with 400, and
-// treating a stray row as empty fails closed instead of open).
+// constrained is false only when the policy allows all day, i.e. both bounds are
+// unset. Everything else that is not a well-formed pair fails closed: a half
+// window, an out-of-range value and start == end all yield an empty (blocked)
+// window, because a policy that silently allowed everything would look
+// configured while enforcing nothing. The write path rejects these with 400;
+// this is the belt-and-braces reading for rows that were not written by it.
 func policyWindow(p model.Policy) (ranges []minuteRange, constrained bool) {
 	start, end := p.AllowedStartMinute, p.AllowedEndMinute
-	if start == nil || end == nil {
-		// Both nil is all day. Half a window is not expressible and the contract
-		// rejects it; treating it as all day avoids inventing a boundary the
-		// operator never set.
+	if start == nil && end == nil {
 		return nil, false
 	}
-	s, e := normaliseMinute(*start), normaliseMinute(*end)
+	if start == nil || end == nil || !validMinute(*start) || !validMinute(*end) {
+		return nil, true
+	}
+	s, e := *start, *end
 	switch {
 	case s == e:
 		return nil, true // empty window
@@ -94,16 +97,10 @@ func policyWindow(p model.Policy) (ranges []minuteRange, constrained bool) {
 	}
 }
 
-// normaliseMinute clamps a stored minute-of-day into range, so a bad row cannot
-// wrap into a window nobody configured.
-func normaliseMinute(m int64) int64 {
-	if m < 0 {
-		return 0
-	}
-	if m > minutesPerDay {
-		return minutesPerDay
-	}
-	return m
+// validMinute reports whether a stored minute-of-day is within the contract's
+// 0–1439 range. Values outside it are a bad row, not a window.
+func validMinute(m int64) bool {
+	return m >= 0 && m < minutesPerDay
 }
 
 // intersectRanges returns the overlap of two sorted, disjoint range lists.
@@ -145,16 +142,6 @@ func (l Limits) WithinWindow(t time.Time) bool {
 	return false
 }
 
-// Window returns the effective window as sorted ranges, plus whether a window is
-// in force at all. Callers use it for the policy snapshot stored on a ticket so
-// that a later policy edit does not rewrite history.
-func (l Limits) Window() (ranges []minuteRange, constrained bool) {
-	out := make([]minuteRange, len(l.window))
-	copy(out, l.window)
-	sortRanges(out)
-	return out, l.hasWindow
-}
-
 // Snapshot is the JSON-friendly form of the limits, stored on a ticket at
 // issuance time for audit and troubleshooting.
 func (l Limits) Snapshot() map[string]any {
@@ -174,7 +161,10 @@ func (l Limits) Snapshot() map[string]any {
 		snapshot["window"] = []minuteRange{}
 		snapshot["window_blocked"] = true
 	case l.hasWindow:
-		snapshot["window"] = l.window
+		ranges := make([]minuteRange, len(l.window))
+		copy(ranges, l.window)
+		sortRanges(ranges)
+		snapshot["window"] = ranges
 	default:
 		snapshot["window"] = nil // all day
 	}

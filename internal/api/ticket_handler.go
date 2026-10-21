@@ -43,10 +43,19 @@ func (a *AdminAPI) IssueTicket(c *gin.Context, orgId int64) {
 		TTLSeconds:     req.TtlSeconds,
 	})
 	if err != nil {
+		// A policy refusal already wrote its own audit row (the denied session),
+		// so the request-level fallback must not add a second one.
+		if errors.Is(err, session.ErrOutsideWindow) {
+			c.Set(contextAuditRecorded, true)
+		}
 		a.writeTicketError(c, err)
 		return
 	}
 
+	// The plaintext token is a one-shot credential: no cache anywhere along the
+	// path may keep it.
+	c.Header("Cache-Control", "no-store")
+	c.Set(contextAuditRecorded, true)
 	c.JSON(http.StatusCreated, gen.IssuedTicketResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
@@ -83,6 +92,7 @@ func (a *AdminAPI) RedeemTicket(c *gin.Context, orgId int64, ticketId int64) {
 		return
 	}
 
+	c.Set(contextAuditRecorded, true)
 	c.JSON(http.StatusCreated, gen.SessionResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",

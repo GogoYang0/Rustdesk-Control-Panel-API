@@ -141,3 +141,52 @@ func TestEffective_AllDayDoesNotWidenAWindow(t *testing.T) {
 	require.True(t, got.WithinWindow(minute(9, 0)))
 	require.False(t, got.WithinWindow(minute(17, 0)))
 }
+
+// A policy row the write path would reject (half a window, an out-of-range
+// value) must not fail open. "Allowed everything" is the failure mode that
+// looks configured while enforcing nothing, so the reading is blocked.
+func TestPolicyWindow_MalformedRowsFailClosed(t *testing.T) {
+	half := policy("half", true)
+	half.AllowedStartMinute = i64(540) // end unset
+
+	tooBig := policy("too-big", true)
+	tooBig.AllowedStartMinute = i64(540)
+	tooBig.AllowedEndMinute = i64(1440) // contract maximum is 1439
+
+	negative := policy("negative", true)
+	negative.AllowedStartMinute = i64(-5)
+	negative.AllowedEndMinute = i64(1020)
+
+	for _, tc := range []model.Policy{half, tooBig, negative} {
+		got := session.Effective([]model.Policy{tc})
+		require.False(t, got.WithinWindow(minute(12, 0)), "%s must block, not allow", tc.Name)
+	}
+
+	// Both bounds unset stays the documented "all day".
+	got := session.Effective([]model.Policy{policy("all-day", true)})
+	require.True(t, got.WithinWindow(minute(0, 0)))
+	require.True(t, got.WithinWindow(minute(23, 59)))
+}
+
+// A snapshot has to describe what a later reader can reason about, including the
+// blocked case.
+func TestEffective_Snapshot(t *testing.T) {
+	morning := policy("morning", true)
+	morning.AllowedStartMinute = i64(540)
+	morning.AllowedEndMinute = i64(1020)
+	morning.MaxConcurrentSessions = i64(3)
+
+	snap := session.Effective([]model.Policy{morning}).Snapshot()
+	require.Equal(t, int64(3), snap["max_concurrent_sessions"])
+	require.Equal(t, false, snap["require_approval"])
+	require.NotNil(t, snap["window"], "a windowed policy records its ranges")
+
+	blocked := policy("blocked", true)
+	blocked.AllowedStartMinute = i64(540)
+	blocked.AllowedEndMinute = i64(540) // empty window
+	snap = session.Effective([]model.Policy{blocked}).Snapshot()
+	require.Equal(t, true, snap["window_blocked"])
+
+	snap = session.Effective(nil).Snapshot()
+	require.Nil(t, snap["window"], "no policy means no window, not a blocked one")
+}

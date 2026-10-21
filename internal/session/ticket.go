@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
@@ -37,10 +38,10 @@ const (
 	maxTTLSeconds     = 900
 )
 
-// approvalTTL bounds how long a pending approval stays actionable. Approvals are
-// a short-lived gateway ("may I connect now?"), not a standing permission; the
-// approval domain owns the exact value once it gains a settings surface.
-const approvalTTL = 30 * time.Minute
+// approvalTTL bounds how long a pending approval stays actionable. The contract
+// fixes it at "request time + 15 minutes": an approval is a short-lived gateway
+// ("may I connect now?"), not a standing permission.
+const approvalTTL = 15 * time.Minute
 
 // ErrApprovalRequired reports that policy demands prior approval; the client
 // routes the user to the inbox and retries issuance afterwards.
@@ -164,16 +165,19 @@ func (s *Service) Issue(ctx context.Context, in IssueInput) (model.Ticket, strin
 
 		if approvalID != nil {
 			// Consuming the approval is the one-to-one binding; the conditional
-			// update means two concurrent issuances cannot both use it.
+			// update means two concurrent issuances cannot both use it. The
+			// status and expiry are re-checked here because the approval could
+			// have been denied or have expired between the read and this write.
 			res := store.ScopedByOrg(tx, in.OrganizationID).
 				Model(&model.Approval{}).
-				Where("id = ? AND ticket_id IS NULL", *approvalID).
+				Where("id = ? AND ticket_id IS NULL AND status = ? AND expires_at > ?",
+					*approvalID, model.ApprovalStatusApproved, now).
 				Update("ticket_id", ticket.ID)
 			if res.Error != nil {
 				return fmt.Errorf("consume approval: %w", res.Error)
 			}
 			if res.RowsAffected != 1 {
-				return ErrConflict
+				return fmt.Errorf("%w: the approval is no longer usable, request a new one", ErrConflict)
 			}
 		}
 
@@ -222,18 +226,22 @@ func (s *Service) Redeem(ctx context.Context, orgID, actorID, ticketID uint, tok
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Serialise redemptions per organization. One transaction is not enough:
 		// under READ COMMITTED two redemptions each read the old count, each
-		// pass, and each insert. This no-op update takes the organization row's
-		// write lock on MySQL/PostgreSQL and promotes the SQLite transaction to a
-		// write transaction, so the count below cannot be stale. It also proves
-		// the organization exists.
-		lock := store.WithoutTenantScope(tx).Model(&model.Organization{}).
+		// pass, and each insert, so the quota would be decorative.
+		//
+		// SELECT ... FOR UPDATE is portable here because the SQLite dialect
+		// simply omits the clause (it serialises writers anyway) while MySQL and
+		// PostgreSQL take the row lock. The previous no-op UPDATE was not
+		// portable: MySQL reports 0 affected rows when the value does not change,
+		// which turned every redemption into a 404 there.
+		var org model.Organization
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("id = ?", orgID).
-			UpdateColumn("updated_at", gorm.Expr("updated_at"))
-		if lock.Error != nil {
-			return fmt.Errorf("lock organization: %w", lock.Error)
-		}
-		if lock.RowsAffected != 1 {
+			First(&org).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrTicketNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("lock organization: %w", err)
 		}
 
 		var ticket model.Ticket
@@ -291,16 +299,22 @@ func (s *Service) Redeem(ctx context.Context, orgID, actorID, ticketID uint, tok
 		if err != nil {
 			return err
 		}
-		policyID, err := s.singlePolicyID(tx, orgID)
+		policyID, err := s.attributedPolicyID(tx, orgID)
 		if err != nil {
 			return err
 		}
 
+		// The session is attributed to the actor the ticket was issued to, not
+		// to whoever redeemed it. Otherwise a colleague redeeming someone else's
+		// token would appear as the session's initiator and the chain
+		// policy → ticket → session would no longer line up; the redeemer is
+		// recorded in the audit entry instead.
+		issuer := ticket.ActorUserID
 		row := model.Session{
 			OrganizationID: orgID,
 			DeviceID:       ticket.DeviceID,
 			RustdeskID:     dev.RustdeskID,
-			ActorUserID:    &actorID,
+			ActorUserID:    &issuer,
 			Origin:         model.SessionOriginPanel,
 			Status:         model.SessionStatusOpen,
 			TicketID:       &ticketID,
@@ -321,8 +335,10 @@ func (s *Service) Redeem(ctx context.Context, orgID, actorID, ticketID uint, tok
 			TargetType:     "session",
 			TargetID:       fmt.Sprint(row.ID),
 			Detail: map[string]any{
-				"ticket_id": ticketID,
-				"device_id": ticket.DeviceID,
+				"ticket_id":         ticketID,
+				"device_id":         ticket.DeviceID,
+				"issued_to_user_id": ticket.ActorUserID,
+				"redeemed_by":       actorID,
 			},
 		}); err != nil {
 			return err
@@ -370,16 +386,22 @@ func (s *Service) enabledPolicies(tx *gorm.DB, orgID uint) ([]model.Policy, erro
 	return policies, nil
 }
 
-// singlePolicyID returns the policy to record on the session when there is
-// exactly one: with several policies the effective limit is a fold, and naming
-// any single row would misattribute it. The ticket's snapshot carries the
-// details either way.
-func (s *Service) singlePolicyID(tx *gorm.DB, orgID uint) (*uint, error) {
-	policies, err := s.enabledPolicies(tx, orgID)
-	if err != nil {
-		return nil, err
+// attributedPolicyID returns the policy id recorded on a session: the enabled
+// policy with the smallest id, or nil when the organization has none.
+//
+// The contract specifies exactly that. With several policies the effective
+// limit is a fold, so no single row fully explains it — the smallest id is the
+// stable attribution, and the ticket's snapshot carries the details.
+func (s *Service) attributedPolicyID(tx *gorm.DB, orgID uint) (*uint, error) {
+	var policies []model.Policy
+	if err := store.ScopedByOrg(tx, orgID).
+		Where("enabled = ?", true).
+		Order("id").
+		Limit(1).
+		Find(&policies).Error; err != nil {
+		return nil, fmt.Errorf("load policies: %w", err)
 	}
-	if len(policies) != 1 {
+	if len(policies) == 0 {
 		return nil, nil
 	}
 	id := policies[0].ID
@@ -421,10 +443,23 @@ func (s *Service) usableApproval(tx *gorm.DB, in IssueInput, now time.Time) (uin
 func (s *Service) ensurePendingApproval(ctx context.Context, in IssueInput) (uint, error) {
 	var id uint
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Serialise on the organization: two concurrent issuances would
+		// otherwise both miss the pending row and create two, filling the
+		// approval inbox with duplicates of the same request.
+		var org model.Organization
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ?", in.OrganizationID).First(&org).Error; err != nil {
+			return fmt.Errorf("lock organization: %w", err)
+		}
+
+		now := s.now().UTC()
 		var existing model.Approval
+		// An expired pending row must not be reused: approving it is impossible,
+		// so every retry would hand back the same dead id and the client would
+		// loop between "approval required" and "approval expired".
 		err := store.ScopedByOrg(tx, in.OrganizationID).
-			Where("actor_user_id = ? AND device_id = ? AND kind = ? AND status = ?",
-				in.ActorUserID, in.DeviceID, model.ApprovalKindPre, model.ApprovalStatusPending).
+			Where("actor_user_id = ? AND device_id = ? AND kind = ? AND status = ? AND expires_at > ?",
+				in.ActorUserID, in.DeviceID, model.ApprovalKindPre, model.ApprovalStatusPending, now).
 			Order("id").
 			First(&existing).Error
 		if err == nil {
@@ -435,7 +470,6 @@ func (s *Service) ensurePendingApproval(ctx context.Context, in IssueInput) (uin
 			return fmt.Errorf("load pending approval: %w", err)
 		}
 
-		now := s.now().UTC()
 		row := model.Approval{
 			OrganizationID: in.OrganizationID,
 			DeviceID:       in.DeviceID,
@@ -450,7 +484,18 @@ func (s *Service) ensurePendingApproval(ctx context.Context, in IssueInput) (uin
 			return fmt.Errorf("create approval: %w", err)
 		}
 		id = row.ID
-		return nil
+		// Creating the approval is a domain mutation, so it is audited in its
+		// transaction. The refusal that triggered it is a normal controlled
+		// path (api-spec 3.6: blocks are not alerts) — but "not an alert" is not
+		// "not recorded".
+		return s.record(tx, audit.Entry{
+			OrganizationID: in.OrganizationID,
+			ActorUserID:    in.ActorUserID,
+			Action:         "session.approval.request",
+			TargetType:     "approval",
+			TargetID:       fmt.Sprint(row.ID),
+			Detail:         map[string]any{"device_id": in.DeviceID, "kind": row.Kind},
+		})
 	})
 	if err != nil {
 		return 0, err
@@ -489,7 +534,10 @@ func (s *Service) recordDenied(tx *gorm.DB, in IssueInput, dev *model.Device, no
 
 func (s *Service) record(tx *gorm.DB, entry audit.Entry) error {
 	if s.recorder == nil {
-		return nil
+		// Fail closed. A ticket or session that committed without an audit entry
+		// cannot be reconstructed later, so a missing recorder is a wiring bug
+		// that must surface at the first write rather than degrade quietly.
+		return errors.New("session: no audit recorder configured")
 	}
 	if err := s.recorder.RecordTx(tx, entry); err != nil {
 		return fmt.Errorf("record audit: %w", err)

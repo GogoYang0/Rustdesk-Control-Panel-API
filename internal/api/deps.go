@@ -92,12 +92,16 @@ func NewAdminAPI(d Deps) *AdminAPI {
 	}
 	tickets := d.Tickets
 	if tickets == nil {
-		// The auditor doubles as the transactional recorder; a non-transactional
-		// auditor (Nop in tests) simply leaves the ticket mutations unaudited,
-		// which is why production always injects the GORM auditor.
-		var recorder audit.TxRecorder
+		// The service fails closed without a recorder, so this branch must
+		// always supply one. A transactional auditor (the GORM auditor
+		// production uses) is wired straight in; anything else falls back to
+		// the discard recorder and says so, because "silently unaudited
+		// mutations" is exactly what the service refuses to be.
+		var recorder audit.TxRecorder = discardRecorder{}
 		if r, ok := d.Auditor.(audit.TxRecorder); ok {
 			recorder = r
+		} else {
+			d.Logger.Warn("auditor is not transactional: ticket and session audit entries will be discarded")
 		}
 		tickets = session.NewService(d.DB, recorder, d.Now)
 	}

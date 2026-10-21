@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,20 +20,37 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
 
-// harnessSeq keeps each harness on its own database.
-var harnessSeq atomic.Int64
+// harnessSeq keeps each harness on its own database; policySeq keeps policy
+// names unique inside one test.
+var (
+	harnessSeq atomic.Int64
+	policySeq  atomic.Int64
+)
 
 type fakeRecorder struct {
+	mu      sync.Mutex
 	entries []audit.Entry
 	fail    error
 }
 
 func (f *fakeRecorder) RecordTx(_ *gorm.DB, e audit.Entry) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.fail != nil {
 		return f.fail
 	}
 	f.entries = append(f.entries, e)
 	return nil
+}
+
+func (f *fakeRecorder) actions() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, 0, len(f.entries))
+	for _, e := range f.entries {
+		out = append(out, e.Action)
+	}
+	return out
 }
 
 type harness struct {
@@ -43,9 +62,24 @@ type harness struct {
 	device   model.Device
 }
 
-func newHarness(t *testing.T) *harness {
+// openHarnessStore opens the database a ticket test runs against.
+//
+// CI's test-db job exports TEST_POSTGRES_DSN / TEST_MYSQL_DSN, and these tests
+// must run on those dialects too: the SQLite-only harness is exactly how a
+// MySQL-only defect (a no-op UPDATE reports 0 affected rows there) stays green
+// locally and breaks in production.
+func openHarnessStore(t *testing.T) *store.Store {
 	t.Helper()
-
+	switch {
+	case os.Getenv("TEST_POSTGRES_DSN") != "":
+		s, err := store.Open(config.DatabaseConfig{Driver: "postgres", DSN: os.Getenv("TEST_POSTGRES_DSN")})
+		require.NoError(t, err)
+		return s
+	case os.Getenv("TEST_MYSQL_DSN") != "":
+		s, err := store.Open(config.DatabaseConfig{Driver: "mysql", DSN: os.Getenv("TEST_MYSQL_DSN")})
+		require.NoError(t, err)
+		return s
+	}
 	// A shared-cache memory database is keyed by name across the process, so a
 	// fixed DSN would let one test see another's rows (and hide rollback bugs).
 	s, err := store.Open(config.DatabaseConfig{
@@ -53,6 +87,13 @@ func newHarness(t *testing.T) *harness {
 		DSN:    fmt.Sprintf("file:session_svc_%d?mode=memory&cache=shared", harnessSeq.Add(1)),
 	})
 	require.NoError(t, err)
+	return s
+}
+
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+
+	s := openHarnessStore(t)
 	t.Cleanup(func() { _ = s.Close() })
 
 	require.NoError(t, s.DB.AutoMigrate(
@@ -65,7 +106,6 @@ func newHarness(t *testing.T) *harness {
 		recorder: &fakeRecorder{},
 		now:      time.Date(2026, 10, 22, 10, 0, 0, 0, time.UTC),
 	}
-	require.NoError(t, s.DB.Create(&h.org).Error)
 	h.org = model.Organization{Name: "acme"}
 	require.NoError(t, s.DB.Create(&h.org).Error)
 
@@ -81,7 +121,12 @@ func (h *harness) setClock(t time.Time) { h.now = t }
 
 func (h *harness) addPolicy(t *testing.T, mutate func(*model.Policy)) model.Policy {
 	t.Helper()
-	p := model.Policy{OrganizationID: h.org.ID, Name: "p", Enabled: true}
+	// (organization_id, name) is unique, so each policy in a test needs its own.
+	p := model.Policy{
+		OrganizationID: h.org.ID,
+		Name:           "policy-" + fmt.Sprint(policySeq.Add(1)),
+		Enabled:        true,
+	}
 	if mutate != nil {
 		mutate(&p)
 	}
@@ -166,7 +211,8 @@ func TestIssue_OutsideWindowRecordsDeniedSession(t *testing.T) {
 	require.ErrorIs(t, err, session.ErrOutsideWindow)
 
 	var denied []model.Session
-	require.NoError(t, store.WithoutTenantScope(h.db).Find(&denied).Error)
+	require.NoError(t, store.WithoutTenantScope(h.db).
+		Where("organization_id = ?", h.org.ID).Find(&denied).Error)
 	require.Len(t, denied, 1)
 	require.Equal(t, model.SessionStatusDenied, denied[0].Status)
 	require.Equal(t, model.SessionOriginPanel, denied[0].Origin)
@@ -405,6 +451,233 @@ func TestIssueAndRedeem_AreAudited(t *testing.T) {
 	require.Contains(t, err.Error(), "audit unavailable")
 
 	var tickets []model.Ticket
-	require.NoError(t, store.WithoutTenantScope(broken.db).Find(&tickets).Error)
+	require.NoError(t, store.WithoutTenantScope(broken.db).
+		Where("organization_id = ?", broken.org.ID).Find(&tickets).Error)
 	require.Empty(t, tickets, "a failed audit must roll the ticket back")
+}
+
+// ── review round: attribution, actor, approval state ────────────────────────
+
+// The contract names the attribution rule: the enabled policy with the smallest
+// id. "Exactly one policy" is not the rule — the common case is several
+// policies, each owning a different dimension, and that case used to get null.
+func TestRedeem_AttributesSmallestEnabledPolicy(t *testing.T) {
+	h := newHarness(t)
+	first := h.addPolicy(t, nil)
+	h.addPolicy(t, nil)
+	h.addPolicy(t, nil)
+
+	disabled := model.Policy{OrganizationID: h.org.ID, Name: "off", Enabled: false}
+	require.NoError(t, h.db.Create(&disabled).Error)
+
+	ticketID, token := h.issue(t)
+	sess, err := h.svc.Redeem(context.Background(), h.org.ID, 1, ticketID, token)
+	require.NoError(t, err)
+
+	require.NotNil(t, sess.PolicyID)
+	require.Equal(t, first.ID, *sess.PolicyID, "the smallest enabled policy id wins")
+}
+
+// A colleague redeeming someone else's token must not appear as the session's
+// initiator: the chain policy → ticket → session has to line up, and the
+// redeemer is recorded in the audit entry instead.
+func TestRedeem_AttributesSessionToIssuer(t *testing.T) {
+	h := newHarness(t)
+
+	ticket, token, err := h.svc.Issue(context.Background(), session.IssueInput{
+		OrganizationID: h.org.ID, ActorUserID: 7, DeviceID: h.device.ID,
+	})
+	require.NoError(t, err)
+
+	sess, err := h.svc.Redeem(context.Background(), h.org.ID, 9, ticket.ID, token)
+	require.NoError(t, err)
+
+	require.NotNil(t, sess.ActorUserID)
+	require.Equal(t, uint(7), *sess.ActorUserID, "the session belongs to the issuer")
+
+	last := h.recorder.entries[len(h.recorder.entries)-1]
+	require.Equal(t, "session.ticket.redeem", last.Action)
+	require.Equal(t, uint(9), last.ActorUserID, "the redeemer is who performed the redemption")
+	require.Equal(t, uint(7), last.Detail["issued_to_user_id"])
+	require.Equal(t, uint(9), last.Detail["redeemed_by"])
+}
+
+// An approval that expired between approval and use must not authorise a
+// ticket: approving something no longer actionable is exactly what the expiry
+// is for.
+func TestIssue_RejectsExpiredApproval(t *testing.T) {
+	h := newHarness(t)
+	h.addPolicy(t, func(p *model.Policy) { p.RequireApproval = true })
+
+	approval := model.Approval{
+		OrganizationID: h.org.ID, DeviceID: h.device.ID, Kind: model.ApprovalKindPre,
+		ActorUserID: 1, Status: model.ApprovalStatusApproved,
+		RequestedAt: h.now.Add(-2 * time.Hour),
+		ExpiresAt:   h.now.Add(-time.Hour), // approved, but past its window
+	}
+	require.NoError(t, h.db.Create(&approval).Error)
+
+	_, _, err := h.svc.Issue(context.Background(), session.IssueInput{
+		OrganizationID: h.org.ID, ActorUserID: 1, DeviceID: h.device.ID,
+	})
+	var need *session.ErrApprovalRequired
+	require.ErrorAs(t, err, &need, "an expired approval cannot authorise issuance")
+}
+
+// Reusing an expired pending row would hand the client a dead id forever: it
+// cannot be approved, so every retry returns the same approval_required.
+func TestIssue_DoesNotReuseExpiredPendingApproval(t *testing.T) {
+	h := newHarness(t)
+	h.addPolicy(t, func(p *model.Policy) { p.RequireApproval = true })
+
+	stale := model.Approval{
+		OrganizationID: h.org.ID, DeviceID: h.device.ID, Kind: model.ApprovalKindPre,
+		ActorUserID: 1, Status: model.ApprovalStatusPending,
+		RequestedAt: h.now.Add(-time.Hour),
+		ExpiresAt:   h.now.Add(-time.Minute),
+	}
+	require.NoError(t, h.db.Create(&stale).Error)
+
+	_, _, err := h.svc.Issue(context.Background(), session.IssueInput{
+		OrganizationID: h.org.ID, ActorUserID: 1, DeviceID: h.device.ID,
+	})
+	var need *session.ErrApprovalRequired
+	require.ErrorAs(t, err, &need)
+	require.NotEqual(t, stale.ID, need.ApprovalID, "an expired pending row is not reused")
+
+	var rows []model.Approval
+	require.NoError(t, store.WithoutTenantScope(h.db).Where("organization_id = ?", h.org.ID).Find(&rows).Error)
+	require.Len(t, rows, 2, "a fresh pending request is created beside the stale one")
+}
+
+// ── review round: concurrency ───────────────────────────────────────────────
+
+// The one-shot guarantee under concurrency: two goroutines redeeming the same
+// ticket must produce exactly one session.
+//
+// Honest scope note: on SQLite the connection pool serialises writers, so this
+// proves the conditional claim but not the row lock. The lock is exercised on
+// MySQL/PostgreSQL, where CI's test-db job points the same suite at real
+// dialects via TEST_MYSQL_DSN / TEST_POSTGRES_DSN.
+func TestRedeem_ConcurrentRedeemOfSameTicket(t *testing.T) {
+	h := newHarness(t)
+	ticketID, token := h.issue(t)
+
+	var okCount, conflictCount int32
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := h.svc.Redeem(context.Background(), h.org.ID, 1, ticketID, token)
+			switch {
+			case err == nil:
+				atomic.AddInt32(&okCount, 1)
+			case errors.Is(err, session.ErrConflict):
+				atomic.AddInt32(&conflictCount, 1)
+			default:
+				t.Errorf("unexpected error: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	require.Equal(t, int32(1), atomic.LoadInt32(&okCount), "exactly one redemption may succeed")
+	require.Equal(t, int32(3), atomic.LoadInt32(&conflictCount), "the rest must be refused")
+
+	var sessions []model.Session
+	require.NoError(t, store.WithoutTenantScope(h.db).
+		Where("organization_id = ? AND origin = ?", h.org.ID, model.SessionOriginPanel).Find(&sessions).Error)
+	require.Len(t, sessions, 1)
+}
+
+// Two different tickets against a limit of one: this is the interleaving the
+// organization row lock exists for ("issue N tickets, redeem them in parallel").
+func TestRedeem_ConcurrentRedeemOfDifferentTicketsRespectsLimit(t *testing.T) {
+	h := newHarness(t)
+	limit := int64(1)
+	h.addPolicy(t, func(p *model.Policy) { p.MaxConcurrentSessions = &limit })
+
+	firstID, firstToken := h.issue(t)
+	secondID, secondToken := h.issue(t)
+
+	start := make(chan struct{})
+	var okCount int32
+	var wg sync.WaitGroup
+	for _, tc := range []struct {
+		id    uint
+		token string
+	}{{firstID, firstToken}, {secondID, secondToken}} {
+		wg.Add(1)
+		go func(id uint, token string) {
+			defer wg.Done()
+			<-start
+			if _, err := h.svc.Redeem(context.Background(), h.org.ID, 1, id, token); err == nil {
+				atomic.AddInt32(&okCount, 1)
+			}
+		}(tc.id, tc.token)
+	}
+	close(start)
+	wg.Wait()
+
+	require.Equal(t, int32(1), atomic.LoadInt32(&okCount),
+		"a limit of one admits exactly one session, whoever wins the race")
+}
+
+// ── review round: audit coverage for the remaining paths ───────────────────
+
+// The denied path writes two rows (session + audit) in one transaction; a failing
+// auditor must leave neither behind.
+func TestIssue_DeniedAuditFailureRollsBack(t *testing.T) {
+	h := newHarness(t)
+	h.addPolicy(t, func(p *model.Policy) {
+		start, end := int64(540), int64(1020)
+		p.AllowedStartMinute, p.AllowedEndMinute = &start, &end
+	})
+	h.setClock(time.Date(2026, 10, 22, 3, 0, 0, 0, time.UTC))
+
+	h.recorder.fail = errors.New("audit unavailable")
+	_, _, err := h.svc.Issue(context.Background(), session.IssueInput{
+		OrganizationID: h.org.ID, ActorUserID: 1, DeviceID: h.device.ID,
+	})
+	require.Error(t, err)
+
+	var sessions []model.Session
+	require.NoError(t, store.WithoutTenantScope(h.db).
+		Where("organization_id = ?", h.org.ID).Find(&sessions).Error)
+	require.Empty(t, sessions, "a failed audit must roll the denied row back too")
+}
+
+// Redemption's audit is transactional as well.
+func TestRedeem_AuditFailureRollsBack(t *testing.T) {
+	h := newHarness(t)
+	ticketID, token := h.issue(t)
+
+	h.recorder.fail = errors.New("audit unavailable")
+	_, err := h.svc.Redeem(context.Background(), h.org.ID, 1, ticketID, token)
+	require.Error(t, err)
+
+	var stored model.Ticket
+	require.NoError(t, store.WithoutTenantScope(h.db).First(&stored, ticketID).Error)
+	require.Nil(t, stored.UsedAt, "a refused redemption must not burn the ticket")
+
+	var sessions []model.Session
+	require.NoError(t, store.WithoutTenantScope(h.db).
+		Where("organization_id = ?", h.org.ID).Find(&sessions).Error)
+	require.Empty(t, sessions)
+}
+
+// The approval request is itself a domain mutation and is audited.
+func TestIssue_ApprovalRequestIsAudited(t *testing.T) {
+	h := newHarness(t)
+	h.addPolicy(t, func(p *model.Policy) { p.RequireApproval = true })
+
+	_, _, err := h.svc.Issue(context.Background(), session.IssueInput{
+		OrganizationID: h.org.ID, ActorUserID: 1, DeviceID: h.device.ID,
+	})
+	var need *session.ErrApprovalRequired
+	require.ErrorAs(t, err, &need)
+
+	require.Contains(t, h.recorder.actions(), "session.approval.request",
+		"creating the approval request is an audited mutation")
 }
