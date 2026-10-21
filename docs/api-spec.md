@@ -36,7 +36,9 @@
 { "code": "invalid_request", "message": "human readable", "data": null }
 ```
 
-`code` 取值（契约枚举）：`ok` `invalid_request` `unauthorized` `not_found` `conflict` `forbidden` `email_not_verified` `rate_limited` `internal` `approval_required`。`unauthorized` 映射 **401**（登录/刷新的凭据拒绝路径）；`internal` 映射 **500**（未预期的服务端错误，不向客户端泄露细节）。
+`code` 取值（契约枚举）：`ok` `invalid_request` `unauthorized` `not_found` `conflict` `forbidden` `email_not_verified` `rate_limited` `internal` `approval_required`。`unauthorized` 映射 **401**（登录/刷新的凭据拒绝路径）；`internal` 映射 **500**（未预期的服务端错误，不向客户端泄露细节）。**唯一的例外**：v0.4.0 契约先行、实现按任务落地的过渡期内，会话治理端点尚未实现时返回 `501 / internal`（见 §3.6），实现合并后该状态消失。
+
+`approval_required` 是唯一**必须携带 `data` 对象**的错误码（`data.approval_id` 指向待审批请求），其余错误码的 `data` 为 `null`。
 
 ### 2.2 租户隔离（管理 API）
 
@@ -57,7 +59,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `forbidden` | 403 | 角色不足、设备已绑定（compat） |
 | `not_found` | 404 | 跨组织访问 / 不存在的资源 |
 | `conflict` | 409 | 管理 API 资源冲突；compat 地址簿的 hash 冲突使用 compat 专用错误 `ab_conflict`（见 §4.3），不走此包络 |
-| `approval_required` | 409 | 票签签发被策略的事前审批要求阻断（`data.approval_id` 指向待审批请求，见 §3.6） |
+| `approval_required` | 409 | 票据签发被策略的事前审批要求阻断（`data.approval_id` 指向待审批请求，见 §3.6） |
 | `unauthorized` | 401 | 登录/刷新的凭据拒绝 |
 | `rate_limited` | 429 | 登录锁定（LoginGuard） |
 | `internal` | 500 | 未预期的服务端错误（不向客户端泄露细节） |
@@ -133,31 +135,46 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 ### 3.6 会话治理（会话记录 / 策略 / 审批 / 票据 / 告警）
 
 > 契约 v0.4.0 定稿；实现按 M3 任务推进（票据 T4、策略与会话记录 T5、审批 T6、告警 T7）。
-> **对应实现合并前这些端点返回 501**——契约先行，客户端应把 501 视为「未实现」而不是业务错误。
+> **对应实现合并前这些端点返回 501 / `internal`**——契约先行，客户端应把 501 视为「未实现」而不是业务错误。
+> 占位实现已完成成员校验，因此非成员拿到的仍是 `403`（租户边界不会因为「还没实现」而失效）。
 
-| 端点 | 说明 |
-|---|---|
-| `GET .../sessions` | 会话记录（按 `started_at` 倒序）：`origin`（panel/native）、`status`（open/closed/denied）、`deviceId`、`since`/`until` 过滤 + 分页 |
-| `GET .../sessions/{sessionId}` | 会话详情 + 事件序列（按时间正序，最多最近 200 条） |
-| `GET .../policies` | 策略列表（单次返回全部，不分页） |
-| `POST .../policies` | 创建策略（`owner`/`admin`；创建即生效） |
-| `PUT .../policies/{policyId}` | **全量**更新（未提供的可选字段表示「不限」；`owner`/`admin`） |
-| `DELETE .../policies/{policyId}` | 删除策略（`owner`/`admin`；已签票据保留签发时的策略快照） |
-| `GET .../approvals` | 审批请求列表（`status`/`deviceId` 过滤 + 分页；`status=pending` 即审批中心待办） |
-| `POST .../approvals` | 提交审批请求（同一 actor + 设备已有 `pending` 时**复用**，返回 200 而非 201） |
-| `POST .../approvals/{approvalId}/decision` | approve/deny（`owner`/`admin`）；只有 `pending` 可决策，否则 409 |
-| `POST .../tickets` | 签发一次性连接票据（`ttl_seconds` 30–900，默认 300）；**必经策略评估** |
-| `GET .../alerts` | 策略违规告警（`severity`/`kind`/`since` 过滤 + 分页） |
+| 端点 | 权限 | 说明 |
+|---|---|---|
+| `GET .../sessions` | 成员 | 会话记录（按 `started_at` 倒序）：`origin`、`status`、`deviceId`、`since`/`until` 过滤 + 分页 |
+| `GET .../sessions/{sessionId}` | 成员 | 会话详情 + 事件序列（最早 200 条，超出置 `truncated=true`） |
+| `GET .../policies` | 成员 | 策略列表（单次返回全部，不分页） |
+| `POST .../policies` | owner/admin | 创建策略（同组织 `name` 唯一，重复 409） |
+| `PUT .../policies/{policyId}` | owner/admin | **全量替换**：`enabled`/`require_approval` 必填，限额字段 null = 不限 |
+| `DELETE .../policies/{policyId}` | owner/admin | 删除策略（已签票据保留签发时的快照） |
+| `GET .../approvals` | 成员 | 审批列表（`status`/`deviceId` 过滤 + 分页；`status=pending` 即待办） |
+| `GET .../approvals/{approvalId}` | 成员 | 审批详情（深链） |
+| `POST .../approvals` | 成员 | 提交审批（`kind` 决定 `device_id` 还是 `session_id`；事前审批复用 pending 返回 200） |
+| `POST .../approvals/{approvalId}/decision` | owner/admin | approve/deny；只有 `pending` 可决策，否则 409 |
+| `POST .../tickets` | 成员 | 签发一次性票据（`ttl_seconds` 30–900，默认 300）；**必经策略评估** |
+| `GET .../tickets/{ticketId}` | 成员 | 票据记账状态（不返回明文 token） |
+| `POST .../tickets/{ticketId}/redeem` | 成员 | 兑换票据并**创建 panel 会话**（唯一创建入口） |
+| `GET .../alerts` | 成员 | 违规告警（`severity`/`kind`/`since` 过滤 + 分页） |
 
-语义要点：
+会话生命周期（契约语义，实现见 T4/T5/T7）：
 
-- **两类会话来源**：`panel`（网页客户端与地址簿下发的连接票据）策略**强制执行**、可事前阻断；`native`（原生客户端直连）由 hbbs/hbbr 日志采集推断，**只记录不阻断**。这是设计 D10 的落地边界，也是反目标（面板故障不影响已建立远控）的保证。
-- **多策略同时生效**：所有 `enabled` 策略参与评估，各维度取最严——并发/时长取最小值、时段取交集、任一条要求审批即需审批。组织没有策略等于不限（默认兜底）。
-- **审批与票据一次性绑定**：`approve` 只放行**一次**签发；签发票据即消费该审批（回填 `ticket_id`），再次签发需要新的审批。
-- **票据不外泄**：明文 `token` 只在签发响应出现一次，服务端只存摘要；`used_at` 非 null 即不可再用。
-- **`approval_required` 是 409 + 业务码**（不是独立 HTTP 状态）：`data.approval_id` 指向新建或复用的待审批请求，客户端应引导到审批中心，通过后重试签发。
-- **时段语义**：`allowed_start_minute`/`allowed_end_minute` 是 **UTC 当日分钟数**（取值 0–1439），起点 > 终点表示跨零点窗口（如 `1320`→`360` 即 22:00–06:00）；两者必须同时提供或同时为 `null`。
-- **`denied` 会话**：仅出现在 `panel` 来源，表示签发阶段即被策略拒绝，用于留痕；它不是「进行中」的失败态。
+- **panel 会话在兑换时创建**：`POST .../tickets/{ticketId}/redeem` 原子占用 `used_at` 并写入 `open` 会话，`started_at` = 兑换时刻。票据签发本身不建会话、不算并发——否则 TTL 30–900 秒的票据会变成"幽灵并发"。
+- **native 会话由日志推断**：hbbs/hbbr 连接事件按 `device` 关联，同设备 30 秒窗口归并；关联不到组织设备的事件不建会话（`device_id` 必填，不做无主会话）。
+- **关闭**：日志中的连接结束事件，或 `last_activity_at` 之后 10 分钟无关联事件（空闲超时）→ `closed`，`end_reason` 记 `disconnected` / `idle_timeout`，超时收尾由后台任务负责。**没有客户端主动关闭端点**——面板不在信令链路上，无法观测"用户点了断开"以外的状态，统一以日志与空闲超时收尾。
+- **并发口径**：`max_concurrent_sessions` 只统计 `status=open` **且** `origin=panel` 的会话。native 只告警不阻断（D10），把 native 计入会让策略不可执行。
+- **`denied` 会话**：仅 panel 来源，签发阶段被策略拒绝时写入留痕行，不占并发额度。
+
+策略与审批语义：
+
+- **多策略同时生效**：所有 `enabled` 策略参与评估，各维度取最严——并发/时长取最小值、时段取交集、任一条要求审批即需审批；组织没有策略等于不限。`Session.policy_id` 记录产生最终约束的那条（并列取 `id` 最小者）。
+- **审批分两类**：`pre_approval` 放行**一次**签发（审批本身不出票，客户端重试 `POST .../tickets` 才拿到 token，签发即消费审批并回填 `ticket_id`）；`ratification` 是对**已发生**的原生直连违规会话补追认，只改状态并落审计，不产生票据、不消费额度。
+- **`approval_required` 是 409 + 业务码**（不是新 HTTP 状态）：`data.approval_id` 指向新建或复用的待审批请求。
+- **票据不外泄、只用一次**：明文 `token` 只在签发响应出现一次，服务端只存摘要；`used_at` 非 null 即不可再用；重复/过期/撤销兑换一律 `409`（不区分原因，避免探测）。
+
+其它易错点：
+
+- **时段语义**：`allowed_start_minute`/`allowed_end_minute` 是 **UTC 当日分钟数**（0–1439），起点 > 终点表示跨零点窗口（如 `1320`→`360` 即 22:00–06:00）；两者必须同时提供或同时为 `null`；**`start == end` 返回 400**（全天请用 null）。
+- **事前审批阻断不产生告警**：那是正常的受控流程，每次受控远控都告警会把告警列表变成噪音；它体现在 409 与审计里。告警只用于并发/时长/时段违规与原生直连未审批会话。
+- **`PUT` 是全量替换**：`enabled` 与 `require_approval` 必填，避免"改时段时省略 `enabled` 导致已停用策略被静默重新启用"。
 
 ---
 

@@ -70,18 +70,36 @@ func (e AlertSeverity) Valid() bool {
 	}
 }
 
-// Defines values for ApprovalDecisionRequestDecision.
+// Defines values for ApprovalDecision.
 const (
-	Approve ApprovalDecisionRequestDecision = "approve"
-	Deny    ApprovalDecisionRequestDecision = "deny"
+	Approve ApprovalDecision = "approve"
+	Deny    ApprovalDecision = "deny"
 )
 
-// Valid indicates whether the value is a known member of the ApprovalDecisionRequestDecision enum.
-func (e ApprovalDecisionRequestDecision) Valid() bool {
+// Valid indicates whether the value is a known member of the ApprovalDecision enum.
+func (e ApprovalDecision) Valid() bool {
 	switch e {
 	case Approve:
 		return true
 	case Deny:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ApprovalKind.
+const (
+	PreApproval  ApprovalKind = "pre_approval"
+	Ratification ApprovalKind = "ratification"
+)
+
+// Valid indicates whether the value is a known member of the ApprovalKind enum.
+func (e ApprovalKind) Valid() bool {
+	switch e {
+	case PreApproval:
+		return true
+	case Ratification:
 		return true
 	default:
 		return false
@@ -477,7 +495,10 @@ type Alert struct {
 	// - `concurrency_exceeded`：并发会话超限
 	// - `duration_exceeded`：会话时长超限
 	// - `outside_window`：时段外发起
-	// - `approval_required`：未审批的签发尝试
+	//
+	// 事前审批阻断**不算告警**（正常的受控流程，每次都告警会让告警列表变成
+	// 噪音）；它体现在 `409 approval_required` 与审计里。告警只用于真正的
+	// 违规：并发/时长/时段，以及原生直连未审批的会话。
 	Kind           string `json:"kind"`
 	OrganizationId int64  `json:"organization_id"`
 	SessionId      *int64 `json:"session_id,omitempty"`
@@ -499,14 +520,17 @@ type AlertListResponse struct {
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
-	Code ErrorCode `json:"code"`
-	Data struct {
-		Items    []Alert `json:"items"`
-		Page     int     `json:"page"`
-		PageSize int     `json:"page_size"`
-		Total    int64   `json:"total"`
-	} `json:"data"`
-	Message string `json:"message"`
+	Code    ErrorCode `json:"code"`
+	Data    AlertPage `json:"data"`
+	Message string    `json:"message"`
+}
+
+// AlertPage defines model for AlertPage.
+type AlertPage struct {
+	Items    []Alert `json:"items"`
+	Page     int     `json:"page"`
+	PageSize int     `json:"page_size"`
+	Total    int64   `json:"total"`
 }
 
 // AlertSeverity 告警级别
@@ -523,13 +547,21 @@ type Approval struct {
 	DeviceId  int64  `json:"device_id"`
 
 	// ExpiresAt 待审批请求的有效期；超期由后台任务置为 expired
-	ExpiresAt      time.Time `json:"expires_at"`
-	Id             int64     `json:"id"`
-	OrganizationId int64     `json:"organization_id"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Id        int64     `json:"id"`
+
+	// Kind - pre_approval：事前审批——为**将要发起**的连接放行一次票据签发
+	// - ratification：事后追认——对**已发生**的原生直连违规会话（日志推断）做确认，
+	//   不产生票据
+	Kind           ApprovalKind `json:"kind"`
+	OrganizationId int64        `json:"organization_id"`
 
 	// Reason 申请理由或拒绝理由
 	Reason      *string   `json:"reason,omitempty"`
 	RequestedAt time.Time `json:"requested_at"`
+
+	// SessionId 事后追认关联的会话（`kind=ratification`）；事前审批为 null
+	SessionId *int64 `json:"session_id,omitempty"`
 
 	// Status - pending：待审批
 	// - approved：已批准（可被一次票据签发消费）
@@ -541,20 +573,40 @@ type Approval struct {
 	TicketId *int64 `json:"ticket_id,omitempty"`
 }
 
-// ApprovalCreateRequest defines model for ApprovalCreateRequest.
+// ApprovalCreateRequest 提交审批请求。按 `kind` 二选一：
+//
+// - `pre_approval`（默认）：必须提供 `device_id`
+// - `ratification`（事后追认）：必须提供 `session_id`（原生直连推断出的会话）
+//
+// 两者都给或都不给返回 `400 invalid_request`。同一 actor + 设备已有 `pending`
+// 的事前审批时**复用**该请求（返回 200）。
 type ApprovalCreateRequest struct {
-	DeviceId int64   `json:"device_id"`
-	Reason   *string `json:"reason,omitempty"`
+	DeviceId *int64 `json:"device_id,omitempty"`
+
+	// Kind - pre_approval：事前审批——为**将要发起**的连接放行一次票据签发
+	// - ratification：事后追认——对**已发生**的原生直连违规会话（日志推断）做确认，
+	//   不产生票据
+	Kind      *ApprovalKind `json:"kind,omitempty"`
+	Reason    *string       `json:"reason,omitempty"`
+	SessionId *int64        `json:"session_id,omitempty"`
 }
+
+// ApprovalDecision - approve：批准（pre_approval 放行一次签发；ratification 即「已追认」）
+// - deny：拒绝
+type ApprovalDecision string
 
 // ApprovalDecisionRequest defines model for ApprovalDecisionRequest.
 type ApprovalDecisionRequest struct {
-	Decision ApprovalDecisionRequestDecision `json:"decision"`
-	Reason   *string                         `json:"reason,omitempty"`
+	// Decision - approve：批准（pre_approval 放行一次签发；ratification 即「已追认」）
+	// - deny：拒绝
+	Decision ApprovalDecision `json:"decision"`
+	Reason   *string          `json:"reason,omitempty"`
 }
 
-// ApprovalDecisionRequestDecision defines model for ApprovalDecisionRequest.Decision.
-type ApprovalDecisionRequestDecision string
+// ApprovalKind - pre_approval：事前审批——为**将要发起**的连接放行一次票据签发
+//   - ratification：事后追认——对**已发生**的原生直连违规会话（日志推断）做确认，
+//     不产生票据
+type ApprovalKind string
 
 // ApprovalListResponse defines model for ApprovalListResponse.
 type ApprovalListResponse struct {
@@ -569,14 +621,17 @@ type ApprovalListResponse struct {
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
-	Code ErrorCode `json:"code"`
-	Data struct {
-		Items    []Approval `json:"items"`
-		Page     int        `json:"page"`
-		PageSize int        `json:"page_size"`
-		Total    int64      `json:"total"`
-	} `json:"data"`
-	Message string `json:"message"`
+	Code    ErrorCode    `json:"code"`
+	Data    ApprovalPage `json:"data"`
+	Message string       `json:"message"`
+}
+
+// ApprovalPage defines model for ApprovalPage.
+type ApprovalPage struct {
+	Items    []Approval `json:"items"`
+	Page     int        `json:"page"`
+	PageSize int        `json:"page_size"`
+	Total    int64      `json:"total"`
 }
 
 // ApprovalResponse defines model for ApprovalResponse.
@@ -906,17 +961,17 @@ type OrgResponse struct {
 
 // Policy defines model for Policy.
 type Policy struct {
-	AllowedEndMinute   *int      `json:"allowed_end_minute,omitempty"`
-	AllowedStartMinute *int      `json:"allowed_start_minute,omitempty"`
+	AllowedEndMinute   *int64    `json:"allowed_end_minute,omitempty"`
+	AllowedStartMinute *int64    `json:"allowed_start_minute,omitempty"`
 	CreatedAt          time.Time `json:"created_at"`
 	Enabled            bool      `json:"enabled"`
 	Id                 int64     `json:"id"`
 
 	// MaxConcurrentSessions null 表示不限
-	MaxConcurrentSessions *int `json:"max_concurrent_sessions,omitempty"`
+	MaxConcurrentSessions *int64 `json:"max_concurrent_sessions,omitempty"`
 
 	// MaxSessionMinutes null 表示不限
-	MaxSessionMinutes *int      `json:"max_session_minutes,omitempty"`
+	MaxSessionMinutes *int64    `json:"max_session_minutes,omitempty"`
 	Name              string    `json:"name"`
 	OrganizationId    int64     `json:"organization_id"`
 	RequireApproval   bool      `json:"require_approval"`
@@ -941,26 +996,28 @@ type PolicyListResponse struct {
 	Message string    `json:"message"`
 }
 
-// PolicyRequest defines model for PolicyRequest.
+// PolicyRequest 策略请求体。`PUT` 是**全量替换**：`enabled` 与 `require_approval` 必填，
+// 避免"省略即按默认值重新启用"这类静默绕过；限额字段为 null（或省略）表示不限。
 type PolicyRequest struct {
-	// AllowedEndMinute 允许时段终点（UTC 当日分钟数，不含；必须与起点同时提供或同时为 null）
-	AllowedEndMinute *int `json:"allowed_end_minute,omitempty"`
+	// AllowedEndMinute 允许时段终点（UTC 当日分钟数，不含）。必须与起点同时提供或同时为 null；
+	// 两者相等（`start == end`）不是合法窗口——全天请用 null——返回 400。
+	AllowedEndMinute *int64 `json:"allowed_end_minute,omitempty"`
 
 	// AllowedStartMinute 允许时段起点（UTC 当日分钟数，0 = 00:00）；与 `allowed_end_minute` 同为
 	// null 表示全天允许。起点大于终点表示跨零点窗口（如 1320–360 即
 	// 22:00–06:00）
-	AllowedStartMinute *int  `json:"allowed_start_minute,omitempty"`
-	Enabled            *bool `json:"enabled,omitempty"`
+	AllowedStartMinute *int64 `json:"allowed_start_minute,omitempty"`
+	Enabled            bool   `json:"enabled"`
 
-	// MaxConcurrentSessions 同一组织并发会话上限；null 表示不限
-	MaxConcurrentSessions *int `json:"max_concurrent_sessions,omitempty"`
+	// MaxConcurrentSessions 同一组织并发会话上限（只统计 open+panel 会话）；null 表示不限
+	MaxConcurrentSessions *int64 `json:"max_concurrent_sessions,omitempty"`
 
 	// MaxSessionMinutes 单会话时长上限（分钟）；null 表示不限
-	MaxSessionMinutes *int   `json:"max_session_minutes,omitempty"`
+	MaxSessionMinutes *int64 `json:"max_session_minutes,omitempty"`
 	Name              string `json:"name"`
 
 	// RequireApproval 为 true 时，票据签发需先有已批准的审批请求
-	RequireApproval *bool `json:"require_approval,omitempty"`
+	RequireApproval bool `json:"require_approval"`
 }
 
 // PolicyResponse defines model for PolicyResponse.
@@ -991,7 +1048,21 @@ type ResendVerificationRequest struct {
 	Email openapi_types.Email `json:"email"`
 }
 
-// Session defines model for Session.
+// Session 会话生命周期（契约语义；实现见 M3 T4/T5/T7）：
+//
+//   - **panel**：票据被兑换（`POST .../tickets/{ticketId}/redeem`）时创建，
+//     `started_at` 为兑换时刻。票据未兑换不产生会话、不占并发额度。
+//   - **native**：由 hbbs/hbbr 日志事件按 `device` 关联推断，同一设备 30 秒
+//     窗口内的事件归并为一个会话；关联不到组织设备的事件不建会话
+//     （`device_id` 必填，不做无主会话）。
+//   - **结束**：日志中的连接结束事件，或空闲超时（`last_activity_at` 之后
+//     10 分钟无关联事件）把状态置 `closed`；`end_reason` 记
+//     `disconnected` / `idle_timeout`，超时收尾由后台任务负责。
+//   - **denied**：仅 panel 来源，签发阶段被策略拒绝时写入留痕行，不占并发额度。
+//   - **并发口径**：`max_concurrent_sessions` 只统计 `status=open` 且
+//     `origin=panel` 的会话——native 只告警不阻断，计入会让策略不可执行。
+//
+// 面板不在信令链路上（设计 D10）：M3 的票据是面板侧记账凭据，不注入信令。
 type Session struct {
 	// ActorUserId 发起人；native 直连无法识别发起人时为 null
 	ActorUserId *int64 `json:"actor_user_id,omitempty"`
@@ -1013,7 +1084,8 @@ type Session struct {
 	// - native：RustDesk 原生客户端直连，由 hbbs/hbbr 日志采集推断，只记录不阻断
 	Origin SessionOrigin `json:"origin"`
 
-	// PolicyId 触发生效的策略（多策略时取约束最严者）；无策略为 null
+	// PolicyId 产生最终约束的那条策略；多条策略并列最严时取 `id` 最小者，
+	// 组织没有启用中的策略时为 null
 	PolicyId *int64 `json:"policy_id,omitempty"`
 
 	// Revision 会话记录修订号，每次状态变更递增
@@ -1034,9 +1106,29 @@ type Session struct {
 
 // SessionDetail defines model for SessionDetail.
 type SessionDetail struct {
-	// Events 事件序列（按时间正序，最多最近 200 条）
-	Events  []SessionEvent `json:"events"`
-	Session Session        `json:"session"`
+	// Events 事件序列（按时间正序，取**最早** 200 条）。保留开头而非结尾：
+	// `started` / `ticket_issued` 这些审计上最关键的条目不能因为会话很长而丢失。
+	Events []SessionEvent `json:"events"`
+
+	// Session 会话生命周期（契约语义；实现见 M3 T4/T5/T7）：
+	//
+	// - **panel**：票据被兑换（`POST .../tickets/{ticketId}/redeem`）时创建，
+	//   `started_at` 为兑换时刻。票据未兑换不产生会话、不占并发额度。
+	// - **native**：由 hbbs/hbbr 日志事件按 `device` 关联推断，同一设备 30 秒
+	//   窗口内的事件归并为一个会话；关联不到组织设备的事件不建会话
+	//   （`device_id` 必填，不做无主会话）。
+	// - **结束**：日志中的连接结束事件，或空闲超时（`last_activity_at` 之后
+	//   10 分钟无关联事件）把状态置 `closed`；`end_reason` 记
+	//   `disconnected` / `idle_timeout`，超时收尾由后台任务负责。
+	// - **denied**：仅 panel 来源，签发阶段被策略拒绝时写入留痕行，不占并发额度。
+	// - **并发口径**：`max_concurrent_sessions` 只统计 `status=open` 且
+	//   `origin=panel` 的会话——native 只告警不阻断，计入会让策略不可执行。
+	//
+	// 面板不在信令链路上（设计 D10）：M3 的票据是面板侧记账凭据，不注入信令。
+	Session Session `json:"session"`
+
+	// Truncated 事件超过 200 条时为 true（此时只返回最早的 200 条）
+	Truncated bool `json:"truncated"`
 }
 
 // SessionDetailResponse defines model for SessionDetailResponse.
@@ -1080,20 +1172,57 @@ type SessionListResponse struct {
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
-	Code ErrorCode `json:"code"`
-	Data struct {
-		Items    []Session `json:"items"`
-		Page     int       `json:"page"`
-		PageSize int       `json:"page_size"`
-		Total    int64     `json:"total"`
-	} `json:"data"`
-	Message string `json:"message"`
+	Code    ErrorCode   `json:"code"`
+	Data    SessionPage `json:"data"`
+	Message string      `json:"message"`
 }
 
 // SessionOrigin 会话来源：
 // - panel：面板签发（网页客户端 / 地址簿下发的连接票据），策略强制、可事前阻断
 // - native：RustDesk 原生客户端直连，由 hbbs/hbbr 日志采集推断，只记录不阻断
 type SessionOrigin string
+
+// SessionPage defines model for SessionPage.
+type SessionPage struct {
+	Items    []Session `json:"items"`
+	Page     int       `json:"page"`
+	PageSize int       `json:"page_size"`
+	Total    int64     `json:"total"`
+}
+
+// SessionResponse defines model for SessionResponse.
+type SessionResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code ErrorCode `json:"code"`
+
+	// Data 会话生命周期（契约语义；实现见 M3 T4/T5/T7）：
+	//
+	// - **panel**：票据被兑换（`POST .../tickets/{ticketId}/redeem`）时创建，
+	//   `started_at` 为兑换时刻。票据未兑换不产生会话、不占并发额度。
+	// - **native**：由 hbbs/hbbr 日志事件按 `device` 关联推断，同一设备 30 秒
+	//   窗口内的事件归并为一个会话；关联不到组织设备的事件不建会话
+	//   （`device_id` 必填，不做无主会话）。
+	// - **结束**：日志中的连接结束事件，或空闲超时（`last_activity_at` 之后
+	//   10 分钟无关联事件）把状态置 `closed`；`end_reason` 记
+	//   `disconnected` / `idle_timeout`，超时收尾由后台任务负责。
+	// - **denied**：仅 panel 来源，签发阶段被策略拒绝时写入留痕行，不占并发额度。
+	// - **并发口径**：`max_concurrent_sessions` 只统计 `status=open` 且
+	//   `origin=panel` 的会话——native 只告警不阻断，计入会让策略不可执行。
+	//
+	// 面板不在信令链路上（设计 D10）：M3 的票据是面板侧记账凭据，不注入信令。
+	Data    Session `json:"data"`
+	Message string  `json:"message"`
+}
 
 // SessionStatus - open：进行中
 // - closed：已结束
@@ -1126,6 +1255,30 @@ type TicketCreateRequest struct {
 
 	// TtlSeconds 票据有效期（秒），默认 300
 	TtlSeconds *int `json:"ttl_seconds,omitempty"`
+}
+
+// TicketRedeemRequest defines model for TicketRedeemRequest.
+type TicketRedeemRequest struct {
+	// Token 签发响应里返回的明文票据令牌
+	Token string `json:"token"`
+}
+
+// TicketResponse defines model for TicketResponse.
+type TicketResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode `json:"code"`
+	Data    Ticket    `json:"data"`
+	Message string    `json:"message"`
 }
 
 // TokenPair defines model for TokenPair.
@@ -1275,6 +1428,9 @@ type UpdatePolicyJSONRequestBody = PolicyRequest
 // IssueTicketJSONRequestBody defines body for IssueTicket for application/json ContentType.
 type IssueTicketJSONRequestBody = TicketCreateRequest
 
+// RedeemTicketJSONRequestBody defines body for RedeemTicket for application/json ContentType.
+type RedeemTicketJSONRequestBody = TicketRedeemRequest
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// Login 邮箱密码登录
@@ -1328,6 +1484,9 @@ type ServerInterface interface {
 	// CreateApproval 提交审批请求
 	// (POST /api/v1/orgs/{orgId}/approvals)
 	CreateApproval(c *gin.Context, orgId int64)
+	// GetApproval 审批请求详情
+	// (GET /api/v1/orgs/{orgId}/approvals/{approvalId})
+	GetApproval(c *gin.Context, orgId int64, approvalId int64)
 	// DecideApproval 审批决定（approve/deny）
 	// (POST /api/v1/orgs/{orgId}/approvals/{approvalId}/decision)
 	DecideApproval(c *gin.Context, orgId int64, approvalId int64)
@@ -1367,6 +1526,12 @@ type ServerInterface interface {
 	// IssueTicket 签发连接票据
 	// (POST /api/v1/orgs/{orgId}/tickets)
 	IssueTicket(c *gin.Context, orgId int64)
+	// GetTicket 票据详情
+	// (GET /api/v1/orgs/{orgId}/tickets/{ticketId})
+	GetTicket(c *gin.Context, orgId int64, ticketId int64)
+	// RedeemTicket 兑换连接票据（创建面板会话）
+	// (POST /api/v1/orgs/{orgId}/tickets/{ticketId}/redeem)
+	RedeemTicket(c *gin.Context, orgId int64, ticketId int64)
 	// GetHealthz 存活探针
 	// (GET /healthz)
 	GetHealthz(c *gin.Context)
@@ -1845,6 +2010,40 @@ func (siw *ServerInterfaceWrapper) CreateApproval(c *gin.Context) {
 	siw.Handler.CreateApproval(c, orgId)
 }
 
+// GetApproval operation middleware
+func (siw *ServerInterfaceWrapper) GetApproval(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "approvalId" -------------
+	var approvalId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "approvalId", c.Param("approvalId"), &approvalId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter approvalId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetApproval(c, orgId, approvalId)
+}
+
 // DecideApproval operation middleware
 func (siw *ServerInterfaceWrapper) DecideApproval(c *gin.Context) {
 
@@ -2309,6 +2508,74 @@ func (siw *ServerInterfaceWrapper) IssueTicket(c *gin.Context) {
 	siw.Handler.IssueTicket(c, orgId)
 }
 
+// GetTicket operation middleware
+func (siw *ServerInterfaceWrapper) GetTicket(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "ticketId" -------------
+	var ticketId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "ticketId", c.Param("ticketId"), &ticketId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter ticketId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetTicket(c, orgId, ticketId)
+}
+
+// RedeemTicket operation middleware
+func (siw *ServerInterfaceWrapper) RedeemTicket(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "ticketId" -------------
+	var ticketId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "ticketId", c.Param("ticketId"), &ticketId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter ticketId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RedeemTicket(c, orgId, ticketId)
+}
+
 // GetHealthz operation middleware
 func (siw *ServerInterfaceWrapper) GetHealthz(c *gin.Context) {
 
@@ -2380,4 +2647,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/approvals/:approvalId/decision", wrapper.DecideApproval)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/tickets", wrapper.IssueTicket)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/alerts", wrapper.ListAlerts)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/approvals/:approvalId", wrapper.GetApproval)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/tickets/:ticketId", wrapper.GetTicket)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/tickets/:ticketId/redeem", wrapper.RedeemTicket)
 }
