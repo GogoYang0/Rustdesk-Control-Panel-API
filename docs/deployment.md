@@ -11,7 +11,7 @@
 |---|---|---|
 | 操作系统 | Linux（推荐）或 Windows | panel 本身是单一 Go 二进制 |
 | Go | 1.27+ | 仅构建时需要；发布产物为静态二进制 |
-| Docker | 20.10+；**生产使用 rootless Docker 或受限的 Docker socket proxy**（见 §8） | 仅 `provision.enabled` 时需要：panel 经 Docker CLI 操作容器，实际地址用 `DOCKER_HOST` 环境变量或 Docker CLI context 指定，**不要默认依赖 rootful 原始 socket** |
+| Docker | 20.10+；**生产使用 rootless Docker 或受限的 Docker socket proxy**（见 §8） | 使用 provisioning 功能时需要（provisioning 无独立开关，始终启用）：panel 经 Docker CLI 操作容器，实际地址用 `DOCKER_HOST` 环境变量或 Docker CLI context 指定，**不要默认依赖 rootful 原始 socket** |
 | 数据库 | SQLite（默认）/ PostgreSQL / MySQL | 生产建议 PostgreSQL |
 | 端口 | `:8080`（panel API）、`21116–22115`（hbbs/hbbr，可配；逐端口协议分布见 §7——仅每组织的 `HbbsPort+1` 同时用 TCP+UDP，其余 TCP） | 反代后面只需暴露 panel 的 443 |
 
