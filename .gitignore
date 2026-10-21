@@ -23,3 +23,6 @@ coverage.*
 # local config overrides
 configs/config.local.yaml
 .env
+
+# git worktrees (superpowers using-git-worktrees)
+/.worktrees/
