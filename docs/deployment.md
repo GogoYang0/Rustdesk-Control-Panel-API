@@ -136,27 +136,36 @@ server {
     }
 }
 
-# Two websocket entries per organization (HbbsPort+2 and HbbrPort+1) go
-# through the proxy as well; shown for the first organization (21118/21119),
-# repeat per organization port. The Upgrade/Connection headers are mandatory:
-# nginx does not forward them by default and the handshake fails without them.
-location / {
+# Web client websocket entries: one TLS server block per entry, shown for the
+# first organization (HbbsPort+2 = 21118, HbbrPort+1 = 21120); repeat per
+# organization port with distinct server names or listen addresses.
+# Upgrade/Connection are mandatory -- nginx does not forward hop-by-hop
+# headers by default, and the handshake fails without them. X-Forwarded-For is
+# deliberately set to $remote_addr: it overwrites any client-supplied chain,
+# so a forged header cannot poison the address the RustDesk server records.
+server {
+    listen 443 ssl;
+    server_name hbbs-ws.example.com;
+    location / {
         proxy_pass http://127.0.0.1:21118;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
     }
 }
 
-location / {
-        proxy_pass http://127.0.0.1:21119;
+server {
+    listen 443 ssl;
+    server_name hbbr-ws.example.com;
+    location / {
+        proxy_pass http://127.0.0.1:21120;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
     }
 }
 ```
