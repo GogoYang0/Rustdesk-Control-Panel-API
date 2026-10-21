@@ -149,7 +149,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `DELETE .../policies/{policyId}` | owner/admin | 删除策略（已签票据保留签发时的快照） |
 | `GET .../approvals` | 成员 | 审批列表（`status`/`deviceId` 过滤 + 分页；`status=pending` 即待办） |
 | `GET .../approvals/{approvalId}` | 成员 | 审批详情（深链） |
-| `POST .../approvals` | 成员 | 提交审批（`kind` 决定 `device_id` 还是 `session_id`；事前审批复用 pending 返回 200） |
+| `POST .../approvals` | 成员 | 提交审批（`kind` 决定 `device_id` 还是 `session_id`；按 kind 复用：事前审批看 actor+设备 pending，追认看会话 pending/approved，复用返回 200） |
 | `POST .../approvals/{approvalId}/decision` | owner/admin | approve/deny；只有 `pending` 可决策，否则 409 |
 | `POST .../tickets` | 成员 | 签发一次性票据（`ttl_seconds` 30–900，默认 300）；评估**时段 + 审批要求**（并发不在这里判） |
 | `GET .../tickets/{ticketId}` | 成员 | 票据记账状态（不返回明文 token） |
@@ -251,6 +251,7 @@ compat 地址簿**只服务个人地址簿**（`EnsurePersonalBook`），共享�
 
 ## 6. 版本与变更管理
 
-- 契约版本随 release 演进：v0.1.0（M0）→ v0.2.0（M1）→ v0.3.0（M2）→ **v0.4.0（M3，会话治理域，纯增补）**
+- 契约版本随 release 演进：v0.1.0（M0）→ v0.2.0（M1）→ v0.3.0（M2）→ **v0.4.0（M3，会话治理域）**
+- v0.4.0 的既有端点请求/响应形状与字段零变更，但 **`ErrorCode` 新增了 `approval_required`**（所有响应共用的 `code` 类型）——对穷尽式 `switch` 或严格枚举解码的客户端属于 **breaking**，重新生成类型后必须处理该分支（0.x 阶段按 C10 以 minor 承载，见 §3.6）
 - **契约变更的 PR 必须同步更新本文档 §3/§4 与 `openapi.yaml`**，并保证 `go generate` 零漂移
 - WEB/APP 从 `openapi.yaml` 生成类型：任何字段/形状变更视为 breaking，需在 PR 描述中标注

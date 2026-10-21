@@ -15,8 +15,12 @@ info:
 
     0.4.0 新增**会话治理域**：会话记录（sessions）、连接策略（policies）、
     敏感操作审批（approvals）、连接票据（tickets，挂在 sessions 标签下）与
-    策略违规告警（alerts）。既有端点与数据结构**形状不变**；ErrorCode 仅新增
-    `approval_required`（票据签发被策略的事前审批要求阻断时返回，附待审批 id）。
+    策略违规告警（alerts）。既有端点的**请求/响应形状与字段不变**。
+
+    但 `ErrorCode` 新增了 `approval_required`（票据签发被策略的事前审批要求阻断时
+    返回，附 `data.approval_id`）——它是所有响应共用的 `code` 类型，**对穷尽式
+    `switch` 或严格枚举解码的客户端属于 breaking**。重新生成类型后需要处理该分支
+    （0.x 阶段按 C10 以 minor 承载）。
     分页响应本域统一为 `data.items/page/page_size/total`（会话与告警是无限增长的
     历史表，需要总数支撑 UI 翻页；既有列表端点保持原形状）。
 
@@ -1076,8 +1080,13 @@ paths:
         为指定设备提交事前审批请求（默认 15 分钟有效）。组织成员均可提交；
         组织无需审批时也可提交，但票据签发并不依赖它——是否需要审批由策略决定。
 
-        同一 actor + 设备已存在 `pending` 的事前审批时**复用**该请求（返回 200 与
-        既有请求），不重复创建。`kind=ratification` 不参与复用判断。
+        复用规则按 `kind` 区分，两种都不重复创建：
+
+        - `pre_approval`：同一 actor + 设备已有 `pending` 请求 → 复用，返回 200
+        - `ratification`：同一会话已有 `pending` 或 `approved` 的追认 → 复用，返回 200
+          （同一会话被不同 approver 重复点开时不应该产生多条待办）
+
+        首次创建返回 201。
       tags:
         - approvals
       security:
