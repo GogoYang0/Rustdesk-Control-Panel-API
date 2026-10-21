@@ -1235,19 +1235,23 @@ paths:
           content:
             application/json:
               schema:
-                anyOf:
-                  - $ref: "#/components/schemas/ApprovalRequiredResponse"
-                  - $ref: "#/components/schemas/ErrorResponse"
+                $ref: "#/components/schemas/ErrorResponse"
 
   /api/v1/orgs/{orgId}/alerts:
     get:
       operationId: listAlerts
       summary: 策略违规告警列表
       description: |
-        本组织的告警，按 `created_at` 倒序（同秒按 `id` 倒序），分页返回。告警由两条路径产生：面板
-        签发路径在并发/时长/时段约束不满足时实时产生；原生直连路径由日志采集推断
-        的会话触发（只告警、不阻断）。事前审批阻断不产生告警（见 Alert.kind）。
-        与 open 会话归并的 panel 日志事件不产生 native 告警（见 Session 生命周期）。
+        本组织的告警，按 `created_at` 倒序（同秒按 `id` 倒序），分页返回。
+
+        告警来源（对应约束实际生效的位置）：
+        - 签发时时段外被拒 → `outside_window`
+        - 兑换时并发超限被拒 → `concurrency_exceeded`
+        - 后台任务发现会话超过时长上限 → `duration_exceeded`（后置，不掐断连接）
+        - 原生直连会话违反时段/时长 → 只告警不阻断（D10）
+
+        事前审批阻断不产生告警（见 Alert.kind）；与 open 会话归并的 panel 日志事件
+        也不产生 native 告警（见 Session 生命周期）。
         组织成员即可读取。
       tags:
         - alerts
@@ -1543,6 +1547,9 @@ components:
             - object
             - "null"
           additionalProperties: true
+          description: |
+            错误上下文；多数错误为 null。`code=approval_required` 时带
+            `approval_id`（int64，待审批请求 id），客户端据此跳转审批中心。
 
     LoginRequest:
       type: object
@@ -2133,7 +2140,7 @@ components:
           `started_at` 作为空闲判定基线。日志事件命中会话即刷新。
         - **结束**：可识别的连接结束事件（采集规则映射为 `SessionEvent.kind=disconnected`，
           规则随 T7 落地），或空闲超时（`last_activity_at` 之后默认 10 分钟、可由部署
-          配置覆盖）把状态置 `closed`；`end_reason` 见 `SessionEndReason`。
+          配置覆盖）把状态置 `closed`；`end_reason` 取值见该字段的说明。
           **已关闭的会话不会被重新打开**：窗口内再来的事件新建会话（重连 = 新会话）。
         - **时长上限是后置处理**：`max_session_minutes` 超限时由后台任务把会话置
           `closed`（`end_reason=policy_exceeded`）并产生告警；面板不在信令链路上，
@@ -2204,7 +2211,10 @@ components:
             - string
             - "null"
           format: date-time
-          description: 最近一次关联事件时间（native 会话由日志事件驱动）
+          description: |
+            最近一次关联事件时间：native 会话由日志事件驱动，panel 会话在日志事件
+            归并到它时刷新。`status=open` 的会话该值非空；为 null 时以 `started_at`
+            作为空闲判定基线。
         end_reason:
           type:
             - string
@@ -2234,7 +2244,9 @@ components:
         kind:
           type: string
           maxLength: 64
-          description: 事件类型（`started`/`approved`/`denied`/`ticket_issued`/`closed` 等，自由字符串）
+          description: |
+            事件类型（自由字符串）。已知取值：`started`、`ticket_issued`、`approved`、
+            `denied`、`disconnected`（日志中识别的连接结束）、`closed`。
         at:
           type: string
           format: date-time
@@ -2861,29 +2873,6 @@ components:
           type: string
         data:
           $ref: "#/components/schemas/Ticket"
-
-    ApprovalRequiredResponse:
-      type: object
-      description: |
-        `409 approval_required` 的响应体：与 `ErrorResponse` 同形，但 `data` 带强类型
-        的 `approval_id`（客户端要拿它去审批中心）。
-      required:
-        - code
-        - message
-        - data
-      properties:
-        code:
-          $ref: "#/components/schemas/ErrorCode"
-        message:
-          type: string
-        data:
-          type: object
-          required:
-            - approval_id
-          properties:
-            approval_id:
-              type: integer
-              format: int64
 
     SessionResponse:
       type: object

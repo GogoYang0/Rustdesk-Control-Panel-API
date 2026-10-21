@@ -4,7 +4,6 @@
 package gen
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -640,27 +639,6 @@ type ApprovalPage struct {
 	Total    int64      `json:"total"`
 }
 
-// ApprovalRequiredResponse `409 approval_required` 的响应体：与 `ErrorResponse` 同形，但 `data` 带强类型
-// 的 `approval_id`（客户端要拿它去审批中心）。
-type ApprovalRequiredResponse struct {
-	// Code 机器可读错误码：
-	// - ok：成功
-	// - invalid_request：参数校验失败
-	// - unauthorized：未认证或令牌无效
-	// - forbidden：权限不足
-	// - not_found：资源不存在
-	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
-	// - rate_limited：触发限流
-	// - internal：服务端错误
-	// - email_not_verified：邮箱未验证（登录被拒）
-	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
-	Code ErrorCode `json:"code"`
-	Data struct {
-		ApprovalId int64 `json:"approval_id"`
-	} `json:"data"`
-	Message string `json:"message"`
-}
-
 // ApprovalResponse defines model for ApprovalResponse.
 type ApprovalResponse struct {
 	// Code 机器可读错误码：
@@ -753,7 +731,10 @@ type ErrorResponse struct {
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
-	Code    ErrorCode               `json:"code"`
+	Code ErrorCode `json:"code"`
+
+	// Data 错误上下文；多数错误为 null。`code=approval_required` 时带
+	// `approval_id`（int64，待审批请求 id），客户端据此跳转审批中心。
 	Data    *map[string]interface{} `json:"data,omitempty"`
 	Message string                  `json:"message"`
 }
@@ -1094,7 +1075,7 @@ type ResendVerificationRequest struct {
 //     `started_at` 作为空闲判定基线。日志事件命中会话即刷新。
 //   - **结束**：可识别的连接结束事件（采集规则映射为 `SessionEvent.kind=disconnected`，
 //     规则随 T7 落地），或空闲超时（`last_activity_at` 之后默认 10 分钟、可由部署
-//     配置覆盖）把状态置 `closed`；`end_reason` 见 `SessionEndReason`。
+//     配置覆盖）把状态置 `closed`；`end_reason` 取值见该字段的说明。
 //     **已关闭的会话不会被重新打开**：窗口内再来的事件新建会话（重连 = 新会话）。
 //   - **时长上限是后置处理**：`max_session_minutes` 超限时由后台任务把会话置
 //     `closed`（`end_reason=policy_exceeded`）并产生告警；面板不在信令链路上，
@@ -1122,7 +1103,9 @@ type Session struct {
 	EndedAt   *time.Time `json:"ended_at,omitempty"`
 	Id        int64      `json:"id"`
 
-	// LastActivityAt 最近一次关联事件时间（native 会话由日志事件驱动）
+	// LastActivityAt 最近一次关联事件时间：native 会话由日志事件驱动，panel 会话在日志事件
+	// 归并到它时刷新。`status=open` 的会话该值非空；为 null 时以 `started_at`
+	// 作为空闲判定基线。
 	LastActivityAt *time.Time `json:"last_activity_at,omitempty"`
 	OrganizationId int64      `json:"organization_id"`
 
@@ -1172,7 +1155,7 @@ type SessionDetail struct {
 	//   `started_at` 作为空闲判定基线。日志事件命中会话即刷新。
 	// - **结束**：可识别的连接结束事件（采集规则映射为 `SessionEvent.kind=disconnected`，
 	//   规则随 T7 落地），或空闲超时（`last_activity_at` 之后默认 10 分钟、可由部署
-	//   配置覆盖）把状态置 `closed`；`end_reason` 见 `SessionEndReason`。
+	//   配置覆盖）把状态置 `closed`；`end_reason` 取值见该字段的说明。
 	//   **已关闭的会话不会被重新打开**：窗口内再来的事件新建会话（重连 = 新会话）。
 	// - **时长上限是后置处理**：`max_session_minutes` 超限时由后台任务把会话置
 	//   `closed`（`end_reason=policy_exceeded`）并产生告警；面板不在信令链路上，
@@ -1214,7 +1197,8 @@ type SessionEvent struct {
 	Detail *map[string]interface{} `json:"detail,omitempty"`
 	Id     int64                   `json:"id"`
 
-	// Kind 事件类型（`started`/`approved`/`denied`/`ticket_issued`/`closed` 等，自由字符串）
+	// Kind 事件类型（自由字符串）。已知取值：`started`、`ticket_issued`、`approved`、
+	// `denied`、`disconnected`（日志中识别的连接结束）、`closed`。
 	Kind string `json:"kind"`
 }
 
@@ -1278,7 +1262,7 @@ type SessionResponse struct {
 	//   `started_at` 作为空闲判定基线。日志事件命中会话即刷新。
 	// - **结束**：可识别的连接结束事件（采集规则映射为 `SessionEvent.kind=disconnected`，
 	//   规则随 T7 落地），或空闲超时（`last_activity_at` 之后默认 10 分钟、可由部署
-	//   配置覆盖）把状态置 `closed`；`end_reason` 见 `SessionEndReason`。
+	//   配置覆盖）把状态置 `closed`；`end_reason` 取值见该字段的说明。
 	//   **已关闭的会话不会被重新打开**：窗口内再来的事件新建会话（重连 = 新会话）。
 	// - **时长上限是后置处理**：`max_session_minutes` 超限时由后台任务把会话置
 	//   `closed`（`end_reason=policy_exceeded`）并产生告警；面板不在信令链路上，
@@ -1447,11 +1431,6 @@ type ListSessionsParams struct {
 	PageSize *int       `form:"pageSize,omitempty" json:"pageSize,omitempty"`
 }
 
-// IssueTicket409JSONResponseBody defines parameters for IssueTicket.
-type IssueTicket409JSONResponseBody struct {
-	union json.RawMessage
-}
-
 // GetHealthz200JSONResponseBodyStatus defines parameters for GetHealthz.
 type GetHealthz200JSONResponseBodyStatus string
 
@@ -1508,68 +1487,6 @@ type IssueTicketJSONRequestBody = TicketCreateRequest
 
 // RedeemTicketJSONRequestBody defines body for RedeemTicket for application/json ContentType.
 type RedeemTicketJSONRequestBody = TicketRedeemRequest
-
-// AsApprovalRequiredResponse returns the union data inside the IssueTicket409JSONResponseBody as a ApprovalRequiredResponse
-func (t IssueTicket409JSONResponseBody) AsApprovalRequiredResponse() (ApprovalRequiredResponse, error) {
-	var body ApprovalRequiredResponse
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromApprovalRequiredResponse overwrites any union data inside the IssueTicket409JSONResponseBody as the provided ApprovalRequiredResponse
-func (t *IssueTicket409JSONResponseBody) FromApprovalRequiredResponse(v ApprovalRequiredResponse) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeApprovalRequiredResponse performs a merge with any union data inside the IssueTicket409JSONResponseBody, using the provided ApprovalRequiredResponse
-func (t *IssueTicket409JSONResponseBody) MergeApprovalRequiredResponse(v ApprovalRequiredResponse) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsErrorResponse returns the union data inside the IssueTicket409JSONResponseBody as a ErrorResponse
-func (t IssueTicket409JSONResponseBody) AsErrorResponse() (ErrorResponse, error) {
-	var body ErrorResponse
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromErrorResponse overwrites any union data inside the IssueTicket409JSONResponseBody as the provided ErrorResponse
-func (t *IssueTicket409JSONResponseBody) FromErrorResponse(v ErrorResponse) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeErrorResponse performs a merge with any union data inside the IssueTicket409JSONResponseBody, using the provided ErrorResponse
-func (t *IssueTicket409JSONResponseBody) MergeErrorResponse(v ErrorResponse) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t IssueTicket409JSONResponseBody) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *IssueTicket409JSONResponseBody) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
