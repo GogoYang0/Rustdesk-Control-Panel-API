@@ -5,22 +5,33 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
 	"time"
 
 	"go.uber.org/zap"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/api"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logcollect"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logger"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/provision"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
 
+// main loads configuration, prepares persistence and services, and starts the API server.
 func main() {
 	cfg, err := config.Load("configs/config.yaml")
 	if err != nil {
@@ -43,13 +54,52 @@ func main() {
 	}
 	defer func() { _ = st.Close() }()
 
+	// backfillEmailVerifiedTrue is the persistent marker for the one-time
+	// data migration that trusts pre-verification accounts as verified.
+	const backfillEmailVerifiedTrue = "backfill_email_verified_true"
+
 	if err := st.DB.AutoMigrate(
 		&model.User{}, &model.RefreshToken{},
 		&model.Organization{}, &model.Membership{}, &model.Invitation{},
 		&model.AuditLog{},
 		&model.Device{}, &model.DeviceHeartbeat{}, &model.ServerGroup{},
+		&model.AddressBook{}, &model.AddressBookPeer{},
+		&model.AddressBookTag{}, &model.SyncCursor{},
+		&model.VerificationToken{},
+		&model.MigrationMark{},
+		&model.CompatSession{},
+		&model.LogEvent{},
 	); err != nil {
 		lg.Fatal("migrate database", zap.Error(err))
+	}
+
+	// One-time backfill, guarded by a persistent marker instead of the
+	// column's existence: if the data migration itself fails, the next boot
+	// must retry it, not skip it. The column carries NOT NULL DEFAULT false,
+	// so upgraded rows arrive as false (or NULL on a legacy nullable
+	// column); every account created before email verification existed (M1)
+	// went through the invitation password-proving chain and is trusted as
+	// verified. Accounts created afterwards start unverified.
+	var mark model.MigrationMark
+	err = st.DB.Where("name = ?", backfillEmailVerifiedTrue).First(&mark).Error
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		res := st.DB.Model(&model.User{}).
+			Where("email_verified IS NULL OR email_verified = ?", false).
+			Update("email_verified", true)
+		if res.Error != nil {
+			// Die without writing the marker: the next start retries.
+			lg.Fatal("backfill email_verified", zap.Error(res.Error))
+		}
+		lg.Info("backfilled email_verified for existing users", zap.Int64("rows", res.RowsAffected))
+		if err := st.DB.Clauses(clause.OnConflict{DoNothing: true}).Create(&model.MigrationMark{
+			Name:      backfillEmailVerifiedTrue,
+			AppliedAt: time.Now().UTC(),
+		}).Error; err != nil {
+			lg.Fatal("record backfill marker", zap.Error(err))
+		}
+	case err != nil:
+		lg.Fatal("read migration marker", zap.Error(err))
 	}
 
 	issuer := auth.NewIssuer(cfg.Auth.Secret, cfg.Auth.AccessTTL, cfg.Auth.RefreshTTL)
@@ -71,10 +121,83 @@ func main() {
 		},
 	)
 	provQueue := provision.NewQueue(provSvc, cfg.Provision.Workers, 0, lg)
-	provQueue.Start(context.Background())
+
+	// rootCtx stops the long-running background workers on SIGINT/SIGTERM so
+	// their docker child processes are not orphaned.
+	rootCtx, stopRoot := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopRoot()
+	// Handling the first signal disables the default termination for the whole
+	// shutdown window, so a second Ctrl-C would be swallowed while a request or
+	// a tailer is still draining. Restoring the default handling as soon as the
+	// context is cancelled keeps the operator's force-quit escape hatch.
+	context.AfterFunc(rootCtx, stopRoot)
+
+	// Mail delivery: devMode prints to stdout; otherwise real SMTP. The
+	// validation below exits the process on misconfiguration, so it runs before
+	// any background worker: lg.Fatal skips every defer and would otherwise
+	// leave docker children and in-flight provisions behind.
+	// SMTP password comes only from PANEL_SMTP_PASSWORD.
+	var mailer mail.Mailer
+	if cfg.Mail.DevMode {
+		mailer = mail.NewDev(os.Stdout)
+		lg.Info("mail delivery in devMode: messages are written to stdout")
+	} else {
+		if cfg.Mail.SMTP.Host == "" || cfg.Mail.SMTP.From == "" {
+			lg.Fatal("mail.devMode is false but mail.smtp.host/from is empty")
+		}
+		if cfg.Mail.SMTP.Username != "" && os.Getenv("PANEL_SMTP_PASSWORD") == "" {
+			// dialSMTP would still attempt AUTH with the empty password and
+			// every delivery would fail at runtime; refuse to start instead.
+			lg.Fatal("PANEL_SMTP_PASSWORD is required when mail.smtp.username is set")
+		}
+		if !isPublicHTTPSOrigin(cfg.Web.BaseURL) {
+			// Every mail embeds the plaintext token in a link built from this
+			// origin. A localhost or plain-http default would silently hand
+			// verification and invitation links to an unusable (or
+			// interceptable) destination.
+			lg.Fatal("web.baseURL must be a public https origin when mail.devMode is false")
+		}
+		mailer = mail.NewSMTP(mail.SMTPConfig{
+			Host:     cfg.Mail.SMTP.Host,
+			Port:     cfg.Mail.SMTP.Port,
+			Username: cfg.Mail.SMTP.Username,
+			Password: os.Getenv("PANEL_SMTP_PASSWORD"),
+			From:     cfg.Mail.SMTP.From,
+		})
+	}
+
+	// Log collection: one tailer pair per provisioned organization. The queue
+	// hook starts the tailers of a fresh deployment immediately instead of
+	// waiting for the next process start.
+	var collector *logcollect.Service
+	if cfg.Logcollect.Enabled {
+		parser, perr := logcollect.NewParser(logcollectRules(cfg.Logcollect.Rules))
+		if perr != nil {
+			lg.Fatal("invalid logcollect rules", zap.Error(perr))
+		}
+		collector = logcollect.NewService(
+			st.DB, parser, logcollect.DockerCLIStreamer{}, deviceSvc,
+			logcollect.Options{ContainerPrefix: cfg.Logcollect.ContainerPrefix}, lg,
+		)
+		collector.Start(rootCtx)
+		provQueue.OnProvisioned(collector.Watch)
+		// A deprovisioned organization no longer has containers to follow.
+		provSvc.OnDeprovisioned(collector.Unwatch)
+		lg.Info("log collector enabled", zap.Int("rules", parser.Rules()))
+	}
+
+	provQueue.Start(rootCtx)
+
+	// Drain the tailers on shutdown: exec.CommandContext kills the
+	// `docker logs -f` children only when their context is cancelled, and
+	// waiting here keeps them from outliving the panel.
+	var drainCollector func()
+	if collector != nil {
+		drainCollector = collector.Wait
+	}
 	// The organization row is the durable record of a provisioning intent, so a
 	// sweep re-enqueues anything that never reached a worker (full queue, crash).
-	go provQueue.RunReconciler(context.Background(), 2*time.Minute)
+	go provQueue.RunReconciler(rootCtx, 2*time.Minute)
 
 	srv := &http.Server{
 		Addr: cfg.Server.Addr,
@@ -94,16 +217,79 @@ func main() {
 			Issuer:         issuer,
 			Auditor:        audit.NewGormAuditor(st.DB),
 			Logger:         lg,
+			Mailer:         mailer,
 			AccessTTL:      cfg.Auth.AccessTTL,
 			RefreshTTL:     cfg.Auth.RefreshTTL,
 			InvitationTTL:  7 * 24 * time.Hour,
+			WebBaseURL:     cfg.Web.BaseURL,
+			CompatTTL:      cfg.Compat.AccessTTL,
 		}),
 	}
 
-	lg.Info("api listening", zap.String("addr", cfg.Server.Addr))
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	ln, err := net.Listen("tcp", cfg.Server.Addr)
+	if err != nil {
+		lg.Fatal("listen", zap.String("addr", cfg.Server.Addr), zap.Error(err))
+	}
+	lg.Info("api listening", zap.String("addr", ln.Addr().String()))
+	if err := serveUntilShutdown(rootCtx, srv, ln, drainCollector, lg, gracefulShutdownTimeout); err != nil {
 		lg.Fatal("server stopped", zap.Error(err))
 	}
+}
+
+// gracefulShutdownTimeout bounds how long in-flight requests may keep the
+// process alive once a termination signal arrives.
+const gracefulShutdownTimeout = 15 * time.Second
+
+// serveUntilShutdown serves srv on ln and returns either when the listener
+// fails or when ctx is cancelled. Draining on cancellation keeps two promises
+// that signal.NotifyContext alone breaks: once a signal is notified the runtime
+// no longer terminates the process by default, so a main that only blocks in
+// ListenAndServe ignores SIGINT/SIGTERM entirely (the default configuration has
+// log collection disabled and therefore no other goroutine watching ctx), and
+// returning instead of calling os.Exit lets every deferred cleanup run.
+func serveUntilShutdown(
+	ctx context.Context,
+	srv *http.Server,
+	ln net.Listener,
+	drain func(),
+	lg *zap.Logger,
+	timeout time.Duration,
+) error {
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(ln) }()
+
+	select {
+	case err := <-serveErr:
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+	}
+
+	// Stop accepting new connections and let in-flight requests finish
+	// (provisioning is asynchronous, so this is short).
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		lg.Warn("graceful shutdown did not finish", zap.Error(err))
+	}
+	if drain != nil {
+		// A docker CLI child that cannot be killed leaves Wait blocked, so the
+		// drain gets the same bound: the process is exiting anyway and the
+		// children are terminated with it.
+		drained := make(chan struct{})
+		go func() {
+			drain()
+			close(drained)
+		}()
+		select {
+		case <-drained:
+		case <-time.After(timeout):
+			lg.Warn("background workers did not stop in time", zap.Duration("timeout", timeout))
+		}
+	}
+	return nil
 }
 
 // zapLogger adapts *zap.Logger to auth.Logger without widening the interface.
@@ -111,4 +297,38 @@ type zapLogger struct{ lg *zap.Logger }
 
 func (l zapLogger) Info(msg string, keysAndValues ...any) {
 	l.lg.Sugar().Infow(msg, keysAndValues...)
+}
+
+// logcollectRules converts the config shape into parser rules.
+func logcollectRules(rules []config.LogcollectRule) []logcollect.Rule {
+	out := make([]logcollect.Rule, 0, len(rules))
+	for _, r := range rules {
+		out = append(out, logcollect.Rule{
+			Name:    r.Name,
+			Pattern: r.Pattern,
+			Level:   r.Level,
+			Kind:    r.Kind,
+		})
+	}
+	return out
+}
+
+// isPublicHTTPSOrigin reports whether raw is a well-formed https origin
+// (scheme + host, no path/query) that points neither at loopback nor at a
+// private address: this panel is a multi-tenant SaaS, and email links embed
+// plaintext tokens, so an unreachable intranet origin is a misconfiguration.
+func isPublicHTTPSOrigin(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.Path != "" ||
+		u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		return false
+	}
+	host := u.Hostname()
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
+		return false
+	}
+	return true
 }

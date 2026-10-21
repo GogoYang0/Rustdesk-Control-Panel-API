@@ -14,4 +14,9 @@ func registerDefaultScopedModels() {
 	RegisterScopedModel(&model.Device{})
 	RegisterScopedModel(&model.DeviceHeartbeat{})
 	RegisterScopedModel(&model.ServerGroup{})
+	RegisterScopedModel(&model.AddressBook{})
+	RegisterScopedModel(&model.AddressBookPeer{})
+	RegisterScopedModel(&model.AddressBookTag{})
+	RegisterScopedModel(&model.SyncCursor{})
+	RegisterScopedModel(&model.LogEvent{})
 }

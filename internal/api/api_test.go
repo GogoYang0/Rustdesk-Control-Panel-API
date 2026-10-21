@@ -2,7 +2,10 @@ package api_test
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,6 +31,12 @@ type harness struct {
 }
 
 func newHarness(t *testing.T) *harness {
+	return newHarnessWith(t, nil)
+}
+
+// newHarnessWith builds the standard harness and lets a test tweak the Deps
+// (e.g. inject a mailer) before the router is created.
+func newHarnessWith(t *testing.T, tune func(*api.Deps)) *harness {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
@@ -41,12 +50,15 @@ func newHarness(t *testing.T) *harness {
 		&model.User{}, &model.RefreshToken{},
 		&model.Organization{}, &model.Membership{}, &model.Invitation{},
 		&model.AuditLog{}, &model.Device{}, &model.DeviceHeartbeat{},
+		&model.AddressBook{}, &model.AddressBookPeer{},
+		&model.AddressBookTag{}, &model.SyncCursor{}, &model.VerificationToken{},
+		&model.MigrationMark{}, &model.CompatSession{}, &model.LogEvent{},
 	))
 
 	issuer := auth.NewIssuer("test-secret", time.Minute, time.Hour)
 	svc := auth.NewService(st.DB, issuer, nil)
 
-	r := api.NewRouter(api.Deps{
+	deps := api.Deps{
 		DB:            st.DB,
 		Auth:          svc,
 		Devices:       device.NewService(st.DB, nil),
@@ -54,7 +66,12 @@ func newHarness(t *testing.T) *harness {
 		AccessTTL:     time.Minute,
 		RefreshTTL:    time.Hour,
 		InvitationTTL: time.Hour,
-	})
+	}
+	if tune != nil {
+		tune(&deps)
+	}
+
+	r := api.NewRouter(deps)
 
 	return &harness{router: r, db: *st, issuer: issuer}
 }
@@ -99,7 +116,19 @@ func (h *harness) seedUser(t *testing.T, email, password string) model.User {
 	t.Helper()
 	hash, err := auth.HashPassword(password)
 	require.NoError(t, err)
-	u := model.User{Email: email, PasswordHash: hash}
+	// Seeded accounts represent pre-existing (verified) users: every M1
+	// account was created through the invitation password-proving chain.
+	u := model.User{Email: email, PasswordHash: hash, EmailVerified: true}
+	require.NoError(t, h.db.DB.Create(&u).Error)
+	return u
+}
+
+// seedUnverifiedUser creates an account that has not confirmed its mailbox.
+func (h *harness) seedUnverifiedUser(t *testing.T, email, password string) model.User {
+	t.Helper()
+	hash, err := auth.HashPassword(password)
+	require.NoError(t, err)
+	u := model.User{Email: email, PasswordHash: hash, EmailVerified: false}
 	require.NoError(t, h.db.DB.Create(&u).Error)
 	return u
 }
@@ -244,23 +273,13 @@ func TestAcceptInvitation_JoinsAsRole(t *testing.T) {
 	w = h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgResp.Data.Id)+"/invitations",
 		map[string]string{"email": "newbie@example.com", "role": "admin"}, ownerToken)
 	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	require.NotContains(t, w.Body.String(), `"token"`)
 
-	var invResp struct {
-		Data struct {
-			Token string `json:"token"`
-		} `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &invResp))
-	require.NotEmpty(t, invResp.Data.Token)
-
-	// Only the hash is stored.
-	var stored model.Invitation
-	require.NoError(t, store.ScopedByOrg(h.db.DB, uint(orgResp.Data.Id)).First(&stored).Error)
-	require.NotEqual(t, invResp.Data.Token, stored.TokenHash)
-	require.NotEmpty(t, stored.TokenHash)
+	// The API no longer returns the token; obtain it via a direct insert.
+	token := h.newInvitationForTest(t, orgResp.Data.Id, "newbie@example.com", "admin")
 
 	w = h.do(t, http.MethodPost, "/api/v1/invitations/accept",
-		map[string]string{"token": invResp.Data.Token, "password": "newpass123"}, "")
+		map[string]string{"token": token, "password": "newpass123"}, "")
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 
 	var member model.Membership
@@ -270,7 +289,7 @@ func TestAcceptInvitation_JoinsAsRole(t *testing.T) {
 
 	// Reusing the token must fail with a conflict.
 	w = h.do(t, http.MethodPost, "/api/v1/invitations/accept",
-		map[string]string{"token": invResp.Data.Token, "password": "newpass123"}, "")
+		map[string]string{"token": token, "password": "newpass123"}, "")
 	require.Equal(t, http.StatusConflict, w.Code)
 }
 
@@ -285,6 +304,56 @@ func itoa(v int64) string {
 func sanitize(name string) string {
 	r := strings.NewReplacer("/", "_", " ", "_", "-", "_")
 	return r.Replace(name)
+}
+
+// inviteSeq keeps each test invitation token unique: the token_hash column
+// is uniquely indexed.
+var inviteSeq int
+
+// newInvitationForTest inserts an invitation directly and returns the
+// plaintext token: contract 0.3.0 no longer returns it in the API response
+// (it is emailed to the invitee; delivery arrives with the email
+// verification task).
+func (h *harness) newInvitationForTest(t *testing.T, orgID int64, email, role string) string {
+	t.Helper()
+	inviteSeq++
+	token := fmt.Sprintf("test-invite-token-%d-0123456789abcdef", inviteSeq)
+	sum := sha256.Sum256([]byte(token))
+	inv := model.Invitation{
+		OrganizationID: uint(orgID),
+		Email:          email,
+		Role:           role,
+		TokenHash:      hex.EncodeToString(sum[:]),
+		ExpiresAt:      time.Now().Add(7 * 24 * time.Hour),
+	}
+	require.NoError(t, store.ScopedByOrg(h.db.DB, uint(orgID)).Create(&inv).Error)
+	return token
+}
+
+// Contract 0.3.0: the invitation token must not appear in the response
+// (issue #17); only its SHA-256 hash is stored server-side.
+func TestCreateInvitation_TokenNotInResponse(t *testing.T) {
+	h := newHarness(t)
+	h.seedUser(t, "owner0@example.com", "password123")
+	ownerToken := h.login(t, "owner0@example.com", "password123")
+
+	w := h.do(t, http.MethodPost, "/api/v1/orgs", map[string]string{"name": "mail-org"}, ownerToken)
+	require.Equal(t, http.StatusCreated, w.Code)
+	var orgResp struct {
+		Data struct {
+			Id int64 `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &orgResp))
+
+	w = h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgResp.Data.Id)+"/invitations",
+		map[string]string{"email": "invited@example.com", "role": "member"}, ownerToken)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	require.NotContains(t, w.Body.String(), `"token"`)
+
+	var stored model.Invitation
+	require.NoError(t, store.ScopedByOrg(h.db.DB, uint(orgResp.Data.Id)).First(&stored).Error)
+	require.Len(t, stored.TokenHash, 64)
 }
 
 // Accepting an invitation for an email that already has an account requires
@@ -307,21 +376,16 @@ func TestAcceptInvitation_ExistingUserWrongPassword_401(t *testing.T) {
 	w = h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgResp.Data.Id)+"/invitations",
 		map[string]string{"email": "existing@example.com", "role": "member"}, ownerToken)
 	require.Equal(t, http.StatusCreated, w.Code)
-	var invResp struct {
-		Data struct {
-			Token string `json:"token"`
-		} `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &invResp))
+	token := h.newInvitationForTest(t, orgResp.Data.Id, "existing@example.com", "member")
 
 	// Wrong password for an existing account must be rejected.
 	w = h.do(t, http.MethodPost, "/api/v1/invitations/accept",
-		map[string]string{"token": invResp.Data.Token, "password": "attacker-pass1"}, "")
+		map[string]string{"token": token, "password": "attacker-pass1"}, "")
 	require.Equal(t, http.StatusUnauthorized, w.Code, w.Body.String())
 
 	// The real password still works.
 	w = h.do(t, http.MethodPost, "/api/v1/invitations/accept",
-		map[string]string{"token": invResp.Data.Token, "password": "originalpass1"}, "")
+		map[string]string{"token": token, "password": "originalpass1"}, "")
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 }
 
@@ -345,14 +409,9 @@ func TestAcceptInvitation_PasswordGuessing_IsRateLimited(t *testing.T) {
 	w = h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgResp.Data.Id)+"/invitations",
 		map[string]string{"email": "victim@example.com", "role": "member"}, ownerToken)
 	require.Equal(t, http.StatusCreated, w.Code)
-	var invResp struct {
-		Data struct {
-			Token string `json:"token"`
-		} `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &invResp))
+	token := h.newInvitationForTest(t, orgResp.Data.Id, "victim@example.com", "member")
 
-	body := map[string]string{"token": invResp.Data.Token, "password": "guess-guess1"}
+	body := map[string]string{"token": token, "password": "guess-guess1"}
 	const attackerIP = "198.51.100.77"
 	for i := 0; i < 5; i++ {
 		w = h.doFrom(t, attackerIP, http.MethodPost, "/api/v1/invitations/accept", body, "")
@@ -413,7 +472,7 @@ func TestCreateDevice_WritesAndHeartbeats(t *testing.T) {
 }
 
 func TestCreateDevice_MemberRole_Forbidden(t *testing.T) {
-	h := newHarness(t)
+	h, buf := newMailHarness(t)
 	h.seedUser(t, "owner4@example.com", "password123")
 	ownerToken := h.login(t, "owner4@example.com", "password123")
 
@@ -426,20 +485,21 @@ func TestCreateDevice_MemberRole_Forbidden(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &orgResp))
 
-	// Invite a second user as member, accept, then try to write a device.
+	// Invite a second user as member, accept, verify the mailbox (a newly
+	// created account starts unverified), then try to write a device.
 	w = h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgResp.Data.Id)+"/invitations",
 		map[string]string{"email": "plain@example.com", "role": "member"}, ownerToken)
 	require.Equal(t, http.StatusCreated, w.Code)
-	var invResp struct {
-		Data struct {
-			Token string `json:"token"`
-		} `json:"data"`
-	}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &invResp))
+	inviteToken := extractToken(t, buf, "accept-invitation")
 
 	w = h.do(t, http.MethodPost, "/api/v1/invitations/accept",
-		map[string]string{"token": invResp.Data.Token, "password": "memberpass1"}, "")
+		map[string]string{"token": inviteToken, "password": "memberpass1"}, "")
 	require.Equal(t, http.StatusOK, w.Code)
+
+	verifyToken := extractToken(t, buf, "verify-email")
+	w = h.do(t, http.MethodPost, "/api/v1/auth/verify-email",
+		map[string]string{"token": verifyToken}, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 
 	memberToken := h.login(t, "plain@example.com", "memberpass1")
 	w = h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgResp.Data.Id)+"/devices",
@@ -519,4 +579,20 @@ func TestCreateOrg_ConcurrentRequestsRespectQuota(t *testing.T) {
 	var orgs int64
 	require.NoError(t, h.db.DB.Model(&model.Organization{}).Count(&orgs).Error)
 	require.EqualValues(t, 1, orgs, "the quota must hold in the database, not just in the responses")
+}
+
+// Contract 0.3.0 declares verify-email / resend-verification with
+// security: []; the JWT middleware must not intercept them. Task 6 turned
+// the placeholders into real handlers: a malformed token is 400 and an
+// unknown email is 200 (anti-enumeration).
+func TestVerifyEmailRoutes_AnonymousReachHandler(t *testing.T) {
+	h := newHarness(t)
+
+	w := h.do(t, http.MethodPost, "/api/v1/auth/verify-email",
+		map[string]string{"token": "short"}, "")
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+
+	w = h.do(t, http.MethodPost, "/api/v1/auth/resend-verification",
+		map[string]string{"email": "someone@example.com"}, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 }

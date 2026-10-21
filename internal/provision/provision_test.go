@@ -357,3 +357,57 @@ func TestPortPool_ConcurrentAllocateSameOrg_ReportsConflict(t *testing.T) {
 	require.Equal(t, 1, won, "exactly one allocation may win")
 	require.Equal(t, attempts-1, conflict)
 }
+
+// The queue notifies the deployment hook once per successful provisioning so
+// the log collector starts tailing the new containers immediately.
+func TestQueue_NotifiesAfterProvisioning(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "hooked-org")
+
+	queue := provision.NewQueue(f.svc, 1, 4, zap.NewNop())
+	notified := make(chan uint, 4)
+	queue.OnProvisioned(func(orgID uint) { notified <- orgID })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	queue.Start(ctx)
+
+	require.NoError(t, queue.Enqueue(org.ID))
+	select {
+	case got := <-notified:
+		require.Equal(t, org.ID, got)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the provisioning hook was not called")
+	}
+	require.Len(t, f.orch.Deployed, 1)
+}
+
+// After a successful deprovision the containers are gone, so anything following
+// them has to stop: the log collector registers its Unwatch here.
+func TestDeprovision_NotifiesHook(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "acme")
+	_, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.NoError(t, err)
+
+	var got []uint
+	f.svc.OnDeprovisioned(func(orgID uint) { got = append(got, orgID) })
+
+	require.NoError(t, f.svc.Deprovision(context.Background(), org.ID))
+	require.Equal(t, []uint{org.ID}, got)
+}
+
+// A failed removal keeps the row and its ports because the containers may still
+// be running: the hook must not fire.
+func TestDeprovision_RemovalFailure_DoesNotNotify(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "acme")
+	_, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.NoError(t, err)
+
+	called := false
+	f.svc.OnDeprovisioned(func(uint) { called = true })
+	f.orch.RemoveErr = errors.New("docker unavailable")
+
+	require.Error(t, f.svc.Deprovision(context.Background(), org.ID))
+	require.False(t, called, "a failed removal must not stop the tailers")
+}

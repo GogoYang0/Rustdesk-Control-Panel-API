@@ -1,8 +1,10 @@
 package scopetest
 
 import (
+	"context"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -260,4 +262,106 @@ func TestScopedByOrg_JoinOnScopedTableRejected(t *testing.T) {
 		Find(&rows).Error
 	require.Error(t, err, "joins touching a scoped table must be rejected")
 	require.Empty(t, rows)
+}
+
+// M2 Task 3: every address book table must be tenant-isolated (Review Focus #1).
+func TestTenantIsolation_AddressBookTables(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	require.NoError(t, db.AutoMigrate(
+		&model.AddressBook{}, &model.AddressBookPeer{},
+		&model.AddressBookTag{}, &model.SyncCursor{},
+	))
+
+	orgA := model.Organization{Name: "org-ab-a"}
+	orgB := model.Organization{Name: "org-ab-b"}
+	require.NoError(t, db.Create(&orgA).Error)
+	require.NoError(t, db.Create(&orgB).Error)
+
+	owner := uint(101)
+	bookA := model.AddressBook{OrganizationID: orgA.ID, OwnerID: &owner, Scope: model.AddressBookScopePersonal, Name: "personal-a"}
+	require.NoError(t, db.Create(&bookA).Error)
+	require.NoError(t, db.Create(&model.AddressBookPeer{
+		OrganizationID: orgA.ID, BookID: bookA.ID, PeerID: "111111", Alias: "alpha",
+	}).Error)
+	require.NoError(t, db.Create(&model.AddressBookTag{
+		OrganizationID: orgA.ID, BookID: bookA.ID, Name: "infra", Color: 16711680,
+	}).Error)
+	require.NoError(t, db.Create(&model.SyncCursor{
+		OrganizationID: orgA.ID, UserID: owner, BookID: bookA.ID, LastRevision: 3,
+	}).Error)
+
+	// Org B must see nothing in any of the four tables.
+	var books []model.AddressBook
+	require.NoError(t, store.ScopedByOrg(db, orgB.ID).Find(&books).Error)
+	require.Empty(t, books, "org B must not see org A address books")
+
+	var peers []model.AddressBookPeer
+	require.NoError(t, store.ScopedByOrg(db, orgB.ID).Find(&peers).Error)
+	require.Empty(t, peers, "org B must not see org A peers")
+
+	var tags []model.AddressBookTag
+	require.NoError(t, store.ScopedByOrg(db, orgB.ID).Find(&tags).Error)
+	require.Empty(t, tags, "org B must not see org A tags")
+
+	var cursors []model.SyncCursor
+	require.NoError(t, store.ScopedByOrg(db, orgB.ID).Find(&cursors).Error)
+	require.Empty(t, cursors, "org B must not see org A sync cursors")
+
+	// Org A still sees its own rows.
+	var own []model.AddressBook
+	require.NoError(t, store.ScopedByOrg(db, orgA.ID).Find(&own).Error)
+	require.Len(t, own, 1)
+}
+
+// The (book_id, peer_id) pair is unique: re-inserting the same peer into the
+// same book must surface gorm.ErrDuplicatedKey (TranslateError is enabled).
+func TestAddressBookPeer_UniqueConstraint(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	require.NoError(t, db.AutoMigrate(&model.AddressBook{}, &model.AddressBookPeer{}))
+
+	org := model.Organization{Name: "org-ab-uniq"}
+	require.NoError(t, db.Create(&org).Error)
+	owner := uint(201)
+	book := model.AddressBook{OrganizationID: org.ID, OwnerID: &owner, Scope: model.AddressBookScopePersonal, Name: "uniq"}
+	require.NoError(t, db.Create(&book).Error)
+
+	peer := model.AddressBookPeer{OrganizationID: org.ID, BookID: book.ID, PeerID: "222222"}
+	require.NoError(t, db.Create(&peer).Error)
+
+	err := db.Create(&model.AddressBookPeer{OrganizationID: org.ID, BookID: book.ID, PeerID: "222222"}).Error
+	require.ErrorIs(t, err, gorm.ErrDuplicatedKey, "duplicate (book_id, peer_id) must raise ErrDuplicatedKey")
+}
+
+// ScopedByOrg carries the tenant id in the context, so a WithContext applied
+// after it replaces that context and silently drops the scope: the plugin then
+// fails closed and every query matches no rows. This bit the log collector,
+// where the failure looked like "device not found" instead of a scoping bug.
+func TestScopedByOrg_WithContextAfterScopeDropsTheScope(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	org := model.Organization{Name: "org-a"}
+	require.NoError(t, db.Create(&org).Error)
+	require.NoError(t, db.Create(&model.Membership{
+		OrganizationID: org.ID, UserID: 1, Role: model.RoleOwner,
+	}).Error)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	// Correct order: the caller context goes in first, then the tenant id.
+	right := store.ScopedByOrg(db.WithContext(ctx), org.ID)
+	var rows []model.Membership
+	require.NoError(t, right.Find(&rows).Error)
+	require.Len(t, rows, 1)
+
+	// Wrong order: WithContext wipes the tenant id out of the context.
+	wrong := store.ScopedByOrg(db, org.ID).WithContext(ctx)
+	rows = nil
+	require.NoError(t, wrong.Find(&rows).Error)
+	require.Empty(t, rows, "the tenant scope must be applied after the caller context")
 }

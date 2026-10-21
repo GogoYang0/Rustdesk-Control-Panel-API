@@ -10,11 +10,63 @@ import (
 
 // Config is the root configuration tree.
 type Config struct {
-	Server    ServerConfig    `mapstructure:"server"`
-	Log       LogConfig       `mapstructure:"log"`
-	Database  DatabaseConfig  `mapstructure:"database"`
-	Auth      AuthConfig      `mapstructure:"auth"`
-	Provision ProvisionConfig `mapstructure:"provision"`
+	Server     ServerConfig     `mapstructure:"server"`
+	Log        LogConfig        `mapstructure:"log"`
+	Database   DatabaseConfig   `mapstructure:"database"`
+	Auth       AuthConfig       `mapstructure:"auth"`
+	Provision  ProvisionConfig  `mapstructure:"provision"`
+	Mail       MailConfig       `mapstructure:"mail"`
+	Web        WebConfig        `mapstructure:"web"`
+	Compat     CompatConfig     `mapstructure:"compat"`
+	Logcollect LogcollectConfig `mapstructure:"logcollect"`
+}
+
+// LogcollectConfig tunes the hbbs/hbbr log collector. Rules are evaluated in
+// order and the first match wins; lines that match no rule are counted and
+// dropped (C7). Device association uses the named capture group "device"
+// (the RustDesk id); every other named group lands in the event detail.
+type LogcollectConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+	// ContainerPrefix matches the provisioned container names
+	// (panel-org-<orgID>-hbbs / -hbbr).
+	ContainerPrefix string           `mapstructure:"containerPrefix"`
+	Rules           []LogcollectRule `mapstructure:"rules"`
+}
+
+// LogcollectRule is one configurable parsing rule.
+type LogcollectRule struct {
+	Name    string `mapstructure:"name"`
+	Pattern string `mapstructure:"pattern"`
+	Level   string `mapstructure:"level"`
+	Kind    string `mapstructure:"kind"`
+}
+
+// CompatConfig tunes the RustDesk client compatibility endpoints. The
+// access token is long-lived by design: desktop clients hold it until
+// logout, and there is no refresh flow in the client protocol.
+type CompatConfig struct {
+	AccessTTL time.Duration `mapstructure:"accessTTL"`
+}
+
+// WebConfig points at the panel frontend so emails can link back to it.
+type WebConfig struct {
+	BaseURL string `mapstructure:"baseURL"`
+}
+
+// MailConfig selects the delivery backend. In devMode messages are written
+// to stdout instead of being sent; otherwise SMTP settings apply and the
+// password must come from PANEL_SMTP_PASSWORD (never from the tracked file).
+type MailConfig struct {
+	DevMode bool       `mapstructure:"devMode"`
+	SMTP    SMTPConfig `mapstructure:"smtp"`
+}
+
+// SMTPConfig carries the SMTP server settings.
+type SMTPConfig struct {
+	Host     string `mapstructure:"host"`
+	Port     int    `mapstructure:"port"`
+	Username string `mapstructure:"username"`
+	From     string `mapstructure:"from"`
 }
 
 // ServerConfig holds HTTP server settings.
@@ -75,6 +127,21 @@ func Load(path string) (*Config, error) {
 	// The signing key must not live in the repository; deployment supplies it.
 	if err := v.BindEnv("auth.secret", "PANEL_AUTH_SECRET"); err != nil {
 		return nil, fmt.Errorf("bind auth secret env: %w", err)
+	}
+	// Same policy for the SMTP password.
+	if err := v.BindEnv("mail.smtp.password", "PANEL_SMTP_PASSWORD"); err != nil {
+		return nil, fmt.Errorf("bind smtp password env: %w", err)
+	}
+	v.SetDefault("mail.devMode", true)
+	v.SetDefault("mail.smtp.port", 587)
+	v.SetDefault("compat.accessTTL", "720h")
+	// Log collection is opt-in: without rules nothing can be parsed.
+	v.SetDefault("logcollect.enabled", false)
+	v.SetDefault("logcollect.containerprefix", "panel-org")
+	// Frontend origin for links inside outgoing emails.
+	v.SetDefault("web.baseurl", "http://localhost:5173")
+	if err := v.BindEnv("web.baseurl", "PANEL_WEB_BASE_URL"); err != nil {
+		return nil, fmt.Errorf("bind web base url env: %w", err)
 	}
 
 	if err := v.ReadInConfig(); err != nil {

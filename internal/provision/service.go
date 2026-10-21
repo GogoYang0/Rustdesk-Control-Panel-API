@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -33,6 +34,28 @@ type Service struct {
 	orch   Orchestrator
 	logger *zap.Logger
 	cfg    Config
+
+	mu              sync.Mutex
+	onDeprovisioned func(orgID uint)
+}
+
+// OnDeprovisioned registers a callback invoked after a successful deprovision.
+// The containers are gone at that point, so anything following them must stop:
+// the log collector uses it to cancel the organization's tailers.
+func (s *Service) OnDeprovisioned(fn func(orgID uint)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onDeprovisioned = fn
+}
+
+// notifyDeprovisioned runs the registered callback, if any.
+func (s *Service) notifyDeprovisioned(orgID uint) {
+	s.mu.Lock()
+	fn := s.onDeprovisioned
+	s.mu.Unlock()
+	if fn != nil {
+		fn(orgID)
+	}
 }
 
 // NewService builds the provisioning service.
@@ -255,14 +278,18 @@ func (s *Service) Deprovision(ctx context.Context, orgID uint) error {
 	// Persist the deprovision intent together with the row deletion: otherwise
 	// the reconciler would see an organization without a server group and
 	// deploy it again.
-	return s.db.Transaction(func(tx *gorm.DB) error {
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
 		if err := store.ScopedByOrg(tx, orgID).Delete(&model.ServerGroup{}, row.ID).Error; err != nil {
 			return err
 		}
 		return tx.Model(&model.Organization{}).
 			Where("id = ?", orgID).
 			Update("provisioning_disabled", true).Error
-	})
+	}); err != nil {
+		return err
+	}
+	s.notifyDeprovisioned(orgID)
+	return nil
 }
 
 // failAndCleanup rolls back a failed deployment. When removal fails the row is

@@ -9,14 +9,17 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/gen"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/compatapi"
 )
 
 // publicPaths never require a bearer token.
 var publicPaths = map[string]bool{
-	"/healthz":                   true,
-	"/api/v1/auth/login":         true,
-	"/api/v1/auth/refresh":       true,
-	"/api/v1/invitations/accept": true,
+	"/healthz":                         true,
+	"/api/v1/auth/login":               true,
+	"/api/v1/auth/refresh":             true,
+	"/api/v1/auth/verify-email":        true,
+	"/api/v1/auth/resend-verification": true,
+	"/api/v1/invitations/accept":       true,
 }
 
 // NewRouter mounts the generated handlers behind the fixed middleware chain:
@@ -37,9 +40,23 @@ func NewRouter(d Deps) *gin.Engine {
 	_ = r.SetTrustedProxies(nil)
 	r.Use(gin.Recovery())
 	r.Use(newAuditMiddleware(d.Auditor, d.Logger))
-	r.Use(requireJWTUnlessPublic(d.Issuer))
 
-	gen.RegisterHandlers(r, NewAdminAPI(d))
+	// Management API: admin access tokens, JWT on every non-public path.
+	mgmt := r.Group("")
+	mgmt.Use(requireJWTUnlessPublic(d.Issuer))
+	gen.RegisterHandlers(mgmt, NewAdminAPI(d))
+
+	// RustDesk compatibility endpoints beside the management API with their
+	// own session authentication: the management JWT middleware must never
+	// cover /api/* compat paths (two token families stay interchangeable-
+	// proof, and the client's unauthenticated heartbeat still lands).
+	compatapi.Mount(r, compatapi.Deps{
+		DB:        d.DB,
+		Issuer:    d.Issuer,
+		Devices:   d.Devices,
+		Now:       d.Now,
+		AccessTTL: d.CompatTTL,
+	})
 	return r
 }
 

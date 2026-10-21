@@ -6,7 +6,10 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	openapi_types "github.com/oapi-codegen/runtime/types"
@@ -15,8 +18,10 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/gen"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
@@ -54,6 +59,7 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 	// The quota is checked inside the transaction with the user row locked.
 	// Reading the count outside would let two concurrent requests both pass the
 	// check and create an organization each (CWE-770, TOCTOU).
+	domainRecorded := false
 	err := a.deps.DB.Transaction(func(tx *gorm.DB) error {
 		if a.deps.OrgsPerUser > 0 {
 			if err := a.lockUserRow(tx, uid); err != nil {
@@ -73,11 +79,29 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 		if err := tx.Create(&org).Error; err != nil {
 			return err
 		}
-		return store.ScopedByOrg(tx, org.ID).Create(&model.Membership{
+		if err := store.ScopedByOrg(tx, org.ID).Create(&model.Membership{
 			OrganizationID: org.ID,
 			UserID:         uid,
 			Role:           model.RoleOwner,
-		}).Error
+		}).Error; err != nil {
+			return err
+		}
+		// Record the audit entry on the same transaction (issue #19): the
+		// organization and its audit trail commit or roll back together.
+		if tr, ok := a.deps.Auditor.(audit.TxRecorder); ok {
+			if err := tr.RecordTx(tx, audit.Entry{
+				OrganizationID: org.ID,
+				ActorUserID:    uid,
+				Action:         "organization.create",
+				TargetType:     "organization",
+				TargetID:       fmt.Sprint(org.ID),
+				Detail:         map[string]any{"name": org.Name},
+			}); err != nil {
+				return err
+			}
+			domainRecorded = true
+		}
+		return nil
 	})
 	switch {
 	case errors.Is(err, errOrgQuotaReached):
@@ -89,9 +113,15 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 		return
 	}
 
-	// Surface the new org and the actor to the audit middleware: tenant
-	// creation is a security-relevant event and must appear in the trail.
-	c.Set(contextOrgID, org.ID)
+	// The domain audit record committed with the transaction; skip the
+	// middleware fallback for this request (issue #19).
+	if domainRecorded {
+		c.Set(contextAuditRecorded, true)
+	} else {
+		// Tenant creation is a security-relevant event and must appear in
+		// the trail through the middleware fallback.
+		c.Set(contextOrgID, org.ID)
+	}
 
 	// Provisioning is slow (container start), so it runs on a bounded worker
 	// queue after the response. Enqueue failures are recoverable: the
@@ -226,7 +256,7 @@ func (a *AdminAPI) CreateInvitation(c *gin.Context, orgId int64) {
 		return
 	}
 
-	token, err := newInvitationToken()
+	token, err := newRandomToken()
 	if err != nil {
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not create invitation")
 		return
@@ -236,7 +266,7 @@ func (a *AdminAPI) CreateInvitation(c *gin.Context, orgId int64) {
 		OrganizationID: uint(orgId),
 		Email:          string(req.Email),
 		Role:           role,
-		TokenHash:      hashInvitationToken(token),
+		TokenHash:      hashToken(token),
 		ExpiresAt:      a.deps.Now().Add(a.deps.InvitationTTL),
 	}
 	if err := store.ScopedByOrg(a.deps.DB, uint(orgId)).Create(&inv).Error; err != nil {
@@ -244,6 +274,28 @@ func (a *AdminAPI) CreateInvitation(c *gin.Context, orgId int64) {
 		return
 	}
 
+	// Issue #17: the plaintext token travels to the invitee mailbox only.
+	// A delivery failure must surface to the admin — there is no recovery
+	// path for an invitation that nobody ever received (the row simply
+	// expires, and a retry creates a fresh one).
+	link := fmt.Sprintf("%s/accept-invitation?token=%s", strings.TrimRight(a.deps.WebBaseURL, "/"), token)
+	hours := int(a.deps.InvitationTTL / time.Hour)
+	if err := a.deps.Mailer.Send(c.Request.Context(), mail.Message{
+		To:      []string{inv.Email},
+		Subject: "组织邀请",
+		TextBody: fmt.Sprintf("您好！\n\n您被邀请以 %s 身份加入组织。请点击以下链接完成加入并设置密码：\n\n%s\n\n"+
+			"该链接 %d 小时内有效，且仅可使用一次。如果您不认识邀请方，请忽略此邮件。\n", role, link, hours),
+	}); err != nil {
+		a.deps.Logger.Warn("invitation mail delivery failed",
+			zap.Uint("invitation_id", inv.ID), zap.Error(err))
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not deliver invitation email")
+		return
+	}
+
+	// Contract 0.3.0: the invitation token is no longer returned in the
+	// response — it is delivered to the invitee mailbox only (issue #17).
+	// Mail delivery lands with the email verification task; until then
+	// newly created invitations cannot be accepted by anyone (M2 interim).
 	c.JSON(http.StatusCreated, gen.InvitationResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
@@ -252,7 +304,6 @@ func (a *AdminAPI) CreateInvitation(c *gin.Context, orgId int64) {
 			Email:     openapi_types.Email(inv.Email),
 			Role:      gen.InvitationRole(inv.Role),
 			ExpiresAt: inv.ExpiresAt,
-			Token:     &token,
 		},
 	})
 }
@@ -273,7 +324,7 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 	// across tenants before the org context is known.
 	var inv model.Invitation
 	err := store.WithoutTenantScope(a.deps.DB).
-		Where("token_hash = ?", hashInvitationToken(req.Token)).
+		Where("token_hash = ?", hashToken(req.Token)).
 		First(&inv).Error
 	if err != nil {
 		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "invitation is not valid")
@@ -288,16 +339,19 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 	// shares the login guard: otherwise the invitation token would become an
 	// unlimited password oracle (CWE-307).
 	ip := c.ClientIP()
-	if !a.guard.allowIP(ip) {
+	if !a.guard.AllowIP(ip) {
 		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "too many attempts")
 		return
 	}
-	if a.guard.locked(inv.Email, ip) {
+	if a.guard.Locked(inv.Email, ip) {
 		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "account temporarily locked")
 		return
 	}
 
 	var member model.Membership
+	var joined model.User
+	needVerify := false
+	domainRecorded := false
 	err = a.deps.DB.Transaction(func(tx *gorm.DB) error {
 		var user model.User
 		err := tx.Where("email = ?", inv.Email).First(&user).Error
@@ -314,17 +368,39 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 			if herr != nil {
 				return herr
 			}
-			user = model.User{Email: inv.Email, PasswordHash: hash}
+			// A fresh account starts unverified; the verification mail goes
+			// out after the transaction commits.
+			user = model.User{Email: inv.Email, PasswordHash: hash, EmailVerified: false}
 			if cerr := tx.Create(&user).Error; cerr != nil {
 				return cerr
 			}
+			needVerify = true
 		default:
 			return err
 		}
 
+		// Remember the account for the post-commit mail step.
+		joined = user
+
 		member = model.Membership{OrganizationID: inv.OrganizationID, UserID: user.ID, Role: inv.Role}
 		if err := store.ScopedByOrg(tx, inv.OrganizationID).Create(&member).Error; err != nil {
 			return err
+		}
+
+		// Record the audit entry on the same transaction (issue #19): the
+		// membership and its audit trail commit or roll back together.
+		if tr, ok := a.deps.Auditor.(audit.TxRecorder); ok {
+			if err := tr.RecordTx(tx, audit.Entry{
+				OrganizationID: inv.OrganizationID,
+				ActorUserID:    user.ID,
+				Action:         "invitation.accept",
+				TargetType:     "membership",
+				TargetID:       fmt.Sprint(member.ID),
+				Detail:         map[string]any{"role": inv.Role, "invitation_id": inv.ID},
+			}); err != nil {
+				return err
+			}
+			domainRecorded = true
 		}
 
 		now := a.deps.Now()
@@ -334,7 +410,7 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 			Updates(map[string]any{"accepted_at": now, "accepted_by": user.ID}).Error
 	})
 	if errors.Is(err, errInvitationCredentials) {
-		a.guard.recordFailure(inv.Email, ip)
+		a.guard.RecordFailure(inv.Email, ip)
 		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "invalid credentials for this email")
 		return
 	}
@@ -342,12 +418,27 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "could not accept invitation")
 		return
 	}
-	a.guard.reset(inv.Email, ip)
+	a.guard.Reset(inv.Email, ip)
 
-	// Record the org and the accepted user in the audit trail: joining a
-	// tenant grants a role and must be traceable to both sides.
-	c.Set(contextOrgID, inv.OrganizationID)
-	c.Set(auth.ContextUserID, member.UserID)
+	if needVerify {
+		if err := a.sendVerificationMail(c.Request.Context(), joined); err != nil {
+			// Membership is durable and the user can recover through
+			// POST /auth/resend-verification, so delivery failure is not fatal.
+			a.deps.Logger.Warn("verification mail delivery failed",
+				zap.Uint("user_id", joined.ID), zap.Error(err))
+		}
+	}
+
+	// The domain audit record committed with the transaction; skip the
+	// middleware fallback for this request (issue #19).
+	if domainRecorded {
+		c.Set(contextAuditRecorded, true)
+	} else {
+		// Record the org and the accepted user in the audit trail: joining a
+		// tenant grants a role and must be traceable to both sides.
+		c.Set(contextOrgID, inv.OrganizationID)
+		c.Set(auth.ContextUserID, member.UserID)
+	}
 
 	c.JSON(http.StatusOK, gen.MemberResponse{
 		Code:    gen.ErrorCodeOk,
@@ -362,8 +453,8 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 	})
 }
 
-// newInvitationToken returns a URL-safe random token.
-func newInvitationToken() (string, error) {
+// newRandomToken returns a URL-safe random token.
+func newRandomToken() (string, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return "", err
@@ -371,8 +462,9 @@ func newInvitationToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-// hashInvitationToken mirrors the storage rule: only the SHA-256 hash is kept.
-func hashInvitationToken(token string) string {
+// hashToken mirrors the storage rule: only the SHA-256 hash is kept, for
+// invitations and verification tokens alike.
+func hashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
 }

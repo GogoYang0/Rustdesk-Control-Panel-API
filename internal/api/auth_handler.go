@@ -24,12 +24,12 @@ func (a *AdminAPI) Login(c *gin.Context) {
 	ip := c.ClientIP()
 
 	// Track 1: per-IP token bucket.
-	if !a.guard.allowIP(ip) {
+	if !a.guard.AllowIP(ip) {
 		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "too many login attempts")
 		return
 	}
 	// Track 2: account+IP failure window.
-	if a.guard.locked(email, ip) {
+	if a.guard.Locked(email, ip) {
 		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "account temporarily locked")
 		return
 	}
@@ -53,12 +53,20 @@ func (a *AdminAPI) Login(c *gin.Context) {
 		valid = ok
 	}
 	if !valid {
-		a.guard.recordFailure(email, ip)
+		a.guard.RecordFailure(email, ip)
 		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "invalid credentials")
 		return
 	}
 
-	a.guard.reset(email, ip)
+	a.guard.Reset(email, ip)
+
+	// Issue #17: correct credentials are not enough — the mailbox must be
+	// confirmed before any login path issues tokens.
+	if err := auth.RequireVerifiedUser(user); err != nil {
+		abortError(c, http.StatusForbidden, gen.ErrorCodeEmailNotVerified, "email is not verified")
+		return
+	}
+
 	access, refresh, err := a.deps.Auth.IssueTokens(user.ID)
 	if err != nil {
 		a.deps.Logger.Error("issue tokens failed")

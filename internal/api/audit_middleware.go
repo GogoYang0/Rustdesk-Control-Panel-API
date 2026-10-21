@@ -6,7 +6,13 @@ import (
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/compatapi"
 )
+
+// contextAuditRecorded marks that the handler already wrote the audit entry
+// inside its own entity transaction (issue #19); the middleware then skips
+// its fallback record so the request produces exactly one audit row.
+const contextAuditRecorded = "audit.domainRecorded"
 
 // newAuditMiddleware records every request after the handler ran. The entry
 // carries who did what and the resulting status; request bodies are never
@@ -15,6 +21,12 @@ func newAuditMiddleware(auditor audit.Auditor, logger *zap.Logger) gin.HandlerFu
 	return func(c *gin.Context) {
 		c.Next()
 
+		// Domain handlers that record atomically (issue #19) mark the
+		// context; their audit row committed with the entity change.
+		if _, recorded := c.Get(contextAuditRecorded); recorded {
+			return
+		}
+
 		entry := audit.Entry{
 			Action:     c.Request.Method + " " + c.FullPath(),
 			TargetType: "http",
@@ -22,9 +34,20 @@ func newAuditMiddleware(auditor audit.Auditor, logger *zap.Logger) gin.HandlerFu
 		}
 		if uid, ok := auth.UserID(c); ok {
 			entry.ActorUserID = uid
+		} else if uid, ok := c.Get(compatapi.ContextUserID); ok {
+			// Compat requests carry their own namespace: without reading it the
+			// entry reaches the auditor as tenant-less and is dropped, leaving
+			// client address-book changes unaudited.
+			if uid, ok := uid.(uint); ok {
+				entry.ActorUserID = uid
+			}
 		}
 		if orgID, ok := c.Get(contextOrgID); ok {
 			if v, ok := orgID.(uint); ok {
+				entry.OrganizationID = v
+			}
+		} else if v, ok := c.Get(compatapi.ContextOrgID); ok {
+			if v, ok := v.(uint); ok {
 				entry.OrganizationID = v
 			}
 		}
