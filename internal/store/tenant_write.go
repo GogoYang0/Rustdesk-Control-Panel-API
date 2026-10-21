@@ -93,6 +93,10 @@ func currentTransferRecorder() TransferRecorder {
 // rejected, because an audit entry pointing at the wrong source is worse than a
 // missing one.
 //
+// The statements inside fn must be updates, not upserts: ON CONFLICT matching
+// cannot be tenant-scoped (MySQL matches any unique key), so an upsert could
+// reach another organization's row even with a correct audit.
+//
 // A transfer with no registered recorder, no organization or no reason fails
 // before fn runs. Nothing in the request path should need this: a row belongs to
 // the organization that created it, and "moving" it is a data repair, not a
@@ -138,18 +142,45 @@ func AllowTenantTransfer(db *gorm.DB, aud TransferAudit, fn func(tx *gorm.DB) er
 // unscoped sweep is not a transfer, and the permission must not be usable that
 // way.
 func isTenantTransfer(stmt *gorm.Statement) bool {
+	_, ok := authorisedTransferOrg(stmt)
+	return ok
+}
+
+// authorisedTransferOrg returns the organization a transfer authorises, when the
+// statement is covered by it.
+func authorisedTransferOrg(stmt *gorm.Statement) (uint, bool) {
 	if stmt == nil || stmt.Context == nil {
-		return false
+		return 0, false
 	}
 	transferOrg, ok := stmt.Context.Value(tenantTransferKey).(uint)
 	if !ok || transferOrg == 0 {
-		return false
+		return 0, false
 	}
 	if isCrossTenant(stmt) {
-		return false
+		return 0, false
 	}
 	scopedOrg, ok := stmt.Context.Value(orgContextKey).(uint)
-	return ok && scopedOrg == transferOrg
+	if !ok || scopedOrg != transferOrg {
+		return 0, false
+	}
+	return transferOrg, true
+}
+
+// upsertWriteError explains why an upsert may not assign the tenant column.
+//
+// This is refused even inside an authorised transfer: conflict matching happens
+// before any WHERE exists, so the row the INSERT collides with is decided by
+// unique keys alone. A globally unique key (a ticket digest, a primary key) can
+// therefore land on another organization's row, and MySQL cannot narrow it —
+// ON DUPLICATE KEY UPDATE fires on any unique key, ignoring the conflict target
+// GORM emits. The portable rule is to use UPDATE, where the tenant condition
+// exists, and that is what the message tells the caller.
+func upsertWriteError(stmt *gorm.Statement, table string) error {
+	const hint = "conflict matching ignores the tenant condition, and MySQL matches any unique key, so the conflict target cannot make this safe; use an UPDATE inside ScopedByOrg"
+	if _, ok := authorisedTransferOrg(stmt); ok {
+		return fmt.Errorf("%w (table %s, column %s in upsert; a tenant transfer must be an UPDATE: %s)", ErrTenantColumnWrite, table, tenantColumn, hint)
+	}
+	return fmt.Errorf("%w (table %s, column %s in upsert: %s)", ErrTenantColumnWrite, table, tenantColumn, hint)
 }
 
 // tenantWriteError explains a rejected write. The mismatch case is worth naming
@@ -196,6 +227,10 @@ func guardTenantColumnWrite(tx *gorm.DB) {
 // A batch Save of a slice compiles to exactly that: GORM turns it into an upsert
 // through the create chain, so the update guard never sees it and a "save these
 // rows" call could move them between tenants.
+//
+// It rejects even inside an authorised tenant transfer. A transfer is a repair
+// of existing rows, and an upsert is not a safe spelling for it: the conflict is
+// resolved by unique keys before any tenant condition applies.
 func guardUpsertTenantColumn(tx *gorm.DB) {
 	if tx.Statement == nil {
 		return
@@ -204,9 +239,7 @@ func guardUpsertTenantColumn(tx *gorm.DB) {
 	if !resolved || !tableIsScoped(table) {
 		return
 	}
-	if isTenantTransfer(tx.Statement) {
-		return
-	}
+	// No transfer exemption here, deliberately: see upsertWriteError.
 	conflict, ok := tx.Statement.Clauses["ON CONFLICT"]
 	if !ok {
 		return
@@ -218,11 +251,11 @@ func guardUpsertTenantColumn(tx *gorm.DB) {
 	// UpdateAll is the shape Save produces: GORM expands it to every column while
 	// building the SQL, so the assignment list is still empty here.
 	if onConflict.UpdateAll {
-		_ = tx.AddError(tenantWriteError(tx.Statement, table, "column "+tenantColumn+" in upsert"))
+		_ = tx.AddError(upsertWriteError(tx.Statement, table))
 		return
 	}
 	if _, found := setClauseTenantColumn(onConflict.DoUpdates); found {
-		_ = tx.AddError(tenantWriteError(tx.Statement, table, "column "+tenantColumn+" in upsert"))
+		_ = tx.AddError(upsertWriteError(tx.Statement, table))
 		return
 	}
 	// Columns is the conflict TARGET (the key that decides whether a row already

@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
@@ -346,4 +347,72 @@ func TestAllowTenantTransfer_RejectsUnscopedWrite(t *testing.T) {
 		})
 	require.ErrorIs(t, err, store.ErrTenantColumnWrite,
 		"a transfer must be scoped to its source organization")
+}
+
+// ON CONFLICT matching does not consult the tenant condition: the WHERE that
+// scopes an update simply does not exist for conflict resolution. So a transfer
+// must never be an upsert — a globally unique opponent key (a ticket digest, an
+// id) can match another organization's row, and MySQL's ON DUPLICATE KEY UPDATE
+// fires on any unique key at all, making even a tenant-inclusive conflict target
+// unenforceable.
+func TestAllowTenantTransfer_RejectsUpsertTenantColumn(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	orgA := model.Organization{Name: "transfer-upsert-a"}
+	orgB := model.Organization{Name: "transfer-upsert-b"}
+	require.NoError(t, db.Create(&orgA).Error)
+	require.NoError(t, db.Create(&orgB).Error)
+
+	victim := model.Membership{OrganizationID: orgB.ID, UserID: 23, Role: model.RoleMember}
+	require.NoError(t, db.Create(&victim).Error)
+
+	store.RegisterTransferRecorder(func(*gorm.DB, store.TransferAudit) error { return nil })
+	t.Cleanup(func() { store.RegisterTransferRecorder(nil) })
+
+	err := store.AllowTenantTransfer(db,
+		store.TransferAudit{OrganizationID: orgA.ID, Reason: "test"},
+		func(tx *gorm.DB) error {
+			// The id collides with org B's row, so the DO UPDATE lands on it.
+			row := model.Membership{ID: victim.ID, OrganizationID: orgA.ID, UserID: 23, Role: model.RoleMember}
+			return store.ScopedByOrg(tx, orgA.ID).
+				Clauses(clause.OnConflict{
+					Columns:   []clause.Column{{Name: "id"}},
+					DoUpdates: clause.AssignmentColumns([]string{"organization_id"}),
+				}).
+				Create(&row).Error
+		})
+	require.ErrorIs(t, err, store.ErrTenantColumnWrite,
+		"a transfer must not be expressed as an upsert")
+
+	var reloaded model.Membership
+	require.NoError(t, store.WithoutTenantScope(db).Where("id = ?", victim.ID).First(&reloaded).Error)
+	require.Equal(t, orgB.ID, reloaded.OrganizationID, "the other organization's row must not move")
+}
+
+// A batch Save inside a transfer compiles to the UpdateAll form of the same
+// upsert, so it has the same problem and the same answer.
+func TestAllowTenantTransfer_RejectsSliceSaveTenantColumn(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	orgA := model.Organization{Name: "transfer-save-a"}
+	orgB := model.Organization{Name: "transfer-save-b"}
+	require.NoError(t, db.Create(&orgA).Error)
+	require.NoError(t, db.Create(&orgB).Error)
+
+	victim := model.Membership{OrganizationID: orgB.ID, UserID: 24, Role: model.RoleMember}
+	require.NoError(t, db.Create(&victim).Error)
+
+	store.RegisterTransferRecorder(func(*gorm.DB, store.TransferAudit) error { return nil })
+	t.Cleanup(func() { store.RegisterTransferRecorder(nil) })
+
+	err := store.AllowTenantTransfer(db,
+		store.TransferAudit{OrganizationID: orgA.ID, Reason: "test"},
+		func(tx *gorm.DB) error {
+			rows := []model.Membership{{ID: victim.ID, OrganizationID: orgA.ID, UserID: 24, Role: model.RoleMember}}
+			return store.ScopedByOrg(tx, orgA.ID).Save(&rows).Error
+		})
+	require.ErrorIs(t, err, store.ErrTenantColumnWrite,
+		"a batch save is an upsert and cannot carry a transfer")
 }
