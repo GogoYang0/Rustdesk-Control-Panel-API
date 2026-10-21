@@ -49,6 +49,69 @@ func (e AddressBookCreateRequestScope) Valid() bool {
 	}
 }
 
+// Defines values for AlertSeverity.
+const (
+	AlertSeverityCritical AlertSeverity = "critical"
+	AlertSeverityInfo     AlertSeverity = "info"
+	AlertSeverityWarning  AlertSeverity = "warning"
+)
+
+// Valid indicates whether the value is a known member of the AlertSeverity enum.
+func (e AlertSeverity) Valid() bool {
+	switch e {
+	case AlertSeverityCritical:
+		return true
+	case AlertSeverityInfo:
+		return true
+	case AlertSeverityWarning:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ApprovalDecisionRequestDecision.
+const (
+	Approve ApprovalDecisionRequestDecision = "approve"
+	Deny    ApprovalDecisionRequestDecision = "deny"
+)
+
+// Valid indicates whether the value is a known member of the ApprovalDecisionRequestDecision enum.
+func (e ApprovalDecisionRequestDecision) Valid() bool {
+	switch e {
+	case Approve:
+		return true
+	case Deny:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ApprovalStatus.
+const (
+	ApprovalStatusApproved ApprovalStatus = "approved"
+	ApprovalStatusDenied   ApprovalStatus = "denied"
+	ApprovalStatusExpired  ApprovalStatus = "expired"
+	ApprovalStatusPending  ApprovalStatus = "pending"
+)
+
+// Valid indicates whether the value is a known member of the ApprovalStatus enum.
+func (e ApprovalStatus) Valid() bool {
+	switch e {
+	case ApprovalStatusApproved:
+		return true
+	case ApprovalStatusDenied:
+		return true
+	case ApprovalStatusExpired:
+		return true
+	case ApprovalStatusPending:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for DeviceStatus.
 const (
 	Offline DeviceStatus = "offline"
@@ -69,6 +132,7 @@ func (e DeviceStatus) Valid() bool {
 
 // Defines values for ErrorCode.
 const (
+	ErrorCodeApprovalRequired ErrorCode = "approval_required"
 	ErrorCodeConflict         ErrorCode = "conflict"
 	ErrorCodeEmailNotVerified ErrorCode = "email_not_verified"
 	ErrorCodeForbidden        ErrorCode = "forbidden"
@@ -83,6 +147,8 @@ const (
 // Valid indicates whether the value is a known member of the ErrorCode enum.
 func (e ErrorCode) Valid() bool {
 	switch e {
+	case ErrorCodeApprovalRequired:
+		return true
 	case ErrorCodeConflict:
 		return true
 	case ErrorCodeEmailNotVerified:
@@ -226,6 +292,45 @@ func (e MemberRole) Valid() bool {
 	}
 }
 
+// Defines values for SessionOrigin.
+const (
+	Native SessionOrigin = "native"
+	Panel  SessionOrigin = "panel"
+)
+
+// Valid indicates whether the value is a known member of the SessionOrigin enum.
+func (e SessionOrigin) Valid() bool {
+	switch e {
+	case Native:
+		return true
+	case Panel:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for SessionStatus.
+const (
+	SessionStatusClosed SessionStatus = "closed"
+	SessionStatusDenied SessionStatus = "denied"
+	SessionStatusOpen   SessionStatus = "open"
+)
+
+// Valid indicates whether the value is a known member of the SessionStatus enum.
+func (e SessionStatus) Valid() bool {
+	switch e {
+	case SessionStatusClosed:
+		return true
+	case SessionStatusDenied:
+		return true
+	case SessionStatusOpen:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ListLogEventsParamsLevel.
 const (
 	ListLogEventsParamsLevelError ListLogEventsParamsLevel = "error"
@@ -303,6 +408,7 @@ type AddressBookListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode     `json:"code"`
 	Data    []AddressBook `json:"data"`
 	Message string        `json:"message"`
@@ -337,6 +443,7 @@ type AddressBookResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode   `json:"code"`
 	Data    AddressBook `json:"data"`
 	Message string      `json:"message"`
@@ -358,6 +465,143 @@ type AddressBookTagsReplaceRequest struct {
 type AddressBookUpdateRequest struct {
 	Name string `json:"name"`
 }
+
+// Alert defines model for Alert.
+type Alert struct {
+	CreatedAt time.Time               `json:"created_at"`
+	Detail    *map[string]interface{} `json:"detail,omitempty"`
+	DeviceId  *int64                  `json:"device_id,omitempty"`
+	Id        int64                   `json:"id"`
+
+	// Kind 告警类型（自由字符串，已知取值）：
+	// - `concurrency_exceeded`：并发会话超限
+	// - `duration_exceeded`：会话时长超限
+	// - `outside_window`：时段外发起
+	// - `approval_required`：未审批的签发尝试
+	Kind           string `json:"kind"`
+	OrganizationId int64  `json:"organization_id"`
+	SessionId      *int64 `json:"session_id,omitempty"`
+
+	// Severity 告警级别
+	Severity AlertSeverity `json:"severity"`
+}
+
+// AlertListResponse defines model for AlertListResponse.
+type AlertListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code ErrorCode `json:"code"`
+	Data struct {
+		Items    []Alert `json:"items"`
+		Page     int     `json:"page"`
+		PageSize int     `json:"page_size"`
+		Total    int64   `json:"total"`
+	} `json:"data"`
+	Message string `json:"message"`
+}
+
+// AlertSeverity 告警级别
+type AlertSeverity string
+
+// Approval defines model for Approval.
+type Approval struct {
+	// ActorUserId 发起审批的成员
+	ActorUserId *int64     `json:"actor_user_id,omitempty"`
+	DecidedAt   *time.Time `json:"decided_at,omitempty"`
+
+	// DecidedBy 决策人（owner/admin）
+	DecidedBy *int64 `json:"decided_by,omitempty"`
+	DeviceId  int64  `json:"device_id"`
+
+	// ExpiresAt 待审批请求的有效期；超期由后台任务置为 expired
+	ExpiresAt      time.Time `json:"expires_at"`
+	Id             int64     `json:"id"`
+	OrganizationId int64     `json:"organization_id"`
+
+	// Reason 申请理由或拒绝理由
+	Reason      *string   `json:"reason,omitempty"`
+	RequestedAt time.Time `json:"requested_at"`
+
+	// Status - pending：待审批
+	// - approved：已批准（可被一次票据签发消费）
+	// - denied：已拒绝
+	// - expired：超期未决策（后台任务标记）
+	Status ApprovalStatus `json:"status"`
+
+	// TicketId 批准后被消费签发的票据（一次性绑定）
+	TicketId *int64 `json:"ticket_id,omitempty"`
+}
+
+// ApprovalCreateRequest defines model for ApprovalCreateRequest.
+type ApprovalCreateRequest struct {
+	DeviceId int64   `json:"device_id"`
+	Reason   *string `json:"reason,omitempty"`
+}
+
+// ApprovalDecisionRequest defines model for ApprovalDecisionRequest.
+type ApprovalDecisionRequest struct {
+	Decision ApprovalDecisionRequestDecision `json:"decision"`
+	Reason   *string                         `json:"reason,omitempty"`
+}
+
+// ApprovalDecisionRequestDecision defines model for ApprovalDecisionRequest.Decision.
+type ApprovalDecisionRequestDecision string
+
+// ApprovalListResponse defines model for ApprovalListResponse.
+type ApprovalListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code ErrorCode `json:"code"`
+	Data struct {
+		Items    []Approval `json:"items"`
+		Page     int        `json:"page"`
+		PageSize int        `json:"page_size"`
+		Total    int64      `json:"total"`
+	} `json:"data"`
+	Message string `json:"message"`
+}
+
+// ApprovalResponse defines model for ApprovalResponse.
+type ApprovalResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode `json:"code"`
+	Data    Approval  `json:"data"`
+	Message string    `json:"message"`
+}
+
+// ApprovalStatus - pending：待审批
+// - approved：已批准（可被一次票据签发消费）
+// - denied：已拒绝
+// - expired：超期未决策（后台任务标记）
+type ApprovalStatus string
 
 // Device defines model for Device.
 type Device struct {
@@ -389,6 +633,7 @@ type DeviceResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    Device    `json:"data"`
 	Message string    `json:"message"`
@@ -409,6 +654,7 @@ type EmailVerificationRequest struct {
 // - rate_limited：触发限流
 // - internal：服务端错误
 // - email_not_verified：邮箱未验证（登录被拒）
+// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 type ErrorCode string
 
 // ErrorResponse defines model for ErrorResponse.
@@ -423,6 +669,7 @@ type ErrorResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode               `json:"code"`
 	Data    *map[string]interface{} `json:"data,omitempty"`
 	Message string                  `json:"message"`
@@ -466,9 +713,36 @@ type InvitationResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode  `json:"code"`
 	Data    Invitation `json:"data"`
 	Message string     `json:"message"`
+}
+
+// IssuedTicket defines model for IssuedTicket.
+type IssuedTicket struct {
+	Ticket Ticket `json:"ticket"`
+
+	// Token 明文票据令牌，**仅此响应返回一次**（服务端只存摘要）
+	Token string `json:"token"`
+}
+
+// IssuedTicketResponse defines model for IssuedTicketResponse.
+type IssuedTicketResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode    `json:"code"`
+	Data    IssuedTicket `json:"data"`
+	Message string       `json:"message"`
 }
 
 // LogEvent defines model for LogEvent.
@@ -505,6 +779,7 @@ type LogEventListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode  `json:"code"`
 	Data    []LogEvent `json:"data"`
 	Message string     `json:"message"`
@@ -540,6 +815,7 @@ type MemberListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    []Member  `json:"data"`
 	Message string    `json:"message"`
@@ -557,6 +833,7 @@ type MemberResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    Member    `json:"data"`
 	Message string    `json:"message"`
@@ -574,6 +851,7 @@ type OkResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Message string    `json:"message"`
 }
@@ -602,6 +880,7 @@ type OrgListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    []Org     `json:"data"`
 	Message string    `json:"message"`
@@ -619,8 +898,86 @@ type OrgResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    Org       `json:"data"`
+	Message string    `json:"message"`
+}
+
+// Policy defines model for Policy.
+type Policy struct {
+	AllowedEndMinute   *int      `json:"allowed_end_minute,omitempty"`
+	AllowedStartMinute *int      `json:"allowed_start_minute,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+	Enabled            bool      `json:"enabled"`
+	Id                 int64     `json:"id"`
+
+	// MaxConcurrentSessions null 表示不限
+	MaxConcurrentSessions *int `json:"max_concurrent_sessions,omitempty"`
+
+	// MaxSessionMinutes null 表示不限
+	MaxSessionMinutes *int      `json:"max_session_minutes,omitempty"`
+	Name              string    `json:"name"`
+	OrganizationId    int64     `json:"organization_id"`
+	RequireApproval   bool      `json:"require_approval"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+// PolicyListResponse defines model for PolicyListResponse.
+type PolicyListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode `json:"code"`
+	Data    []Policy  `json:"data"`
+	Message string    `json:"message"`
+}
+
+// PolicyRequest defines model for PolicyRequest.
+type PolicyRequest struct {
+	// AllowedEndMinute 允许时段终点（UTC 当日分钟数，不含；必须与起点同时提供或同时为 null）
+	AllowedEndMinute *int `json:"allowed_end_minute,omitempty"`
+
+	// AllowedStartMinute 允许时段起点（UTC 当日分钟数，0 = 00:00）；与 `allowed_end_minute` 同为
+	// null 表示全天允许。起点大于终点表示跨零点窗口（如 1320–360 即
+	// 22:00–06:00）
+	AllowedStartMinute *int  `json:"allowed_start_minute,omitempty"`
+	Enabled            *bool `json:"enabled,omitempty"`
+
+	// MaxConcurrentSessions 同一组织并发会话上限；null 表示不限
+	MaxConcurrentSessions *int `json:"max_concurrent_sessions,omitempty"`
+
+	// MaxSessionMinutes 单会话时长上限（分钟）；null 表示不限
+	MaxSessionMinutes *int   `json:"max_session_minutes,omitempty"`
+	Name              string `json:"name"`
+
+	// RequireApproval 为 true 时，票据签发需先有已批准的审批请求
+	RequireApproval *bool `json:"require_approval,omitempty"`
+}
+
+// PolicyResponse defines model for PolicyResponse.
+type PolicyResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode `json:"code"`
+	Data    Policy    `json:"data"`
 	Message string    `json:"message"`
 }
 
@@ -632,6 +989,143 @@ type RefreshRequest struct {
 // ResendVerificationRequest defines model for ResendVerificationRequest.
 type ResendVerificationRequest struct {
 	Email openapi_types.Email `json:"email"`
+}
+
+// Session defines model for Session.
+type Session struct {
+	// ActorUserId 发起人；native 直连无法识别发起人时为 null
+	ActorUserId *int64 `json:"actor_user_id,omitempty"`
+
+	// DeviceId 组织内设备行 id
+	DeviceId int64 `json:"device_id"`
+
+	// EndReason 结束原因（`closed`/`timeout`/`denied`/`policy_exceeded` 等，自由字符串）
+	EndReason *string    `json:"end_reason,omitempty"`
+	EndedAt   *time.Time `json:"ended_at,omitempty"`
+	Id        int64      `json:"id"`
+
+	// LastActivityAt 最近一次关联事件时间（native 会话由日志事件驱动）
+	LastActivityAt *time.Time `json:"last_activity_at,omitempty"`
+	OrganizationId int64      `json:"organization_id"`
+
+	// Origin 会话来源：
+	// - panel：面板签发（网页客户端 / 地址簿下发的连接票据），策略强制、可事前阻断
+	// - native：RustDesk 原生客户端直连，由 hbbs/hbbr 日志采集推断，只记录不阻断
+	Origin SessionOrigin `json:"origin"`
+
+	// PolicyId 触发生效的策略（多策略时取约束最严者）；无策略为 null
+	PolicyId *int64 `json:"policy_id,omitempty"`
+
+	// Revision 会话记录修订号，每次状态变更递增
+	Revision *int64 `json:"revision,omitempty"`
+
+	// RustdeskId 设备对外 ID（RustDesk id），便于展示
+	RustdeskId *string   `json:"rustdesk_id,omitempty"`
+	StartedAt  time.Time `json:"started_at"`
+
+	// Status - open：进行中
+	// - closed：已结束
+	// - denied：签发阶段被策略拒绝（仅 panel 来源，用于留痕）
+	Status SessionStatus `json:"status"`
+
+	// TicketId 签发该会话的票据；native 会话为 null
+	TicketId *int64 `json:"ticket_id,omitempty"`
+}
+
+// SessionDetail defines model for SessionDetail.
+type SessionDetail struct {
+	// Events 事件序列（按时间正序，最多最近 200 条）
+	Events  []SessionEvent `json:"events"`
+	Session Session        `json:"session"`
+}
+
+// SessionDetailResponse defines model for SessionDetailResponse.
+type SessionDetailResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode     `json:"code"`
+	Data    SessionDetail `json:"data"`
+	Message string        `json:"message"`
+}
+
+// SessionEvent defines model for SessionEvent.
+type SessionEvent struct {
+	At     time.Time               `json:"at"`
+	Detail *map[string]interface{} `json:"detail,omitempty"`
+	Id     int64                   `json:"id"`
+
+	// Kind 事件类型（`started`/`approved`/`denied`/`ticket_issued`/`closed` 等，自由字符串）
+	Kind string `json:"kind"`
+}
+
+// SessionListResponse defines model for SessionListResponse.
+type SessionListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code ErrorCode `json:"code"`
+	Data struct {
+		Items    []Session `json:"items"`
+		Page     int       `json:"page"`
+		PageSize int       `json:"page_size"`
+		Total    int64     `json:"total"`
+	} `json:"data"`
+	Message string `json:"message"`
+}
+
+// SessionOrigin 会话来源：
+// - panel：面板签发（网页客户端 / 地址簿下发的连接票据），策略强制、可事前阻断
+// - native：RustDesk 原生客户端直连，由 hbbs/hbbr 日志采集推断，只记录不阻断
+type SessionOrigin string
+
+// SessionStatus - open：进行中
+// - closed：已结束
+// - denied：签发阶段被策略拒绝（仅 panel 来源，用于留痕）
+type SessionStatus string
+
+// Ticket defines model for Ticket.
+type Ticket struct {
+	ActorUserId *int64 `json:"actor_user_id,omitempty"`
+
+	// ApprovalId 绑定的审批请求（审批放行时）
+	ApprovalId     *int64    `json:"approval_id,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	DeviceId       int64     `json:"device_id"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	Id             int64     `json:"id"`
+	OrganizationId int64     `json:"organization_id"`
+
+	// PolicySnapshot 签发时生效的策略快照（审计与排障用）
+	PolicySnapshot *map[string]interface{} `json:"policy_snapshot,omitempty"`
+	RevokedAt      *time.Time              `json:"revoked_at,omitempty"`
+
+	// UsedAt 首次被兑换的时间；一次性，非 null 即不可再用
+	UsedAt *time.Time `json:"used_at,omitempty"`
+}
+
+// TicketCreateRequest defines model for TicketCreateRequest.
+type TicketCreateRequest struct {
+	DeviceId int64 `json:"device_id"`
+
+	// TtlSeconds 票据有效期（秒），默认 300
+	TtlSeconds *int `json:"ttl_seconds,omitempty"`
 }
 
 // TokenPair defines model for TokenPair.
@@ -655,6 +1149,7 @@ type TokenResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    TokenPair `json:"data"`
 	Message string    `json:"message"`
@@ -681,6 +1176,25 @@ type TooManyRequests = ErrorResponse
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = ErrorResponse
 
+// ListAlertsParams defines parameters for ListAlerts.
+type ListAlertsParams struct {
+	Severity *AlertSeverity `form:"severity,omitempty" json:"severity,omitempty"`
+
+	// Kind 告警类型（自由字符串，见 Alert.kind 的已知取值）
+	Kind     *string    `form:"kind,omitempty" json:"kind,omitempty"`
+	Since    *time.Time `form:"since,omitempty" json:"since,omitempty"`
+	Page     *int       `form:"page,omitempty" json:"page,omitempty"`
+	PageSize *int       `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
+// ListApprovalsParams defines parameters for ListApprovals.
+type ListApprovalsParams struct {
+	Status   *ApprovalStatus `form:"status,omitempty" json:"status,omitempty"`
+	DeviceId *int64          `form:"deviceId,omitempty" json:"deviceId,omitempty"`
+	Page     *int            `form:"page,omitempty" json:"page,omitempty"`
+	PageSize *int            `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
 // ListLogEventsParams defines parameters for ListLogEvents.
 type ListLogEventsParams struct {
 	DeviceId *int64                    `form:"deviceId,omitempty" json:"deviceId,omitempty"`
@@ -691,6 +1205,21 @@ type ListLogEventsParams struct {
 
 // ListLogEventsParamsLevel defines parameters for ListLogEvents.
 type ListLogEventsParamsLevel string
+
+// ListSessionsParams defines parameters for ListSessions.
+type ListSessionsParams struct {
+	Origin   *SessionOrigin `form:"origin,omitempty" json:"origin,omitempty"`
+	Status   *SessionStatus `form:"status,omitempty" json:"status,omitempty"`
+	DeviceId *int64         `form:"deviceId,omitempty" json:"deviceId,omitempty"`
+
+	// Since 起始时间（含），按 `started_at` 过滤
+	Since *time.Time `form:"since,omitempty" json:"since,omitempty"`
+
+	// Until 结束时间（含），按 `started_at` 过滤
+	Until    *time.Time `form:"until,omitempty" json:"until,omitempty"`
+	Page     *int       `form:"page,omitempty" json:"page,omitempty"`
+	PageSize *int       `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
 
 // GetHealthz200JSONResponseBodyStatus defines parameters for GetHealthz.
 type GetHealthz200JSONResponseBodyStatus string
@@ -725,11 +1254,26 @@ type ReplaceAddressBookPeersJSONRequestBody = AddressBookPeersReplaceRequest
 // ReplaceAddressBookTagsJSONRequestBody defines body for ReplaceAddressBookTags for application/json ContentType.
 type ReplaceAddressBookTagsJSONRequestBody = AddressBookTagsReplaceRequest
 
+// CreateApprovalJSONRequestBody defines body for CreateApproval for application/json ContentType.
+type CreateApprovalJSONRequestBody = ApprovalCreateRequest
+
+// DecideApprovalJSONRequestBody defines body for DecideApproval for application/json ContentType.
+type DecideApprovalJSONRequestBody = ApprovalDecisionRequest
+
 // CreateDeviceJSONRequestBody defines body for CreateDevice for application/json ContentType.
 type CreateDeviceJSONRequestBody = DeviceCreateRequest
 
 // CreateInvitationJSONRequestBody defines body for CreateInvitation for application/json ContentType.
 type CreateInvitationJSONRequestBody = InvitationCreateRequest
+
+// CreatePolicyJSONRequestBody defines body for CreatePolicy for application/json ContentType.
+type CreatePolicyJSONRequestBody = PolicyRequest
+
+// UpdatePolicyJSONRequestBody defines body for UpdatePolicy for application/json ContentType.
+type UpdatePolicyJSONRequestBody = PolicyRequest
+
+// IssueTicketJSONRequestBody defines body for IssueTicket for application/json ContentType.
+type IssueTicketJSONRequestBody = TicketCreateRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -775,6 +1319,18 @@ type ServerInterface interface {
 	// ReplaceAddressBookTags 全量替换地址簿标签
 	// (PUT /api/v1/orgs/{orgId}/address-books/{bookId}/tags)
 	ReplaceAddressBookTags(c *gin.Context, orgId int64, bookId int64)
+	// ListAlerts 策略违规告警列表
+	// (GET /api/v1/orgs/{orgId}/alerts)
+	ListAlerts(c *gin.Context, orgId int64, params ListAlertsParams)
+	// ListApprovals 审批请求列表
+	// (GET /api/v1/orgs/{orgId}/approvals)
+	ListApprovals(c *gin.Context, orgId int64, params ListApprovalsParams)
+	// CreateApproval 提交审批请求
+	// (POST /api/v1/orgs/{orgId}/approvals)
+	CreateApproval(c *gin.Context, orgId int64)
+	// DecideApproval 审批决定（approve/deny）
+	// (POST /api/v1/orgs/{orgId}/approvals/{approvalId}/decision)
+	DecideApproval(c *gin.Context, orgId int64, approvalId int64)
 	// CreateDevice 注册设备
 	// (POST /api/v1/orgs/{orgId}/devices)
 	CreateDevice(c *gin.Context, orgId int64)
@@ -790,6 +1346,27 @@ type ServerInterface interface {
 	// ListMembers 列出组织成员
 	// (GET /api/v1/orgs/{orgId}/members)
 	ListMembers(c *gin.Context, orgId int64)
+	// ListPolicies 连接策略列表
+	// (GET /api/v1/orgs/{orgId}/policies)
+	ListPolicies(c *gin.Context, orgId int64)
+	// CreatePolicy 创建连接策略
+	// (POST /api/v1/orgs/{orgId}/policies)
+	CreatePolicy(c *gin.Context, orgId int64)
+	// DeletePolicy 删除连接策略
+	// (DELETE /api/v1/orgs/{orgId}/policies/{policyId})
+	DeletePolicy(c *gin.Context, orgId int64, policyId int64)
+	// UpdatePolicy 更新连接策略
+	// (PUT /api/v1/orgs/{orgId}/policies/{policyId})
+	UpdatePolicy(c *gin.Context, orgId int64, policyId int64)
+	// ListSessions 会话记录列表
+	// (GET /api/v1/orgs/{orgId}/sessions)
+	ListSessions(c *gin.Context, orgId int64, params ListSessionsParams)
+	// GetSession 会话详情（含事件序列）
+	// (GET /api/v1/orgs/{orgId}/sessions/{sessionId})
+	GetSession(c *gin.Context, orgId int64, sessionId int64)
+	// IssueTicket 签发连接票据
+	// (POST /api/v1/orgs/{orgId}/tickets)
+	IssueTicket(c *gin.Context, orgId int64)
 	// GetHealthz 存活探针
 	// (GET /healthz)
 	GetHealthz(c *gin.Context)
@@ -1115,6 +1692,193 @@ func (siw *ServerInterfaceWrapper) ReplaceAddressBookTags(c *gin.Context) {
 	siw.Handler.ReplaceAddressBookTags(c, orgId, bookId)
 }
 
+// ListAlerts operation middleware
+func (siw *ServerInterfaceWrapper) ListAlerts(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListAlertsParams
+
+	// ------------- Optional query parameter "severity" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "severity", c.Request.URL.Query(), &params.Severity, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter severity: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "kind" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "kind", c.Request.URL.Query(), &params.Kind, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter kind: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "since" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "since", c.Request.URL.Query(), &params.Since, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter since: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "page" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "page", c.Request.URL.Query(), &params.Page, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter page: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "pageSize" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "pageSize", c.Request.URL.Query(), &params.PageSize, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter pageSize: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListAlerts(c, orgId, params)
+}
+
+// ListApprovals operation middleware
+func (siw *ServerInterfaceWrapper) ListApprovals(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListApprovalsParams
+
+	// ------------- Optional query parameter "status" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "status", c.Request.URL.Query(), &params.Status, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter status: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "deviceId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "deviceId", c.Request.URL.Query(), &params.DeviceId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "page" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "page", c.Request.URL.Query(), &params.Page, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter page: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "pageSize" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "pageSize", c.Request.URL.Query(), &params.PageSize, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter pageSize: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListApprovals(c, orgId, params)
+}
+
+// CreateApproval operation middleware
+func (siw *ServerInterfaceWrapper) CreateApproval(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateApproval(c, orgId)
+}
+
+// DecideApproval operation middleware
+func (siw *ServerInterfaceWrapper) DecideApproval(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "approvalId" -------------
+	var approvalId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "approvalId", c.Param("approvalId"), &approvalId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter approvalId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DecideApproval(c, orgId, approvalId)
+}
+
 // CreateDevice operation middleware
 func (siw *ServerInterfaceWrapper) CreateDevice(c *gin.Context) {
 
@@ -1284,6 +2048,267 @@ func (siw *ServerInterfaceWrapper) ListMembers(c *gin.Context) {
 	siw.Handler.ListMembers(c, orgId)
 }
 
+// ListPolicies operation middleware
+func (siw *ServerInterfaceWrapper) ListPolicies(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListPolicies(c, orgId)
+}
+
+// CreatePolicy operation middleware
+func (siw *ServerInterfaceWrapper) CreatePolicy(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreatePolicy(c, orgId)
+}
+
+// DeletePolicy operation middleware
+func (siw *ServerInterfaceWrapper) DeletePolicy(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "policyId" -------------
+	var policyId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "policyId", c.Param("policyId"), &policyId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter policyId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeletePolicy(c, orgId, policyId)
+}
+
+// UpdatePolicy operation middleware
+func (siw *ServerInterfaceWrapper) UpdatePolicy(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "policyId" -------------
+	var policyId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "policyId", c.Param("policyId"), &policyId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter policyId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UpdatePolicy(c, orgId, policyId)
+}
+
+// ListSessions operation middleware
+func (siw *ServerInterfaceWrapper) ListSessions(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListSessionsParams
+
+	// ------------- Optional query parameter "origin" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "origin", c.Request.URL.Query(), &params.Origin, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter origin: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "status" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "status", c.Request.URL.Query(), &params.Status, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter status: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "deviceId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "deviceId", c.Request.URL.Query(), &params.DeviceId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "since" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "since", c.Request.URL.Query(), &params.Since, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter since: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "until" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "until", c.Request.URL.Query(), &params.Until, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter until: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "page" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "page", c.Request.URL.Query(), &params.Page, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter page: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "pageSize" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "pageSize", c.Request.URL.Query(), &params.PageSize, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter pageSize: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListSessions(c, orgId, params)
+}
+
+// GetSession operation middleware
+func (siw *ServerInterfaceWrapper) GetSession(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "sessionId" -------------
+	var sessionId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "sessionId", c.Param("sessionId"), &sessionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter sessionId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetSession(c, orgId, sessionId)
+}
+
+// IssueTicket operation middleware
+func (siw *ServerInterfaceWrapper) IssueTicket(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.IssueTicket(c, orgId)
+}
+
 // GetHealthz operation middleware
 func (siw *ServerInterfaceWrapper) GetHealthz(c *gin.Context) {
 
@@ -1344,4 +2369,15 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/auth/verify-email", wrapper.VerifyEmail)
 	router.POST(options.BaseURL+"/api/v1/auth/resend-verification", wrapper.ResendVerification)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/heartbeat", wrapper.DeviceHeartbeat)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/sessions", wrapper.ListSessions)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/sessions/:sessionId", wrapper.GetSession)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/policies", wrapper.ListPolicies)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/policies", wrapper.CreatePolicy)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/policies/:policyId", wrapper.DeletePolicy)
+	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/policies/:policyId", wrapper.UpdatePolicy)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/approvals", wrapper.ListApprovals)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/approvals", wrapper.CreateApproval)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/approvals/:approvalId/decision", wrapper.DecideApproval)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/tickets", wrapper.IssueTicket)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/alerts", wrapper.ListAlerts)
 }

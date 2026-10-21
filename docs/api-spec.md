@@ -1,6 +1,6 @@
 # 后端 API 规范（Backend API Specification）
 
-> 适用版本：v0.3.0（M2）。本文档是对 `openapi.yaml`（契约 v0.3.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
+> 适用版本：v0.4.0（M3，交付中；已发布版本为 v0.3.0）。本文档是对 `openapi.yaml`（契约 v0.4.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
 > 本文档随版本演进持续更新——契约变更的 PR 必须同步更新 §3/§4。
 > 配套文档：[部署指南](deployment.md) · [运维指南](operations.md)
 
@@ -36,7 +36,7 @@
 { "code": "invalid_request", "message": "human readable", "data": null }
 ```
 
-`code` 取值（契约枚举）：`ok` `invalid_request` `unauthorized` `not_found` `conflict` `forbidden` `email_not_verified` `rate_limited` `internal`。`unauthorized` 映射 **401**（登录/刷新的凭据拒绝路径）；`internal` 映射 **500**（未预期的服务端错误，不向客户端泄露细节）。
+`code` 取值（契约枚举）：`ok` `invalid_request` `unauthorized` `not_found` `conflict` `forbidden` `email_not_verified` `rate_limited` `internal` `approval_required`。`unauthorized` 映射 **401**（登录/刷新的凭据拒绝路径）；`internal` 映射 **500**（未预期的服务端错误，不向客户端泄露细节）。
 
 ### 2.2 租户隔离（管理 API）
 
@@ -57,6 +57,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `forbidden` | 403 | 角色不足、设备已绑定（compat） |
 | `not_found` | 404 | 跨组织访问 / 不存在的资源 |
 | `conflict` | 409 | 管理 API 资源冲突；compat 地址簿的 hash 冲突使用 compat 专用错误 `ab_conflict`（见 §4.3），不走此包络 |
+| `approval_required` | 409 | 票签签发被策略的事前审批要求阻断（`data.approval_id` 指向待审批请求，见 §3.6） |
 | `unauthorized` | 401 | 登录/刷新的凭据拒绝 |
 | `rate_limited` | 429 | 登录锁定（LoginGuard） |
 | `internal` | 500 | 未预期的服务端错误（不向客户端泄露细节） |
@@ -67,6 +68,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 
 - **日志事件**（`GET .../log-events`）：`since` + `limit`（`limit` 取值 1–200，默认 50），筛选参数为 `since`、`deviceId`、`level`（`source` 是返回字段，不是筛选参数）
 - **compat 地址簿 peers**（`POST /api/ab/peers`，仅个人簿）：query 参数 `ab`（地址簿 guid，必填）、`current`（页码，默认 1，最小 1）、`pageSize`（默认 100，最小 1，超过 500 截断为 500）
+- **会话 / 审批 / 告警**（§3.6）：`page`（默认 1，最小 1）+ `pageSize`（默认 50，1–200）；响应形状为 `data.items/page/page_size/total`（这三张表无限增长，需要总数支撑翻页）
 - 设备暂无列表端点（见 §3.3 与 [#43](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/43)）
 
 ---
@@ -125,6 +127,37 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `GET .../log-events` | 采集到的事件（level/kind/source/device/时间过滤 + 分页） |
 
 事件由采集器写入（见运维指南 §4），API 只读。
+
+---
+
+### 3.6 会话治理（会话记录 / 策略 / 审批 / 票据 / 告警）
+
+> 契约 v0.4.0 定稿；实现按 M3 任务推进（票据 T4、策略与会话记录 T5、审批 T6、告警 T7）。
+> **对应实现合并前这些端点返回 501**——契约先行，客户端应把 501 视为「未实现」而不是业务错误。
+
+| 端点 | 说明 |
+|---|---|
+| `GET .../sessions` | 会话记录（按 `started_at` 倒序）：`origin`（panel/native）、`status`（open/closed/denied）、`deviceId`、`since`/`until` 过滤 + 分页 |
+| `GET .../sessions/{sessionId}` | 会话详情 + 事件序列（按时间正序，最多最近 200 条） |
+| `GET .../policies` | 策略列表（单次返回全部，不分页） |
+| `POST .../policies` | 创建策略（`owner`/`admin`；创建即生效） |
+| `PUT .../policies/{policyId}` | **全量**更新（未提供的可选字段表示「不限」；`owner`/`admin`） |
+| `DELETE .../policies/{policyId}` | 删除策略（`owner`/`admin`；已签票据保留签发时的策略快照） |
+| `GET .../approvals` | 审批请求列表（`status`/`deviceId` 过滤 + 分页；`status=pending` 即审批中心待办） |
+| `POST .../approvals` | 提交审批请求（同一 actor + 设备已有 `pending` 时**复用**，返回 200 而非 201） |
+| `POST .../approvals/{approvalId}/decision` | approve/deny（`owner`/`admin`）；只有 `pending` 可决策，否则 409 |
+| `POST .../tickets` | 签发一次性连接票据（`ttl_seconds` 30–900，默认 300）；**必经策略评估** |
+| `GET .../alerts` | 策略违规告警（`severity`/`kind`/`since` 过滤 + 分页） |
+
+语义要点：
+
+- **两类会话来源**：`panel`（网页客户端与地址簿下发的连接票据）策略**强制执行**、可事前阻断；`native`（原生客户端直连）由 hbbs/hbbr 日志采集推断，**只记录不阻断**。这是设计 D10 的落地边界，也是反目标（面板故障不影响已建立远控）的保证。
+- **多策略同时生效**：所有 `enabled` 策略参与评估，各维度取最严——并发/时长取最小值、时段取交集、任一条要求审批即需审批。组织没有策略等于不限（默认兜底）。
+- **审批与票据一次性绑定**：`approve` 只放行**一次**签发；签发票据即消费该审批（回填 `ticket_id`），再次签发需要新的审批。
+- **票据不外泄**：明文 `token` 只在签发响应出现一次，服务端只存摘要；`used_at` 非 null 即不可再用。
+- **`approval_required` 是 409 + 业务码**（不是独立 HTTP 状态）：`data.approval_id` 指向新建或复用的待审批请求，客户端应引导到审批中心，通过后重试签发。
+- **时段语义**：`allowed_start_minute`/`allowed_end_minute` 是 **UTC 当日分钟数**（取值 0–1439），起点 > 终点表示跨零点窗口（如 `1320`→`360` 即 22:00–06:00）；两者必须同时提供或同时为 `null`。
+- **`denied` 会话**：仅出现在 `panel` 来源，表示签发阶段即被策略拒绝，用于留痕；它不是「进行中」的失败态。
 
 ---
 
@@ -197,6 +230,6 @@ compat 地址簿**只服务个人地址簿**（`EnsurePersonalBook`），共享�
 
 ## 6. 版本与变更管理
 
-- 契约版本随 release 演进：v0.1.0（M0）→ v0.2.0（M1）→ v0.3.0（M2）
+- 契约版本随 release 演进：v0.1.0（M0）→ v0.2.0（M1）→ v0.3.0（M2）→ **v0.4.0（M3，会话治理域，纯增补）**
 - **契约变更的 PR 必须同步更新本文档 §3/§4 与 `openapi.yaml`**，并保证 `go generate` 零漂移
 - WEB/APP 从 `openapi.yaml` 生成类型：任何字段/形状变更视为 breaking，需在 PR 描述中标注
