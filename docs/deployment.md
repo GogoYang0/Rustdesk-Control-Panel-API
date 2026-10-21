@@ -135,6 +135,30 @@ server {
         proxy_set_header X-Forwarded-Proto https;
     }
 }
+
+# Two websocket entries per organization (HbbsPort+2 and HbbrPort+1) go
+# through the proxy as well; shown for the first organization (21118/21119),
+# repeat per organization port. The Upgrade/Connection headers are mandatory:
+# nginx does not forward them by default and the handshake fails without them.
+location / {
+        proxy_pass http://127.0.0.1:21118;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+
+location / {
+        proxy_pass http://127.0.0.1:21119;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
 ```
 
 - `web.baseURL`（或 `PANEL_WEB_BASE_URL`）必须是用户浏览器可达的 **https** 地址——邮件里的验证码/邀请链接指向它
