@@ -51,7 +51,7 @@ go build -o panel ./cmd/server
 | `provision.portStart/End` | | `21116–22115` | 每组织占用**连续 5 个**主机端口（`PortBlockSize=5`，见 §7 协议分布）；默认范围最多支持 200 个组织 |
 | `provision.relayHost` | | — | **必须是客户端可达的公网地址**，无回退 |
 | `provision.orgLabel` / `provision.roleLabel` | | `com.rustdesk-panel.org` / `com.rustdesk-panel.role` | 容器标签键 |
-| `provision.image` | | —（无加载器默认，未配置时供应失败） | 必须显式配置为 `rustdesk/rustdesk-server:1.1.11`；固定 tag 保证可复现；**日志采集规则按此镜像的日志格式编写**，换镜像必须重新校准 |
+| `provision.image` | | —（无加载器默认，未配置时供应失败） | 必须显式配置并**使用固定 tag**（运行时仅校验非空）；推荐 `rustdesk/rustdesk-server:1.1.11`——**日志采集规则按此镜像的日志格式编写**，换镜像必须重新校准规则 |
 | `provision.dataDir` | | `./data/servergroups` | 各组织 hbbs/hbbr 的密钥与数据目录（挂载进容器） |
 | `provision.maxOrgsPerUser` / `workers` | | `5` / `2` | 单用户组织上限 / 供应队列并发 |
 | `mail.devMode` | | `true` | `true` 时邮件打印到 stdout（开发）；生产必须 `false` |
