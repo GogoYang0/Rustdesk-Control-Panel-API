@@ -99,8 +99,15 @@ func registerTenantPlugin(db *gorm.DB) error {
 	}{
 		{db.Callback().Query().Before("gorm:query").Register},
 		{db.Callback().Row().Before("gorm:row").Register},
+		// The write guard runs first: rejecting the statement before the
+		// scope injection means nothing downstream can act on a payload that
+		// reassigns the tenant column.
 		{db.Callback().Update().Before("gorm:update").Register},
 		{db.Callback().Delete().Before("gorm:delete").Register},
+	}
+	if err := db.Callback().Update().Before("gorm:update").
+		Register("panel:tenant_write_guard", guardTenantColumnWrite); err != nil {
+		return err
 	}
 	for _, c := range chains {
 		if err := c.register("panel:tenant_scope", inject); err != nil {
