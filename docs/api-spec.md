@@ -10,7 +10,7 @@
 
 | | 管理 API（WEB/APP） | compat 层（RustDesk 原生客户端） |
 |---|---|---|
-| 令牌 | JWT（`/api/v1/auth/login` 签发，15m）+ 刷新令牌（168h，**轮换 + 重放撤销**） | compat access token（`/api/login` 签发，TTL 见 `compat.accessTTL`） |
+| 令牌 | JWT（`/api/v1/auth/login` 签发）+ 刷新令牌（**轮换 + 重放撤销**）；时长默认 `15m`/`168h`，实际值以 `auth.accessTTL`/`auth.refreshTTL` 配置为准 | compat access token（`/api/login` 签发，TTL 默认见 `compat.accessTTL`，以配置为准） |
 | 中间件 | 管理 JWT 中间件，写入 `api.*` 上下文 | compat 会话中间件，写入 `compat.*` 上下文（`compat.userID` / `compat.orgID` / `compat.jti`） |
 | 审计 | 中间件回退记录（领域写用 `TxRecorder` 同事务） | 同一审计中间件回退读取 compat 键归因（v0.3.0 起） |
 | 多组织 | 登录响应仅含 `access_token`、`refresh_token`、`expires_in`，**不含组织列表**；管理请求携带 `orgId` 路径参数 | 账号属多组织时用户名用 `email#orgID` 选择组织，会话固定组织 |
@@ -36,7 +36,7 @@
 { "code": "invalid_request", "message": "human readable", "data": null }
 ```
 
-`code` 取值（契约枚举）：`ok` `invalid_request` `unauthorized` `not_found` `conflict` `forbidden` `email_not_verified` `rate_limited` `internal`。`unauthorized` 映射 **401**（登录/刷新的凭据拒绝路径）。
+`code` 取值（契约枚举）：`ok` `invalid_request` `unauthorized` `not_found` `conflict` `forbidden` `email_not_verified` `rate_limited` `internal`。`unauthorized` 映射 **401**（登录/刷新的凭据拒绝路径）；`internal` 映射 **500**（未预期的服务端错误，不向客户端泄露细节）。
 
 ### 2.2 租户隔离（管理 API）
 
@@ -57,11 +57,17 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `forbidden` | 403 | 角色不足、设备已绑定（compat） |
 | `not_found` | 404 | 跨组织访问 / 不存在的资源 |
 | `conflict` | 409 | 管理 API 资源冲突；compat 地址簿的 hash 冲突使用 compat 专用错误 `ab_conflict`（见 §4.3），不走此包络 |
+| `unauthorized` | 401 | 登录/刷新的凭据拒绝 |
 | `rate_limited` | 429 | 登录锁定（LoginGuard） |
+| `internal` | 500 | 未预期的服务端错误（不向客户端泄露细节） |
 
 ### 2.4 分页
 
-列表端点（设备、日志事件、地址簿 peers）使用 `page`/`pageSize`（契约定义）；日志事件支持按时间与来源过滤。
+分页参数**按端点各自定义**，不要混用：
+
+- **日志事件**（`GET .../log-events`）：`since` + `limit`（`limit` 取值 1–200，默认 50），筛选参数为 `since`、`deviceId`、`level`（`source` 是返回字段，不是筛选参数）
+- **compat 地址簿 peers**（`POST /api/ab/peers`，仅个人簿）：query 参数 `ab`（地址簿 guid，必填）、`current`（页码，默认 1，最小 1）、`pageSize`（默认 100，最小 1，超过 500 截断为 500）
+- 设备暂无列表端点（见 §3.3 与 [#43](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/43)）
 
 ---
 
