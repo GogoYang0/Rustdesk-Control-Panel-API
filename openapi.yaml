@@ -735,7 +735,8 @@ paths:
       operationId: listSessions
       summary: 会话记录列表
       description: |
-        本组织的会话记录，按 `started_at` 倒序，分页返回。组织成员即可读取。
+        本组织的会话记录，按 `started_at` 倒序（同秒按 `id` 倒序，保证翻页稳定），
+        分页返回。组织成员即可读取。
 
         `origin` 区分两类来源：`panel`（面板签发：网页客户端与地址簿下发的连接
         票据，策略强制且可事前阻断）与 `native`（原生客户端直连，由 hbbs/hbbr
@@ -860,7 +861,8 @@ paths:
         本组织的连接策略（单次返回全部，不分页）。组织成员即可读取。
 
         评估票据签发时**所有 `enabled` 策略同时生效**，各维度取最严约束
-        （并发/时长的最小值、时段的交集、任一条要求审批即需审批）。
+        （并发/时长的最小值、时段的交集、任一条要求审批即需审批）。时段按模 1440
+        求交（跨零点窗口先展开成区间再取交），**交集为空表示该时段完全禁止**。
       tags:
         - policies
       security:
@@ -1013,7 +1015,7 @@ paths:
       operationId: listApprovals
       summary: 审批请求列表
       description: |
-        本组织的审批请求，按 `requested_at` 倒序，分页返回。审批中心按
+        本组织的审批请求，按 `requested_at` 倒序（同秒按 `id` 倒序），分页返回。审批中心按
         `status=pending` 拉取待办。组织成员即可读取（审批中心对 member 只读）。
       tags:
         - approvals
@@ -1126,8 +1128,15 @@ paths:
         - `kind=pre_approval`：`approve` 后该 actor 对该设备的**下一次**票据签发不再
           被审批阻断。审批本身不签发任何东西（不返回 token）——客户端重试
           `POST .../tickets` 才拿到票据，审批与票据**一次性绑定**（签发票据即消费审批）。
+
+          消费点在签发而不是兑换：票据过期（默认 300 秒）**不退还审批**，需要重新申请。
+          这样"一次审批 = 一次签发许可"的语义最简单，也不会因为客户端反复兑换失败
+          而重复消耗审批。
         - `kind=ratification`：`approve` 即「已追认」，仅改状态并落审计，
-          不产生票据、不消费任何额度。
+          不产生票据、不消费任何额度（`ticket_id` 恒为 null）。
+
+        `expires_at` 对两类一致：请求时刻 + 15 分钟；超期未决策由后台任务置 `expired`。
+        已结束的原生会话同样可以追认（追认针对已发生的事实，与连接是否还在无关）。
       tags:
         - approvals
       security:
@@ -1177,9 +1186,14 @@ paths:
         为一次远控签发一次性、短时效的连接票据（默认 300 秒，范围 30–900）。
         组织成员均可签发（是否放行由策略决定，不看角色）。
 
-        签发前**必经策略评估**：并发上限、时长上限、时段。若策略要求事前审批而
-        该 actor 对设备没有已批准且未消费的审批，返回 `409 approval_required`，
+        签发前评估**时段**与**审批要求**：时段外返回 `409 conflict`；策略要求事前
+        审批而该 actor 对设备没有已批准且未消费的审批时返回 `409 approval_required`，
         `data.approval_id` 指向新建或复用的待审批请求——审批通过后重试本端点即可。
+
+        **并发上限与时长上限不在这里评估**：签发不产生会话，此刻看不到任何新会话，
+        在这里判并发等于恒不超限。并发在兑换时复查（见
+        `POST .../tickets/{ticketId}/redeem`），时长是后置处理（超时由后台任务关闭
+        会话并告警，不掐断真实连接——面板不在信令链路上）。
 
         明文 `token` **仅在本次响应中返回一次**，服务端只保存摘要。
       tags:
@@ -1217,20 +1231,23 @@ paths:
         "409":
           description: |
             策略阻断：`approval_required`（需事前审批，`data.approval_id` 为待审批
-            请求）或 `conflict`（并发/时段等约束不满足）
+            请求）或 `conflict`（时段外等约束不满足）
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ErrorResponse"
+                anyOf:
+                  - $ref: "#/components/schemas/ApprovalRequiredResponse"
+                  - $ref: "#/components/schemas/ErrorResponse"
 
   /api/v1/orgs/{orgId}/alerts:
     get:
       operationId: listAlerts
       summary: 策略违规告警列表
       description: |
-        本组织的告警，按 `created_at` 倒序，分页返回。告警由两条路径产生：面板
+        本组织的告警，按 `created_at` 倒序（同秒按 `id` 倒序），分页返回。告警由两条路径产生：面板
         签发路径在并发/时长/时段约束不满足时实时产生；原生直连路径由日志采集推断
         的会话触发（只告警、不阻断）。事前审批阻断不产生告警（见 Alert.kind）。
+        与 open 会话归并的 panel 日志事件不产生 native 告警（见 Session 生命周期）。
         组织成员即可读取。
       tags:
         - alerts
@@ -1371,13 +1388,18 @@ paths:
       operationId: redeemTicket
       summary: 兑换连接票据（创建面板会话）
       description: |
-        兑换一次性票据：原子地占用 `used_at`，并创建一条 `origin=panel`、`status=open`
-        的会话（`started_at` 为兑换时刻），返回该会话。这是 panel 会话的唯一创建入口，
-        也是并发策略的计数起点。
+        兑换一次性票据：在**同一个事务**里复查并发与时段 → 原子占用 `used_at` →
+        创建一条 `origin=panel`、`status=open` 的会话（`started_at` 为兑换时刻），
+        返回该会话。这是 open panel 会话的唯一创建入口，也是并发配额的真正闸门。
+
+        **并发复查必须在兑换时做**：统计本组织 `status=open` 且 `origin=panel` 的会话数，
+        达到策略上限就拒绝——否则「先连签 N 张票据再并行兑换」可以绕过并发上限。
+        计数与插入必须在同一事务内（条件插入），否则并发兑换会同时读到旧计数。
 
         票据只能兑换一次：已兑换、已过期、已撤销或 token 不匹配一律返回
-        `409 conflict`（不区分原因，避免探测）；票据不存在或不属于本组织返回 404。
-        组织成员即可兑换。
+        `409 conflict`（不区分原因，避免探测）；并发或时段约束不满足同样返回 409
+        （`conflict`，原因写在 message 里）。票据不存在或不属于本组织返回 404。
+        组织成员即可兑换（M4 托管客户端若需未登录兑换，走面板内部路径，不在本契约内）。
 
         M3 阶段票据不注入信令（面板不在信令链路），这里是面板侧记账入口；
         网页客户端托管与票据注入见 M4。
@@ -1420,7 +1442,9 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: 票据已兑换、已过期或已撤销
+          description: |
+            票据已兑换、已过期、已撤销、token 不匹配，或并发/时段约束不满足
+            （统一 `conflict`，message 说明具体原因）
           content:
             application/json:
               schema:
@@ -2099,13 +2123,24 @@ components:
 
         - **panel**：票据被兑换（`POST .../tickets/{ticketId}/redeem`）时创建，
           `started_at` 为兑换时刻。票据未兑换不产生会话、不占并发额度。
-        - **native**：由 hbbs/hbbr 日志事件按 `device` 关联推断，同一设备 30 秒
-          窗口内的事件归并为一个会话；关联不到组织设备的事件不建会话
-          （`device_id` 必填，不做无主会话）。
-        - **结束**：日志中的连接结束事件，或空闲超时（`last_activity_at` 之后
-          10 分钟无关联事件）把状态置 `closed`；`end_reason` 记
-          `disconnected` / `idle_timeout`，超时收尾由后台任务负责。
-        - **denied**：仅 panel 来源，签发阶段被策略拒绝时写入留痕行，不占并发额度。
+        - **native**：由 hbbs/hbbr 日志事件按 `device` 关联推断。归并前**先查同设备
+          30 秒窗口内未关闭的会话**（含 panel）：
+          命中 panel → 只刷新该会话的 `last_activity_at`，不新建 native 会话、不发
+          native 相关告警（面板远控也要走本组织的 hbbs/hbbr，日志里同样有它）；
+          命中 native → 事件归并到该会话；两者都没有 → 新建 native 会话。
+          关联不到组织设备的事件不建会话（`device_id` 必填，不做无主会话）。
+        - **活动时钟**：`status=open` 的会话 `last_activity_at` 非空；为 null 时以
+          `started_at` 作为空闲判定基线。日志事件命中会话即刷新。
+        - **结束**：可识别的连接结束事件（采集规则映射为 `SessionEvent.kind=disconnected`，
+          规则随 T7 落地），或空闲超时（`last_activity_at` 之后默认 10 分钟、可由部署
+          配置覆盖）把状态置 `closed`；`end_reason` 见 `SessionEndReason`。
+          **已关闭的会话不会被重新打开**：窗口内再来的事件新建会话（重连 = 新会话）。
+        - **时长上限是后置处理**：`max_session_minutes` 超限时由后台任务把会话置
+          `closed`（`end_reason=policy_exceeded`）并产生告警；面板不在信令链路上，
+          **不会掐断真实连接**——时长策略是记账与告警语义，不是强制断连。
+        - **denied**：仅 panel 来源，由 `POST .../tickets`（签发阶段被策略拒绝）写入
+          留痕行：`ticket_id=null`、`started_at`=`ended_at`=拒绝时刻、
+          `end_reason=policy_denied`，不占并发额度。它不经兑换创建。
         - **并发口径**：`max_concurrent_sessions` 只统计 `status=open` 且
           `origin=panel` 的会话——native 只告警不阻断，计入会让策略不可执行。
 
@@ -2153,7 +2188,8 @@ components:
             - "null"
           format: int64
           description: |
-            产生最终约束的那条策略；多条策略并列最严时取 `id` 最小者，
+            本次生效的策略中 `id` 最小者（多条策略各管不同维度时无法唯一归因，
+            因此固定取最小 id；具体约束以全部 enabled 策略的交集为准），
             组织没有启用中的策略时为 null
         started_at:
           type: string
@@ -2174,7 +2210,12 @@ components:
             - string
             - "null"
           maxLength: 64
-          description: 结束原因（`closed`/`timeout`/`denied`/`policy_exceeded` 等，自由字符串）
+          description: |
+            结束原因（进行中的会话为 null）：
+            - `disconnected`：日志中识别到连接结束事件
+            - `idle_timeout`：空闲超时（默认 10 分钟无关联事件）
+            - `policy_exceeded`：超过 `max_session_minutes`（后置关闭，不断连）
+            - `policy_denied`：签发阶段被策略拒绝（仅 `denied` 会话）
         revision:
           type: integer
           format: int64
@@ -2254,8 +2295,10 @@ components:
     PolicyRequest:
       type: object
       description: |
-        策略请求体。`PUT` 是**全量替换**：`enabled` 与 `require_approval` 必填，
-        避免"省略即按默认值重新启用"这类静默绕过；限额字段为 null（或省略）表示不限。
+        策略请求体。`PUT` 是**全量替换**：`enabled` 与 `require_approval` 必填且必须
+        显式给出布尔值（缺失或 null → 400），避免"省略即按默认值"的静默绕过——
+        静默按 false 会把已启用的策略关掉或把审批要求取消。限额字段为 null（或省略）
+        表示不限。
       required:
         - name
         - enabled
@@ -2271,7 +2314,9 @@ components:
           minLength: 1
           maxLength: 128
         enabled:
-          type: boolean
+          type:
+            - boolean
+            - "null"
         max_concurrent_sessions:
           type:
             - integer
@@ -2308,8 +2353,13 @@ components:
             允许时段终点（UTC 当日分钟数，不含）。必须与起点同时提供或同时为 null；
             两者相等（`start == end`）不是合法窗口——全天请用 null——返回 400。
         require_approval:
-          type: boolean
-          description: 为 true 时，票据签发需先有已批准的审批请求
+          type:
+            - boolean
+            - "null"
+          description: |
+            为 true 时，票据签发需先有已批准的审批请求。**必须显式给出 true/false**：
+            缺失或 null 返回 400（bool 零值无法区分「没给」与「给了 false」，
+            静默按 false 处理会把审批要求关掉）
 
     Policy:
       type: object
@@ -2407,7 +2457,8 @@ components:
       type: string
       description: |
         - pending：待审批
-        - approved：已批准（可被一次票据签发消费）
+        - approved：已批准。`kind=pre_approval` 时可被**一次**票据签发消费；
+          `kind=ratification` 时表示「已追认」，不可消费、不产生票据
         - denied：已拒绝
         - expired：超期未决策（后台任务标记）
       enum:
@@ -2512,13 +2563,18 @@ components:
     ApprovalCreateRequest:
       type: object
       description: |
-        提交审批请求。按 `kind` 二选一：
+        提交审批请求，按 `kind` 二选一：
 
-        - `pre_approval`（默认）：必须提供 `device_id`
-        - `ratification`（事后追认）：必须提供 `session_id`（原生直连推断出的会话）
+        - `pre_approval`：必须提供 `device_id`
+        - `ratification`（事后追认）：必须提供 `session_id`，且该会话必须属于本组织、
+          `origin=native`（面板会话本身已受策略管控，无需追认）；`device_id` 由服务端
+          从会话派生
 
-        两者都给或都不给返回 `400 invalid_request`。同一 actor + 设备已有 `pending`
-        的事前审批时**复用**该请求（返回 200）。
+        两者都给、都不给，或 `kind` 与字段不匹配，返回 `400 invalid_request`。
+        同一 actor + 设备已有 `pending` 的事前审批时**复用**该请求（返回 200）；
+        同一会话已有 `pending`/`approved` 的追认时同样复用，不重复创建。
+      required:
+        - kind
       properties:
         kind:
           $ref: "#/components/schemas/ApprovalKind"
@@ -2562,6 +2618,7 @@ components:
           format: int64
         ttl_seconds:
           type: integer
+          format: int64
           minimum: 30
           maximum: 900
           default: 300
@@ -2617,6 +2674,9 @@ components:
             - string
             - "null"
           format: date-time
+          description: |
+            撤销时间。没有独立的撤销端点：成员被移出组织、角色降级或组织停用时，
+            由 offboarding 路径撤销其**未兑换**的票据（T8）。
 
     IssuedTicket:
       type: object
@@ -2687,8 +2747,9 @@ components:
             - `outside_window`：时段外发起
 
             事前审批阻断**不算告警**（正常的受控流程，每次都告警会让告警列表变成
-            噪音）；它体现在 `409 approval_required` 与审计里。告警只用于真正的
-            违规：并发/时长/时段，以及原生直连未审批的会话。
+            噪音）；它体现在 `409 approval_required` 与审计里。原生直连无法事前审批
+            （审批是签发的前提），所以 native 会话的告警只用 `duration_exceeded` /
+            `outside_window` 表达实际违规。
         severity:
           $ref: "#/components/schemas/AlertSeverity"
         detail:
@@ -2730,6 +2791,7 @@ components:
           type: integer
         page_size:
           type: integer
+          format: int64
         total:
           type: integer
           format: int64
@@ -2750,6 +2812,7 @@ components:
           type: integer
         page_size:
           type: integer
+          format: int64
         total:
           type: integer
           format: int64
@@ -2770,6 +2833,7 @@ components:
           type: integer
         page_size:
           type: integer
+          format: int64
         total:
           type: integer
           format: int64
@@ -2797,6 +2861,29 @@ components:
           type: string
         data:
           $ref: "#/components/schemas/Ticket"
+
+    ApprovalRequiredResponse:
+      type: object
+      description: |
+        `409 approval_required` 的响应体：与 `ErrorResponse` 同形，但 `data` 带强类型
+        的 `approval_id`（客户端要拿它去审批中心）。
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          type: object
+          required:
+            - approval_id
+          properties:
+            approval_id:
+              type: integer
+              format: int64
 
     SessionResponse:
       type: object

@@ -42,7 +42,7 @@
 
 ### 2.2 租户隔离（管理 API）
 
-管理 API 的一切组织内资源都带 `{orgId}` 路径参数；服务端通过 `ScopedByOrg` 强制租户过滤，跨组织访问返回 `404 not_found`（不泄露存在性）。compat 层不带 `{orgId}`：**已认证请求**使用已验证 token 的 `org` claim 作为组织上下文；**无凭据的 heartbeat/sysinfo** 从持久化会话取得 `OrganizationID` 后执行组织范围查询（见 §4）。
+管理 API 的一切组织内资源都带 `{orgId}` 路径参数；服务端通过 `ScopedByOrg` 强制租户过滤，**组织内**跨租户资源访问返回 `404 not_found`（不泄露存在性）；**调用者不属于该组织**时返回 `403 forbidden`（"不是本组织成员"本身不构成信息泄露，且便于前端区分"没权限"与"资源没了"）。compat 层不带 `{orgId}`：**已认证请求**使用已验证 token 的 `org` claim 作为组织上下文；**无凭据的 heartbeat/sysinfo** 从持久化会话取得 `OrganizationID` 后执行组织范围查询（见 §4）。
 
 fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件注册为准）：
 
@@ -63,6 +63,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `unauthorized` | 401 | 登录/刷新的凭据拒绝 |
 | `rate_limited` | 429 | 登录锁定（LoginGuard） |
 | `internal` | 500 | 未预期的服务端错误（不向客户端泄露细节） |
+| `internal` | **501** | **过渡期专用**：v0.4.0 契约先行、实现未合并的会话治理端点（见 §3.6）。实现合并后消失 |
 
 ### 2.4 分页
 
@@ -150,23 +151,26 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `GET .../approvals/{approvalId}` | 成员 | 审批详情（深链） |
 | `POST .../approvals` | 成员 | 提交审批（`kind` 决定 `device_id` 还是 `session_id`；事前审批复用 pending 返回 200） |
 | `POST .../approvals/{approvalId}/decision` | owner/admin | approve/deny；只有 `pending` 可决策，否则 409 |
-| `POST .../tickets` | 成员 | 签发一次性票据（`ttl_seconds` 30–900，默认 300）；**必经策略评估** |
+| `POST .../tickets` | 成员 | 签发一次性票据（`ttl_seconds` 30–900，默认 300）；评估**时段 + 审批要求**（并发不在这里判） |
 | `GET .../tickets/{ticketId}` | 成员 | 票据记账状态（不返回明文 token） |
-| `POST .../tickets/{ticketId}/redeem` | 成员 | 兑换票据并**创建 panel 会话**（唯一创建入口） |
+| `POST .../tickets/{ticketId}/redeem` | 成员 | 兑换票据 → **复查并发/时段** → 创建 open panel 会话（同一事务） |
 | `GET .../alerts` | 成员 | 违规告警（`severity`/`kind`/`since` 过滤 + 分页） |
 
 会话生命周期（契约语义，实现见 T4/T5/T7）：
 
-- **panel 会话在兑换时创建**：`POST .../tickets/{ticketId}/redeem` 原子占用 `used_at` 并写入 `open` 会话，`started_at` = 兑换时刻。票据签发本身不建会话、不算并发——否则 TTL 30–900 秒的票据会变成"幽灵并发"。
-- **native 会话由日志推断**：hbbs/hbbr 连接事件按 `device` 关联，同设备 30 秒窗口归并；关联不到组织设备的事件不建会话（`device_id` 必填，不做无主会话）。
-- **关闭**：日志中的连接结束事件，或 `last_activity_at` 之后 10 分钟无关联事件（空闲超时）→ `closed`，`end_reason` 记 `disconnected` / `idle_timeout`，超时收尾由后台任务负责。**没有客户端主动关闭端点**——面板不在信令链路上，无法观测"用户点了断开"以外的状态，统一以日志与空闲超时收尾。
+- **panel 会话在兑换时创建**：`POST .../tickets/{ticketId}/redeem` 在同一事务里复查并发/时段 → 原子占用 `used_at` → 写入 `open` 会话，`started_at` = 兑换时刻。票据签发本身不建会话、不算并发（否则 TTL 30–900 秒的票据会变成"幽灵并发"）。
+- **并发闸门在兑换，不在签发**：签发时看不到任何新会话，在那里判并发等于恒不超限——"先连签 N 张票再并行兑换"会绕过上限。因此兑换必须做「count(open,panel) < 上限 → 条件插入」，且计数与插入同事务，否则并发兑换会同时读到旧计数。
+- **native 会话由日志推断，且先归并到既有会话**：hbbs/hbbr 连接事件按 `device` 查同设备 30 秒窗口内未关闭的会话——命中 **panel** 会话就只刷新 `last_activity_at`（面板远控也要走本组织 hbbs/hbbr，日志里同样有它，不能重复记一条 native，也不能触发 native 告警）；命中 native 就归并事件；都没有才新建 native 会话。关联不到组织设备的事件不建会话（`device_id` 必填）。
+- **活动时钟**：`status=open` 的会话 `last_activity_at` 非空，为 null 时以 `started_at` 作为空闲基线；日志事件命中会话即刷新。
+- **关闭**：可识别的连接结束事件（采集规则映射为 `SessionEvent.kind=disconnected`，规则随 T7 落地），或空闲超时（默认 10 分钟无关联事件，可由部署配置覆盖）→ `closed`，`end_reason` 取 `disconnected` / `idle_timeout`。**已关闭的会话不会被重新打开**：窗口内再来的事件新建会话（重连 = 新会话）。没有客户端主动关闭端点——面板不在信令链路上。
+- **时长上限是后置的**：超过 `max_session_minutes` 由后台任务把会话置 `closed`（`end_reason=policy_exceeded`）并告警，**不断开真实连接**。panel 会话的强制手段是"兑换时拦截"，不是"中途掐断"。
 - **并发口径**：`max_concurrent_sessions` 只统计 `status=open` **且** `origin=panel` 的会话。native 只告警不阻断（D10），把 native 计入会让策略不可执行。
-- **`denied` 会话**：仅 panel 来源，签发阶段被策略拒绝时写入留痕行，不占并发额度。
+- **`denied` 会话**：仅 panel 来源，由**签发**路径在策略拒绝时写入（`ticket_id=null`、`started_at=ended_at=拒绝时刻`、`end_reason=policy_denied`），不占并发额度；它不经兑换创建。
 
 策略与审批语义：
 
-- **多策略同时生效**：所有 `enabled` 策略参与评估，各维度取最严——并发/时长取最小值、时段取交集、任一条要求审批即需审批；组织没有策略等于不限。`Session.policy_id` 记录产生最终约束的那条（并列取 `id` 最小者）。
-- **审批分两类**：`pre_approval` 放行**一次**签发（审批本身不出票，客户端重试 `POST .../tickets` 才拿到 token，签发即消费审批并回填 `ticket_id`）；`ratification` 是对**已发生**的原生直连违规会话补追认，只改状态并落审计，不产生票据、不消费额度。
+- **多策略同时生效**：所有 `enabled` 策略参与评估，各维度取最严——并发/时长取最小值、时段取交集（按模 1440 求交，跨零点窗口先展开成区间，**交集为空 = 该时段完全禁止**）、任一条要求审批即需审批；组织没有策略等于不限。`Session.policy_id` 记 id 最小的生效策略（多策略各管不同维度时无法唯一归因，具体约束以交集为准）。
+- **审批分两类**：`pre_approval` 放行**一次**签发（审批本身不出票，客户端重试 `POST .../tickets` 才拿到 token，**签发即消费审批**并回填 `ticket_id`；票据过期不退还审批，需重新申请）；`ratification` 是对**已发生**的原生直连违规会话补追认——请求必须给 `session_id`（会话须属本组织且 `origin=native`，`device_id` 由服务端派生），决策通过即"已追认"，只改状态 + 落审计，不产生票据、不消费额度、`ticket_id` 恒为 null。
 - **`approval_required` 是 409 + 业务码**（不是新 HTTP 状态）：`data.approval_id` 指向新建或复用的待审批请求。
 - **票据不外泄、只用一次**：明文 `token` 只在签发响应出现一次，服务端只存摘要；`used_at` 非 null 即不可再用；重复/过期/撤销兑换一律 `409`（不区分原因，避免探测）。
 

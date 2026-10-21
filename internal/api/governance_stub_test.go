@@ -10,30 +10,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// governanceRoutes is the surface contract v0.4.0 adds. Keeping it in one place
-// lets the wiring tests below prove every path is registered, authenticated and
-// membership-checked before answering.
+// governanceRoutes is the surface contract v0.4.0 adds. Paths carry an {org}
+// placeholder so tests can point them at the organization they actually
+// created; ginPath is the pattern gin registers.
 var governanceRoutes = []struct {
-	method string
-	path   string
-	// ginPath is the pattern gin registers for this path (parameters instead
-	// of concrete ids).
+	method  string
+	path    string
 	ginPath string
 }{
-	{http.MethodGet, "/api/v1/orgs/1/sessions", "/api/v1/orgs/:orgId/sessions"},
-	{http.MethodGet, "/api/v1/orgs/1/sessions/1", "/api/v1/orgs/:orgId/sessions/:sessionId"},
-	{http.MethodGet, "/api/v1/orgs/1/policies", "/api/v1/orgs/:orgId/policies"},
-	{http.MethodPost, "/api/v1/orgs/1/policies", "/api/v1/orgs/:orgId/policies"},
-	{http.MethodPut, "/api/v1/orgs/1/policies/1", "/api/v1/orgs/:orgId/policies/:policyId"},
-	{http.MethodDelete, "/api/v1/orgs/1/policies/1", "/api/v1/orgs/:orgId/policies/:policyId"},
-	{http.MethodGet, "/api/v1/orgs/1/approvals", "/api/v1/orgs/:orgId/approvals"},
-	{http.MethodGet, "/api/v1/orgs/1/approvals/1", "/api/v1/orgs/:orgId/approvals/:approvalId"},
-	{http.MethodPost, "/api/v1/orgs/1/approvals", "/api/v1/orgs/:orgId/approvals"},
-	{http.MethodPost, "/api/v1/orgs/1/approvals/1/decision", "/api/v1/orgs/:orgId/approvals/:approvalId/decision"},
-	{http.MethodPost, "/api/v1/orgs/1/tickets", "/api/v1/orgs/:orgId/tickets"},
-	{http.MethodGet, "/api/v1/orgs/1/tickets/1", "/api/v1/orgs/:orgId/tickets/:ticketId"},
-	{http.MethodPost, "/api/v1/orgs/1/tickets/1/redeem", "/api/v1/orgs/:orgId/tickets/:ticketId/redeem"},
-	{http.MethodGet, "/api/v1/orgs/1/alerts", "/api/v1/orgs/:orgId/alerts"},
+	{http.MethodGet, "/api/v1/orgs/{org}/sessions", "/api/v1/orgs/:orgId/sessions"},
+	{http.MethodGet, "/api/v1/orgs/{org}/sessions/1", "/api/v1/orgs/:orgId/sessions/:sessionId"},
+	{http.MethodGet, "/api/v1/orgs/{org}/policies", "/api/v1/orgs/:orgId/policies"},
+	{http.MethodPost, "/api/v1/orgs/{org}/policies", "/api/v1/orgs/:orgId/policies"},
+	{http.MethodPut, "/api/v1/orgs/{org}/policies/1", "/api/v1/orgs/:orgId/policies/:policyId"},
+	{http.MethodDelete, "/api/v1/orgs/{org}/policies/1", "/api/v1/orgs/:orgId/policies/:policyId"},
+	{http.MethodGet, "/api/v1/orgs/{org}/approvals", "/api/v1/orgs/:orgId/approvals"},
+	{http.MethodGet, "/api/v1/orgs/{org}/approvals/1", "/api/v1/orgs/:orgId/approvals/:approvalId"},
+	{http.MethodPost, "/api/v1/orgs/{org}/approvals", "/api/v1/orgs/:orgId/approvals"},
+	{http.MethodPost, "/api/v1/orgs/{org}/approvals/1/decision", "/api/v1/orgs/:orgId/approvals/:approvalId/decision"},
+	{http.MethodPost, "/api/v1/orgs/{org}/tickets", "/api/v1/orgs/:orgId/tickets"},
+	{http.MethodGet, "/api/v1/orgs/{org}/tickets/1", "/api/v1/orgs/:orgId/tickets/:ticketId"},
+	{http.MethodPost, "/api/v1/orgs/{org}/tickets/1/redeem", "/api/v1/orgs/:orgId/tickets/:ticketId/redeem"},
+	{http.MethodGet, "/api/v1/orgs/{org}/alerts", "/api/v1/orgs/:orgId/alerts"},
+}
+
+// withOrg substitutes the {org} placeholder.
+func withOrg(template string, orgID int64) string {
+	return strings.Replace(template, "{org}", strconv.FormatInt(orgID, 10), 1)
 }
 
 // TestGovernanceRoutesRegistered proves the generated handlers are mounted: a
@@ -60,28 +63,36 @@ func TestGovernanceRoutesRequireAuth(t *testing.T) {
 
 	for _, route := range governanceRoutes {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
-			w := h.do(t, route.method, route.path, map[string]any{}, "")
+			w := h.do(t, route.method, withOrg(route.path, 1), map[string]any{}, "")
 			require.Equal(t, http.StatusUnauthorized, w.Code, w.Body.String())
 		})
 	}
 }
 
 // TestGovernanceRoutesRejectNonMembers pins the tenant boundary the placeholders
-// already enforce. Whoever replaces them must keep the membership check: this
-// test is the regression net for "forgot requirePerm on a new endpoint".
+// already enforce. The outsider owns their own organization, so the 403 on the
+// other organization proves the check is per-organization rather than a blanket
+// deny — and it is the regression net for "forgot the permission check" when
+// the real handlers land.
 func TestGovernanceRoutesRejectNonMembers(t *testing.T) {
 	h := newHarness(t)
-	// owner of organization 1
-	_, orgID := seedOrgOwner(t, h, "gov-owner@example.com")
-	// an authenticated user who belongs to no organization
-	h.seedUser(t, "gov-outsider@example.com", "Outsider!123")
-	outsiderToken := h.login(t, "gov-outsider@example.com", "Outsider!123")
+	_, orgA := seedOrgOwner(t, h, "gov-a@example.com")
+	outsiderToken, orgB := seedOrgOwner(t, h, "gov-b@example.com")
+	require.NotEqual(t, orgA, orgB, "the two seeded organizations must differ")
 
 	for _, route := range governanceRoutes {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
-			path := rewriteOrgID(route.path, orgID)
-			w := h.do(t, route.method, path, map[string]any{}, outsiderToken)
+			w := h.do(t, route.method, withOrg(route.path, orgA), map[string]any{}, outsiderToken)
 			require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+		})
+	}
+
+	// The same caller reaches their own organization (501 = the placeholder),
+	// which proves the rejection above is about membership, not about the route.
+	for _, route := range governanceRoutes {
+		t.Run("own org "+route.method+" "+route.path, func(t *testing.T) {
+			w := h.do(t, route.method, withOrg(route.path, orgB), map[string]any{}, outsiderToken)
+			require.Equal(t, http.StatusNotImplemented, w.Code, w.Body.String())
 		})
 	}
 }
@@ -96,23 +107,22 @@ func TestGovernanceRoutesAreStubsUntilImplemented(t *testing.T) {
 
 	for _, route := range governanceRoutes {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
-			w := h.do(t, route.method, rewriteOrgID(route.path, orgID), map[string]any{}, token)
+			w := h.do(t, route.method, withOrg(route.path, orgID), map[string]any{}, token)
 			require.Equal(t, http.StatusNotImplemented, w.Code, w.Body.String())
 			require.Contains(t, w.Header().Get("Content-Type"), "application/json")
 
 			var body struct {
-				Code    string `json:"code"`
-				Message string `json:"message"`
+				Code    string          `json:"code"`
+				Message string          `json:"message"`
+				Data    json.RawMessage `json:"data"`
 			}
 			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 			require.Equal(t, "internal", body.Code)
 			require.Contains(t, body.Message, "not implemented yet:")
+			// The address-book envelope omits data on error; the placeholder
+			// must not invent one.
+			require.True(t, len(body.Data) == 0 || string(body.Data) == "null",
+				"stub response must not carry a data payload, got %s", string(body.Data))
 		})
 	}
-}
-
-// rewriteOrgID swaps the placeholder organization id in a route template for
-// the organization the test actually created.
-func rewriteOrgID(path string, orgID int64) string {
-	return strings.Replace(path, "/orgs/1/", "/orgs/"+strconv.FormatInt(orgID, 10)+"/", 1)
 }

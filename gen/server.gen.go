@@ -4,6 +4,7 @@
 package gen
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -497,8 +498,9 @@ type Alert struct {
 	// - `outside_window`：时段外发起
 	//
 	// 事前审批阻断**不算告警**（正常的受控流程，每次都告警会让告警列表变成
-	// 噪音）；它体现在 `409 approval_required` 与审计里。告警只用于真正的
-	// 违规：并发/时长/时段，以及原生直连未审批的会话。
+	// 噪音）；它体现在 `409 approval_required` 与审计里。原生直连无法事前审批
+	// （审批是签发的前提），所以 native 会话的告警只用 `duration_exceeded` /
+	// `outside_window` 表达实际违规。
 	Kind           string `json:"kind"`
 	OrganizationId int64  `json:"organization_id"`
 	SessionId      *int64 `json:"session_id,omitempty"`
@@ -529,7 +531,7 @@ type AlertListResponse struct {
 type AlertPage struct {
 	Items    []Alert `json:"items"`
 	Page     int     `json:"page"`
-	PageSize int     `json:"page_size"`
+	PageSize int64   `json:"page_size"`
 	Total    int64   `json:"total"`
 }
 
@@ -564,7 +566,8 @@ type Approval struct {
 	SessionId *int64 `json:"session_id,omitempty"`
 
 	// Status - pending：待审批
-	// - approved：已批准（可被一次票据签发消费）
+	// - approved：已批准。`kind=pre_approval` 时可被**一次**票据签发消费；
+	//   `kind=ratification` 时表示「已追认」，不可消费、不产生票据
 	// - denied：已拒绝
 	// - expired：超期未决策（后台任务标记）
 	Status ApprovalStatus `json:"status"`
@@ -573,22 +576,25 @@ type Approval struct {
 	TicketId *int64 `json:"ticket_id,omitempty"`
 }
 
-// ApprovalCreateRequest 提交审批请求。按 `kind` 二选一：
+// ApprovalCreateRequest 提交审批请求，按 `kind` 二选一：
 //
-// - `pre_approval`（默认）：必须提供 `device_id`
-// - `ratification`（事后追认）：必须提供 `session_id`（原生直连推断出的会话）
+//   - `pre_approval`：必须提供 `device_id`
+//   - `ratification`（事后追认）：必须提供 `session_id`，且该会话必须属于本组织、
+//     `origin=native`（面板会话本身已受策略管控，无需追认）；`device_id` 由服务端
+//     从会话派生
 //
-// 两者都给或都不给返回 `400 invalid_request`。同一 actor + 设备已有 `pending`
-// 的事前审批时**复用**该请求（返回 200）。
+// 两者都给、都不给，或 `kind` 与字段不匹配，返回 `400 invalid_request`。
+// 同一 actor + 设备已有 `pending` 的事前审批时**复用**该请求（返回 200）；
+// 同一会话已有 `pending`/`approved` 的追认时同样复用，不重复创建。
 type ApprovalCreateRequest struct {
 	DeviceId *int64 `json:"device_id,omitempty"`
 
 	// Kind - pre_approval：事前审批——为**将要发起**的连接放行一次票据签发
 	// - ratification：事后追认——对**已发生**的原生直连违规会话（日志推断）做确认，
 	//   不产生票据
-	Kind      *ApprovalKind `json:"kind,omitempty"`
-	Reason    *string       `json:"reason,omitempty"`
-	SessionId *int64        `json:"session_id,omitempty"`
+	Kind      ApprovalKind `json:"kind"`
+	Reason    *string      `json:"reason,omitempty"`
+	SessionId *int64       `json:"session_id,omitempty"`
 }
 
 // ApprovalDecision - approve：批准（pre_approval 放行一次签发；ratification 即「已追认」）
@@ -630,8 +636,29 @@ type ApprovalListResponse struct {
 type ApprovalPage struct {
 	Items    []Approval `json:"items"`
 	Page     int        `json:"page"`
-	PageSize int        `json:"page_size"`
+	PageSize int64      `json:"page_size"`
 	Total    int64      `json:"total"`
+}
+
+// ApprovalRequiredResponse `409 approval_required` 的响应体：与 `ErrorResponse` 同形，但 `data` 带强类型
+// 的 `approval_id`（客户端要拿它去审批中心）。
+type ApprovalRequiredResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code ErrorCode `json:"code"`
+	Data struct {
+		ApprovalId int64 `json:"approval_id"`
+	} `json:"data"`
+	Message string `json:"message"`
 }
 
 // ApprovalResponse defines model for ApprovalResponse.
@@ -653,9 +680,10 @@ type ApprovalResponse struct {
 }
 
 // ApprovalStatus - pending：待审批
-// - approved：已批准（可被一次票据签发消费）
-// - denied：已拒绝
-// - expired：超期未决策（后台任务标记）
+//   - approved：已批准。`kind=pre_approval` 时可被**一次**票据签发消费；
+//     `kind=ratification` 时表示「已追认」，不可消费、不产生票据
+//   - denied：已拒绝
+//   - expired：超期未决策（后台任务标记）
 type ApprovalStatus string
 
 // Device defines model for Device.
@@ -996,8 +1024,10 @@ type PolicyListResponse struct {
 	Message string    `json:"message"`
 }
 
-// PolicyRequest 策略请求体。`PUT` 是**全量替换**：`enabled` 与 `require_approval` 必填，
-// 避免"省略即按默认值重新启用"这类静默绕过；限额字段为 null（或省略）表示不限。
+// PolicyRequest 策略请求体。`PUT` 是**全量替换**：`enabled` 与 `require_approval` 必填且必须
+// 显式给出布尔值（缺失或 null → 400），避免"省略即按默认值"的静默绕过——
+// 静默按 false 会把已启用的策略关掉或把审批要求取消。限额字段为 null（或省略）
+// 表示不限。
 type PolicyRequest struct {
 	// AllowedEndMinute 允许时段终点（UTC 当日分钟数，不含）。必须与起点同时提供或同时为 null；
 	// 两者相等（`start == end`）不是合法窗口——全天请用 null——返回 400。
@@ -1007,7 +1037,7 @@ type PolicyRequest struct {
 	// null 表示全天允许。起点大于终点表示跨零点窗口（如 1320–360 即
 	// 22:00–06:00）
 	AllowedStartMinute *int64 `json:"allowed_start_minute,omitempty"`
-	Enabled            bool   `json:"enabled"`
+	Enabled            *bool  `json:"enabled"`
 
 	// MaxConcurrentSessions 同一组织并发会话上限（只统计 open+panel 会话）；null 表示不限
 	MaxConcurrentSessions *int64 `json:"max_concurrent_sessions,omitempty"`
@@ -1016,8 +1046,10 @@ type PolicyRequest struct {
 	MaxSessionMinutes *int64 `json:"max_session_minutes,omitempty"`
 	Name              string `json:"name"`
 
-	// RequireApproval 为 true 时，票据签发需先有已批准的审批请求
-	RequireApproval bool `json:"require_approval"`
+	// RequireApproval 为 true 时，票据签发需先有已批准的审批请求。**必须显式给出 true/false**：
+	// 缺失或 null 返回 400（bool 零值无法区分「没给」与「给了 false」，
+	// 静默按 false 处理会把审批要求关掉）
+	RequireApproval *bool `json:"require_approval"`
 }
 
 // PolicyResponse defines model for PolicyResponse.
@@ -1052,13 +1084,24 @@ type ResendVerificationRequest struct {
 //
 //   - **panel**：票据被兑换（`POST .../tickets/{ticketId}/redeem`）时创建，
 //     `started_at` 为兑换时刻。票据未兑换不产生会话、不占并发额度。
-//   - **native**：由 hbbs/hbbr 日志事件按 `device` 关联推断，同一设备 30 秒
-//     窗口内的事件归并为一个会话；关联不到组织设备的事件不建会话
-//     （`device_id` 必填，不做无主会话）。
-//   - **结束**：日志中的连接结束事件，或空闲超时（`last_activity_at` 之后
-//     10 分钟无关联事件）把状态置 `closed`；`end_reason` 记
-//     `disconnected` / `idle_timeout`，超时收尾由后台任务负责。
-//   - **denied**：仅 panel 来源，签发阶段被策略拒绝时写入留痕行，不占并发额度。
+//   - **native**：由 hbbs/hbbr 日志事件按 `device` 关联推断。归并前**先查同设备
+//     30 秒窗口内未关闭的会话**（含 panel）：
+//     命中 panel → 只刷新该会话的 `last_activity_at`，不新建 native 会话、不发
+//     native 相关告警（面板远控也要走本组织的 hbbs/hbbr，日志里同样有它）；
+//     命中 native → 事件归并到该会话；两者都没有 → 新建 native 会话。
+//     关联不到组织设备的事件不建会话（`device_id` 必填，不做无主会话）。
+//   - **活动时钟**：`status=open` 的会话 `last_activity_at` 非空；为 null 时以
+//     `started_at` 作为空闲判定基线。日志事件命中会话即刷新。
+//   - **结束**：可识别的连接结束事件（采集规则映射为 `SessionEvent.kind=disconnected`，
+//     规则随 T7 落地），或空闲超时（`last_activity_at` 之后默认 10 分钟、可由部署
+//     配置覆盖）把状态置 `closed`；`end_reason` 见 `SessionEndReason`。
+//     **已关闭的会话不会被重新打开**：窗口内再来的事件新建会话（重连 = 新会话）。
+//   - **时长上限是后置处理**：`max_session_minutes` 超限时由后台任务把会话置
+//     `closed`（`end_reason=policy_exceeded`）并产生告警；面板不在信令链路上，
+//     **不会掐断真实连接**——时长策略是记账与告警语义，不是强制断连。
+//   - **denied**：仅 panel 来源，由 `POST .../tickets`（签发阶段被策略拒绝）写入
+//     留痕行：`ticket_id=null`、`started_at`=`ended_at`=拒绝时刻、
+//     `end_reason=policy_denied`，不占并发额度。它不经兑换创建。
 //   - **并发口径**：`max_concurrent_sessions` 只统计 `status=open` 且
 //     `origin=panel` 的会话——native 只告警不阻断，计入会让策略不可执行。
 //
@@ -1070,7 +1113,11 @@ type Session struct {
 	// DeviceId 组织内设备行 id
 	DeviceId int64 `json:"device_id"`
 
-	// EndReason 结束原因（`closed`/`timeout`/`denied`/`policy_exceeded` 等，自由字符串）
+	// EndReason 结束原因（进行中的会话为 null）：
+	// - `disconnected`：日志中识别到连接结束事件
+	// - `idle_timeout`：空闲超时（默认 10 分钟无关联事件）
+	// - `policy_exceeded`：超过 `max_session_minutes`（后置关闭，不断连）
+	// - `policy_denied`：签发阶段被策略拒绝（仅 `denied` 会话）
 	EndReason *string    `json:"end_reason,omitempty"`
 	EndedAt   *time.Time `json:"ended_at,omitempty"`
 	Id        int64      `json:"id"`
@@ -1084,7 +1131,8 @@ type Session struct {
 	// - native：RustDesk 原生客户端直连，由 hbbs/hbbr 日志采集推断，只记录不阻断
 	Origin SessionOrigin `json:"origin"`
 
-	// PolicyId 产生最终约束的那条策略；多条策略并列最严时取 `id` 最小者，
+	// PolicyId 本次生效的策略中 `id` 最小者（多条策略各管不同维度时无法唯一归因，
+	// 因此固定取最小 id；具体约束以全部 enabled 策略的交集为准），
 	// 组织没有启用中的策略时为 null
 	PolicyId *int64 `json:"policy_id,omitempty"`
 
@@ -1114,13 +1162,24 @@ type SessionDetail struct {
 	//
 	// - **panel**：票据被兑换（`POST .../tickets/{ticketId}/redeem`）时创建，
 	//   `started_at` 为兑换时刻。票据未兑换不产生会话、不占并发额度。
-	// - **native**：由 hbbs/hbbr 日志事件按 `device` 关联推断，同一设备 30 秒
-	//   窗口内的事件归并为一个会话；关联不到组织设备的事件不建会话
-	//   （`device_id` 必填，不做无主会话）。
-	// - **结束**：日志中的连接结束事件，或空闲超时（`last_activity_at` 之后
-	//   10 分钟无关联事件）把状态置 `closed`；`end_reason` 记
-	//   `disconnected` / `idle_timeout`，超时收尾由后台任务负责。
-	// - **denied**：仅 panel 来源，签发阶段被策略拒绝时写入留痕行，不占并发额度。
+	// - **native**：由 hbbs/hbbr 日志事件按 `device` 关联推断。归并前**先查同设备
+	//   30 秒窗口内未关闭的会话**（含 panel）：
+	//   命中 panel → 只刷新该会话的 `last_activity_at`，不新建 native 会话、不发
+	//   native 相关告警（面板远控也要走本组织的 hbbs/hbbr，日志里同样有它）；
+	//   命中 native → 事件归并到该会话；两者都没有 → 新建 native 会话。
+	//   关联不到组织设备的事件不建会话（`device_id` 必填，不做无主会话）。
+	// - **活动时钟**：`status=open` 的会话 `last_activity_at` 非空；为 null 时以
+	//   `started_at` 作为空闲判定基线。日志事件命中会话即刷新。
+	// - **结束**：可识别的连接结束事件（采集规则映射为 `SessionEvent.kind=disconnected`，
+	//   规则随 T7 落地），或空闲超时（`last_activity_at` 之后默认 10 分钟、可由部署
+	//   配置覆盖）把状态置 `closed`；`end_reason` 见 `SessionEndReason`。
+	//   **已关闭的会话不会被重新打开**：窗口内再来的事件新建会话（重连 = 新会话）。
+	// - **时长上限是后置处理**：`max_session_minutes` 超限时由后台任务把会话置
+	//   `closed`（`end_reason=policy_exceeded`）并产生告警；面板不在信令链路上，
+	//   **不会掐断真实连接**——时长策略是记账与告警语义，不是强制断连。
+	// - **denied**：仅 panel 来源，由 `POST .../tickets`（签发阶段被策略拒绝）写入
+	//   留痕行：`ticket_id=null`、`started_at`=`ended_at`=拒绝时刻、
+	//   `end_reason=policy_denied`，不占并发额度。它不经兑换创建。
 	// - **并发口径**：`max_concurrent_sessions` 只统计 `status=open` 且
 	//   `origin=panel` 的会话——native 只告警不阻断，计入会让策略不可执行。
 	//
@@ -1186,7 +1245,7 @@ type SessionOrigin string
 type SessionPage struct {
 	Items    []Session `json:"items"`
 	Page     int       `json:"page"`
-	PageSize int       `json:"page_size"`
+	PageSize int64     `json:"page_size"`
 	Total    int64     `json:"total"`
 }
 
@@ -1209,13 +1268,24 @@ type SessionResponse struct {
 	//
 	// - **panel**：票据被兑换（`POST .../tickets/{ticketId}/redeem`）时创建，
 	//   `started_at` 为兑换时刻。票据未兑换不产生会话、不占并发额度。
-	// - **native**：由 hbbs/hbbr 日志事件按 `device` 关联推断，同一设备 30 秒
-	//   窗口内的事件归并为一个会话；关联不到组织设备的事件不建会话
-	//   （`device_id` 必填，不做无主会话）。
-	// - **结束**：日志中的连接结束事件，或空闲超时（`last_activity_at` 之后
-	//   10 分钟无关联事件）把状态置 `closed`；`end_reason` 记
-	//   `disconnected` / `idle_timeout`，超时收尾由后台任务负责。
-	// - **denied**：仅 panel 来源，签发阶段被策略拒绝时写入留痕行，不占并发额度。
+	// - **native**：由 hbbs/hbbr 日志事件按 `device` 关联推断。归并前**先查同设备
+	//   30 秒窗口内未关闭的会话**（含 panel）：
+	//   命中 panel → 只刷新该会话的 `last_activity_at`，不新建 native 会话、不发
+	//   native 相关告警（面板远控也要走本组织的 hbbs/hbbr，日志里同样有它）；
+	//   命中 native → 事件归并到该会话；两者都没有 → 新建 native 会话。
+	//   关联不到组织设备的事件不建会话（`device_id` 必填，不做无主会话）。
+	// - **活动时钟**：`status=open` 的会话 `last_activity_at` 非空；为 null 时以
+	//   `started_at` 作为空闲判定基线。日志事件命中会话即刷新。
+	// - **结束**：可识别的连接结束事件（采集规则映射为 `SessionEvent.kind=disconnected`，
+	//   规则随 T7 落地），或空闲超时（`last_activity_at` 之后默认 10 分钟、可由部署
+	//   配置覆盖）把状态置 `closed`；`end_reason` 见 `SessionEndReason`。
+	//   **已关闭的会话不会被重新打开**：窗口内再来的事件新建会话（重连 = 新会话）。
+	// - **时长上限是后置处理**：`max_session_minutes` 超限时由后台任务把会话置
+	//   `closed`（`end_reason=policy_exceeded`）并产生告警；面板不在信令链路上，
+	//   **不会掐断真实连接**——时长策略是记账与告警语义，不是强制断连。
+	// - **denied**：仅 panel 来源，由 `POST .../tickets`（签发阶段被策略拒绝）写入
+	//   留痕行：`ticket_id=null`、`started_at`=`ended_at`=拒绝时刻、
+	//   `end_reason=policy_denied`，不占并发额度。它不经兑换创建。
 	// - **并发口径**：`max_concurrent_sessions` 只统计 `status=open` 且
 	//   `origin=panel` 的会话——native 只告警不阻断，计入会让策略不可执行。
 	//
@@ -1243,7 +1313,10 @@ type Ticket struct {
 
 	// PolicySnapshot 签发时生效的策略快照（审计与排障用）
 	PolicySnapshot *map[string]interface{} `json:"policy_snapshot,omitempty"`
-	RevokedAt      *time.Time              `json:"revoked_at,omitempty"`
+
+	// RevokedAt 撤销时间。没有独立的撤销端点：成员被移出组织、角色降级或组织停用时，
+	// 由 offboarding 路径撤销其**未兑换**的票据（T8）。
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
 
 	// UsedAt 首次被兑换的时间；一次性，非 null 即不可再用
 	UsedAt *time.Time `json:"used_at,omitempty"`
@@ -1254,7 +1327,7 @@ type TicketCreateRequest struct {
 	DeviceId int64 `json:"device_id"`
 
 	// TtlSeconds 票据有效期（秒），默认 300
-	TtlSeconds *int `json:"ttl_seconds,omitempty"`
+	TtlSeconds *int64 `json:"ttl_seconds,omitempty"`
 }
 
 // TicketRedeemRequest defines model for TicketRedeemRequest.
@@ -1374,6 +1447,11 @@ type ListSessionsParams struct {
 	PageSize *int       `form:"pageSize,omitempty" json:"pageSize,omitempty"`
 }
 
+// IssueTicket409JSONResponseBody defines parameters for IssueTicket.
+type IssueTicket409JSONResponseBody struct {
+	union json.RawMessage
+}
+
 // GetHealthz200JSONResponseBodyStatus defines parameters for GetHealthz.
 type GetHealthz200JSONResponseBodyStatus string
 
@@ -1430,6 +1508,68 @@ type IssueTicketJSONRequestBody = TicketCreateRequest
 
 // RedeemTicketJSONRequestBody defines body for RedeemTicket for application/json ContentType.
 type RedeemTicketJSONRequestBody = TicketRedeemRequest
+
+// AsApprovalRequiredResponse returns the union data inside the IssueTicket409JSONResponseBody as a ApprovalRequiredResponse
+func (t IssueTicket409JSONResponseBody) AsApprovalRequiredResponse() (ApprovalRequiredResponse, error) {
+	var body ApprovalRequiredResponse
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromApprovalRequiredResponse overwrites any union data inside the IssueTicket409JSONResponseBody as the provided ApprovalRequiredResponse
+func (t *IssueTicket409JSONResponseBody) FromApprovalRequiredResponse(v ApprovalRequiredResponse) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeApprovalRequiredResponse performs a merge with any union data inside the IssueTicket409JSONResponseBody, using the provided ApprovalRequiredResponse
+func (t *IssueTicket409JSONResponseBody) MergeApprovalRequiredResponse(v ApprovalRequiredResponse) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsErrorResponse returns the union data inside the IssueTicket409JSONResponseBody as a ErrorResponse
+func (t IssueTicket409JSONResponseBody) AsErrorResponse() (ErrorResponse, error) {
+	var body ErrorResponse
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromErrorResponse overwrites any union data inside the IssueTicket409JSONResponseBody as the provided ErrorResponse
+func (t *IssueTicket409JSONResponseBody) FromErrorResponse(v ErrorResponse) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeErrorResponse performs a merge with any union data inside the IssueTicket409JSONResponseBody, using the provided ErrorResponse
+func (t *IssueTicket409JSONResponseBody) MergeErrorResponse(v ErrorResponse) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t IssueTicket409JSONResponseBody) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *IssueTicket409JSONResponseBody) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
