@@ -197,6 +197,20 @@ func main() {
 	// log collection itself is enabled (#41), and every pass is audited so
 	// infrastructure housekeeping stays observable (#46).
 	auditor := audit.NewGormAuditor(st.DB)
+
+	// Tenant transfers are the one write path that can move a row between
+	// organizations. The store refuses them unless a recorder is registered, so
+	// wiring it here is what makes the channel usable at all; leaving it out
+	// keeps the channel closed.
+	store.RegisterTransferRecorder(func(tx *gorm.DB, aud store.TransferAudit) error {
+		return auditor.RecordTx(tx, audit.Entry{
+			OrganizationID: aud.OrganizationID,
+			ActorUserID:    aud.ActorUserID,
+			Action:         "tenant.transfer",
+			TargetType:     "organization",
+			Detail:         map[string]any{"reason": aud.Reason},
+		})
+	})
 	sched := worker.New(lg, auditor)
 	if cfg.Logcollect.RetentionSweepInterval > 0 {
 		if err := sched.Register(worker.Task{
