@@ -244,7 +244,8 @@ func TestIssue_RequiresApprovalAndReusesPending(t *testing.T) {
 	require.Equal(t, need.ApprovalID, again.ApprovalID, "the pending approval is reused")
 
 	var approvals []model.Approval
-	require.NoError(t, store.WithoutTenantScope(h.db).Find(&approvals).Error)
+	require.NoError(t, store.WithoutTenantScope(h.db).
+		Where("organization_id = ?", h.org.ID).Find(&approvals).Error)
 	require.Len(t, approvals, 1)
 	require.Equal(t, model.ApprovalKindPre, approvals[0].Kind)
 	require.Equal(t, model.ApprovalStatusPending, approvals[0].Status)
@@ -665,6 +666,25 @@ func TestRedeem_AuditFailureRollsBack(t *testing.T) {
 	require.NoError(t, store.WithoutTenantScope(h.db).
 		Where("organization_id = ?", h.org.ID).Find(&sessions).Error)
 	require.Empty(t, sessions)
+}
+
+// A service with no recorder must refuse to write rather than commit an
+// unaudited ticket: the audit row is what makes the mutation reconstructable
+// afterwards.
+func TestIssue_WithoutRecorderFailsClosed(t *testing.T) {
+	h := newHarness(t)
+	h.svc = session.NewService(h.db, nil, func() time.Time { return h.now })
+
+	_, _, err := h.svc.Issue(context.Background(), session.IssueInput{
+		OrganizationID: h.org.ID, ActorUserID: 1, DeviceID: h.device.ID,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no audit recorder")
+
+	var tickets []model.Ticket
+	require.NoError(t, store.WithoutTenantScope(h.db).
+		Where("organization_id = ?", h.org.ID).Find(&tickets).Error)
+	require.Empty(t, tickets, "no ticket may be committed without an audit entry")
 }
 
 // The approval request is itself a domain mutation and is audited.

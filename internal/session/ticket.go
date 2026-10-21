@@ -233,6 +233,15 @@ func (s *Service) Redeem(ctx context.Context, orgID, actorID, ticketID uint, tok
 		// PostgreSQL take the row lock. The previous no-op UPDATE was not
 		// portable: MySQL reports 0 affected rows when the value does not change,
 		// which turned every redemption into a 404 there.
+		//
+		// The count below is safe because its snapshot is established *after* the
+		// lock is granted: MySQL's locking read sees the latest committed rows
+		// even inside an older REPEATABLE READ snapshot, and PostgreSQL's default
+		// READ COMMITTED sees them per statement. This holds as long as neither
+		// database is switched to a stricter isolation level (PostgreSQL
+		// REPEATABLE READ would let a second transaction's plain count miss the
+		// first one's insert, since the organization row itself is never
+		// updated) — the store does not set one.
 		var org model.Organization
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("id = ?", orgID).
