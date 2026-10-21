@@ -31,6 +31,10 @@ type LogcollectConfig struct {
 	// (panel-org-<orgID>-hbbs / -hbbr).
 	ContainerPrefix string           `mapstructure:"containerPrefix"`
 	Rules           []LogcollectRule `mapstructure:"rules"`
+	// RetentionSweepInterval is the period of the log-event retention sweep.
+	// Zero disables the periodic sweep (the startup pass still runs when the
+	// collector is enabled).
+	RetentionSweepInterval time.Duration `mapstructure:"retentionSweepInterval"`
 }
 
 // LogcollectRule is one configurable parsing rule.
@@ -138,6 +142,7 @@ func Load(path string) (*Config, error) {
 	// Log collection is opt-in: without rules nothing can be parsed.
 	v.SetDefault("logcollect.enabled", false)
 	v.SetDefault("logcollect.containerprefix", "panel-org")
+	v.SetDefault("logcollect.retentionsweepinterval", 6*time.Hour)
 	// Frontend origin for links inside outgoing emails.
 	v.SetDefault("web.baseurl", "http://localhost:5173")
 	if err := v.BindEnv("web.baseurl", "PANEL_WEB_BASE_URL"); err != nil {

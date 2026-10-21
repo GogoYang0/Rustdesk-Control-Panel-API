@@ -110,24 +110,19 @@ func (s *Service) Start(ctx context.Context) {
 		zap.Int("organizations", len(rows)), zap.Int("rules", s.parser.Rules()))
 }
 
-// pruneExpired enforces the documented retention window at startup. M2 has no
-// background scheduler yet, so the sweep runs once per process start; it is
-// idempotent and bounded by the occurred_at index.
+// pruneExpired runs the retention sweep once at startup. Periodic sweeps are
+// driven by the worker scheduler (#41), which also covers the case where log
+// collection is disabled; this immediate pass keeps a long-stopped collector
+// from serving over-window history before the first tick.
 func (s *Service) pruneExpired() {
-	// occurred_at is stored as UTC text and compared lexicographically, so the
-	// cutoff must share that timeline: a local-zone value shifts the window by
-	// the host's offset.
-	cutoff := s.now().UTC().Add(-time.Duration(model.DefaultLogEventRetentionDays) * 24 * time.Hour)
-	res := store.WithoutTenantScope(s.db).
-		Where("occurred_at < ?", cutoff).
-		Delete(&model.LogEvent{})
-	if res.Error != nil {
-		s.logger.Warn("prune expired log events failed", zap.Error(res.Error))
+	rows, err := PruneExpired(s.db, s.now())
+	if err != nil {
+		s.logger.Warn("prune expired log events failed", zap.Error(err))
 		return
 	}
-	if res.RowsAffected > 0 {
+	if rows > 0 {
 		s.logger.Info("pruned expired log events",
-			zap.Int64("rows", res.RowsAffected),
+			zap.Int64("rows", rows),
 			zap.Int("retention_days", model.DefaultLogEventRetentionDays))
 	}
 }

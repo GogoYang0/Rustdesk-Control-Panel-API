@@ -29,6 +29,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/provision"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/worker"
 )
 
 // main loads configuration, prepares persistence and services, and starts the API server.
@@ -188,12 +189,37 @@ func main() {
 
 	provQueue.Start(rootCtx)
 
+	// Background workers: the retention sweep must run regardless of whether
+	// log collection itself is enabled (#41), and every pass is audited so
+	// infrastructure housekeeping stays observable (#46).
+	auditor := audit.NewGormAuditor(st.DB)
+	sched := worker.New(lg, auditor)
+	if cfg.Logcollect.RetentionSweepInterval > 0 {
+		if err := sched.Register(worker.Task{
+			Name:     "logcollect-retention",
+			Interval: cfg.Logcollect.RetentionSweepInterval,
+			Run: func(ctx context.Context) (int64, error) {
+				return logcollect.PruneExpired(st.DB.WithContext(ctx), time.Now())
+			},
+		}); err != nil {
+			lg.Fatal("register retention sweep", zap.Error(err))
+		}
+	} else {
+		lg.Warn("periodic retention sweep disabled (logcollect.retentionSweepInterval = 0)")
+	}
+	sched.Start(rootCtx)
+
 	// Drain the tailers on shutdown: exec.CommandContext kills the
 	// `docker logs -f` children only when their context is cancelled, and
 	// waiting here keeps them from outliving the panel.
 	var drainCollector func()
 	if collector != nil {
-		drainCollector = collector.Wait
+		drainCollector = func() {
+			collector.Wait()
+			sched.Stop()
+		}
+	} else {
+		drainCollector = sched.Stop
 	}
 	// The organization row is the durable record of a provisioning intent, so a
 	// sweep re-enqueues anything that never reached a worker (full queue, crash).
@@ -215,7 +241,7 @@ func main() {
 			ProvisionQueue: provQueue,
 			OrgsPerUser:    cfg.Provision.MaxOrgsPerUser,
 			Issuer:         issuer,
-			Auditor:        audit.NewGormAuditor(st.DB),
+			Auditor:        auditor,
 			Logger:         lg,
 			Mailer:         mailer,
 			AccessTTL:      cfg.Auth.AccessTTL,
