@@ -139,6 +139,7 @@ server {
 
 - `web.baseURL`（或 `PANEL_WEB_BASE_URL`）必须是用户浏览器可达的 **https** 地址——邮件里的验证码/邀请链接指向它
 - `provision.portStart..portEnd` 分配的主机端口需要直接暴露，不经反代。每个组织占用连续 5 个端口，协议分布不同：`HbbsPort`（TCP，nat-test）、`HbbsPort+1`（**TCP+UDP**，id registry/heartbeat）、`HbbsPort+2`（TCP，web client websocket）、`HbbrPort`（TCP，relay）、`HbbrPort+1`（TCP，web client relay ws）。默认端口从 21116 起、每组织连续 5 个——第一个组织就需要 `21116–21120`，**缺 21120 时第一个组织的 `HbbrPort+1` 即不可用**；完整放行范围以 `portStart..portEnd` 为准
+- **例外——两个 WebSocket 端口建议经反向代理暴露**：`HbbsPort+2` 与 `HbbrPort+1` 是 web 客户端的 WebSocket 入口。RustDesk 服务端信任这些连接上的 `X-Real-IP` / `X-Forwarded-For` 头，直接暴露时真实客户端 IP 的还原依赖直连来源，基于 IP 的限制也可能被伪造头绕过（CWE-16）。建议与 panel 一致地经反代终止 TLS 并透传这两个头
 
 ---
 
