@@ -13,6 +13,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/session"
 )
 
 // Deps carries everything the HTTP layer needs.
@@ -44,6 +45,10 @@ type Deps struct {
 	// CompatTTL bounds the RustDesk compatibility session/token lifetime
 	// (config compat.accessTTL, default 720h).
 	CompatTTL time.Duration
+
+	// Tickets issues and redeems connection tickets. NewAdminAPI builds one
+	// from DB/Auditor/Now when it is nil, so tests can leave it out.
+	Tickets *session.Service
 }
 
 // Provisioner schedules asynchronous server provisioning.
@@ -53,10 +58,11 @@ type Provisioner interface {
 
 // AdminAPI implements the generated gen.ServerInterface.
 type AdminAPI struct {
-	deps   Deps
-	guard  *loginGuard
-	resend *loginGuard
-	books  *addressbook.Service
+	deps    Deps
+	guard   *loginGuard
+	resend  *loginGuard
+	books   *addressbook.Service
+	tickets *session.Service
 }
 
 // NewAdminAPI builds the handler set.
@@ -84,10 +90,23 @@ func NewAdminAPI(d Deps) *AdminAPI {
 		// dependency wiring optional in tests that do not exercise mail.
 		d.Mailer = mail.NewDev(io.Discard)
 	}
+	tickets := d.Tickets
+	if tickets == nil {
+		// The auditor doubles as the transactional recorder; a non-transactional
+		// auditor (Nop in tests) simply leaves the ticket mutations unaudited,
+		// which is why production always injects the GORM auditor.
+		var recorder audit.TxRecorder
+		if r, ok := d.Auditor.(audit.TxRecorder); ok {
+			recorder = r
+		}
+		tickets = session.NewService(d.DB, recorder, d.Now)
+	}
+
 	return &AdminAPI{
-		deps:   d,
-		guard:  newLoginGuard(),
-		resend: newLoginGuard(),
-		books:  addressbook.NewService(d.DB),
+		deps:    d,
+		guard:   newLoginGuard(),
+		resend:  newLoginGuard(),
+		books:   addressbook.NewService(d.DB),
+		tickets: tickets,
 	}
 }
