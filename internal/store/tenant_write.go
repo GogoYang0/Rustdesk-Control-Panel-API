@@ -104,10 +104,16 @@ func AllowTenantTransfer(db *gorm.DB, aud TransferAudit, fn func(tx *gorm.DB) er
 		parent = db.Statement.Context
 	}
 	tx := db.WithContext(context.WithValue(parent, tenantTransferKey, true))
-	if err := fn(tx); err != nil {
-		return err
-	}
-	return recorder(tx, aud)
+	// The move and its audit row must commit or fail together. Without this
+	// transaction the update autocommits, a recorder error leaves the row moved
+	// but unaudited, and the caller only sees an error for a change that already
+	// happened.
+	return tx.Transaction(func(inner *gorm.DB) error {
+		if err := fn(inner); err != nil {
+			return err
+		}
+		return recorder(inner, aud)
+	})
 }
 
 func isTenantTransfer(stmt *gorm.Statement) bool {

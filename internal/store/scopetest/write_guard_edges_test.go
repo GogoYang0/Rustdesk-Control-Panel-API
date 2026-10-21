@@ -267,4 +267,11 @@ func TestAllowTenantTransfer_AuditFailureSurfaces(t *testing.T) {
 				Update("organization_id", orgB.ID).Error
 		})
 	require.ErrorIs(t, err, auditErr, "the audit error must reach the caller")
+
+	// The move and the audit share a transaction: a failed audit must roll the
+	// move back, not leave a row that changed hands with no record.
+	var reloaded model.Membership
+	require.NoError(t, store.WithoutTenantScope(db).Where("id = ?", m.ID).First(&reloaded).Error)
+	require.Equal(t, orgA.ID, reloaded.OrganizationID,
+		"a failed audit must not leave the row in the other organization")
 }
