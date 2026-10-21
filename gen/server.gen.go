@@ -1009,6 +1009,9 @@ type PolicyListResponse struct {
 // 显式给出布尔值（缺失或 null → 400），避免"省略即按默认值"的静默绕过——
 // 静默按 false 会把已启用的策略关掉或把审批要求取消。限额字段为 null（或省略）
 // 表示不限。
+//
+// 服务端须从原始 JSON 判定这两个字段是否真的出现（生成的强类型默认值无法
+// 区分「没给」与「给了 false」）；schema 本身已拒绝 null。
 type PolicyRequest struct {
 	// AllowedEndMinute 允许时段终点（UTC 当日分钟数，不含）。必须与起点同时提供或同时为 null；
 	// 两者相等（`start == end`）不是合法窗口——全天请用 null——返回 400。
@@ -1018,7 +1021,7 @@ type PolicyRequest struct {
 	// null 表示全天允许。起点大于终点表示跨零点窗口（如 1320–360 即
 	// 22:00–06:00）
 	AllowedStartMinute *int64 `json:"allowed_start_minute,omitempty"`
-	Enabled            *bool  `json:"enabled"`
+	Enabled            bool   `json:"enabled"`
 
 	// MaxConcurrentSessions 同一组织并发会话上限（只统计 open+panel 会话）；null 表示不限
 	MaxConcurrentSessions *int64 `json:"max_concurrent_sessions,omitempty"`
@@ -1028,9 +1031,10 @@ type PolicyRequest struct {
 	Name              string `json:"name"`
 
 	// RequireApproval 为 true 时，票据签发需先有已批准的审批请求。**必须显式给出 true/false**：
-	// 缺失或 null 返回 400（bool 零值无法区分「没给」与「给了 false」，
-	// 静默按 false 处理会把审批要求关掉）
-	RequireApproval *bool `json:"require_approval"`
+	// 缺失或 null 返回 400。服务端不得依赖 bool 零值判断（零值无法区分「没给」
+	// 与「给了 false」，静默按 false 处理会把审批要求关掉），应从原始 JSON
+	// 判定字段存在性。
+	RequireApproval bool `json:"require_approval"`
 }
 
 // PolicyResponse defines model for PolicyResponse.
@@ -1071,6 +1075,16 @@ type ResendVerificationRequest struct {
 //     native 相关告警（面板远控也要走本组织的 hbbs/hbbr，日志里同样有它）；
 //     命中 native → 事件归并到该会话；两者都没有 → 新建 native 会话。
 //     关联不到组织设备的事件不建会话（`device_id` 必填，不做无主会话）。
+//   - **一个 panel 会话最多吸收一个连接事件**：命中 panel 的那次归并要记一条
+//     `SessionEvent.kind=connected`。同一设备在窗口内再出现**新的连接事件**
+//     （例如同一台机器的面板远控与另一条原生直连同时进行）时，**不能再并进那个
+//     panel 会话**——日志里没有连接级标识，无法证明它属于同一连接；把第二条也
+//     并进去就会漏记一条原生连接、连带漏掉它的违规告警（CWE-778）。
+//     所以：多出来的连接事件一律**新建 native 会话**，宁可多记一条，也不漏记。
+//     候选位置有歧义时（同一设备多个未关闭会话）同样按「新建 native」处理。
+//   - 采集规则若能从日志中提取连接级标识（连接号 / 对端地址等），实现应按该标识
+//     精确匹配、取代上面的保守规则；标识的有无属于采集层细节，不改变本契约的
+//     可观测语义。
 //   - **活动时钟**：`status=open` 的会话 `last_activity_at` 非空；为 null 时以
 //     `started_at` 作为空闲判定基线。日志事件命中会话即刷新。
 //   - **结束**：可识别的连接结束事件（采集规则映射为 `SessionEvent.kind=disconnected`，
@@ -1151,6 +1165,16 @@ type SessionDetail struct {
 	//   native 相关告警（面板远控也要走本组织的 hbbs/hbbr，日志里同样有它）；
 	//   命中 native → 事件归并到该会话；两者都没有 → 新建 native 会话。
 	//   关联不到组织设备的事件不建会话（`device_id` 必填，不做无主会话）。
+	// - **一个 panel 会话最多吸收一个连接事件**：命中 panel 的那次归并要记一条
+	//   `SessionEvent.kind=connected`。同一设备在窗口内再出现**新的连接事件**
+	//   （例如同一台机器的面板远控与另一条原生直连同时进行）时，**不能再并进那个
+	//   panel 会话**——日志里没有连接级标识，无法证明它属于同一连接；把第二条也
+	//   并进去就会漏记一条原生连接、连带漏掉它的违规告警（CWE-778）。
+	//   所以：多出来的连接事件一律**新建 native 会话**，宁可多记一条，也不漏记。
+	//   候选位置有歧义时（同一设备多个未关闭会话）同样按「新建 native」处理。
+	// - 采集规则若能从日志中提取连接级标识（连接号 / 对端地址等），实现应按该标识
+	//   精确匹配、取代上面的保守规则；标识的有无属于采集层细节，不改变本契约的
+	//   可观测语义。
 	// - **活动时钟**：`status=open` 的会话 `last_activity_at` 非空；为 null 时以
 	//   `started_at` 作为空闲判定基线。日志事件命中会话即刷新。
 	// - **结束**：可识别的连接结束事件（采集规则映射为 `SessionEvent.kind=disconnected`，
@@ -1258,6 +1282,16 @@ type SessionResponse struct {
 	//   native 相关告警（面板远控也要走本组织的 hbbs/hbbr，日志里同样有它）；
 	//   命中 native → 事件归并到该会话；两者都没有 → 新建 native 会话。
 	//   关联不到组织设备的事件不建会话（`device_id` 必填，不做无主会话）。
+	// - **一个 panel 会话最多吸收一个连接事件**：命中 panel 的那次归并要记一条
+	//   `SessionEvent.kind=connected`。同一设备在窗口内再出现**新的连接事件**
+	//   （例如同一台机器的面板远控与另一条原生直连同时进行）时，**不能再并进那个
+	//   panel 会话**——日志里没有连接级标识，无法证明它属于同一连接；把第二条也
+	//   并进去就会漏记一条原生连接、连带漏掉它的违规告警（CWE-778）。
+	//   所以：多出来的连接事件一律**新建 native 会话**，宁可多记一条，也不漏记。
+	//   候选位置有歧义时（同一设备多个未关闭会话）同样按「新建 native」处理。
+	// - 采集规则若能从日志中提取连接级标识（连接号 / 对端地址等），实现应按该标识
+	//   精确匹配、取代上面的保守规则；标识的有无属于采集层细节，不改变本契约的
+	//   可观测语义。
 	// - **活动时钟**：`status=open` 的会话 `last_activity_at` 非空；为 null 时以
 	//   `started_at` 作为空闲判定基线。日志事件命中会话即刷新。
 	// - **结束**：可识别的连接结束事件（采集规则映射为 `SessionEvent.kind=disconnected`，
