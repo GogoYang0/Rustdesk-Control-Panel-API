@@ -15,7 +15,7 @@
 | 邀请成员 | `POST /api/v1/orgs/{orgId}/invitations` | admin |
 | 接受邀请 | `POST /api/v1/invitations/accept` | 被邀请人 |
 | 查看设备 | `GET /api/v1/orgs/{orgId}/devices` | member（owner/admin 见契约） |
-| 删除设备（解绑 compat 客户端） | `DELETE /api/v1/orgs/{orgId}/devices/{deviceId}` | admin |
+| ~~删除设备（解绑 compat 客户端）~~ | **v0.3.0 无此端点**（[#43](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/43)）——解绑需直接删除数据库设备行（临时流程） | — |
 | 查询日志事件 | `GET /api/v1/orgs/{orgId}/log-events` | member |
 
 **设备解绑**是 compat 层最高频的管理操作：客户端重装/换机后 uuid 变化，登录报 403「设备已绑定」→ 管理员删除设备行 → 客户端重新登录即重新认领。删除设备不影响历史心跳与日志事件（按组织保留）。
@@ -24,18 +24,18 @@
 
 ## 2. 设备在线判定与心跳
 
-设备 `online` 的判定：`last_seen_at + OnlineWindow > now`（时间只前进，慢到的旧心跳不会回退时间戳）。
+设备 `online` 的判定：`last_seen_at + OnlineWindow > now`，且 `last_seen_at` 不得比 `now` 超前超过 5 秒（`ClockSkew`）——超前的设备判定为 offline（时钟偏差的节点不能借未来时间戳保持在线）。时间只前进，慢到的旧心跳不会回退时间戳。
 
 心跳有两个来源，在 `DeviceHeartbeat.source` 中区分：
 
 | 源 | 触发 | 去重 |
 |---|---|---|
-| `api` | 原生客户端 `POST /api/heartbeat`（无凭据，凭 uuid+设备 id 定位会话） | 30s 窗口合并（`apiHeartbeatMinInterval`），**事务内 `RowsAffected` 守卫**保证并发下每窗口一行 |
-| `log` | 日志采集器从 hbbs 日志中识别出连接行为（C11） | 30s 窗口（`logHeartbeatMinInterval`），`RecordLogActivity` 前置检查 + 事务内守卫 |
+| `api` | 原生客户端 `POST /api/heartbeat`（无凭据，凭 uuid+设备 id 定位会话） | 与 `log` 源**共享**设备 `last_seen_at` 的 30s 合并窗口，事务内 `RowsAffected` 守卫保证并发下每窗口一行 |
+| `log` | 日志采集器从 hbbs 日志中识别出连接行为（C11） | 与 `api` 源共享同一窗口（`logHeartbeatMinInterval`），`RecordLogActivity` 前置检查 + 事务内守卫 |
 
 运维要点：
 
-- 心跳历史每天每设备最多 2,880 行（两源各一），可作为设备活跃度审计数据
+- 心跳历史每天每设备最多 2,880 行（**两源共享同一 30s 窗口**，非各自 2,880）；有行不能证明两个源分别产生了活动
 - 客户端心跳是**幂等**的：窗口内的重复上报返回成功但不追加行；返回的设备状态是刷新后的
 - 管理端点返回的设备状态在心跳合并竞态下也保证是最新值（不会把刚上线的设备报成 offline）
 
@@ -65,7 +65,7 @@
 | 组织部署成功 | `Watch`：确认 server group 仍 deployed 后启动 hbbs/hbbr 两个 tailer |
 | 首次连接 | `--tail 0` 只跟随新行（历史不回灌） |
 | 重连 | `--since <最后确认时间戳+1ns>`（闭区间 `--since` 从该时间戳起读） |
-| 行写入失败 | 停止当前流，断点**不推进**，重连重放该行；退避继续增长（DB 不可用时不猛打） |
+| 行写入失败 | 停止当前流，断点**不推进**，重连重放该行。注意：若当前流此前已交付过至少一行，重连前退避会**重置**为初始值——DB 长时间不可用时可能按初始间隔重试（已知行为） |
 | 组织下线 | `OnDeprovisioned → Unwatch` 取消 tailer（仅删除成功后触发） |
 | 关闭 | `Wait` 置 `closed` 标志后 `WaitGroup.Wait`；关闭后的迟到部署回调不注册新 tailer |
 
@@ -92,16 +92,18 @@
 |---|---|---|
 | 用户未收到验证邮件 | devMode=true（邮件在 panel stdout 里） | 生产必须 `mail.devMode=false` |
 | SMTP 报 STARTTLS 相关错误 | 服务器不支持 STARTTLS | panel **拒绝明文发送**——改用支持 TLS 的 relay |
-| 5xx 后用户收不到 | 永久错误不重试（设计） | 让用户点重发（`/api/v1/auth/resend-verification`） |
-| 令牌结果不明 | 连接中断，投递状态未知 | 验证码/邀请令牌保留，用户可重试 |
+| 验证邮件 5xx 后用户收不到 | 永久错误不重试（设计） | 让用户点重发（`/api/v1/auth/resend-verification`） |
+| 邀请邮件 5xx 后用户收不到 | 永久错误不重试（设计） | **没有邀请重发端点**——等待邀请记录过期后重新创建邀请 |
+| 验证令牌结果不明 | 连接中断，投递状态未知 | 验证令牌保留，用户可重试 |
+| 邀请令牌结果不明 | 连接中断，投递状态未知 | 邀请令牌保留；同样没有重发端点，过期后重建 |
 
 ---
 
 ## 6. Provisioning 运维
 
 - 每组织一对容器：`panel-org-<orgId>-hbbs` / `-hbbr`，端口从 `provision.portStart..portEnd` 池分配并持久化在 `ServerGroup` 行
-- 供应队列：`provision.workers` 并发；失败的部署保留行与端口（不回收），由对账 reconciler（2 分钟周期）重新入队——**不要手工删除 `ServerGroup` 行**，会造成端口重复分配
-- 下线：`Deprovision` 删除容器 → 删行 → `Unwatch` 采集器；失败时行保留（failed 状态），端口继续被占用
+- 供应队列：`provision.workers` 并发。部署失败后会执行清理：**清理成功 → 删除 `ServerGroup` 行并释放端口；清理失败 → 行保留为 `failed` 状态**。保留的行会被 `PendingOrgIDs` 排除，对账 reconciler（2 分钟周期）**不会**重新入队——清理失败的部署必须人工处理（残留容器、行、端口）
+- 下线：`Deprovision` 删除容器 → 删行 → `Unwatch` 采集器；失败时行保留（failed 状态），端口继续被占用，且不会由 reconciler 自动重试
 - `provision.dataDir/org-<orgId>/` 含各组织密钥与数据（`dataDir` 可配置，默认根目录为 `./data/servergroups`）：**备份范围必须包含它**，否则重建容器后客户端 ID 不变但密钥丢失
 
 ---
@@ -113,7 +115,7 @@
 | 关系数据（用户/组织/设备/审计/日志事件/供应状态） | `panel.db` 或外部 DB | 每日；审计行是安全证据，保留期越长越好 |
 | 各组织 hbbs/hbbr 密钥与数据 | `provision.dataDir`（默认 `./data/servergroups`，组织子目录为 `org-<orgId>/`） | 每日（与 DB 同步点） |
 
-恢复：恢复 DB + 数据目录 → 启动 panel → AutoMigrate 幂等 → 供应状态从 `ServerGroup` 行恢复（reconciler 会对账）。
+恢复：恢复 DB + 数据目录 → **恢复对应的 Docker 容器状态**（reconciler 会跳过已有 `ServerGroup` 行的组织，不会重建缺失的容器）——容器状态不可恢复时，须对每个已恢复的组织执行并验证容器重建 → 启动 panel → AutoMigrate 幂等。
 
 **审计完整性巡检**：按组织检查 audit 序列号连续性（断号 = 行被删/篡改）。
 
@@ -125,7 +127,7 @@
 
 | 信号 | 日志关键字 | 含义 |
 |---|---|---|
-| 供应失败 | `provision` + error / `markFailed` | 需要人工检查 docker/端口 |
+| 供应失败 | `provision` + error / `mark server group failed` / `provision rollback: remove failed` | 需要人工检查 docker/端口 |
 | 审计写失败 | `audit record failed` | 审计链路异常（Drop 即损失证据） |
 | 日志事件持久化失败 | `store log event failed` | DB 压力/故障；tailer 会自动重连重放 |
 | 规则失配 | `unparseable`（限速告警） | 规则需要校准 |

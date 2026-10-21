@@ -23,13 +23,13 @@
 go build -o panel ./cmd/server
 ```
 
-发布产物为单二进制；不依赖任何运行时。`configs/config.yaml` 是随仓库发布的**示例配置**，部署时复制到工作目录并按需修改。
+发布产物为单二进制；不依赖任何运行时。配置固定从工作目录下的 **`configs/config.yaml`** 读取（`config.Load("configs/config.yaml")`）——部署时保留 `configs/` 目录结构并按需修改，**不要拍平到工作目录**。
 
 ---
 
 ## 3. 配置全表
 
-配置来自工作目录的 `config.yaml`（viper），三个敏感项只从环境变量注入：
+三个敏感项只从环境变量注入：
 
 ### 3.1 环境变量（敏感项，禁止写入配置文件）
 
@@ -46,11 +46,12 @@ go build -o panel ./cmd/server
 | `server.addr` | | `:8080` | HTTP 监听地址 |
 | `auth.accessTTL` / `auth.refreshTTL` | | `15m` / `168h` | 管理 JWT 的访问/刷新令牌有效期；刷新令牌轮换 + 重放撤销 |
 | `database.driver` | | `sqlite` | `sqlite` \| `postgres` \| `mysql` |
-| `database.dsn` | | `file:data/panel.db` | 生产建议 PostgreSQL；SQLite 只适合单实例小规模部署 |
+| `database.dsn` | | `file::memory:?cache=shared` | **加载器默认是共享内存 SQLite（重启即失数据）**——生产必须显式设置持久化 DSN，如 `file:data/panel.db`；生产建议 PostgreSQL |
 | `log.level` / `log.format` | | `info` / `json` | zap 结构化日志；`json` 便于采集 |
 | `provision.portStart/End` | | `21116–22115` | 每组织占用**连续 5 个**主机端口（`PortBlockSize=5`，见 §7 协议分布）；默认范围最多支持 200 个组织 |
 | `provision.relayHost` | | — | **必须是客户端可达的公网地址**，无回退 |
-| `provision.image` | | `rustdesk/rustdesk-server:1.1.11` | 固定 tag 保证可复现；**日志采集规则按此镜像的日志格式编写**，换镜像必须重新校准 |
+| `provision.orgLabel` / `provision.roleLabel` | | `com.rustdesk-panel.org` / `com.rustdesk-panel.role` | 容器标签键 |
+| `provision.image` | —（无加载器默认，未配置时供应失败） | `rustdesk/rustdesk-server:1.1.11` | 必须显式配置；固定 tag 保证可复现；**日志采集规则按此镜像的日志格式编写**，换镜像必须重新校准 |
 | `provision.dataDir` | | `./data/servergroups` | 各组织 hbbs/hbbr 的密钥与数据目录（挂载进容器） |
 | `provision.maxOrgsPerUser` / `workers` | | `5` / `2` | 单用户组织上限 / 供应队列并发 |
 | `mail.devMode` | | `true` | `true` 时邮件打印到 stdout（开发）；生产必须 `false` |
@@ -78,7 +79,7 @@ go build -o panel ./cmd/server
 ### 4.2 升级
 
 - 新版本新增列时 AutoMigrate 自动处理；**删除列/收窄列不会自动执行**（如 `Device.BoundUUID` 保持 255 的原因）
-- 回填标记保证一次性迁移只执行一次；**多实例同时升级是安全的**（回填幂等），但建议逐个滚动启动
+- **升级期间禁止并行启动实例**：回填会把当前所有未验证账户标为已验证——若另一实例在回填完成前启动并创建了新的未验证账户，该账户也会被误标为已验证，**绕过邮箱验证边界**。正确流程：先停止或隔离其他实例 → 启动一个实例完成回填并写入迁移标记 → 再启动其余实例
 - 升级前备份 `panel.db`（或数据库快照）与 `data/servergroups/`
 
 ### 4.3 选择生产数据库
@@ -101,7 +102,8 @@ database:
 - `mail.devMode=true`：所有邮件写 stdout（开发/内网体验）
 - 生产：`devMode=false` + 填 `mail.smtp.{host,port,username,from}` + 环境变量 `PANEL_SMTP_PASSWORD`
 - 投递语义（运维含义见 [运维指南 §5](operations.md)）：
-  - 服务器不支持 STARTTLS → 不发送（拒绝明文凭据）
+  - **非 465 端口**的服务器不支持 STARTTLS → 不发送（拒绝明文凭据）
+  - **465 端口使用隐式 TLS**，不要求 STARTTLS（两种受支持形态）
   - 5xx 永久错误 → 不重试
   - 结果不明（连接中断）→ 保留验证码/令牌，可重发
 - 验证码有效期与一次性语义见 [API 规范 §4.4](api-spec.md)
@@ -156,6 +158,6 @@ server {
 客户端「ID/中继服务器」指向该组织分配的 hbbs/hbbr 地址（provision 时按 `relayHost` + 分配端口生成）。客户端登录面板走 **compat 层**（协议与官方客户端一致）：
 
 - 登录凭据 = 面板账号（邮箱 + 密码）+ 组织；首次登录会认领设备（rustdesk id + uuid 绑定）
-- 换机器/重装后 uuid 变化会报「设备已绑定」——需要管理员在面板删除该设备记录后重新认领（见运维指南 §2）
+- 换机器/重装后 uuid 变化会报 403「设备已绑定」。v0.3.0 **没有设备删除的管理面端点**（跟踪 [#43](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/43)），恢复需直接删除数据库中的设备行（临时流程）
 
 详细协议见 [API 规范 §5](api-spec.md)。

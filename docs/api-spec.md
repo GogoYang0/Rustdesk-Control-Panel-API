@@ -13,7 +13,7 @@
 | 令牌 | JWT（`/api/v1/auth/login` 签发，15m）+ 刷新令牌（168h，**轮换 + 重放撤销**） | compat access token（`/api/login` 签发，TTL 见 `compat.accessTTL`） |
 | 中间件 | 管理 JWT 中间件，写入 `api.*` 上下文 | compat 会话中间件，写入 `compat.*` 上下文（`compat.userID` / `compat.orgID` / `compat.jti`） |
 | 审计 | 中间件回退记录（领域写用 `TxRecorder` 同事务） | 同一审计中间件回退读取 compat 键归因（v0.3.0 起） |
-| 多组织 | 登录响应含组织列表，请求携带 `orgId` 路径参数 | 登录时选择组织（`org` 选择器），会话固定组织 |
+| 多组织 | 登录响应仅含 `access_token`、`refresh_token`、`expires_in`，**不含组织列表**；管理请求携带 `orgId` 路径参数 | 账号属多组织时用户名用 `email#orgID` 选择组织，会话固定组织 |
 | 传输 | `Authorization: Bearer <token>` | 同左（`authed` 组）；`heartbeat`/`sysinfo` 无凭据 |
 
 两族**互不可换用**：管理令牌打不开 compat 端点，反之亦然（中间件按族校验）。
@@ -36,11 +36,11 @@
 { "code": "invalid_request", "message": "human readable", "data": null }
 ```
 
-`code` 取值（契约枚举）：`ok` `invalid_request` `not_found` `conflict` `forbidden` `email_not_verified` `rate_limited` `internal`。
+`code` 取值（契约枚举）：`ok` `invalid_request` `unauthorized` `not_found` `conflict` `forbidden` `email_not_verified` `rate_limited` `internal`。`unauthorized` 映射 **401**（登录/刷新的凭据拒绝路径）。
 
 ### 2.2 租户隔离（管理 API）
 
-管理 API 的一切组织内资源都带 `{orgId}` 路径参数；服务端通过 `ScopedByOrg` 强制租户过滤，跨组织访问返回 `404 not_found`（不泄露存在性）。compat 层不带 `{orgId}`：组织由 compat 会话承载，服务端从会话取 `OrganizationID` 后执行组织范围查询（见 §4）。
+管理 API 的一切组织内资源都带 `{orgId}` 路径参数；服务端通过 `ScopedByOrg` 强制租户过滤，跨组织访问返回 `404 not_found`（不泄露存在性）。compat 层不带 `{orgId}`：**已认证请求**使用已验证 token 的 `org` claim 作为组织上下文；**无凭据的 heartbeat/sysinfo** 从持久化会话取得 `OrganizationID` 后执行组织范围查询（见 §4）。
 
 fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件注册为准）：
 
@@ -91,9 +91,10 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 
 | 端点 | 说明 |
 |---|---|
-| `GET /api/v1/orgs/{orgId}/devices` | 设备列表（含 `online` 判定、`last_seen_at`、心跳来源） |
-| `DELETE .../devices/{deviceId}` | 删除设备 = 解绑 compat 客户端（admin）；客户端下次登录重新认领 |
+| `POST /api/v1/orgs/{orgId}/devices` | 注册设备（`device.write` 权限） |
 | `POST .../devices/{deviceId}/heartbeat` | 管理端手动心跳（`source=api`，30s 窗口合并） |
+
+> ⚠️ **v0.3.0 契约没有设备列表（GET）与设备删除（DELETE）端点**。compat 客户端换机后「管理员删除设备行 → 重新认领」的恢复流程因此**没有管理面入口**，当前唯一手段是直接操作数据库（跟踪：[#43](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/43)）。compat 侧的认领与绑定语义见 §4。
 
 ### 3.4 地址簿
 
