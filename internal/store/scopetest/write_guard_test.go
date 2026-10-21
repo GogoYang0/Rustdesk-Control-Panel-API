@@ -101,12 +101,17 @@ func TestAllowTenantTransfer_PermitsTenantColumn(t *testing.T) {
 	m := model.Membership{OrganizationID: orgA.ID, UserID: 4, Role: model.RoleMember}
 	require.NoError(t, db.Create(&m).Error)
 
-	require.NoError(t, store.AllowTenantTransfer(db, func(tx *gorm.DB) error {
-		return store.ScopedByOrg(tx, orgA.ID).
-			Model(&model.Membership{}).
-			Where("id = ?", m.ID).
-			Update("organization_id", orgB.ID).Error
-	}))
+	store.RegisterTransferRecorder(func(*gorm.DB, store.TransferAudit) error { return nil })
+	t.Cleanup(func() { store.RegisterTransferRecorder(nil) })
+
+	require.NoError(t, store.AllowTenantTransfer(db,
+		store.TransferAudit{OrganizationID: orgA.ID, Reason: "test repair"},
+		func(tx *gorm.DB) error {
+			return store.ScopedByOrg(tx, orgA.ID).
+				Model(&model.Membership{}).
+				Where("id = ?", m.ID).
+				Update("organization_id", orgB.ID).Error
+		}))
 
 	var reloaded model.Membership
 	require.NoError(t, store.WithoutTenantScope(db).Where("id = ?", m.ID).First(&reloaded).Error)

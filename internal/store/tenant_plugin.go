@@ -109,6 +109,12 @@ func registerTenantPlugin(db *gorm.DB) error {
 		Register("panel:tenant_write_guard", guardTenantColumnWrite); err != nil {
 		return err
 	}
+	// A batch Save of a slice is an upsert, i.e. an INSERT with DO UPDATE, so the
+	// update callback never runs for it.
+	if err := db.Callback().Create().Before("gorm:create").
+		Register("panel:tenant_upsert_guard", guardUpsertTenantColumn); err != nil {
+		return err
+	}
 	for _, c := range chains {
 		if err := c.register("panel:tenant_scope", inject); err != nil {
 			return err

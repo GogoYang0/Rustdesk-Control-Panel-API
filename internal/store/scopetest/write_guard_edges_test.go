@@ -1,6 +1,7 @@
 package scopetest
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -118,13 +119,18 @@ func TestAllowTenantTransfer_DoesNotOutliveTheStatement(t *testing.T) {
 	require.NoError(t, db.Create(&first).Error)
 	require.NoError(t, db.Create(&second).Error)
 
+	store.RegisterTransferRecorder(func(*gorm.DB, store.TransferAudit) error { return nil })
+	t.Cleanup(func() { store.RegisterTransferRecorder(nil) })
+
 	// The explicit transfer succeeds…
-	require.NoError(t, store.AllowTenantTransfer(db, func(tx *gorm.DB) error {
-		return store.ScopedByOrg(tx, orgA.ID).
-			Model(&model.Membership{}).
-			Where("id = ?", first.ID).
-			Update("organization_id", orgB.ID).Error
-	}))
+	require.NoError(t, store.AllowTenantTransfer(db,
+		store.TransferAudit{OrganizationID: orgA.ID, Reason: "test repair"},
+		func(tx *gorm.DB) error {
+			return store.ScopedByOrg(tx, orgA.ID).
+				Model(&model.Membership{}).
+				Where("id = ?", first.ID).
+				Update("organization_id", orgB.ID).Error
+		}))
 
 	// …and a second, unrelated statement from the same handle must not inherit it.
 	err := store.ScopedByOrg(db, orgA.ID).
@@ -133,4 +139,132 @@ func TestAllowTenantTransfer_DoesNotOutliveTheStatement(t *testing.T) {
 		Update("organization_id", orgB.ID).Error
 	require.Error(t, err, "the transfer permission must not persist on the base handle")
 	require.ErrorIs(t, err, store.ErrTenantColumnWrite)
+}
+
+// GORM dereferences any depth of pointer, so the guard must too: two ampersands
+// used to be enough to move a row.
+func TestScopedUpdate_RejectsTenantColumnInDoublePointerMap(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	orgA := model.Organization{Name: "guard-ptr2-a"}
+	orgB := model.Organization{Name: "guard-ptr2-b"}
+	require.NoError(t, db.Create(&orgA).Error)
+	require.NoError(t, db.Create(&orgB).Error)
+
+	m := model.Membership{OrganizationID: orgA.ID, UserID: 16, Role: model.RoleMember}
+	require.NoError(t, db.Create(&m).Error)
+
+	inner := map[string]any{"organization_id": orgB.ID}
+	pointer := &inner
+	err := store.ScopedByOrg(db, orgA.ID).
+		Model(&model.Membership{}).
+		Where("id = ?", m.ID).
+		Updates(&pointer).Error
+	require.Error(t, err, "a multi-level pointer payload must not bypass the guard")
+	require.ErrorIs(t, err, store.ErrTenantColumnWrite)
+}
+
+// Save(&[]T{{...}}) is a legal batch update in GORM; every element has to be
+// checked, not just the first struct shape.
+func TestScopedUpdate_RejectsTenantColumnInSliceSave(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	orgA := model.Organization{Name: "guard-slice-a"}
+	orgB := model.Organization{Name: "guard-slice-b"}
+	require.NoError(t, db.Create(&orgA).Error)
+	require.NoError(t, db.Create(&orgB).Error)
+
+	m := model.Membership{OrganizationID: orgA.ID, UserID: 17, Role: model.RoleMember}
+	require.NoError(t, db.Create(&m).Error)
+
+	rows := []model.Membership{{ID: m.ID, OrganizationID: orgB.ID, UserID: 17, Role: model.RoleMember}}
+	err := store.ScopedByOrg(db, orgA.ID).Save(&rows).Error
+	require.Error(t, err, "a slice save must not bypass the guard")
+	require.ErrorIs(t, err, store.ErrTenantColumnWrite)
+}
+
+// A map payload that omits the tenant column is a legal write: Omit applies to
+// maps as well as structs.
+func TestScopedUpdate_AllowsOmittedTenantColumnInMap(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	org := model.Organization{Name: "guard-map-omit"}
+	require.NoError(t, db.Create(&org).Error)
+
+	m := model.Membership{OrganizationID: org.ID, UserID: 18, Role: model.RoleMember}
+	require.NoError(t, db.Create(&m).Error)
+
+	require.NoError(t, store.ScopedByOrg(db, org.ID).
+		Model(&model.Membership{}).
+		Where("id = ?", m.ID).
+		Omit("organization_id").
+		Updates(map[string]any{"organization_id": org.ID, "role": model.RoleAdmin}).Error)
+}
+
+// An unaudited transfer is refused before it can touch a row.
+func TestAllowTenantTransfer_RequiresRecorderAndReason(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	orgA := model.Organization{Name: "transfer-audit-a"}
+	orgB := model.Organization{Name: "transfer-audit-b"}
+	require.NoError(t, db.Create(&orgA).Error)
+	require.NoError(t, db.Create(&orgB).Error)
+
+	m := model.Membership{OrganizationID: orgA.ID, UserID: 19, Role: model.RoleMember}
+	require.NoError(t, db.Create(&m).Error)
+
+	store.RegisterTransferRecorder(nil)
+	t.Cleanup(func() { store.RegisterTransferRecorder(nil) })
+
+	move := func(tx *gorm.DB) error {
+		return store.ScopedByOrg(tx, orgA.ID).
+			Model(&model.Membership{}).
+			Where("id = ?", m.ID).
+			Update("organization_id", orgB.ID).Error
+	}
+
+	err := store.AllowTenantTransfer(db, store.TransferAudit{OrganizationID: orgA.ID, Reason: "x"}, move)
+	require.ErrorIs(t, err, store.ErrTransferAuditMissing,
+		"a transfer without a registered recorder must be refused")
+
+	store.RegisterTransferRecorder(func(*gorm.DB, store.TransferAudit) error { return nil })
+	err = store.AllowTenantTransfer(db, store.TransferAudit{OrganizationID: orgA.ID}, move)
+	require.Error(t, err, "a transfer without a reason must be refused")
+	require.NotErrorIs(t, err, store.ErrTransferAuditMissing)
+
+	var reloaded model.Membership
+	require.NoError(t, store.WithoutTenantScope(db).Where("id = ?", m.ID).First(&reloaded).Error)
+	require.Equal(t, orgA.ID, reloaded.OrganizationID, "refused transfers must not move anything")
+}
+
+// The recorder runs inside the transfer, so a failing audit aborts the move.
+func TestAllowTenantTransfer_AuditFailureSurfaces(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	orgA := model.Organization{Name: "transfer-fail-a"}
+	orgB := model.Organization{Name: "transfer-fail-b"}
+	require.NoError(t, db.Create(&orgA).Error)
+	require.NoError(t, db.Create(&orgB).Error)
+
+	m := model.Membership{OrganizationID: orgA.ID, UserID: 20, Role: model.RoleMember}
+	require.NoError(t, db.Create(&m).Error)
+
+	auditErr := errors.New("audit store unavailable")
+	store.RegisterTransferRecorder(func(*gorm.DB, store.TransferAudit) error { return auditErr })
+	t.Cleanup(func() { store.RegisterTransferRecorder(nil) })
+
+	err := store.AllowTenantTransfer(db,
+		store.TransferAudit{OrganizationID: orgA.ID, Reason: "test"},
+		func(tx *gorm.DB) error {
+			return store.ScopedByOrg(tx, orgA.ID).
+				Model(&model.Membership{}).
+				Where("id = ?", m.ID).
+				Update("organization_id", orgB.ID).Error
+		})
+	require.ErrorIs(t, err, auditErr, "the audit error must reach the caller")
 }
