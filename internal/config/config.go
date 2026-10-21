@@ -179,11 +179,10 @@ func validateLogcollect(cfg LogcollectConfig) error {
 	v := cfg.RetentionSweepInterval
 	// Zero disables the periodic sweep on purpose; anything between is a
 	// misconfiguration (a 1s sweep scans the table every second).
+	// Negative values are covered by the same bound: anything below a minute
+	// that is not exactly zero is a misconfiguration.
 	if v != 0 && v < time.Minute {
-		return fmt.Errorf("logcollect.retentionSweepInterval must be 0 or at least 1m, got %s", v)
-	}
-	if v < 0 {
-		return fmt.Errorf("logcollect.retentionSweepInterval must not be negative, got %s", v)
+		return fmt.Errorf("logcollect.retentionSweepInterval must be 0 (disabled) or at least 1m, got %s", v)
 	}
 	return nil
 }

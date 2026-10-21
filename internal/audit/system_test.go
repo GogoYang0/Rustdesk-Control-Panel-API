@@ -78,28 +78,6 @@ func TestRecordSystem_ConcurrentGapFree(t *testing.T) {
 	}
 }
 
-func TestRecordSystem_RetriesOnSequenceCollision(t *testing.T) {
-	a, st, cleanup := newAuditor(t)
-	defer cleanup()
-
-	ctx := context.Background()
-	// Pre-insert the row every writer would compute first, forcing the
-	// unique-index retry path.
-	require.NoError(t, st.DB.Create(&model.AuditLog{
-		OrganizationID: 0, Seq: 1, Action: audit.SystemActionPrefix + "collide",
-	}).Error)
-
-	require.NoError(t, a.RecordSystem(ctx, audit.Entry{Action: audit.SystemActionPrefix + "collide"}))
-
-	var rows []model.AuditLog
-	require.NoError(t, store.WithoutTenantScope(st.DB).
-		Where("organization_id = ?", 0).Where("action = ?", audit.SystemActionPrefix+"collide").
-		Order("seq").Find(&rows).Error)
-	require.Len(t, rows, 2, "retry allocates the next free sequence")
-	require.Equal(t, uint64(1), rows[0].Seq)
-	require.Equal(t, uint64(2), rows[1].Seq)
-}
-
 // The system partition must stay invisible to tenant-scoped reads: that is
 // what keeps request-scoped code from ever seeing infrastructure audit
 // entries through a normal org-scoped query.

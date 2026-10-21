@@ -76,11 +76,10 @@ func (s *Scheduler) Register(t Task) error {
 		return fmt.Errorf("worker: task %q needs a positive interval", t.Name)
 	}
 
-	// Action and TargetID land in size-capped audit columns; a name that does
-	// not fit would be truncated (MySQL) or fail the audit insert (PostgreSQL).
-	if len(audit.SystemActionPrefix)+len(t.Name) > maxActionLen {
-		return fmt.Errorf("worker: task name %q is too long for the audit action column", t.Name)
-	}
+	// TargetID lands in a size-capped audit column; a name that does not fit
+	// would be truncated (MySQL) or fail the audit insert (PostgreSQL). The
+	// action column ("worker." + name) is wider than TargetID, so this single
+	// bound covers both.
 	if len(t.Name) > maxTargetIDLen {
 		return fmt.Errorf("worker: task name %q is too long for the audit target column", t.Name)
 	}
@@ -111,8 +110,10 @@ func (s *Scheduler) Names() []string {
 	return out
 }
 
-// Start launches one goroutine per registered task. It is safe to call once;
-// subsequent calls are no-ops.
+// Start launches one goroutine per registered task. Calling it again while
+// running is a no-op; calling it after Stop is also a no-op, because Stop is
+// terminal (a stopped scheduler never restarts — reusing the WaitGroup across
+// generations would panic).
 func (s *Scheduler) Start(ctx context.Context) {
 	s.mu.Lock()
 	if s.cancel != nil || s.stopped {
@@ -156,13 +157,16 @@ func (s *Scheduler) Stop() {
 }
 
 // RunOnce executes a registered task once, synchronously. It exists for tests
-// and operational tooling; the scheduler does not need to be started.
+// and operational tooling; the scheduler does not need to be started. A pass
+// started this way is NOT tracked by Stop's WaitGroup, so Stop does not wait
+// for it.
 func (s *Scheduler) RunOnce(ctx context.Context, name string) error {
 	s.mu.Lock()
 	var found *Task
 	for i := range s.tasks {
 		if s.tasks[i].Name == name {
-			found = &s.tasks[i]
+			task := s.tasks[i] // copy under the lock; the slice may be appended to
+			found = &task
 			break
 		}
 	}
@@ -209,8 +213,13 @@ func (s *Scheduler) execute(ctx context.Context, t Task) error {
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			// Shutdown cancels the root context; that is not a task failure and
-			// must not produce an error log or an audit entry on every stop.
+			// must not produce an error log or an audit entry on every stop. A
+			// partial pass that already changed rows is still worth a line, so
+			// the work is not invisible.
 			s.logger.Debug("worker task cancelled", fields...)
+			if changed > 0 {
+				s.logger.Info("worker task cancelled after partial progress", fields...)
+			}
 			return err
 		}
 		s.logger.Error("worker task failed", append(fields, zap.Error(err))...)
@@ -268,12 +277,11 @@ func (s *Scheduler) record(ctx context.Context, name string, changed int64, elap
 	}
 }
 
-// Audit column budgets (see model.AuditLog): action and target_id are capped,
-// so a long task name or a deep panic trace must be cut before it reaches the
-// insert.
+// Audit column budgets (see model.AuditLog): a long task name or a deep panic
+// trace must be cut before the insert. The log line keeps the full trace; only
+// the stored detail is truncated.
 const (
-	maxActionLen      = 128
-	maxTargetIDLen    = 64
+	maxTargetIDLen    = 64 // audit_logs.target_id is size:64 (the action column is wider)
 	maxErrorDetail    = 2000
 	auditWriteTimeout = 5 * time.Second
 )

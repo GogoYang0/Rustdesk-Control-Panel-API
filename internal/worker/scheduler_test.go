@@ -173,29 +173,44 @@ func TestExecute_AuditFailureDoesNotStopTask(t *testing.T) {
 }
 
 func TestStop_WaitsForInFlightPass(t *testing.T) {
-	var finished atomic.Bool
+	entered := make(chan struct{})
+	release := make(chan struct{})
 	s := worker.New(zap.NewNop(), nil)
 	require.NoError(t, s.Register(worker.Task{
-		Name:     "slow",
-		Interval: time.Hour,
-		Run: func(ctx context.Context) (int64, error) {
-			time.Sleep(80 * time.Millisecond)
-			finished.Store(true)
+		Name:       "slow",
+		Interval:   time.Hour,
+		RunOnStart: true,
+		Run: func(context.Context) (int64, error) {
+			close(entered)
+			<-release
 			return 1, nil
 		},
 	}))
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	s.Start(ctx)
-	// Give the RunOnStart=false task a moment to enter its ticker wait, then
-	// trigger the pass via RunOnce on a separate goroutine and stop.
-	go func() { _ = s.RunOnce(context.Background(), "slow") }()
-	time.Sleep(20 * time.Millisecond)
-	cancel()
-	s.Stop()
+	<-entered // the pass is now inside Run
 
-	require.Eventually(t, finished.Load, time.Second, 10*time.Millisecond,
-		"Stop must not return before the in-flight pass completes")
+	stopped := make(chan struct{})
+	go func() {
+		s.Stop()
+		close(stopped)
+	}()
+
+	// Stop must not return while the pass is still blocked.
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned before the in-flight pass finished")
+	case <-time.After(80 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not return after the pass completed")
+	}
 }
 
 func TestStart_PanicDoesNotStopLoop(t *testing.T) {

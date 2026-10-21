@@ -208,40 +208,6 @@ func TestLogActivity_StaleLine_Ignored(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, got)
 }
-
-// The startup sweep enforces the documented retention window.
-func TestStart_PrunesExpiredEvents(t *testing.T) {
-	st, orgs := serviceFixture(t, "org-a")
-	org := orgs[0]
-
-	old := model.LogEvent{
-		OrganizationID: org.ID, Source: model.LogSourceHbbs,
-		Level: model.LogLevelInfo, Kind: model.LogKindConn, DetailJSON: "{}",
-		OccurredAt: time.Now().Add(-time.Duration(model.DefaultLogEventRetentionDays+1) * 24 * time.Hour),
-	}
-	fresh := old
-	fresh.OccurredAt = time.Now()
-	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).Create(&old).Error)
-	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).Create(&fresh).Error)
-
-	parser, err := NewParser(testRules())
-	require.NoError(t, err)
-	svc := NewService(st.DB, parser, newMapStreamer(nil), device.NewService(st.DB, nil),
-		Options{InitialBackoff: time.Millisecond, MaxBackoff: 2 * time.Millisecond}, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	svc.Start(ctx)
-	svc.Unwatch(org.ID)
-	cancel()
-	svc.Wait()
-
-	var rows []model.LogEvent
-	require.NoError(t, store.WithoutTenantScope(st.DB).Find(&rows).Error)
-	require.Len(t, rows, 1, "only the expired event is pruned")
-	require.True(t, rows[0].OccurredAt.After(time.Now().Add(-time.Hour)))
-}
-
-// Unwatch stops the tailers of a deprovisioned organization instead of
-// leaving them to poll a container that no longer exists.
 func TestWatchUnwatch_StopsTailers(t *testing.T) {
 	st, orgs := serviceFixture(t, "org-a")
 	org := orgs[0]
@@ -439,9 +405,10 @@ func TestPruneExpired_ComparesOnUTCTimeline(t *testing.T) {
 
 	parser, err := NewParser(testRules())
 	require.NoError(t, err)
-	svc := NewService(st.DB, parser, newMapStreamer(nil), nil, Options{}, nil)
-	svc.now = func() time.Time { return now }
-	svc.pruneExpired()
+	_ = parser // retention is a package-level sweep now (worker scheduler)
+	pruned, err := PruneExpired(st.DB, now)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), pruned)
 
 	var rows []model.LogEvent
 	require.NoError(t, store.WithoutTenantScope(st.DB).Find(&rows).Error)

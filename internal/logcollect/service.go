@@ -94,8 +94,6 @@ func (s *Service) Start(ctx context.Context) {
 	s.ctx = ctx
 	s.mu.Unlock()
 
-	s.pruneExpired()
-
 	var rows []model.ServerGroup
 	if err := store.WithoutTenantScope(s.db).
 		Where("state = ?", model.ServerGroupDeployed).
@@ -108,23 +106,6 @@ func (s *Service) Start(ctx context.Context) {
 	}
 	s.logger.Info("log collector started",
 		zap.Int("organizations", len(rows)), zap.Int("rules", s.parser.Rules()))
-}
-
-// pruneExpired runs the retention sweep once at startup. Periodic sweeps are
-// driven by the worker scheduler (#41), which also covers the case where log
-// collection is disabled; this immediate pass keeps a long-stopped collector
-// from serving over-window history before the first tick.
-func (s *Service) pruneExpired() {
-	rows, err := PruneExpired(s.db, s.now())
-	if err != nil {
-		s.logger.Warn("prune expired log events failed", zap.Error(err))
-		return
-	}
-	if rows > 0 {
-		s.logger.Info("pruned expired log events",
-			zap.Int64("rows", rows),
-			zap.Int("retention_days", model.DefaultLogEventRetentionDays))
-	}
 }
 
 // Watch starts tailing one organization; repeated calls are no-ops, so the

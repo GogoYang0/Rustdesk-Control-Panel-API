@@ -35,7 +35,6 @@ type LogEvent struct {
 }
 
 // DefaultLogEventRetentionDays is how long collected events are kept. The
-// collector enforces it with a sweep at process start; a background scheduler
-// is M3 work, so a long-running process can exceed the window between
-// restarts (documented capacity note in the deployment config).
+// worker scheduler sweeps expired rows periodically (and once on start), so a
+// long-running process stays inside the window without a restart.
 const DefaultLogEventRetentionDays = 30
