@@ -130,6 +130,8 @@ panel 自身只出 HTTP；对外必须经反向代理终止 TLS：
 server {
     listen 443 ssl;
     server_name panel.example.com;
+    ssl_certificate     /etc/nginx/tls/panel.example.com.crt;
+    ssl_certificate_key /etc/nginx/tls/panel.example.com.key;
     location / {
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header X-Forwarded-Proto https;
@@ -146,6 +148,8 @@ server {
 server {
     listen 443 ssl;
     server_name hbbs-ws.example.com;
+    ssl_certificate     /etc/nginx/tls/hbbs-ws.example.com.crt;
+    ssl_certificate_key /etc/nginx/tls/hbbs-ws.example.com.key;
     location / {
         proxy_pass http://127.0.0.1:21118;
         proxy_http_version 1.1;
@@ -159,6 +163,8 @@ server {
 server {
     listen 443 ssl;
     server_name hbbr-ws.example.com;
+    ssl_certificate     /etc/nginx/tls/hbbr-ws.example.com.crt;
+    ssl_certificate_key /etc/nginx/tls/hbbr-ws.example.com.key;
     location / {
         proxy_pass http://127.0.0.1:21120;
         proxy_http_version 1.1;
@@ -169,6 +175,8 @@ server {
     }
 }
 ```
+
+证书指令是每 server 必需的（不跨 `server` 块继承）；路径为示例，按部署替换，并以完整配置运行 `nginx -t` 验证。
 
 - `web.baseURL`（或 `PANEL_WEB_BASE_URL`）必须是用户浏览器可达的 **https** 地址——邮件里的验证码/邀请链接指向它
 - `provision.portStart..portEnd` 分配的主机端口需要直接暴露，不经反代。每个组织占用连续 5 个端口，协议分布不同：`HbbsPort`（TCP，nat-test）、`HbbsPort+1`（**TCP+UDP**，id registry/heartbeat）、`HbbsPort+2`（TCP，web client websocket）、`HbbrPort`（TCP，relay）、`HbbrPort+1`（TCP，web client relay ws）。默认端口从 21116 起、每组织连续 5 个——第一个组织就需要 `21116–21120`，**缺 21120 时第一个组织的 `HbbrPort+1` 即不可用**；完整放行范围以 `portStart..portEnd` 为准
