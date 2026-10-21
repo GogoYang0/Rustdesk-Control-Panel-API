@@ -40,7 +40,12 @@
 
 ### 2.2 租户隔离
 
-一切组织内资源都带 `{orgId}` 路径参数；服务端通过 `ScopedByOrg` 强制租户过滤，跨组织访问返回 `404 not_found`（不泄露存在性）。原始 DB 读取若未加租户范围会 fail-closed（store 层租户插件）。
+一切组织内资源都带 `{orgId}` 路径参数；服务端通过 `ScopedByOrg` 强制租户过滤，跨组织访问返回 `404 not_found`（不泄露存在性）。
+
+fail-closed 的适用范围必须分清：
+
+- **ORM 作用域查询**（经 `ScopedByOrg` 包装的 Query/Create/Update/Delete）由租户插件注入条件；`orgID=0` 时注入的条件匹配不到任何行，即 fail-closed。
+- **`Raw()` / `Exec()` 不经过租户插件**，不会被自动注入租户条件——未显式写入租户过滤的原始 SQL **不具备** fail-closed 保证，也不得用于访问租户数据（store 层硬性约定）。
 
 ### 2.3 错误码 → HTTP 映射
 
@@ -75,7 +80,8 @@
 | 端点 | 说明 |
 |---|---|
 | `POST /api/v1/orgs` | 创建组织（受 `maxOrgsPerUser` 限制，超出 409/400） |
-| `GET/POST /api/v1/orgs/{orgId}/members` | 成员列表/角色管理（admin） |
+| `GET /api/v1/orgs/{orgId}/members` | 成员列表及其组织内角色（**组织成员即可访问**，不限 admin） |
+| `POST /api/v1/orgs/{orgId}/members` | 成员角色管理（admin） |
 | `POST /api/v1/orgs/{orgId}/invitations` | 邀请（admin 生成邀请令牌，邮件下发） |
 | `POST /api/v1/invitations/accept` | 接受邀请并加入组织 |
 
