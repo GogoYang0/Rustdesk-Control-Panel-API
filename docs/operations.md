@@ -14,7 +14,7 @@
 | 创建组织 | `POST /api/v1/orgs` | 任意已验证用户（受 `maxOrgsPerUser` 限制） |
 | 邀请成员 | `POST /api/v1/orgs/{orgId}/invitations` | admin |
 | 接受邀请 | `POST /api/v1/invitations/accept` | 被邀请人 |
-| 查看设备 | `GET /api/v1/orgs/{orgId}/devices` | member（owner/admin 见契约） |
+| 查看设备 | **v0.3.0 无设备列表端点**（契约 devices 路径只有 POST 注册，[#43](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/43)） | — |
 | ~~删除设备（解绑 compat 客户端）~~ | **v0.3.0 无此端点**（[#43](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/43)）——解绑需直接删除数据库设备行（临时流程） | — |
 | 查询日志事件 | `GET /api/v1/orgs/{orgId}/log-events` | member |
 
