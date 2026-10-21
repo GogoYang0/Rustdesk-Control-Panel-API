@@ -73,7 +73,7 @@
 
 - 规则按序匹配、首条命中即停；命名捕获组写入 `DetailJSON`，`device` 捕获组把事件关联到设备并产生辅助心跳
 - 匹配不上的行**按设计丢弃**（C7），每分钟至多记一条 `unparseable` 速率限制告警——大量 unparseable 说明规则与镜像实际格式不符
-- 事件保留 30 天（`DefaultLogEventRetentionDays`），启动时清扫
+- 事件保留 30 天（`DefaultLogEventRetentionDays`）：启动时清扫一次，之后由后台调度器按 `logcollect.retentionSweepInterval`（默认 6h）周期清扫——**与采集启停解耦**，停用采集也会执行（#41）；清扫是分批删除（每批 1000 行）
 
 ### 4.3 常见问题
 

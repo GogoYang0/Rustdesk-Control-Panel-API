@@ -3,6 +3,7 @@ package worker_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -169,4 +170,92 @@ func TestExecute_AuditFailureDoesNotStopTask(t *testing.T) {
 		Run:      func(context.Context) (int64, error) { return 1, nil },
 	}))
 	require.NoError(t, s.RunOnce(context.Background(), "changed"))
+}
+
+func TestStop_WaitsForInFlightPass(t *testing.T) {
+	var finished atomic.Bool
+	s := worker.New(zap.NewNop(), nil)
+	require.NoError(t, s.Register(worker.Task{
+		Name:     "slow",
+		Interval: time.Hour,
+		Run: func(ctx context.Context) (int64, error) {
+			time.Sleep(80 * time.Millisecond)
+			finished.Store(true)
+			return 1, nil
+		},
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	s.Start(ctx)
+	// Give the RunOnStart=false task a moment to enter its ticker wait, then
+	// trigger the pass via RunOnce on a separate goroutine and stop.
+	go func() { _ = s.RunOnce(context.Background(), "slow") }()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	s.Stop()
+
+	require.Eventually(t, finished.Load, time.Second, 10*time.Millisecond,
+		"Stop must not return before the in-flight pass completes")
+}
+
+func TestStart_PanicDoesNotStopLoop(t *testing.T) {
+	var passes int32
+	s := worker.New(zap.NewNop(), nil)
+	require.NoError(t, s.Register(worker.Task{
+		Name:       "boom",
+		Interval:   10 * time.Millisecond,
+		RunOnStart: true,
+		Run: func(context.Context) (int64, error) {
+			n := atomic.AddInt32(&passes, 1)
+			if n == 1 {
+				panic("first pass explodes")
+			}
+			return 0, nil
+		},
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.Start(ctx)
+	require.Eventually(t, func() bool { return atomic.LoadInt32(&passes) >= 3 }, 2*time.Second, 10*time.Millisecond,
+		"a panicking pass must not end the schedule")
+	s.Stop()
+}
+
+func TestExecute_ContextCancelledIsNotAFailure(t *testing.T) {
+	aud := &captureAuditor{}
+	s := worker.New(zap.NewNop(), aud)
+	require.NoError(t, s.Register(worker.Task{
+		Name:     "cancelled",
+		Interval: time.Hour,
+		Run: func(ctx context.Context) (int64, error) {
+			return 0, ctx.Err()
+		},
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := s.RunOnce(ctx, "cancelled")
+	require.ErrorIs(t, err, context.Canceled)
+	require.Empty(t, aud.all(), "shutdown cancellation is not audited as a failure")
+}
+
+func TestRegister_RejectedAfterStart(t *testing.T) {
+	s := worker.New(zap.NewNop(), nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.Start(ctx)
+	t.Cleanup(s.Stop)
+
+	err := s.Register(worker.Task{Name: "late", Interval: time.Second, Run: func(context.Context) (int64, error) { return 0, nil }})
+	require.Error(t, err, "a task registered after Start would never run")
+}
+
+func TestRegister_RejectsOversizedNames(t *testing.T) {
+	s := worker.New(zap.NewNop(), nil)
+	require.Error(t, s.Register(worker.Task{
+		Name:     strings.Repeat("x", 70),
+		Interval: time.Second,
+		Run:      func(context.Context) (int64, error) { return 0, nil },
+	}))
 }

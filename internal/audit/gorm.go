@@ -25,6 +25,12 @@ const maxSeqAttempts = 20
 // continuous without a separate counter table.
 type GormAuditor struct {
 	db *gorm.DB
+
+	// insertSystemHook replaces the row insert in tests. It exists so the
+	// retry path can be exercised deterministically: a real duplicate-key
+	// collision cannot be produced on demand against SQLite (serialised
+	// writers, and a pre-inserted row is picked up by the MAX(seq) read).
+	insertSystemHook func(tx *gorm.DB, row *model.AuditLog) error
 }
 
 // NewGormAuditor builds a persistent auditor.

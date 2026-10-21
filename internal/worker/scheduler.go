@@ -4,7 +4,10 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -43,11 +46,12 @@ type Scheduler struct {
 	logger  *zap.Logger
 	auditor AuditRecorder
 
-	mu     sync.Mutex
-	tasks  []Task
-	names  map[string]struct{}
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	mu      sync.Mutex
+	tasks   []Task
+	names   map[string]struct{}
+	cancel  context.CancelFunc
+	stopped bool
+	wg      sync.WaitGroup
 }
 
 // New builds an empty scheduler. auditor may be nil (entries are skipped).
@@ -72,8 +76,22 @@ func (s *Scheduler) Register(t Task) error {
 		return fmt.Errorf("worker: task %q needs a positive interval", t.Name)
 	}
 
+	// Action and TargetID land in size-capped audit columns; a name that does
+	// not fit would be truncated (MySQL) or fail the audit insert (PostgreSQL).
+	if len(audit.SystemActionPrefix)+len(t.Name) > maxActionLen {
+		return fmt.Errorf("worker: task name %q is too long for the audit action column", t.Name)
+	}
+	if len(t.Name) > maxTargetIDLen {
+		return fmt.Errorf("worker: task name %q is too long for the audit target column", t.Name)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.cancel != nil || s.stopped {
+		// A task registered after Start would never run — failing loudly beats
+		// a silently dead sweep.
+		return fmt.Errorf("worker: scheduler already started, cannot register %q", t.Name)
+	}
 	if _, dup := s.names[t.Name]; dup {
 		return fmt.Errorf("worker: task %q is already registered", t.Name)
 	}
@@ -97,21 +115,27 @@ func (s *Scheduler) Names() []string {
 // subsequent calls are no-ops.
 func (s *Scheduler) Start(ctx context.Context) {
 	s.mu.Lock()
-	if s.cancel != nil {
+	if s.cancel != nil || s.stopped {
 		s.mu.Unlock()
 		return
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
 	tasks := append([]Task(nil), s.tasks...)
+	// Add happens under the lock so it cannot race with Stop's Wait: a Wait
+	// that is already in flight must not observe a later Add (that panics).
+	s.wg.Add(len(tasks))
 	s.mu.Unlock()
 
 	for _, t := range tasks {
-		s.wg.Add(1)
 		go func(t Task) {
 			defer s.wg.Done()
 			s.loop(runCtx, t)
 		}(t)
+	}
+	if len(tasks) == 0 {
+		s.logger.Warn("worker scheduler started with no tasks")
+		return
 	}
 	s.logger.Info("worker scheduler started", zap.Int("tasks", len(tasks)))
 }
@@ -121,6 +145,9 @@ func (s *Scheduler) Stop() {
 	s.mu.Lock()
 	cancel := s.cancel
 	s.cancel = nil
+	// A stopped scheduler never starts again: reusing the WaitGroup across
+	// Start/Stop generations is what produced the "WaitGroup is reused" panic.
+	s.stopped = true
 	s.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -180,6 +207,12 @@ func (s *Scheduler) execute(ctx context.Context, t Task) error {
 		zap.Duration("elapsed", elapsed),
 	}
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			// Shutdown cancels the root context; that is not a task failure and
+			// must not produce an error log or an audit entry on every stop.
+			s.logger.Debug("worker task cancelled", fields...)
+			return err
+		}
 		s.logger.Error("worker task failed", append(fields, zap.Error(err))...)
 		s.record(ctx, t.Name, changed, elapsed, err)
 		return err
@@ -199,6 +232,7 @@ func (s *Scheduler) safeRun(ctx context.Context, t Task) (changed int64, err err
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("panic: %v", r)
+			err = fmt.Errorf("%w\n%s", err, debug.Stack())
 		}
 	}()
 	return t.Run(ctx)
@@ -213,7 +247,7 @@ func (s *Scheduler) record(ctx context.Context, name string, changed int64, elap
 		"duration_ms": elapsed.Milliseconds(),
 	}
 	if runErr != nil {
-		detail["error"] = runErr.Error()
+		detail["error"] = truncate(runErr.Error(), maxErrorDetail)
 	}
 	entry := audit.Entry{
 		Action:     audit.SystemActionPrefix + name,
@@ -221,10 +255,33 @@ func (s *Scheduler) record(ctx context.Context, name string, changed int64, elap
 		TargetID:   name,
 		Detail:     detail,
 	}
-	if err := s.auditor.RecordSystem(ctx, entry); err != nil {
+	// The run context may already be cancelled (shutdown) or nearly expired;
+	// writing the audit entry on a detached context is the whole point of
+	// "failures are always recorded".
+	auditCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), auditWriteTimeout)
+	defer cancel()
+	if err := s.auditor.RecordSystem(auditCtx, entry); err != nil {
 		// Auditing must not break the task loop; the failure is visible in
 		// the log instead.
 		s.logger.Error("worker audit entry failed",
 			zap.String("task", name), zap.Error(err))
 	}
+}
+
+// Audit column budgets (see model.AuditLog): action and target_id are capped,
+// so a long task name or a deep panic trace must be cut before it reaches the
+// insert.
+const (
+	maxActionLen      = 128
+	maxTargetIDLen    = 64
+	maxErrorDetail    = 2000
+	auditWriteTimeout = 5 * time.Second
+)
+
+func truncate(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "...(truncated)"
 }

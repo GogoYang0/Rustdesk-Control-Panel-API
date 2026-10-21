@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -198,6 +199,9 @@ func main() {
 		if err := sched.Register(worker.Task{
 			Name:     "logcollect-retention",
 			Interval: cfg.Logcollect.RetentionSweepInterval,
+			// The startup pass doubles as the first sweep, so a disabled
+			// collector still trims overdue history right after boot (#41).
+			RunOnStart: true,
 			Run: func(ctx context.Context) (int64, error) {
 				return logcollect.PruneExpired(st.DB.WithContext(ctx), time.Now())
 			},
@@ -214,9 +218,15 @@ func main() {
 	// waiting here keeps them from outliving the panel.
 	var drainCollector func()
 	if collector != nil {
+		// Stop the scheduler and drain the tailers concurrently: a stuck
+		// `docker logs` drain must not keep in-flight sweeps writing to a
+		// database that is about to be closed.
 		drainCollector = func() {
-			collector.Wait()
-			sched.Stop()
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() { defer wg.Done(); sched.Stop() }()
+			go func() { defer wg.Done(); collector.Wait() }()
+			wg.Wait()
 		}
 	} else {
 		drainCollector = sched.Stop

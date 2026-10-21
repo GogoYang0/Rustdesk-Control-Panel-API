@@ -88,3 +88,7 @@ logcollect:
       pattern: '^\[[^\]]+\]\s+ERROR\s+\[[^\]]+\]\s+(?P<msg>.*)$'
       level: error
       kind: error
+  # Period of the log-event retention sweep (30-day window). 0 disables the
+  # periodic sweep; the minimum accepted value is 1m. The sweep also runs once
+  # at startup, so overdue history is trimmed even with log collection off.
+  retentionSweepInterval: 6h

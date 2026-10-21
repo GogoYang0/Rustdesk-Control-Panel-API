@@ -30,7 +30,7 @@ type LogEvent struct {
 	// DetailJSON holds the named capture groups of the matching rule plus
 	// the raw line; it is always a JSON object.
 	DetailJSON string    `gorm:"type:text" json:"detail_json"`
-	OccurredAt time.Time `gorm:"index:idx_log_org_time,priority:2;not null" json:"occurred_at"`
+	OccurredAt time.Time `gorm:"index:idx_log_org_time,priority:2;index:idx_log_time;not null" json:"occurred_at"`
 	CreatedAt  time.Time `json:"created_at"`
 }
 

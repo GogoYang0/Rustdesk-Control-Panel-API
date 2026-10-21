@@ -18,11 +18,30 @@ import (
 // host's offset.
 func PruneExpired(db *gorm.DB, now time.Time) (int64, error) {
 	cutoff := now.UTC().Add(-time.Duration(model.DefaultLogEventRetentionDays) * 24 * time.Hour)
-	res := store.WithoutTenantScope(db).
-		Where("occurred_at < ?", cutoff).
-		Delete(&model.LogEvent{})
-	if res.Error != nil {
-		return 0, res.Error
+
+	// Batched deletion keeps lock hold times bounded on large tables. The
+	// subquery form works on SQLite, MySQL and PostgreSQL alike (PostgreSQL
+	// has no DELETE ... LIMIT).
+	var total int64
+	for {
+		ids := store.WithoutTenantScope(db).
+			Model(&model.LogEvent{}).
+			Select("id").
+			Where("occurred_at < ?", cutoff).
+			Limit(pruneBatchSize)
+		res := store.WithoutTenantScope(db).
+			Where("id IN (?)", ids).
+			Delete(&model.LogEvent{})
+		if res.Error != nil {
+			return total, res.Error
+		}
+		total += res.RowsAffected
+		if res.RowsAffected < pruneBatchSize {
+			return total, nil
+		}
 	}
-	return res.RowsAffected, nil
 }
+
+// pruneBatchSize bounds how many rows one delete statement removes, so a large
+// backlog does not hold a long write transaction.
+const pruneBatchSize = 1000

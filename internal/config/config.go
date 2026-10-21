@@ -166,7 +166,26 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("unmarshal config %s: %w", path, err)
 	}
 
+	if err := validateLogcollect(cfg.Logcollect); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+	}
+
 	return &cfg, nil
+}
+
+// validateLogcollect rejects sweep intervals that would either hammer the
+// database or silently masquerade as "disabled".
+func validateLogcollect(cfg LogcollectConfig) error {
+	v := cfg.RetentionSweepInterval
+	// Zero disables the periodic sweep on purpose; anything between is a
+	// misconfiguration (a 1s sweep scans the table every second).
+	if v != 0 && v < time.Minute {
+		return fmt.Errorf("logcollect.retentionSweepInterval must be 0 or at least 1m, got %s", v)
+	}
+	if v < 0 {
+		return fmt.Errorf("logcollect.retentionSweepInterval must not be negative, got %s", v)
+	}
+	return nil
 }
 
 // devSecretPlaceholder is rejected so a shipped config cannot become production.
