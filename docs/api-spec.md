@@ -66,7 +66,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 分页参数**按端点各自定义**，不要混用：
 
 - **日志事件**（`GET .../log-events`）：`since` + `limit`（`limit` 取值 1–200，默认 50），筛选参数为 `since`、`deviceId`、`level`（`source` 是返回字段，不是筛选参数）
-- **compat 地址簿 peers**（`POST /api/ab/peers`）：分页参数见契约
+- **compat 地址簿 peers**（`POST /api/ab/peers`，仅个人簿）：query 参数 `ab`（地址簿 guid，必填）、`current`（页码，默认 1，最小 1）、`pageSize`（默认 100，最小 1，超过 500 截断为 500）
 - 设备暂无列表端点（见 §3.3 与 [#43](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/43)）
 
 ---
