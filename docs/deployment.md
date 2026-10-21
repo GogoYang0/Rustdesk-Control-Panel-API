@@ -11,9 +11,9 @@
 |---|---|---|
 | 操作系统 | Linux（推荐）或 Windows | panel 本身是单一 Go 二进制 |
 | Go | 1.27+ | 仅构建时需要；发布产物为静态二进制 |
-| Docker | 20.10+，且 panel 进程可访问 `/var/run/docker.sock` | 仅 `provision.enabled` 时需要：hbbs/hbbr 容器由 panel 代管 |
+| Docker | 20.10+；**生产使用 rootless Docker 或受限的 Docker socket proxy**（见 §8） | 仅 `provision.enabled` 时需要：panel 经 Docker CLI 操作容器，实际地址用 `DOCKER_HOST` 环境变量或 Docker CLI context 指定，**不要默认依赖 rootful 原始 socket** |
 | 数据库 | SQLite（默认）/ PostgreSQL / MySQL | 生产建议 PostgreSQL |
-| 端口 | `:8080`（panel API）、`21116–22115/udp+tcp`（hbbs/hbbr，可配） | 反代后面只需暴露 panel 的 443 |
+| 端口 | `:8080`（panel API）、`21116–22115`（hbbs/hbbr，可配；逐端口协议分布见 §7——仅每组织的 `HbbsPort+1` 同时用 TCP+UDP，其余 TCP） | 反代后面只需暴露 panel 的 443 |
 
 ---
 
@@ -51,7 +51,7 @@ go build -o panel ./cmd/server
 | `provision.portStart/End` | | `21116–22115` | 每组织占用**连续 5 个**主机端口（`PortBlockSize=5`，见 §7 协议分布）；默认范围最多支持 200 个组织 |
 | `provision.relayHost` | | — | **必须是客户端可达的公网地址**，无回退 |
 | `provision.orgLabel` / `provision.roleLabel` | | `com.rustdesk-panel.org` / `com.rustdesk-panel.role` | 容器标签键 |
-| `provision.image` | —（无加载器默认，未配置时供应失败） | `rustdesk/rustdesk-server:1.1.11` | 必须显式配置；固定 tag 保证可复现；**日志采集规则按此镜像的日志格式编写**，换镜像必须重新校准 |
+| `provision.image` | —（无加载器默认，未配置时供应失败） | 必须显式配置为 `rustdesk/rustdesk-server:1.1.11`；固定 tag 保证可复现；**日志采集规则按此镜像的日志格式编写**，换镜像必须重新校准 |
 | `provision.dataDir` | | `./data/servergroups` | 各组织 hbbs/hbbr 的密钥与数据目录（挂载进容器） |
 | `provision.maxOrgsPerUser` / `workers` | | `5` / `2` | 单用户组织上限 / 供应队列并发 |
 | `mail.devMode` | | `true` | `true` 时邮件打印到 stdout（开发）；生产必须 `false` |
@@ -138,7 +138,7 @@ server {
 ```
 
 - `web.baseURL`（或 `PANEL_WEB_BASE_URL`）必须是用户浏览器可达的 **https** 地址——邮件里的验证码/邀请链接指向它
-- `provision.portStart..portEnd` 分配的主机端口需要直接暴露，不经反代。每个组织占用连续 5 个端口，协议分布不同：`HbbsPort`（TCP，nat-test）、`HbbsPort+1`（**TCP+UDP**，id registry/heartbeat）、`HbbsPort+2`（TCP，web client websocket）、`HbbrPort`（TCP，relay）、`HbbrPort+1`（TCP，web client relay ws）。只放行 21116–21119 会导致第二个组织起无法连接
+- `provision.portStart..portEnd` 分配的主机端口需要直接暴露，不经反代。每个组织占用连续 5 个端口，协议分布不同：`HbbsPort`（TCP，nat-test）、`HbbsPort+1`（**TCP+UDP**，id registry/heartbeat）、`HbbsPort+2`（TCP，web client websocket）、`HbbrPort`（TCP，relay）、`HbbrPort+1`（TCP，web client relay ws）。默认端口从 21116 起、每组织连续 5 个——第一个组织就需要 `21116–21120`，**缺 21120 时第一个组织的 `HbbrPort+1` 即不可用**；完整放行范围以 `portStart..portEnd` 为准
 
 ---
 
@@ -160,4 +160,4 @@ server {
 - 登录凭据 = 面板账号（邮箱 + 密码）+ 组织；首次登录会认领设备（rustdesk id + uuid 绑定）
 - 换机器/重装后 uuid 变化会报 403「设备已绑定」。v0.3.0 **没有设备删除的管理面端点**（跟踪 [#43](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/43)），恢复需直接删除数据库中的设备行（临时流程）
 
-详细协议见 [API 规范 §5](api-spec.md)。
+详细协议见 [API 规范 §4](api-spec.md)。
