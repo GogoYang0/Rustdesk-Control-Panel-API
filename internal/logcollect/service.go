@@ -36,6 +36,28 @@ type Options struct {
 	Streamer LineStreamer
 	// PersistTimeout overrides the event-write bound (tests shorten it).
 	PersistTimeout time.Duration
+	// Sessions receives session-relevant events after they are stored. It may
+	// be nil (session tracking disabled); a panicking or failing hook never
+	// affects event storage (C7).
+	Sessions SessionRecorder
+}
+
+// SessionRecorder is the session tracker's consumer side of the collector:
+// one call per stored event that references a known device of the
+// organization. It is called synchronously in tailer order — log lines are
+// ordered, and session aggregation (last_activity_at) relies on that order —
+// but the collector treats every failure as the hook's own problem.
+// SessionRecorderFunc adapts a plain function, for callers whose tracking
+// method already has a richer signature.
+type SessionRecorderFunc func(ctx context.Context, orgID, deviceID uint, kind string, at time.Time, detail map[string]any) error
+
+// RecordLogEvent implements SessionRecorder.
+func (f SessionRecorderFunc) RecordLogEvent(ctx context.Context, orgID, deviceID uint, kind string, at time.Time, detail map[string]any) error {
+	return f(ctx, orgID, deviceID, kind, at, detail)
+}
+
+type SessionRecorder interface {
+	RecordLogEvent(ctx context.Context, orgID, deviceID uint, kind string, at time.Time, detail map[string]any) error
 }
 
 // Service runs one tailer pair per provisioned organization, parses the lines
@@ -293,7 +315,28 @@ func (s *Service) handleLine(ctx context.Context, orgID uint, source, line strin
 		// line and replays it after reconnecting.
 		return err
 	}
+
+	// Session tracking runs after the event is safely stored, synchronously
+	// (tailer order keeps last_activity_at monotonic) and fully fenced: a
+	// hook panic or failure is logged and forgotten, never propagated (C7).
+	if s.opts.Sessions != nil && deviceID != nil {
+		s.deliverToSessions(persistCtx, orgID, *deviceID, &row, event.Detail)
+	}
 	return nil
+}
+
+// deliverToSessions isolates the hook call. Any panic or error stays here.
+func (s *Service) deliverToSessions(ctx context.Context, orgID, deviceID uint, row *model.LogEvent, detail map[string]any) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Warn("session hook panicked",
+				zap.Uint("org_id", orgID), zap.Any("recover", r))
+		}
+	}()
+	if err := s.opts.Sessions.RecordLogEvent(ctx, orgID, deviceID, row.Kind, row.OccurredAt, detail); err != nil {
+		s.logger.Warn("session hook failed",
+			zap.Uint("org_id", orgID), zap.Error(err))
+	}
 }
 
 // logParseError emits the unparseable-line signal at most once per interval.

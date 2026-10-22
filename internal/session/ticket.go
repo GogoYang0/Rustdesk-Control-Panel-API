@@ -222,7 +222,12 @@ func (s *Service) Redeem(ctx context.Context, orgID, actorID, ticketID uint, tok
 		return nil, fmt.Errorf("%w: organization, actor, ticket and token are required", ErrInvalidInput)
 	}
 
-	var sess *model.Session
+	var (
+		sess *model.Session
+		// outcome carries a refusal out of the transaction: returning it
+		// directly would roll back the alert the refusal just wrote.
+		outcome error
+	)
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Serialise redemptions per organization. One transaction is not enough:
 		// under READ COMMITTED two redemptions each read the old count, each
@@ -288,7 +293,21 @@ func (s *Service) Redeem(ctx context.Context, orgID, actorID, ticketID uint, tok
 				return err
 			}
 			if open >= *limits.MaxConcurrent {
-				return fmt.Errorf("%w: concurrent session limit reached", ErrConflict)
+				// The contract lists the refused redemption as a
+				// concurrency_exceeded alert source. It must be written here,
+				// inside the transaction that is about to commit, with the
+				// refusal carried out via outcome — returning it directly
+				// would roll back the very alert the operator should see.
+				if err := s.recordAlert(tx, orgID, nil, &ticket.DeviceID,
+					model.AlertKindConcurrencyExceeded, model.AlertSeverityWarning, map[string]any{
+						"limit":     *limits.MaxConcurrent,
+						"open":      open,
+						"ticket_id": ticketID,
+					}); err != nil {
+					return err
+				}
+				outcome = fmt.Errorf("%w: concurrent session limit reached", ErrConflict)
+				return nil
 			}
 		}
 
@@ -357,6 +376,9 @@ func (s *Service) Redeem(ctx context.Context, orgID, actorID, ticketID uint, tok
 	})
 	if err != nil {
 		return nil, err
+	}
+	if outcome != nil {
+		return nil, outcome
 	}
 	return sess, nil
 }
@@ -530,6 +552,17 @@ func (s *Service) recordDenied(tx *gorm.DB, in IssueInput, dev *model.Device, no
 	}
 	if err := tx.Create(&row).Error; err != nil {
 		return fmt.Errorf("record denied session: %w", err)
+	}
+	// The contract lists the refused issuance as an outside_window alert
+	// source. Severity is info: the attempt was blocked, no connection
+	// happened — unlike the native variant, which is a warning because that
+	// connection is already running.
+	if err := s.recordAlert(tx, in.OrganizationID, &row.ID, &in.DeviceID,
+		model.AlertKindOutsideWindow, model.AlertSeverityInfo, map[string]any{
+			"occurred_at": now,
+			"actor":       actor,
+		}); err != nil {
+		return err
 	}
 	return s.record(tx, audit.Entry{
 		OrganizationID: in.OrganizationID,

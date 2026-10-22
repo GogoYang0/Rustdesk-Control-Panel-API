@@ -172,6 +172,15 @@ func main() {
 		})
 	}
 
+	// The shared audit recorder: everything below (session service, worker
+	// scheduler) writes through it.
+	auditor := audit.NewGormAuditor(st.DB)
+
+	// One session service shared by the API handlers, the log collector's
+	// session hook and the background tasks: all three mutate the same rows,
+	// so they must see one clock and one audit recorder.
+	sessionSvc := session.NewService(st.DB, auditor, time.Now)
+
 	// Log collection: one tailer pair per provisioned organization. The queue
 	// hook starts the tailers of a fresh deployment immediately instead of
 	// waiting for the next process start.
@@ -183,7 +192,7 @@ func main() {
 		}
 		collector = logcollect.NewService(
 			st.DB, parser, logcollect.DockerCLIStreamer{}, deviceSvc,
-			logcollect.Options{ContainerPrefix: cfg.Logcollect.ContainerPrefix}, lg,
+			logcollect.Options{ContainerPrefix: cfg.Logcollect.ContainerPrefix, Sessions: logcollect.SessionRecorderFunc(sessionSvc.ReportLogEvent)}, lg,
 		)
 		collector.Start(rootCtx)
 		provQueue.OnProvisioned(collector.Watch)
@@ -197,7 +206,6 @@ func main() {
 	// Background workers: the retention sweep must run regardless of whether
 	// log collection itself is enabled (#41), and every pass is audited so
 	// infrastructure housekeeping stays observable (#46).
-	auditor := audit.NewGormAuditor(st.DB)
 
 	// Tenant transfers are the one write path that can move a row between
 	// organizations. The store refuses them unless a recorder is registered, so
@@ -214,11 +222,12 @@ func main() {
 	})
 	sched := worker.New(lg, auditor)
 
-	// One session service shared by the API handlers and the background
-	// tasks: the approval-expiry sweep mutates the same rows the handlers
-	// serve, so both must see one clock and one audit recorder.
-	sessionSvc := session.NewService(st.DB, auditor, time.Now)
+	// One session service shared by the API handlers, the log collector's
+	// session hook and the background tasks: all three mutate the same rows,
+	// so they must see one clock and one audit recorder.
 
+	// (sessionSvc is created above, before the collector, so the hook can be
+	// wired into it.)
 	// Pending approvals expire on their own deadline; the sweep only marks
 	// the rows so the inbox stops offering dead requests.
 	if err := sched.Register(worker.Task{
@@ -231,6 +240,33 @@ func main() {
 	}); err != nil {
 		lg.Fatal("register approval expiry sweep", zap.Error(err))
 	}
+
+	// Session maintenance: the idle sweep closes sessions whose trail went
+	// quiet (otherwise a lost-log session would hold its concurrency slot
+	// forever), and the duration sweep enforces max_session_minutes after the
+	// fact — the panel is not in the signalling path, so the real connection
+	// is never cut, only recorded and alerted.
+	if err := sched.Register(worker.Task{
+		Name:       "session-idle",
+		Interval:   time.Minute,
+		RunOnStart: true,
+		Run: func(ctx context.Context) (int64, error) {
+			return sessionSvc.CloseIdleSessions(ctx, time.Now(), session.DefaultIdleWindow)
+		},
+	}); err != nil {
+		lg.Fatal("register idle session sweep", zap.Error(err))
+	}
+	if err := sched.Register(worker.Task{
+		Name:       "session-duration",
+		Interval:   time.Minute,
+		RunOnStart: true,
+		Run: func(ctx context.Context) (int64, error) {
+			return sessionSvc.ClosePolicyExceededSessions(ctx, time.Now())
+		},
+	}); err != nil {
+		lg.Fatal("register duration session sweep", zap.Error(err))
+	}
+
 	if cfg.Logcollect.RetentionSweepInterval > 0 {
 		if err := sched.Register(worker.Task{
 			Name:     "logcollect-retention",

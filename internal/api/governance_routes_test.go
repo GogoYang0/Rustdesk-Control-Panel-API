@@ -37,7 +37,7 @@ var governanceRoutes = []struct {
 // implementedPrefixes mark the governance endpoints that now have real handlers.
 // Tickets landed in T4, policies and session records in T5; they keep the shared
 // registration/auth/tenant assertions and drop only the "answers 501" ones.
-var implementedPrefixes = []string{"/tickets", "/policies", "/sessions", "/approvals"}
+var implementedPrefixes = []string{"/tickets", "/policies", "/sessions", "/approvals", "/alerts"}
 
 // stubRoutes are the governance endpoints still answered by a placeholder.
 func stubRoutes() []struct {
