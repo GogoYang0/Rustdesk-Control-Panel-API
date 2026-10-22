@@ -53,7 +53,7 @@
 | 任务 | 语义 | 运维关注 |
 |---|---|---|
 | `approval-expiry` | 超期 pending 审批置 `expired`（仅标记，不发通知） | 审批中心不再显示死请求；无告警 |
-| `session-idle` | `last_activity_at`（缺省回退 `started_at`）超过 `session.idleTimeout`（默认 10 分钟，可配置）的 open 会话置 `closed`（`end_reason=idle_timeout`） | 日志断流（容器停止/采集中断）的会话由它兜底关闭；非违规、无告警 |
+| `session-idle` | `last_activity_at`（缺省回退 `started_at`）超过 `session.idleTimeout`（默认 10 分钟）的 open 会话置 `closed`（`end_reason=idle_timeout`） | 日志断流（容器停止/采集中断）的会话由它兜底关闭；非违规、无告警。`session.idleTimeout` **必须为正**——配置 `0` 或负值不是"禁用清扫"，而是记 warning 并回退默认 10 分钟 |
 | `session-duration` | 超过策略 `max_session_minutes` 的 open 会话置 `closed`（`end_reason=policy_exceeded`）并写 **critical** 告警 | 真实连接不被掐断（面板不在信令链路）——告警是唯一信号，**必须处置** |
 
 **告警处置**（`GET .../alerts`，severity 语义）：

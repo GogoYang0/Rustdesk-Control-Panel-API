@@ -109,4 +109,6 @@ logcollect:
 # before the background idle sweep closes it — sessions whose logs stop
 # arriving are closed here. Contract: "默认 10 分钟、可由部署配置覆盖".
 session:
+  # Must be positive: a non-positive value is not "disable the sweep" —
+  # it logs a warning and falls back to the 10m default.
   idleTimeout: 10m
