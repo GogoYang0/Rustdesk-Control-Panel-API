@@ -120,6 +120,7 @@ database:
 3. 用 `docker logs -t panel-org-<id>-hbbs` 抽样验证规则能匹配真实行（本地可跑 `TestExampleConfigRules_MatchServerFormat` 参照）
 4. 首次连接只跟随新行（`--tail 0`），历史日志不会回灌——需要历史数据请在启用前导出
 5. 启用后 30 天内的事件自动保留，超期事件在启动时及每个 `logcollect.retentionSweepInterval` 周期清扫——与采集启停无关（见运维指南 §4.2）
+6. **断开事件（`disconnected` 规则）默认不配置**：rustdesk-server 在默认日志级别下不打印任何连接结束日志（其唯一 close 行是 debug 级且只含 socket 地址、无设备 id——已对照 rustdesk-server `src/rendezvous_server.rs` 核实），因此没有可匹配的真实格式。无法产生结束事件的会话由空闲清扫（10 分钟）兜底关闭。若你的日志源确实产生可识别的断开行（改过日志级别或自定义服务端），在 `configs/config.yaml` 的 `connection` 规则**之前**添加 `kind: disconnected` 规则（规则按序首匹配，否则会被宽泛的 connection 规则吞成连接事件）
 
 ---
 

@@ -32,6 +32,18 @@ func (a *AdminAPI) ListSessions(c *gin.Context, orgId int64, params gen.ListSess
 	}
 
 	filter := session.SessionFilter{}
+	// The generated binding converts the query strings without checking the
+	// enums: an unknown origin/status would silently filter to an empty page,
+	// which a client would read as "nothing in this state" instead of a bad
+	// parameter (same ruling as the approval status filter, task 6 review).
+	if params.Origin != nil && !params.Origin.Valid() {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid origin")
+		return
+	}
+	if params.Status != nil && !params.Status.Valid() {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid status")
+		return
+	}
 	if params.Origin != nil {
 		origin := string(*params.Origin)
 		filter.Origin = &origin
