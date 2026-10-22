@@ -17,8 +17,7 @@ import (
 //   - tickets: issueTicket / getTicket / redeemTicket (T4)
 //   - policies and session records: list/CRUD (T5)
 //   - approvals: list/get/create/decide (T6)
-//   - alerts: list (T7)
-//
+//   - alerts: list (T7)//
 // They answer 501 so a client generated from the contract fails loudly instead
 // of assuming the feature exists. Shipping this state is safe only because the
 // endpoints are new: no existing behaviour changes.
@@ -50,26 +49,6 @@ func (a *AdminAPI) stubMembership(c *gin.Context, orgID int64, feature string) {
 		return
 	}
 	notImplemented(c, feature)
-}
-
-// ListApprovals implements gen.ServerInterface (stub, T6).
-func (a *AdminAPI) ListApprovals(c *gin.Context, orgId int64, params gen.ListApprovalsParams) {
-	a.stubMembership(c, orgId, "approvals")
-}
-
-// GetApproval implements gen.ServerInterface (stub, T6).
-func (a *AdminAPI) GetApproval(c *gin.Context, orgId int64, approvalId int64) {
-	a.stubMembership(c, orgId, "approvals")
-}
-
-// CreateApproval implements gen.ServerInterface (stub, T6).
-func (a *AdminAPI) CreateApproval(c *gin.Context, orgId int64) {
-	a.stubMembership(c, orgId, "approvals")
-}
-
-// DecideApproval implements gen.ServerInterface (stub, T6).
-func (a *AdminAPI) DecideApproval(c *gin.Context, orgId int64, approvalId int64) {
-	a.stubMembership(c, orgId, "approvals")
 }
 
 // ListAlerts implements gen.ServerInterface (stub, T7).

@@ -15,27 +15,32 @@ const (
 	// owner and admin, so it is a distinct permission rather than PermOrgAdmin
 	// (which only the owner holds).
 	PermPolicyWrite = "policy.write"
+	// PermApprovalDecide gates approve/deny decisions. The contract grants it
+	// to owner and admin — members submit requests but cannot rule on them.
+	PermApprovalDecide = "approval.decide"
 )
 
 // rolePermissions is the single source of truth for authorization.
 // owner: everything. admin: members, devices, audit. member: read-only devices.
 var rolePermissions = map[string]map[string]bool{
 	"owner": {
-		PermOrgAdmin:     true,
-		PermMemberManage: true,
-		PermDeviceRead:   true,
-		PermDeviceWrite:  true,
-		PermAuditRead:    true,
-		PermAddressBook:  true,
-		PermPolicyWrite:  true,
+		PermOrgAdmin:       true,
+		PermMemberManage:   true,
+		PermDeviceRead:     true,
+		PermDeviceWrite:    true,
+		PermAuditRead:      true,
+		PermAddressBook:    true,
+		PermPolicyWrite:    true,
+		PermApprovalDecide: true,
 	},
 	"admin": {
-		PermMemberManage: true,
-		PermDeviceRead:   true,
-		PermDeviceWrite:  true,
-		PermAuditRead:    true,
-		PermAddressBook:  true,
-		PermPolicyWrite:  true,
+		PermMemberManage:   true,
+		PermDeviceRead:     true,
+		PermDeviceWrite:    true,
+		PermAuditRead:      true,
+		PermAddressBook:    true,
+		PermPolicyWrite:    true,
+		PermApprovalDecide: true,
 	},
 	"member": {
 		PermDeviceRead: true,
