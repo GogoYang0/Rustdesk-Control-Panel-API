@@ -276,6 +276,16 @@ func TestExecute_TaskInternalTimeoutIsAuditedAsFailure(t *testing.T) {
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	require.Len(t, aud.all(), 1, "a task-internal timeout is a real failure and must be audited")
 	require.Contains(t, aud.all()[0].Action, "worker.timed-out")
+
+	// Deterministic interleaving for the Stop race: the shutdown signal is
+	// raised first, and only then does the task return an independently
+	// produced DeadlineExceeded. The failure is still audited — the signal
+	// tunes the log level, never auditability.
+	s.Stop()
+	err = s.RunOnce(context.Background(), "timed-out")
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Len(t, aud.all(), 2, "audited even under the shutdown signal")
+	require.Contains(t, aud.all()[1].Detail, "shutdown", "the row carries the shutdown marker")
 }
 
 func TestRegister_RejectedAfterStart(t *testing.T) {
