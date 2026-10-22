@@ -74,8 +74,29 @@ func (s *Service) Register(ctx context.Context, orgID uint, in RegisterInput) (*
 		RustdeskID:     in.RustdeskID,
 		Name:           in.Name,
 		BoundUUID:      in.BoundUUID,
+		// A registration that carries a binding is the first claim: the
+		// generation starts at 1 so a session can never match generation 0
+		// (no binding yet).
+		BindingGeneration: firstBindingGeneration(in.BoundUUID),
 	}
-	err := store.ScopedByOrg(s.db.WithContext(ctx), orgID).
+	return RegisterTx(s.db.WithContext(ctx), orgID, row)
+}
+
+// firstBindingGeneration maps a registration binding to its generation: a
+// bound row starts at 1, an unbound row at 0.
+func firstBindingGeneration(boundUUID string) uint64 {
+	if boundUUID == "" {
+		return 0
+	}
+	return 1
+}
+
+// RegisterTx is Register on a caller-supplied transaction, so the compat
+// login can claim a device and persist its session atomically. The upsert
+// never touches bound_uuid or binding_generation on conflict: the stored
+// binding belongs to whoever claimed first.
+func RegisterTx(db *gorm.DB, orgID uint, row model.Device) (*model.Device, error) {
+	err := store.ScopedByOrg(db, orgID).
 		Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "organization_id"}, {Name: "rustdesk_id"}},
 			DoUpdates: clause.AssignmentColumns([]string{"name", "updated_at"}),
@@ -86,8 +107,8 @@ func (s *Service) Register(ctx context.Context, orgID uint, in RegisterInput) (*
 	}
 
 	var stored model.Device
-	if err := store.ScopedByOrg(s.db.WithContext(ctx), orgID).
-		Where("rustdesk_id = ?", in.RustdeskID).
+	if err := store.ScopedByOrg(db, orgID).
+		Where("rustdesk_id = ?", row.RustdeskID).
 		First(&stored).Error; err != nil {
 		return nil, fmt.Errorf("load device: %w", err)
 	}
