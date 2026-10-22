@@ -205,6 +205,7 @@ func TestRecordLogEvent_CrossTenantIsolation(t *testing.T) {
 // activity was ever recorded) is older than the idle window.
 func TestCloseIdleSessions(t *testing.T) {
 	h := newHarness(t)
+	clearSessionTables(t, h)
 
 	idle, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
 		Kind:       model.LogKindConn,
@@ -259,6 +260,7 @@ func TestCloseIdleSessions(t *testing.T) {
 // signalling path), so the alert is what the operator sees.
 func TestClosePolicyExceededSessions(t *testing.T) {
 	h := newHarness(t)
+	clearSessionTables(t, h)
 	h.addPolicy(t, func(p *model.Policy) { p.MaxSessionMinutes = ptrInt64(30) })
 
 	long, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
@@ -442,10 +444,13 @@ func (h *harness) seedPanelSession(t *testing.T, deviceID uint, started time.Tim
 	return sess
 }
 
+// alerts reads this organization's alerts. On CI's shared test database the
+// sweeps and earlier tests leave rows in other organizations, so a
+// cross-tenant read would poison every count.
 func (h *harness) alerts(t *testing.T) []model.Alert {
 	t.Helper()
 	var alerts []model.Alert
-	require.NoError(t, store.WithoutTenantScope(h.db).Order("id").Find(&alerts).Error)
+	require.NoError(t, store.ScopedByOrg(h.db, h.org.ID).Order("id").Find(&alerts).Error)
 	return alerts
 }
 
@@ -454,6 +459,18 @@ func (h *harness) reloadSession(t *testing.T, id uint) model.Session {
 	var sess model.Session
 	require.NoError(t, store.WithoutTenantScope(h.db).First(&sess, id).Error)
 	return sess
+}
+
+// clearSessionTables wipes sessions, their timeline and alerts. Both sweeps
+// are deliberately cross-tenant, so on CI's shared database their changed
+// counts include rows left over from earlier tests unless the tables start
+// empty. Every test seeds its own rows and reads only its own, and the
+// package runs serially, so the wipe cannot cross a test boundary.
+func clearSessionTables(t *testing.T, h *harness) {
+	t.Helper()
+	for _, m := range []any{&model.SessionEvent{}, &model.Alert{}, &model.Session{}} {
+		require.NoError(t, store.WithoutTenantScope(h.db).Where("1 = 1").Delete(m).Error)
+	}
 }
 
 func ptrInt64(v int64) *int64 { return &v }
