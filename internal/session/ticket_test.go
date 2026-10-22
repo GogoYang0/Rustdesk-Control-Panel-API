@@ -98,7 +98,8 @@ func newHarness(t *testing.T) *harness {
 
 	require.NoError(t, s.DB.AutoMigrate(
 		&model.Organization{}, &model.Device{}, &model.Policy{},
-		&model.Ticket{}, &model.Session{}, &model.Approval{},
+		&model.Ticket{}, &model.Session{}, &model.SessionEvent{},
+		&model.Approval{}, &model.Alert{},
 	))
 
 	h := &harness{

@@ -36,7 +36,7 @@
 { "code": "invalid_request", "message": "human readable", "data": null }
 ```
 
-`code` 取值（契约枚举）：`ok` `invalid_request` `unauthorized` `not_found` `conflict` `forbidden` `email_not_verified` `rate_limited` `internal` `approval_required`。`unauthorized` 映射 **401**（登录/刷新的凭据拒绝路径）；`internal` 映射 **500**（未预期的服务端错误，不向客户端泄露细节）。**唯一的例外**：v0.4.0 契约先行、实现按任务落地的过渡期内，会话治理端点尚未实现时返回 `501 / internal`（见 §3.6），实现合并后该状态消失。
+`code` 取值（契约枚举）：`ok` `invalid_request` `unauthorized` `not_found` `conflict` `forbidden` `email_not_verified` `rate_limited` `internal` `approval_required`。`unauthorized` 映射 **401**（登录/刷新的凭据拒绝路径）；`internal` 映射 **500**（未预期的服务端错误，不向客户端泄露细节）。**唯一的例外**：v0.4.0 过渡期内，**尚未实现**的会话治理端点（当前为审批与告警）返回 `501 / internal`（见 §3.6），实现合并后该状态消失。
 
 `approval_required` 是唯一**必须携带 `data` 对象**的错误码（`data.approval_id` 指向待审批请求），其余错误码的 `data` 为 `null`。
 
@@ -63,7 +63,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `unauthorized` | 401 | 登录/刷新的凭据拒绝 |
 | `rate_limited` | 429 | 登录锁定（LoginGuard） |
 | `internal` | 500 | 未预期的服务端错误（不向客户端泄露细节） |
-| `internal` | **501** | **过渡期专用**：v0.4.0 契约先行、实现未合并的会话治理端点（见 §3.6）。实现合并后消失 |
+| `internal` | **501** | **过渡期专用**：仅剩审批与告警端点（v0.4.0 契约先行、T6/T7 未合并，见 §3.6）。票据/策略/会话记录已实现，不再返回 501 |
 
 ### 2.4 分页
 
@@ -135,8 +135,8 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 
 ### 3.6 会话治理（会话记录 / 策略 / 审批 / 票据 / 告警）
 
-> 契约 v0.4.0 定稿；实现按 M3 任务推进（票据 T4、策略与会话记录 T5、审批 T6、告警 T7）。
-> **对应实现合并前这些端点返回 501 / `internal`**——契约先行，客户端应把 501 视为「未实现」而不是业务错误。
+> 契约 v0.4.0 定稿；实现按 M3 任务推进。**已落地**：票据（T4，`POST/GET .../tickets`、`POST .../tickets/{id}/redeem`）、策略 CRUD 与会话记录（T5，`.../policies`、`.../sessions`）。
+> **仍未实现**：审批（T6）与告警（T7）——这些端点返回 `501 / internal`，客户端应把 501 视为「未实现」而不是业务错误；实现合并后该状态消失。
 > 占位实现已完成成员校验，因此非成员拿到的仍是 `403`（租户边界不会因为「还没实现」而失效）。
 
 | 端点 | 权限 | 说明 |

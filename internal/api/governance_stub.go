@@ -52,36 +52,6 @@ func (a *AdminAPI) stubMembership(c *gin.Context, orgID int64, feature string) {
 	notImplemented(c, feature)
 }
 
-// ListSessions implements gen.ServerInterface (stub, T5).
-func (a *AdminAPI) ListSessions(c *gin.Context, orgId int64, params gen.ListSessionsParams) {
-	a.stubMembership(c, orgId, "session records")
-}
-
-// GetSession implements gen.ServerInterface (stub, T5).
-func (a *AdminAPI) GetSession(c *gin.Context, orgId int64, sessionId int64) {
-	a.stubMembership(c, orgId, "session records")
-}
-
-// ListPolicies implements gen.ServerInterface (stub, T5).
-func (a *AdminAPI) ListPolicies(c *gin.Context, orgId int64) {
-	a.stubMembership(c, orgId, "connection policies")
-}
-
-// CreatePolicy implements gen.ServerInterface (stub, T5).
-func (a *AdminAPI) CreatePolicy(c *gin.Context, orgId int64) {
-	a.stubMembership(c, orgId, "connection policies")
-}
-
-// UpdatePolicy implements gen.ServerInterface (stub, T5).
-func (a *AdminAPI) UpdatePolicy(c *gin.Context, orgId int64, policyId int64) {
-	a.stubMembership(c, orgId, "connection policies")
-}
-
-// DeletePolicy implements gen.ServerInterface (stub, T5).
-func (a *AdminAPI) DeletePolicy(c *gin.Context, orgId int64, policyId int64) {
-	a.stubMembership(c, orgId, "connection policies")
-}
-
 // ListApprovals implements gen.ServerInterface (stub, T6).
 func (a *AdminAPI) ListApprovals(c *gin.Context, orgId int64, params gen.ListApprovalsParams) {
 	a.stubMembership(c, orgId, "approvals")

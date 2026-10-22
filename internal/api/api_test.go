@@ -42,6 +42,17 @@ func newHarnessWith(t *testing.T, tune func(*api.Deps)) *harness {
 
 	// One named in-memory database per test keeps runs independent, so
 	// go test -count=2 does not collide on unique indexes.
+	//
+	// This suite is deliberately SQLite-only. Pointing it at CI's
+	// TEST_POSTGRES_DSN / TEST_MYSQL_DSN was tried and fails immediately:
+	// a shared database means tests see each other's rows, and several of them
+	// count globally (TestCreateOrg_ConcurrentRequestsRespectQuota expects one
+	// organization, the verification tests expect one token row, the ticket
+	// tests expect one denied session). Making that safe needs per-test
+	// isolation on the shared database — a truncation helper or a schema per
+	// test — which is its own task, not a one-line change. The service-layer
+	// suites (internal/session) already run on all three dialects, which is
+	// where the dialect-sensitive code lives (locking, affected rows, upsert).
 	dsn := "file:apitest_" + sanitize(t.Name()) + "?mode=memory&cache=shared"
 	st, err := store.Open(config.DatabaseConfig{Driver: "sqlite", DSN: dsn})
 	require.NoError(t, err)

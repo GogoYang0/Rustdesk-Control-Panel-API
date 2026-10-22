@@ -1,0 +1,332 @@
+package session
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"unicode/utf8"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
+)
+
+// ErrPolicyNotFound reports a policy id that does not exist in this organization.
+var ErrPolicyNotFound = errors.New("policy not found")
+
+// ErrDuplicatePolicy is the contract's 409 for a name that already exists in the
+// organization. It deliberately does not reuse ErrConflict: that sentinel reads
+// "ticket cannot be redeemed", and a policy error must not borrow a ticket's
+// wording.
+var ErrDuplicatePolicy = errors.New("a policy with this name already exists in this organization")
+
+// Field bounds from the contract and the column sizes.
+const (
+	maxPolicyNameLen = 128
+	maxMinuteOfDay   = 1439
+)
+
+// PolicyInput carries a policy write.
+//
+// The two booleans are pointers on purpose. The generated contract type uses
+// plain `bool`, which cannot tell "omitted" from `false` — and treating an
+// omitted field as false would silently disable a policy or drop its approval
+// requirement. The HTTP layer therefore reads presence from the raw payload and
+// hands the service pointers; a nil here is a 400.
+type PolicyInput struct {
+	// ActorUserID is the member performing the write; it lands in the audit
+	// entry, which is what answers "who changed this policy".
+	ActorUserID           uint
+	Name                  string
+	Enabled               *bool
+	RequireApproval       *bool
+	MaxConcurrentSessions *int64
+	MaxSessionMinutes     *int64
+	AllowedStartMinute    *int64
+	AllowedEndMinute      *int64
+}
+
+// validate applies the contract's write rules. Everything that is not a
+// well-formed policy fails closed with ErrInvalidInput rather than being
+// coerced, because a coerced value is a policy nobody configured.
+func (in PolicyInput) validate() error {
+	if strings.TrimSpace(in.Name) == "" {
+		return fmt.Errorf("%w: name is required", ErrInvalidInput)
+	}
+	// The column is sized in characters; len() counts bytes, which would reject
+	// a 50-character Chinese name (150 bytes) that fits comfortably.
+	if utf8.RuneCountInString(in.Name) > maxPolicyNameLen {
+		return fmt.Errorf("%w: name must be at most %d characters", ErrInvalidInput, maxPolicyNameLen)
+	}
+	if in.Enabled == nil || in.RequireApproval == nil {
+		return fmt.Errorf("%w: enabled and require_approval are required", ErrInvalidInput)
+	}
+	for _, bound := range []struct {
+		name  string
+		value *int64
+	}{
+		{"max_concurrent_sessions", in.MaxConcurrentSessions},
+		{"max_session_minutes", in.MaxSessionMinutes},
+	} {
+		if bound.value != nil && *bound.value < 1 {
+			// Zero is not "unlimited": null is unlimited. Zero would mean "no
+			// session may ever start", which the contract's minimum forbids.
+			return fmt.Errorf("%w: %s must be at least 1", ErrInvalidInput, bound.name)
+		}
+	}
+
+	start, end := in.AllowedStartMinute, in.AllowedEndMinute
+	if (start == nil) != (end == nil) {
+		return fmt.Errorf("%w: allowed_start_minute and allowed_end_minute must be provided together", ErrInvalidInput)
+	}
+	if start == nil {
+		return nil // all day
+	}
+	for _, m := range []struct {
+		name  string
+		value int64
+	}{
+		{"allowed_start_minute", *start},
+		{"allowed_end_minute", *end},
+	} {
+		if m.value < 0 || m.value > maxMinuteOfDay {
+			return fmt.Errorf("%w: %s must be between 0 and %d", ErrInvalidInput, m.name, maxMinuteOfDay)
+		}
+	}
+	if *start == *end {
+		return fmt.Errorf("%w: start and end must differ; use null for all day", ErrInvalidInput)
+	}
+	return nil
+}
+
+// ListPolicies returns the organization's policies, oldest first.
+func (s *Service) ListPolicies(ctx context.Context, orgID uint) ([]model.Policy, error) {
+	var policies []model.Policy
+	if err := store.ScopedByOrg(s.db.WithContext(ctx), orgID).
+		Order("id").
+		Find(&policies).Error; err != nil {
+		return nil, fmt.Errorf("list policies: %w", err)
+	}
+	return policies, nil
+}
+
+// CreatePolicy writes a new policy. A duplicate name inside the organization is
+// the contract's 409.
+func (s *Service) CreatePolicy(ctx context.Context, orgID uint, in PolicyInput) (*model.Policy, error) {
+	if orgID == 0 {
+		return nil, fmt.Errorf("%w: organization is required", ErrInvalidInput)
+	}
+	if err := in.validate(); err != nil {
+		return nil, err
+	}
+
+	var created model.Policy
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Serialise policy writes per organization. The pre-check is
+		// case-insensitive but the unique index is on the raw name, so on
+		// SQLite/PostgreSQL two concurrent creates of "Policy" and "policy"
+		// would both pass the check and both be accepted. The lock makes the
+		// check authoritative on every dialect.
+		if err := lockOrganization(tx, orgID); err != nil {
+			return err
+		}
+		if err := policyNameTaken(tx, orgID, in.Name, 0); err != nil {
+			return err
+		}
+		now := s.now().UTC()
+		created = model.Policy{
+			OrganizationID:        orgID,
+			Name:                  in.Name,
+			Enabled:               *in.Enabled,
+			MaxConcurrentSessions: in.MaxConcurrentSessions,
+			MaxSessionMinutes:     in.MaxSessionMinutes,
+			AllowedStartMinute:    in.AllowedStartMinute,
+			AllowedEndMinute:      in.AllowedEndMinute,
+			RequireApproval:       *in.RequireApproval,
+			CreatedAt:             now,
+			UpdatedAt:             now,
+		}
+		if err := tx.Create(&created).Error; err != nil {
+			// The pre-check above cannot close the race: two concurrent writes
+			// both pass it and one hits the unique index.
+			if errors.Is(err, gorm.ErrDuplicatedKey) {
+				return fmt.Errorf("%w: %q", ErrDuplicatePolicy, in.Name)
+			}
+			return fmt.Errorf("create policy: %w", err)
+		}
+		return s.record(tx, audit.Entry{
+			OrganizationID: orgID,
+			ActorUserID:    in.ActorUserID,
+			Action:         "session.policy.create",
+			TargetType:     "policy",
+			TargetID:       fmt.Sprint(created.ID),
+			Detail:         map[string]any{"name": created.Name},
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &created, nil
+}
+
+// UpdatePolicy replaces a policy wholesale: the contract defines PUT as a full
+// replacement, so a field left out is cleared rather than merged. A merge
+// semantic would let a client disable a limit it can no longer see.
+func (s *Service) UpdatePolicy(ctx context.Context, orgID, policyID uint, in PolicyInput) (*model.Policy, error) {
+	if orgID == 0 || policyID == 0 {
+		return nil, fmt.Errorf("%w: organization and policy are required", ErrInvalidInput)
+	}
+	if err := in.validate(); err != nil {
+		return nil, err
+	}
+
+	var updated model.Policy
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Same serialisation as CreatePolicy: the rename check has to hold.
+		if err := lockOrganization(tx, orgID); err != nil {
+			return err
+		}
+
+		// One reading for the whole transaction: a second call could land on a
+		// different tick, and then the stored updated_at and the response would
+		// disagree — which is exactly what this field is trusted not to do.
+		// Read after the lock: if another transaction holds the organization
+		// row and commits a newer updated_at first, a clock value captured
+		// before acquiring the lock would push the stored timestamp backwards.
+		now := s.now().UTC()
+
+		var existing model.Policy
+		if err := store.ScopedByOrg(tx, orgID).Where("id = ?", policyID).First(&existing).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrPolicyNotFound
+			}
+			return err
+		}
+		if !strings.EqualFold(existing.Name, in.Name) {
+			if err := policyNameTaken(tx, orgID, in.Name, policyID); err != nil {
+				return err
+			}
+		}
+
+		// An explicit column list rather than Save: the tenant-column guard
+		// rejects any write that carries organization_id, and a full replacement
+		// must not include it anyway.
+		// updated_at is written explicitly so the service clock (not the
+		// database's) is the source of truth, and the response can state what
+		// was actually stored. GORM's auto-update yields to an explicit value.
+		updates := map[string]any{
+			"name":                    in.Name,
+			"updated_at":              now,
+			"enabled":                 *in.Enabled,
+			"require_approval":        *in.RequireApproval,
+			"max_concurrent_sessions": in.MaxConcurrentSessions,
+			"max_session_minutes":     in.MaxSessionMinutes,
+			"allowed_start_minute":    in.AllowedStartMinute,
+			"allowed_end_minute":      in.AllowedEndMinute,
+		}
+		res := store.ScopedByOrg(tx, orgID).
+			Model(&model.Policy{}).
+			Where("id = ?", policyID).
+			Updates(updates)
+		if res.Error != nil {
+			if errors.Is(res.Error, gorm.ErrDuplicatedKey) {
+				return fmt.Errorf("%w: %q", ErrDuplicatePolicy, in.Name)
+			}
+			return fmt.Errorf("update policy: %w", res.Error)
+		}
+		// No RowsAffected check: the scoped First above already proved the row
+		// exists, and MySQL reports 0 for a value-identical update (the T4
+		// lesson), which would turn an idempotent PUT into a 404.
+
+		updated = existing
+		updated.Name = in.Name
+		updated.Enabled = *in.Enabled
+		updated.RequireApproval = *in.RequireApproval
+		updated.MaxConcurrentSessions = in.MaxConcurrentSessions
+		updated.MaxSessionMinutes = in.MaxSessionMinutes
+		updated.AllowedStartMinute = in.AllowedStartMinute
+		updated.AllowedEndMinute = in.AllowedEndMinute
+		updated.UpdatedAt = now
+
+		return s.record(tx, audit.Entry{
+			OrganizationID: orgID,
+			ActorUserID:    in.ActorUserID,
+			Action:         "session.policy.update",
+			TargetType:     "policy",
+			TargetID:       fmt.Sprint(policyID),
+			Detail:         map[string]any{"name": in.Name},
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
+// DeletePolicy removes a policy. Deleting a policy is not an emergency stop:
+// the remaining enabled policies keep applying, and an organization with none
+// is unrestricted by design.
+func (s *Service) DeletePolicy(ctx context.Context, orgID, policyID, actorID uint) error {
+	if orgID == 0 || policyID == 0 {
+		return fmt.Errorf("%w: organization and policy are required", ErrInvalidInput)
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		res := store.ScopedByOrg(tx, orgID).Where("id = ?", policyID).Delete(&model.Policy{})
+		if res.Error != nil {
+			return fmt.Errorf("delete policy: %w", res.Error)
+		}
+		if res.RowsAffected == 0 {
+			return ErrPolicyNotFound
+		}
+		return s.record(tx, audit.Entry{
+			OrganizationID: orgID,
+			ActorUserID:    actorID,
+			Action:         "session.policy.delete",
+			TargetType:     "policy",
+			TargetID:       fmt.Sprint(policyID),
+		})
+	})
+}
+
+// policyNameTaken reports the contract's duplicate-name conflict, ignoring the
+// policy being updated (excludeID == 0 on create).
+//
+// The comparison is case-insensitive on purpose. The unique index behind it is
+// dialect-dependent — MySQL's default collation is case-insensitive, SQLite and
+// PostgreSQL are not — so an exact match would let "Policy" and "policy"
+// coexist on one deployment and collide on another. Doing the check in SQL makes
+// the observable rule identical everywhere; the index error stays as the
+// backstop for the race between this check and the write.
+func policyNameTaken(tx *gorm.DB, orgID uint, name string, excludeID uint) error {
+	var count int64
+	q := store.ScopedByOrg(tx, orgID).Model(&model.Policy{}).Where("LOWER(name) = LOWER(?)", name)
+	if excludeID != 0 {
+		q = q.Where("id <> ?", excludeID)
+	}
+	if err := q.Count(&count).Error; err != nil {
+		return fmt.Errorf("check policy name: %w", err)
+	}
+	if count > 0 {
+		return fmt.Errorf("%w: %q", ErrDuplicatePolicy, name)
+	}
+	return nil
+}
+
+// lockOrganization takes the organization row's write lock, serialising policy
+// writes for that organization.
+func lockOrganization(tx *gorm.DB, orgID uint) error {
+	var org model.Organization
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ?", orgID).
+		First(&org).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("%w: organization %d does not exist", ErrInvalidInput, orgID)
+		}
+		return fmt.Errorf("lock organization: %w", err)
+	}
+	return nil
+}

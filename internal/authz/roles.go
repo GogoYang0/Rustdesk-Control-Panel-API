@@ -11,6 +11,10 @@ const (
 	PermDeviceWrite  = "device.write"
 	PermAuditRead    = "audit.read"
 	PermAddressBook  = "addressbook.write"
+	// PermPolicyWrite gates connection policies. The contract grants it to
+	// owner and admin, so it is a distinct permission rather than PermOrgAdmin
+	// (which only the owner holds).
+	PermPolicyWrite = "policy.write"
 )
 
 // rolePermissions is the single source of truth for authorization.
@@ -23,6 +27,7 @@ var rolePermissions = map[string]map[string]bool{
 		PermDeviceWrite:  true,
 		PermAuditRead:    true,
 		PermAddressBook:  true,
+		PermPolicyWrite:  true,
 	},
 	"admin": {
 		PermMemberManage: true,
@@ -30,6 +35,7 @@ var rolePermissions = map[string]map[string]bool{
 		PermDeviceWrite:  true,
 		PermAuditRead:    true,
 		PermAddressBook:  true,
+		PermPolicyWrite:  true,
 	},
 	"member": {
 		PermDeviceRead: true,
