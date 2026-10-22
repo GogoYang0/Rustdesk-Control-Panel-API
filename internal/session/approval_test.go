@@ -476,7 +476,7 @@ func TestListApprovals_OrdersAndFilters(t *testing.T) {
 	require.Equal(t, first.ID, items[1].ID)
 
 	// Status filter.
-	items, total, err = h.svc.ListApprovals(context.Background(), h.org.ID, session.ApprovalFilter{
+	_, total, err = h.svc.ListApprovals(context.Background(), h.org.ID, session.ApprovalFilter{
 		Status: ptrString(model.ApprovalStatusPending),
 	})
 	require.NoError(t, err)
@@ -494,7 +494,7 @@ func TestListApprovals_OrdersAndFilters(t *testing.T) {
 	require.Equal(t, second.ID, items[0].ID)
 
 	// Device filter.
-	items, total, err = h.svc.ListApprovals(context.Background(), h.org.ID, session.ApprovalFilter{
+	_, total, err = h.svc.ListApprovals(context.Background(), h.org.ID, session.ApprovalFilter{
 		DeviceID: &h.device.ID,
 	})
 	require.NoError(t, err)
@@ -537,8 +537,17 @@ func TestListApprovals_CrossTenantIsEmpty(t *testing.T) {
 
 // The background task flips overdue pending rows to expired and touches
 // nothing else.
+//
+// The sweep is deliberately cross-tenant, so on CI's shared PostgreSQL/MySQL
+// database the changed count includes rows left over from earlier tests. This
+// test therefore starts by clearing the approvals table: every test in this
+// package seeds its own rows and reads only its own, and the suite runs
+// serially, so the wipe cannot cross a test boundary.
 func TestExpirePendingApprovals(t *testing.T) {
 	h := newHarness(t)
+	require.NoError(t, store.WithoutTenantScope(h.db).
+		Where("1 = 1").Delete(&model.Approval{}).Error)
+
 	stale, _, err := h.svc.CreateApproval(context.Background(), h.org.ID, 7, session.ApprovalCreateInput{
 		Kind:     model.ApprovalKindPre,
 		DeviceID: h.device.ID,
