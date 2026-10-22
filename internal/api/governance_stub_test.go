@@ -34,9 +34,12 @@ var governanceRoutes = []struct {
 	{http.MethodGet, "/api/v1/orgs/{org}/alerts", "/api/v1/orgs/:orgId/alerts"},
 }
 
+// implementedPrefixes mark the governance endpoints that now have real handlers.
+// Tickets landed in T4, policies and session records in T5; they keep the shared
+// registration/auth/tenant assertions and drop only the "answers 501" ones.
+var implementedPrefixes = []string{"/tickets", "/policies", "/sessions"}
+
 // stubRoutes are the governance endpoints still answered by a placeholder.
-// Tickets moved to their real handlers in T4, so they keep the shared
-// registration/auth/tenant assertions but drop the 501 ones.
 func stubRoutes() []struct {
 	method  string
 	path    string
@@ -48,7 +51,14 @@ func stubRoutes() []struct {
 		ginPath string
 	}, 0, len(governanceRoutes))
 	for _, route := range governanceRoutes {
-		if strings.Contains(route.path, "/tickets") {
+		implemented := false
+		for _, prefix := range implementedPrefixes {
+			if strings.Contains(route.path, prefix) {
+				implemented = true
+				break
+			}
+		}
+		if implemented {
 			continue
 		}
 		out = append(out, route)
