@@ -2,12 +2,10 @@ package session_test
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"gorm.io/gorm"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/session"
@@ -79,12 +77,13 @@ func TestRecordLogEvent_CreatesNativeSession(t *testing.T) {
 
 	events := h.sessionEvents(t, sess.ID)
 	require.Len(t, events, 1)
-	require.Equal(t, "started", events[0].Kind)
+	require.Equal(t, "connected", events[0].Kind, "the starting event is the session's connection")
 }
 
-// A follow-up conn event within the aggregation window merges into the open
-// native session instead of creating a duplicate per log line.
-func TestRecordLogEvent_MergesIntoNativeSession(t *testing.T) {
+// The contract caps absorption at one connection event per session: a second
+// conn event means a second connection, and merging them would hide it (and
+// with it its policy alerts).
+func TestRecordLogEvent_SecondConnStartsNewNative(t *testing.T) {
 	h := newHarness(t)
 	first, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
 		Kind:       model.LogKindConn,
@@ -98,440 +97,91 @@ func TestRecordLogEvent_MergesIntoNativeSession(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, second)
-	require.Equal(t, first.ID, second.ID, "the event merges into the open session")
+	require.NotEqual(t, first.ID, second.ID, "a session absorbs at most one conn event")
 
 	reloaded := h.reloadSession(t, first.ID)
 	require.NotNil(t, reloaded.LastActivityAt)
-	require.Equal(t, h.now.Add(10*time.Second).UTC(), reloaded.LastActivityAt.UTC())
+	require.Equal(t, h.now.UTC(), reloaded.LastActivityAt.UTC(), "the second event does not touch the first session")
 
 	events := h.sessionEvents(t, first.ID)
-	require.Len(t, events, 2, "started + the merged connected event")
-	require.Equal(t, "connected", events[1].Kind)
+	require.Len(t, events, 1, "connected only: the event that started this session")
 }
 
-// A panel session hit only refreshes last_activity_at: the panel traffic also
-// flows through the organization's hbbs/hbbr, and recording it as native would
-// double-count and alert-spam the very sessions policy already governs.
-func TestRecordLogEvent_PanelSessionOnlyRefreshes(t *testing.T) {
-	h := newHarness(t)
-	// Started just inside the aggregation window, as a live panel session is.
-	panel := h.seedPanelSession(t, h.device.ID, h.now.Add(-10*time.Second))
-
-	sess, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
-		Kind:       model.LogKindConn,
-		OccurredAt: h.now,
-	})
-	require.NoError(t, err)
-	require.NotNil(t, sess)
-	require.Equal(t, panel.ID, sess.ID, "the event merges into the panel session")
-	require.Equal(t, model.SessionOriginPanel, sess.Origin)
-
-	reloaded := h.reloadSession(t, panel.ID)
-	require.NotNil(t, reloaded.LastActivityAt)
-	require.Equal(t, h.now.UTC(), reloaded.LastActivityAt.UTC(), "activity is refreshed")
-
-	require.Empty(t, h.sessionEvents(t, panel.ID), "panel sessions get no log-derived timeline rows")
-	require.Empty(t, h.alerts(t), "panel traffic generates no native alerts")
-}
-
-// An open session whose last activity is older than the aggregation window is
-// treated as a stale remnant: the new connection gets its own native session
-// and the stale one is left for the idle sweeper.
-func TestRecordLogEvent_StaleOpenSessionGetsNewNative(t *testing.T) {
-	h := newHarness(t)
-	stale, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
-		Kind:       model.LogKindConn,
-		OccurredAt: h.now.Add(-10 * time.Minute),
-	})
-	require.NoError(t, err)
-
-	second, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
-		Kind:       model.LogKindConn,
-		OccurredAt: h.now,
-	})
-	require.NoError(t, err)
-	require.NotNil(t, second)
-	require.NotEqual(t, stale.ID, second.ID, "the stale open session is not reused")
-}
-
-// A closed session is never reopened: a reconnect after a disconnect is a new
-// session, which is what makes per-connection accounting meaningful.
-func TestRecordLogEvent_ClosedSessionNotReused(t *testing.T) {
+// An activity event (file) merges into the single open native session and is
+// recorded on its timeline.
+func TestRecordLogEvent_ActivityMergesIntoNative(t *testing.T) {
 	h := newHarness(t)
 	first, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
 		Kind:       model.LogKindConn,
-		OccurredAt: h.now.Add(-time.Minute),
+		OccurredAt: h.now,
 	})
 	require.NoError(t, err)
-	_, err = h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
-		Kind:       "disconnected",
+
+	sess, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
+		Kind:       model.LogKindFile,
+		OccurredAt: h.now.Add(30 * time.Second),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	require.Equal(t, first.ID, sess.ID, "a file event merges into the open session")
+
+	events := h.sessionEvents(t, first.ID)
+	require.Len(t, events, 2)
+	require.Equal(t, model.LogKindFile, events[1].Kind, "the event itself is recorded")
+}
+
+// With panel and native candidates open at once, an activity event refreshes
+// all of them and is recorded only on the native session(s): "panel first"
+// would let the native session idle out and its duration alerts vanish.
+func TestRecordLogEvent_ActivityRefreshesAllCandidates(t *testing.T) {
+	h := newHarness(t)
+	panel := h.seedPanelSession(t, h.device.ID, h.now.Add(-time.Minute))
+	// The panel absorbs its one connection...
+	_, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
+		Kind:       model.LogKindConn,
+		OccurredAt: h.now.Add(-45 * time.Second),
+	})
+	require.NoError(t, err)
+	// ...so this second connection starts its own native session.
+	native, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
+		Kind:       model.LogKindConn,
 		OccurredAt: h.now.Add(-30 * time.Second),
 	})
 	require.NoError(t, err)
-	closed := h.reloadSession(t, first.ID)
-	require.Equal(t, model.SessionStatusClosed, closed.Status)
+	require.NotEqual(t, panel.ID, native.ID)
 
-	second, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
-		Kind:       model.LogKindConn,
+	sess, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
+		Kind:       model.LogKindError,
 		OccurredAt: h.now,
 	})
 	require.NoError(t, err)
-	require.NotNil(t, second)
-	require.NotEqual(t, first.ID, second.ID, "a reconnect is a new session")
+	require.Nil(t, sess, "multiple candidates: no single session to return")
+
+	panelRow := h.reloadSession(t, panel.ID)
+	require.NotNil(t, panelRow.LastActivityAt)
+	require.Equal(t, h.now.UTC(), panelRow.LastActivityAt.UTC(), "panel candidate is refreshed too")
+
+	nativeRow := h.reloadSession(t, native.ID)
+	require.NotNil(t, nativeRow.LastActivityAt)
+	require.Equal(t, h.now.UTC(), nativeRow.LastActivityAt.UTC(), "native candidate is refreshed too")
+
+	events := h.sessionEvents(t, native.ID)
+	require.Len(t, events, 2)
+	require.Equal(t, model.LogKindError, events[1].Kind, "the event is recorded on the native session")
+	require.Len(t, h.sessionEvents(t, panel.ID), 1, "the panel keeps only its own connection row")
 }
 
-// ── disconnected events ─────────────────────────────────────────────────────
-
-// A disconnected event closes the device's open session with the disconnect
-// reason, regardless of origin.
-func TestRecordLogEvent_DisconnectedClosesSession(t *testing.T) {
+// An activity event with no open session starts a native session: the
+// connection was live even though its start was never seen.
+func TestRecordLogEvent_ActivityNoCandidateCreatesNative(t *testing.T) {
 	h := newHarness(t)
-	native, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
-		Kind:       model.LogKindConn,
-		OccurredAt: h.now.Add(-5 * time.Minute),
-	})
-	require.NoError(t, err)
 
 	sess, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
-		Kind:       "disconnected",
+		Kind:       model.LogKindFile,
 		OccurredAt: h.now,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, sess)
-	require.Equal(t, native.ID, sess.ID)
-
-	reloaded := h.reloadSession(t, native.ID)
-	require.Equal(t, model.SessionStatusClosed, reloaded.Status)
-	require.NotNil(t, reloaded.EndedAt)
-	require.Equal(t, h.now.UTC(), reloaded.EndedAt.UTC())
-	require.NotNil(t, reloaded.EndReason)
-	require.Equal(t, model.SessionEndDisconnected, *reloaded.EndReason)
-
-	events := h.sessionEvents(t, native.ID)
-	require.Len(t, events, 2)
-	require.Equal(t, "disconnected", events[1].Kind)
+	require.Equal(t, model.SessionOriginNative, sess.Origin)
+	require.Equal(t, model.SessionStatusOpen, sess.Status)
 }
-
-// A disconnected event for a device without an open session is a no-op: the
-// close half of a connection whose start was never seen.
-func TestRecordLogEvent_DisconnectedWithoutOpenSession(t *testing.T) {
-	h := newHarness(t)
-
-	sess, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
-		Kind:       "disconnected",
-		OccurredAt: h.now,
-	})
-	require.NoError(t, err)
-	require.Nil(t, sess, "nothing to close")
-	require.Empty(t, h.alerts(t))
-}
-
-// ── policy evaluation (native alerts, D10: alert, never block) ──────────────
-
-// A native connection outside the allowed window still gets its session (the
-// panel cannot block it), but the violation is alerted.
-func TestRecordLogEvent_NativeOutsideWindowAlerts(t *testing.T) {
-	h := newHarness(t)
-	h.addPolicy(t, func(p *model.Policy) {
-		p.AllowedStartMinute = ptrInt64(9 * 60) // 09:00
-		p.AllowedEndMinute = ptrInt64(17 * 60)  // 17:00
-	})
-	// 10:00 UTC is inside the window; move to 20:00.
-	h.setClock(time.Date(2026, 10, 22, 20, 0, 0, 0, time.UTC))
-
-	sess, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
-		Kind:       model.LogKindConn,
-		OccurredAt: h.now,
-	})
-	require.NoError(t, err)
-	require.NotNil(t, sess, "native is record-only: the session is still created")
-
-	alerts := h.alerts(t)
-	require.Len(t, alerts, 1)
-	require.Equal(t, model.AlertKindOutsideWindow, alerts[0].Kind)
-	require.NotNil(t, alerts[0].SessionID)
-	require.Equal(t, sess.ID, *alerts[0].SessionID)
-	require.Equal(t, model.AlertSeverityWarning, alerts[0].Severity)
-}
-
-// Merged events do not re-evaluate the window: the violation (if any) was
-// recorded when the session started, and per-line alerts would flood the list.
-func TestRecordLogEvent_MergedEventsDoNotReAlert(t *testing.T) {
-	h := newHarness(t)
-	h.addPolicy(t, func(p *model.Policy) {
-		p.AllowedStartMinute = ptrInt64(9 * 60)
-		p.AllowedEndMinute = ptrInt64(17 * 60)
-	})
-	h.setClock(time.Date(2026, 10, 22, 20, 0, 0, 0, time.UTC))
-
-	_, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
-		Kind:       model.LogKindConn,
-		OccurredAt: h.now,
-	})
-	require.NoError(t, err)
-	_, err = h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
-		Kind:       model.LogKindConn,
-		OccurredAt: h.now.Add(10 * time.Second),
-	})
-	require.NoError(t, err)
-
-	require.Len(t, h.alerts(t), 1, "one violation, one alert")
-}
-
-// Events of another organization never merge into this organization's
-// sessions, even for the same rustdesk id.
-func TestRecordLogEvent_CrossTenantIsolation(t *testing.T) {
-	h := newHarness(t)
-	otherOrg := model.Organization{Name: "other"}
-	require.NoError(t, h.db.Create(&otherOrg).Error)
-	otherDev := model.Device{OrganizationID: otherOrg.ID, RustdeskID: h.device.RustdeskID, Name: "twin"}
-	require.NoError(t, h.db.Create(&otherDev).Error)
-
-	first, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
-		Kind:       model.LogKindConn,
-		OccurredAt: h.now,
-	})
-	require.NoError(t, err)
-
-	second, err := h.svc.RecordLogEvent(context.Background(), otherOrg.ID, otherDev.ID, session.LogEventInput{
-		Kind:       model.LogKindConn,
-		OccurredAt: h.now.Add(5 * time.Second),
-	})
-	require.NoError(t, err)
-	require.NotNil(t, second)
-	require.NotEqual(t, first.ID, second.ID, "the other org gets its own session")
-	require.Equal(t, otherOrg.ID, second.OrganizationID)
-
-	// And the reverse: an event of this org's device does not touch the other
-	// org's session either.
-	otherSession := h.reloadSession(t, second.ID)
-	require.NotNil(t, otherSession.LastActivityAt)
-}
-
-// ── idle sweep ──────────────────────────────────────────────────────────────
-
-// The idle sweeper closes open sessions whose last activity (or start, when no
-// activity was ever recorded) is older than the idle window.
-func TestCloseIdleSessions(t *testing.T) {
-	h := newHarness(t)
-
-	idle, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
-		Kind:       model.LogKindConn,
-		OccurredAt: h.now.Add(-20 * time.Minute),
-	})
-	require.NoError(t, err)
-
-	active, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
-		Kind:       model.LogKindConn,
-		OccurredAt: h.now.Add(-time.Minute),
-	})
-	require.NoError(t, err)
-	require.NotEqual(t, idle.ID, active.ID, "the active session is separate (stale one left open)")
-
-	// A session with no recorded activity falls back to started_at.
-	noActivity := model.Session{
-		OrganizationID: h.org.ID,
-		DeviceID:       h.device.ID,
-		RustdeskID:     h.device.RustdeskID,
-		Origin:         model.SessionOriginNative,
-		Status:         model.SessionStatusOpen,
-		StartedAt:      h.now.Add(-20 * time.Minute),
-	}
-	require.NoError(t, h.db.Create(&noActivity).Error)
-
-	changed, err := h.svc.CloseIdleSessions(context.Background(), h.now, 10*time.Minute)
-	require.NoError(t, err)
-	require.Equal(t, int64(2), changed, "the idle native and the no-activity session")
-
-	idleRow := h.reloadSession(t, idle.ID)
-	require.Equal(t, model.SessionStatusClosed, idleRow.Status)
-	require.NotNil(t, idleRow.EndReason)
-	require.Equal(t, model.SessionEndIdleTimeout, *idleRow.EndReason)
-
-	noActivityRow := h.reloadSession(t, noActivity.ID)
-	require.Equal(t, model.SessionStatusClosed, noActivityRow.Status)
-	require.Equal(t, model.SessionEndIdleTimeout, *noActivityRow.EndReason)
-
-	activeRow := h.reloadSession(t, active.ID)
-	require.Equal(t, model.SessionStatusOpen, activeRow.Status, "the active session stays open")
-
-	// The sweep is idempotent.
-	changed, err = h.svc.CloseIdleSessions(context.Background(), h.now, 10*time.Minute)
-	require.NoError(t, err)
-	require.Equal(t, int64(0), changed)
-}
-
-// ── duration policy sweep ───────────────────────────────────────────────────
-
-// Sessions running past max_session_minutes are closed by the background task
-// and alerted — the real connection is not cut (the panel is not in the
-// signalling path), so the alert is what the operator sees.
-func TestClosePolicyExceededSessions(t *testing.T) {
-	h := newHarness(t)
-	h.addPolicy(t, func(p *model.Policy) { p.MaxSessionMinutes = ptrInt64(30) })
-
-	long, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
-		Kind:       model.LogKindConn,
-		OccurredAt: h.now.Add(-45 * time.Minute),
-	})
-	require.NoError(t, err)
-	fresh, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
-		Kind:       model.LogKindConn,
-		OccurredAt: h.now.Add(-5 * time.Minute),
-	})
-	require.NoError(t, err)
-
-	changed, err := h.svc.ClosePolicyExceededSessions(context.Background(), h.now)
-	require.NoError(t, err)
-	require.Equal(t, int64(1), changed)
-
-	longRow := h.reloadSession(t, long.ID)
-	require.Equal(t, model.SessionStatusClosed, longRow.Status)
-	require.Equal(t, model.SessionEndPolicyExceeded, *longRow.EndReason)
-
-	freshRow := h.reloadSession(t, fresh.ID)
-	require.Equal(t, model.SessionStatusOpen, freshRow.Status)
-
-	alerts := h.alerts(t)
-	require.Len(t, alerts, 1)
-	require.Equal(t, model.AlertKindDurationExceeded, alerts[0].Kind)
-	require.NotNil(t, alerts[0].SessionID)
-	require.Equal(t, long.ID, *alerts[0].SessionID)
-
-	// Idempotent: the closed session is not alerted twice.
-	changed, err = h.svc.ClosePolicyExceededSessions(context.Background(), h.now)
-	require.NoError(t, err)
-	require.Equal(t, int64(0), changed)
-	require.Len(t, h.alerts(t), 1)
-}
-
-// An organization without a duration policy never sweeps: null means
-// unlimited.
-func TestClosePolicyExceededSessions_NoPolicy(t *testing.T) {
-	h := newHarness(t)
-	_, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
-		Kind:       model.LogKindConn,
-		OccurredAt: h.now.Add(-10 * time.Hour),
-	})
-	require.NoError(t, err)
-
-	changed, err := h.svc.ClosePolicyExceededSessions(context.Background(), h.now)
-	require.NoError(t, err)
-	require.Equal(t, int64(0), changed)
-}
-
-// ── T4-path alerts (the contract's alert sources) ───────────────────────────
-
-// A redemption refused on the concurrency limit is alerted: the contract lists
-// it as an alert source.
-func TestRedeem_ConcurrencyExceededAlerts(t *testing.T) {
-	h := newHarness(t)
-	h.addPolicy(t, func(p *model.Policy) { p.MaxConcurrentSessions = ptrInt64(0) })
-
-	ticket, token, err := h.svc.Issue(context.Background(), session.IssueInput{
-		OrganizationID: h.org.ID, ActorUserID: 1, DeviceID: h.device.ID,
-	})
-	require.NoError(t, err)
-	_, err = h.svc.Redeem(context.Background(), h.org.ID, 1, ticket.ID, token)
-	require.ErrorIs(t, err, session.ErrConflict)
-
-	alerts := h.alerts(t)
-	require.Len(t, alerts, 1)
-	require.Equal(t, model.AlertKindConcurrencyExceeded, alerts[0].Kind)
-}
-
-// An issuance refused outside the window is alerted (the denied session row
-// already exists from T4; the alert is the inbox-facing record).
-func TestIssue_OutsideWindowAlerts(t *testing.T) {
-	h := newHarness(t)
-	h.addPolicy(t, func(p *model.Policy) {
-		p.AllowedStartMinute = ptrInt64(9 * 60)
-		p.AllowedEndMinute = ptrInt64(17 * 60)
-	})
-	h.setClock(time.Date(2026, 10, 22, 20, 0, 0, 0, time.UTC))
-
-	_, _, err := h.svc.Issue(context.Background(), session.IssueInput{
-		OrganizationID: h.org.ID, ActorUserID: 1, DeviceID: h.device.ID,
-	})
-	require.ErrorIs(t, err, session.ErrOutsideWindow)
-
-	alerts := h.alerts(t)
-	require.Len(t, alerts, 1)
-	require.Equal(t, model.AlertKindOutsideWindow, alerts[0].Kind)
-}
-
-// ── alerts listing ──────────────────────────────────────────────────────────
-
-func TestListAlerts_OrdersAndFilters(t *testing.T) {
-	h := newHarness(t)
-	h.addPolicy(t, func(p *model.Policy) { p.MaxSessionMinutes = ptrInt64(8) })
-
-	first, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
-		Kind:       model.LogKindConn,
-		OccurredAt: h.now.Add(-10 * time.Minute),
-	})
-	require.NoError(t, err)
-	_, err = h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
-		Kind:       model.LogKindConn,
-		OccurredAt: h.now.Add(-5 * time.Minute),
-	})
-	require.NoError(t, err)
-
-	_, err = h.svc.ClosePolicyExceededSessions(context.Background(), h.now)
-	require.NoError(t, err)
-
-	items, total, err := h.svc.ListAlerts(context.Background(), h.org.ID, session.AlertFilter{})
-	require.NoError(t, err)
-	require.Equal(t, int64(1), total)
-	require.Len(t, items, 1)
-	require.Equal(t, model.AlertKindDurationExceeded, items[0].Kind)
-	var detail map[string]any
-	require.NoError(t, json.Unmarshal([]byte(items[0].DetailJSON), &detail))
-	require.NotEmpty(t, detail, "the alert carries its violation context")
-	_ = first
-
-	// Newest first when several exist: seed one directly with a later clock.
-	h.setClock(h.now.Add(time.Hour))
-	_, err = h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
-		Kind:       model.LogKindConn,
-		OccurredAt: h.now,
-	})
-	require.NoError(t, err)
-	_, err = h.svc.ClosePolicyExceededSessions(context.Background(), h.now)
-	require.NoError(t, err)
-
-	items, total, err = h.svc.ListAlerts(context.Background(), h.org.ID, session.AlertFilter{
-		Kind: ptrString(model.AlertKindDurationExceeded),
-	})
-	require.NoError(t, err)
-	require.Equal(t, int64(2), total)
-	require.Greater(t, items[0].CreatedAt, items[1].CreatedAt, "newest first")
-
-	// Unknown kind filter matches nothing but is a valid filter (free string).
-	items, total, err = h.svc.ListAlerts(context.Background(), h.org.ID, session.AlertFilter{
-		Kind: ptrString("nope"),
-	})
-	require.NoError(t, err)
-	require.Equal(t, int64(0), total)
-	require.Empty(t, items)
-}
-
-func TestListAlerts_CrossTenantIsEmpty(t *testing.T) {
-	h := newHarness(t)
-	_, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
-		Kind: model.LogKindConn, OccurredAt: h.now,
-	})
-	require.NoError(t, err)
-
-	otherOrg := model.Organization{Name: "other"}
-	require.NoError(t, h.db.Create(&otherOrg).Error)
-
-	items, total, err := h.svc.ListAlerts(context.Background(), otherOrg.ID, session.AlertFilter{})
-	require.NoError(t, err)
-	require.Equal(t, int64(0), total)
-	require.Empty(t, items)
-}
-
-func ptrInt64(v int64) *int64 { return &v }
-
-var _ = gorm.ErrRecordNotFound
