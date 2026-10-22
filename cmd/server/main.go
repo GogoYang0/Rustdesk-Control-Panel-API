@@ -245,13 +245,22 @@ func main() {
 	// quiet (otherwise a lost-log session would hold its concurrency slot
 	// forever), and the duration sweep enforces max_session_minutes after the
 	// fact — the panel is not in the signalling path, so the real connection
-	// is never cut, only recorded and alerted.
+	// is never cut, only recorded and alerted. The idle window is deployment
+	// configurable (session.idleTimeout, default 10m) per the contract.
+	idleWindow := cfg.Session.IdleTimeout
+	if idleWindow <= 0 {
+		// A misconfigured window must not silently disable the sweep.
+		lg.Warn("session.idleTimeout is not positive; falling back to the default",
+			zap.Duration("configured", cfg.Session.IdleTimeout),
+			zap.Duration("using", session.DefaultIdleWindow))
+		idleWindow = session.DefaultIdleWindow
+	}
 	if err := sched.Register(worker.Task{
 		Name:       "session-idle",
 		Interval:   time.Minute,
 		RunOnStart: true,
 		Run: func(ctx context.Context) (int64, error) {
-			return sessionSvc.CloseIdleSessions(ctx, time.Now(), session.DefaultIdleWindow)
+			return sessionSvc.CloseIdleSessions(ctx, time.Now(), idleWindow)
 		},
 	}); err != nil {
 		lg.Fatal("register idle session sweep", zap.Error(err))

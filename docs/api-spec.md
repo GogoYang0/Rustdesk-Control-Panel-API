@@ -36,7 +36,7 @@
 { "code": "invalid_request", "message": "human readable", "data": null }
 ```
 
-`code` 取值（契约枚举）：`ok` `invalid_request` `unauthorized` `not_found` `conflict` `forbidden` `email_not_verified` `rate_limited` `internal` `approval_required`。`unauthorized` 映射 **401**（登录/刷新的凭据拒绝路径）；`internal` 映射 **500**（未预期的服务端错误，不向客户端泄露细节）。**唯一的例外**：v0.4.0 过渡期内，**尚未实现**的会话治理端点（当前为审批与告警）返回 `501 / internal`（见 §3.6），实现合并后该状态消失。
+`code` 取值（契约枚举）：`ok` `invalid_request` `unauthorized` `not_found` `conflict` `forbidden` `email_not_verified` `rate_limited` `internal` `approval_required`。`unauthorized` 映射 **401**（登录/刷新的凭据拒绝路径）；`internal` 映射 **500**（未预期的服务端错误，不向客户端泄露细节）。
 
 `approval_required` 是唯一**必须携带 `data` 对象**的错误码（`data.approval_id` 指向待审批请求），其余错误码的 `data` 为 `null`。
 
@@ -63,7 +63,6 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `unauthorized` | 401 | 登录/刷新的凭据拒绝 |
 | `rate_limited` | 429 | 登录锁定（LoginGuard） |
 | `internal` | 500 | 未预期的服务端错误（不向客户端泄露细节） |
-| `internal` | **501** | **过渡期专用**：仅剩审批与告警端点（v0.4.0 契约先行、T6/T7 未合并，见 §3.6）。票据/策略/会话记录已实现，不再返回 501 |
 
 ### 2.4 分页
 
@@ -92,7 +91,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | 端点 | 说明 |
 |---|---|
 | `POST /api/v1/orgs` | 创建组织（受 `maxOrgsPerUser` 限制，超出 409/400） |
-| `GET /api/v1/orgs/{orgId}/members` | 成员列表及其组织内角色（**组织成员即可访问**，不限 admin）。成员的角色在邀请时指定；v0.3.0 没有独立的角色变更端点（契约里 members 路径只有 GET） |
+| `GET /api/v1/orgs/{orgId}/members` | 成员列表及其组织内角色（**组织成员即可访问**，不限 admin）。成员的角色在邀请时指定；v0.4.0 仍无独立的角色变更/成员移除端点（契约里 members 路径只有 GET）——移除成员的管理端点落地时必须接线会话撤销（见 §4.1 与运维指南 §2.1） |
 | `POST /api/v1/orgs/{orgId}/invitations` | 邀请（admin 生成邀请令牌，邮件下发） |
 | `POST /api/v1/invitations/accept` | 接受邀请并加入组织 |
 
@@ -135,9 +134,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 
 ### 3.6 会话治理（会话记录 / 策略 / 审批 / 票据 / 告警）
 
-> 契约 v0.4.0 定稿；实现按 M3 任务推进。**已落地**：票据（T4，`POST/GET .../tickets`、`POST .../tickets/{id}/redeem`）、策略 CRUD 与会话记录（T5，`.../policies`、`.../sessions`）。
-> **仍未实现**：审批（T6）与告警（T7）——这些端点返回 `501 / internal`，客户端应把 501 视为「未实现」而不是业务错误；实现合并后该状态消失。
-> 占位实现已完成成员校验，因此非成员拿到的仍是 `403`（租户边界不会因为「还没实现」而失效）。
+> 契约 v0.4.0 定稿，**本节全部端点已实现**（票据、策略、会话记录、审批、告警）。契约之外的行为约定：**会话列表**的 `origin`/`status` 过滤参数是契约**枚举**，未知取值返回 `400 invalid_request` 而不是空列表（客户端不应把参数错误误读为"该状态下没有数据"）；**审批列表**仅支持下表列出的 `status`/`deviceId` 过滤参数（无 `origin`）。
 
 | 端点 | 权限 | 说明 |
 |---|---|---|
@@ -156,7 +153,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `POST .../tickets/{ticketId}/redeem` | 成员 | 兑换票据 → **复查并发/时段** → 创建 open panel 会话（同一事务） |
 | `GET .../alerts` | 成员 | 违规告警（`severity`/`kind`/`since` 过滤 + 分页） |
 
-会话生命周期（契约语义，实现见 T4/T5/T7）：
+会话生命周期（契约语义，v0.4.0 实现语义）：
 
 - **panel 会话在兑换时创建**：`POST .../tickets/{ticketId}/redeem` 在同一事务里复查并发/时段 → 原子占用 `used_at` → 写入 `open` 会话，`started_at` = 兑换时刻。票据签发本身不建会话、不算并发（否则 TTL 30–900 秒的票据会变成"幽灵并发"）。
 - **并发闸门在兑换，不在签发**：签发时看不到任何新会话，在那里判并发等于恒不超限——"先连签 N 张票再并行兑换"会绕过上限。兑换必须做「count(open,panel) < 上限 → 插入」，且**显式串行化同一组织的兑换**：READ COMMITTED 下仅把两步放进同一事务不够（两个事务都能读到旧计数），实现需先锁组织行/策略行（`SELECT ... FOR UPDATE`）再计数与插入。**不要用按设备的唯一约束代替**——上限是按组织统计的，设备级约束既拦不住不同设备同时占满名额，又会错误拒绝同一设备的第二个合法会话。锁粒度到组织即可，跨组织互不影响。
@@ -166,7 +163,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
   - 取舍单向：宁可多记一条 native 会话，也不漏记一条连接（CWE-778）。面板远控与原生直连并发时，第二条连接会被独立记下来。
   - 采集规则能提取连接级标识时按标识精确匹配，取代上述保守规则。关联不到组织设备的事件不建会话（`device_id` 必填）。
 - **活动时钟**：`status=open` 的会话 `last_activity_at` 非空，为 null 时以 `started_at` 作为空闲基线；日志事件命中会话即刷新。
-- **关闭**：可识别的连接结束事件（采集规则映射为 `SessionEvent.kind=disconnected`，规则随 T7 落地），或空闲超时（默认 10 分钟无关联事件，可由部署配置覆盖）→ `closed`，`end_reason` 取 `disconnected` / `idle_timeout`。**已关闭的会话不会被重新打开**：窗口内再来的事件新建会话（重连 = 新会话）。没有客户端主动关闭端点——面板不在信令链路上。
+- **关闭**：可识别的连接结束事件（采集规则映射为 `SessionEvent.kind=disconnected`；rustdesk-server 默认日志级别不打印断开行，默认规则集不含该规则——见部署指南 §6，规则随部署配置提供），或空闲超时（默认 10 分钟无关联事件，可由部署配置覆盖）→ `closed`，`end_reason` 取 `disconnected` / `idle_timeout`。**已关闭的会话不会被重新打开**：窗口内再来的事件新建会话（重连 = 新会话）。没有客户端主动关闭端点——面板不在信令链路上。
 - **时长上限是后置的**：超过 `max_session_minutes` 由后台任务把会话置 `closed`（`end_reason=policy_exceeded`）并告警，**不断开真实连接**。panel 会话的强制手段是"兑换时拦截"，不是"中途掐断"。
 - **并发口径**：`max_concurrent_sessions` 只统计 `status=open` **且** `origin=panel` 的会话。native 只告警不阻断（D10），把 native 计入会让策略不可执行。
 - **`denied` 会话**：仅 panel 来源，由**签发**路径在策略拒绝时写入（`ticket_id=null`、`started_at=ended_at=拒绝时刻`、`end_reason=policy_denied`），不占并发额度；它不经兑换创建。
@@ -200,11 +197,14 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `POST /api/logout` | 撤销当前 compat 会话 |
 | `POST /api/currentUser` | 当前用户信息（需 Bearer） |
 
-**设备认领语义**（重要）：
+**设备认领语义**（重要，v0.4.0 事务化 + 绑定代数）：
 
 - 设备 `rustdesk_id` 首次登录时绑定提交的 `uuid`（`BoundUUID`）；之后不同 uuid 登录同一 id → 403 `device is already bound`（仅管理员删除设备行可解绑）
+- **认领与会话在同一事务**（#40）：认领成功但会话落库失败会整体回滚——不存在「已绑定但无会话」或「有会话无绑定」的中间态；被拒绝的认领（403）不会留下任何会话行
+- **绑定代数**：每次绑定变更（首次认领、管理员改绑）使 `binding_generation` +1；登录会话快照当时的代数，`heartbeat`/`sysinfo` 校验会话代数与设备当前代数一致——**旧代数会话的活动被丢弃**（不落库、不推进 `last_seen_at`）。绑定的所有权语义因此不依赖 uuid 的保密性
 - uuid 非秘密且登录时不校验归属——这正是心跳必须按 `(uuid, device_id)` 双条件解析会话的原因
 - `id` ≤ 64 字符、`uuid` ≤ 128 字符，超长直接 400（防止「绑定成功但会话建不出来」的死锁状态）
+- **成员失去组织访问时**（移出组织、角色降级——当这些管理端点落地时），对应路径**必须**调用 `compatapi.RevokeOrgSessions` 立即撤销该用户在该组织的全部 compat 会话（#39）；撤销后管理请求 401、凭据免验心跳不再生效。约束已写入运维指南 §2.1
 
 ### 4.2 心跳与系统信息（无凭据）
 

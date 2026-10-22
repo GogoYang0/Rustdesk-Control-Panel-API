@@ -1,6 +1,6 @@
 # 运维指南（Operations Guide）
 
-> 适用版本：v0.3.0（M2）。本文档随版本演进持续更新——每次发布前必须复核一遍。
+> 适用版本：v0.4.0（M3）。本文档随版本演进持续更新——每次发布前必须复核一遍。
 > 配套文档：[部署指南](deployment.md) · [后端 API 规范](api-spec.md)
 
 ---
@@ -42,8 +42,28 @@
 ### 2.1 边界与已知局限（v0.3.0 设计现状）
 
 - **免凭据心跳 = 不可信的活跃提示**。`/api/heartbeat`、`/api/sysinfo` 无凭据，任何知道 `(rustdesk id, uuid)` 组合的调用者都可提交活动。设备活跃数据**不得作为安全决策依据**：授权判断一律基于管理令牌或 compat 会话（签名令牌 + 活跃 JTI）。写放大已由 30s 窗口收敛；全局请求限流为后续硬化项；日志保留期的周期化清扫见 [#41](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/41)。
-- **offboarding 不即时撤销 compat 会话**。成员被移出组织后，其 compat 会话（默认 720h）在 TTL 内仍然有效；期间只能访问其个人地址簿与组织内按角色过滤的资源，跨组织访问始终被租户过滤拒绝。若业务要求即时除名语义，需要 membership 变更联动会话撤销（[#39](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/39)）。
-- **设备认领的竞态窗口**。并发首次认领同一设备时，落败方获得的是一个未绑定该设备的持久会话；其心跳仍可被记录（不可信活跃提示）。完整的「事务化认领 + 绑定代数」硬化已立项（[#40](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/40)）。
+- **offboarding 即时撤销钩子（v0.4.0 已提供，路径尚未实现）**。撤销函数 `compatapi.RevokeOrgSessions(orgID, userID)` 已就绪（批量撤销该用户在该组织的全部活跃 compat 会话），但**当前生产代码没有成员移除或角色降级的调用方**——契约 v0.4.0 尚无对应端点。后续实现 offboarding 路径时**必须**调用该函数，且撤销失败时不得向客户端返回成功（否则 720h 的 compat 令牌会在除名后继续有效，这是 #39 的核心要求）。
+- **设备认领的竞态已关闭（v0.4.0）**。认领与会话落库在同一事务，落败方不留会话行；设备带**绑定代数**（每次绑定变更 +1），会话快照登录时的代数，旧代数会话的心跳/系统信息被丢弃——绑定的所有权语义不依赖 uuid 保密性。免凭据心跳仍是**不可信活跃提示**（无凭据的本质不变），但落败/过期会话不再能驱动设备活动。
+- **审批中心轮询是静默读**：`GET .../approvals`、`GET .../alerts` 不写审计（请求级审计回退被抑制），详情读（单个 approval）会记录——与票据/会话详情同规则。
+
+### 2.2 会话治理运维（v0.4.0）
+
+后台任务（共享调度器，每 1 分钟一轮，启动即跑首轮）：
+
+| 任务 | 语义 | 运维关注 |
+|---|---|---|
+| `approval-expiry` | 超期 pending 审批置 `expired`（仅标记，不发通知） | 审批中心不再显示死请求；无告警 |
+| `session-idle` | `last_activity_at`（缺省回退 `started_at`）超过 `session.idleTimeout`（默认 10 分钟）的 open 会话置 `closed`（`end_reason=idle_timeout`） | 日志断流（容器停止/采集中断）的会话由它兜底关闭；非违规、无告警。`session.idleTimeout` **必须为正**——配置 `0` 或负值不是"禁用清扫"，而是记 warning 并回退默认 10 分钟 |
+| `session-duration` | 超过策略 `max_session_minutes` 的 open 会话置 `closed`（`end_reason=policy_exceeded`）并写 **critical** 告警 | 真实连接不被掐断（面板不在信令链路）——告警是唯一信号，**必须处置** |
+
+**告警处置**（`GET .../alerts`，severity 语义）：
+
+- `critical`（`duration_exceeded`）：native 会话超出策略时长仍在运行（D10：面板不阻断 native）。处置 = 联系设备管理员 / 网络侧断开，或收紧策略。D10 语义下若连接持续，之后每过一个 `max_session_minutes` 会再产生一条——这是"宁可多记"的设计取向，不是重复告警缺陷。
+- `warning`（`outside_window`，native）：原生直连发生在策略时段外且连接已在运行；同上只能事后处置。
+- `warning`（`concurrency_exceeded`）：panel 兑换被并发上限拒绝——已被阻断，无连接发生，留痕供审查配额是否合理。
+- `info`（`outside_window`，panel）：签发被时段拒绝——已被阻断，无连接发生。
+
+**审批流程**（`GET/POST .../approvals`）：成员提交 → owner/admin 在审批中心决策（approve/deny）。`pre_approval` 批准后**放行一次签发**（签发即消费审批）；`ratification` 批准即"已追认"，不出票。超期请求由 `approval-expiry` 自动过期，无需手工清理。
 
 ---
 
@@ -53,6 +73,7 @@
 - **完整性**：每条审计行带 per-org 连续序列号，序列断裂即表示行被删除或篡改——巡检时应检查序列连续性
 - 无租户请求（login、healthz）不产生持久审计行（`GormAuditor` 对 org 0 直接丢弃，有意 fail-closed）
 - 遗留：compat 写路径的**事务级**审计（与业务写同事务）尚未实现，当前为请求级归因
+- **M3 新增的领域审计动作**（`TxRecorder` 在实体事务内记录）：`session.ticket.issue`（票据签发）、`session.ticket.redeem`（票据兑换）、`session.ticket.denied`（策略拒绝）、`session.approval.request`（新建审批请求；复用不重复记）、`session.approval.decide`（approve/deny 决策）。会话治理的**列表轮询不产生审计**（读静默），单个详情读会记录；provision 供应与保留期清扫等基础设施动作的审计见 provision 相关节（#46）
 
 ---
 
@@ -74,6 +95,7 @@
 - 规则按序匹配、首条命中即停；命名捕获组写入 `DetailJSON`，`device` 捕获组把事件关联到设备并产生辅助心跳
 - 匹配不上的行**按设计丢弃**（C7），每分钟至多记一条 `unparseable` 速率限制告警——大量 unparseable 说明规则与镜像实际格式不符
 - 事件保留 30 天（`DefaultLogEventRetentionDays`）：由后台调度器按 `logcollect.retentionSweepInterval`（默认 6h）执行，启动即清扫一次——**与采集启停解耦**，停用采集也会执行（#41）；设为 `0` 则完全停用保留期清理。清扫是**分批删除**（每批 `pruneBatchSize` 行，默认 1000），避免大表长事务
+- 事件 kind 与会话治理的映射：`conn`=连接事件、`file`/`error`=活动事件、`disconnected`=连接结束（**默认规则集不含**——rustdesk-server 默认日志级别不打印断开行，见部署指南 §6 第 6 条；自定义规则必须放在宽泛 connection 规则之前）。kind→会话语义的完整规则见运维指南 §2.2 与 API 规范 §3.6
 
 ### 4.3 常见问题
 
