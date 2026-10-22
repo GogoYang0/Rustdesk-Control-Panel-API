@@ -81,6 +81,15 @@ logcollect:
       pattern: '^\[[^\]]+\]\s+INFO\s+\[[^\]]+\]\s+.*?(?P<device>\d{6,12})'
       level: info
       kind: conn
+    # There is deliberately NO default `disconnected` rule: the pinned
+    # rustdesk-server prints nothing about a peer's connection ending at the
+    # default log level (its only close line, "Tcp connection from {:?}
+    # closed", is log::debug! and carries a socket address but no device id —
+    # rustdesk-server src/rendezvous_server.rs). Sessions that never see an
+    # end event are closed by the idle sweep instead. If your log source does
+    # emit an identifiable end line (a patched server, or debug level), add a
+    # `disconnected` rule ABOVE the connection rule — rules are first-match —
+    # or the broad connection pattern will absorb those lines as `conn`.
     - name: warnings
       pattern: '^\[[^\]]+\]\s+WARN\s+\[[^\]]+\]\s+(?P<msg>.*)$'
       level: warn

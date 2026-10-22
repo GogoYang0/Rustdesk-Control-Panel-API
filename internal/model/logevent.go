@@ -14,7 +14,11 @@ const (
 	LogKindConn  = "conn"
 	LogKindFile  = "file"
 	LogKindError = "error"
-	LogKindOther = "other"
+	// LogKindDisconnected marks a connection-end line. It must survive the
+	// parser's whitelist: without it the session tracker's disconnect path is
+	// unreachable and every session would only ever close via the idle sweep.
+	LogKindDisconnected = "disconnected"
+	LogKindOther        = "other"
 )
 
 // LogEvent is one parsed line collected from an organization's hbbs/hbbr

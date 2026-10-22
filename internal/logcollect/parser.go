@@ -146,7 +146,7 @@ func normalizeLevel(level string) string {
 // normalizeKind clamps unknown kinds to other.
 func normalizeKind(kind string) string {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case model.LogKindConn, model.LogKindFile, model.LogKindError:
+	case model.LogKindConn, model.LogKindFile, model.LogKindError, model.LogKindDisconnected:
 		return strings.ToLower(strings.TrimSpace(kind))
 	default:
 		return model.LogKindOther
