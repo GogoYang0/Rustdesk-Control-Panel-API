@@ -170,7 +170,7 @@ func refreshActivity(tx *gorm.DB, orgID, sessionID uint, occurred time.Time) (bo
 // `connected` — that event IS the session's connection and occupies its
 // single absorption slot; for an activity event it is `started`, because the
 // connection itself was never observed.
-func (s *Service) startNativeSession(tx *gorm.DB, orgID uint, dev *model.Device, deviceID uint, occurred time.Time, detail map[string]any, timelineKind string) (model.Session, error) {
+func (s *Service) startNativeSession(tx *gorm.DB, orgID uint, dev *model.Device, deviceID uint, occurred time.Time, detail map[string]any, timelineKind string, evaluateWindow bool) (model.Session, error) {
 	sess := model.Session{
 		OrganizationID: orgID,
 		DeviceID:       deviceID,
@@ -188,17 +188,19 @@ func (s *Service) startNativeSession(tx *gorm.DB, orgID uint, dev *model.Device,
 		return model.Session{}, err
 	}
 
-	limits, err := s.limits(tx, orgID)
-	if err != nil {
-		return model.Session{}, err
-	}
-	if !limits.WithinWindow(occurred) {
-		// D10: native traffic cannot be blocked, so the violation is a
-		// warning-level alert — the connection is already running.
-		if err := s.recordAlert(tx, orgID, &sess.ID, &deviceID, model.AlertKindOutsideWindow, model.AlertSeverityWarning, map[string]any{
-			"occurred_at": occurred,
-		}); err != nil {
+	if evaluateWindow {
+		limits, err := s.limits(tx, orgID)
+		if err != nil {
 			return model.Session{}, err
+		}
+		if !limits.WithinWindow(occurred) {
+			// D10: native traffic cannot be blocked, so the violation is a
+			// warning-level alert — the connection is already running.
+			if err := s.recordAlert(tx, orgID, &sess.ID, &deviceID, model.AlertKindOutsideWindow, model.AlertSeverityWarning, map[string]any{
+				"occurred_at": occurred,
+			}); err != nil {
+				return model.Session{}, err
+			}
 		}
 	}
 	return sess, nil
@@ -278,7 +280,7 @@ func (s *Service) recordConnEvent(ctx context.Context, orgID, deviceID uint, occ
 		// Zero candidates, or every candidate already absorbed its connection
 		// event, or several at once (indeterminable): the contract prefers
 		// over-recording a native session to hiding a connection.
-		sess, err = s.startNativeSession(tx, orgID, dev, deviceID, occurred, detail, SessionEventConnected)
+		sess, err = s.startNativeSession(tx, orgID, dev, deviceID, occurred, detail, SessionEventConnected, true)
 		if err != nil {
 			return err
 		}
@@ -317,7 +319,7 @@ func (s *Service) recordActivityEvent(ctx context.Context, orgID, deviceID uint,
 		if len(candidates) == 0 {
 			// An activity event with no open session still marks a live
 			// connection the tracker never saw start.
-			sess, err = s.startNativeSession(tx, orgID, dev, deviceID, occurred, detail, SessionEventStarted)
+			sess, err = s.startNativeSession(tx, orgID, dev, deviceID, occurred, detail, SessionEventStarted, false)
 			if err != nil {
 				return err
 			}

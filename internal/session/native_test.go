@@ -137,6 +137,38 @@ func TestRecordLogEvent_EachConnectionAlertsOnce(t *testing.T) {
 	require.Len(t, h.alerts(t), 2, "two connections, two violations, two alerts")
 }
 
+// A session started by an activity event (which does not judge the window —
+// an activity line is not a connection) is judged when a conn event is
+// absorbed into it, exactly once.
+func TestRecordLogEvent_ConnAbsorbedIntoActivitySessionAlerts(t *testing.T) {
+	h := newHarness(t)
+	h.addPolicy(t, func(p *model.Policy) {
+		p.AllowedStartMinute = ptrInt64(9 * 60)
+		p.AllowedEndMinute = ptrInt64(17 * 60)
+	})
+	h.setClock(time.Date(2026, 10, 22, 20, 0, 0, 0, time.UTC))
+
+	// The activity event starts the session without any window judgment.
+	first, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
+		Kind:       model.LogKindFile,
+		OccurredAt: h.now,
+	})
+	require.NoError(t, err)
+	require.Empty(t, h.alerts(t), "an activity line is not a connection")
+
+	// The conn event is the connection: one judgment, one alert.
+	sess, err := h.svc.RecordLogEvent(context.Background(), h.org.ID, h.device.ID, session.LogEventInput{
+		Kind:       model.LogKindConn,
+		OccurredAt: h.now.Add(10 * time.Second),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	require.Equal(t, first.ID, sess.ID)
+
+	alerts := h.alerts(t)
+	require.Len(t, alerts, 1, "one connection, one window judgment")
+}
+
 // Events of another organization never merge into this organization's
 // sessions, even for the same rustdesk id.
 func TestRecordLogEvent_CrossTenantIsolation(t *testing.T) {
