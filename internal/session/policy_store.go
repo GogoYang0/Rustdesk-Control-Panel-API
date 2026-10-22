@@ -186,15 +186,18 @@ func (s *Service) UpdatePolicy(ctx context.Context, orgID, policyID uint, in Pol
 
 	var updated model.Policy
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// One reading for the whole transaction: a second call could land on a
-		// different tick, and then the stored updated_at and the response would
-		// disagree — which is exactly what this field is trusted not to do.
-		now := s.now().UTC()
-
 		// Same serialisation as CreatePolicy: the rename check has to hold.
 		if err := lockOrganization(tx, orgID); err != nil {
 			return err
 		}
+
+		// One reading for the whole transaction: a second call could land on a
+		// different tick, and then the stored updated_at and the response would
+		// disagree — which is exactly what this field is trusted not to do.
+		// Read after the lock: if another transaction holds the organization
+		// row and commits a newer updated_at first, a clock value captured
+		// before acquiring the lock would push the stored timestamp backwards.
+		now := s.now().UTC()
 
 		var existing model.Policy
 		if err := store.ScopedByOrg(tx, orgID).Where("id = ?", policyID).First(&existing).Error; err != nil {
