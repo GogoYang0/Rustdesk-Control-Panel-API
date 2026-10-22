@@ -96,6 +96,10 @@ func firstBindingGeneration(boundUUID string) uint64 {
 // never touches bound_uuid or binding_generation on conflict: the stored
 // binding belongs to whoever claimed first.
 func RegisterTx(db *gorm.DB, orgID uint, row model.Device) (*model.Device, error) {
+	// The binding generation is normalized here so every caller agrees on
+	// it: a row that arrives with a binding starts at 1, an unbound row at
+	// 0 — no session can ever match the unbound generation.
+	row.BindingGeneration = firstBindingGeneration(row.BoundUUID)
 	err := store.ScopedByOrg(db, orgID).
 		Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "organization_id"}, {Name: "rustdesk_id"}},

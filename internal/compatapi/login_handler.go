@@ -141,13 +141,14 @@ func (s *Server) login(c *gin.Context) {
 		return
 	}
 
-	var outcome error
 	if req.ID != "" {
 		err = s.deps.DB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
 			generation, cerr := s.claimDeviceTx(tx, orgID, req.ID, req.UUID)
 			if cerr != nil {
-				outcome = cerr
-				return nil
+				// Roll back everything: errDeviceBound is answered below from
+				// the returned error, and any other failure must not commit
+				// a half state (a binding without its session).
+				return cerr
 			}
 			session := model.CompatSession{
 				OrganizationID:    orgID,
@@ -164,11 +165,7 @@ func (s *Server) login(c *gin.Context) {
 			return nil
 		})
 		if err != nil {
-			compatError(c, http.StatusInternalServerError, "login failed")
-			return
-		}
-		if outcome != nil {
-			if errors.Is(outcome, errDeviceBound) {
+			if errors.Is(err, errDeviceBound) {
 				compatError(c, http.StatusForbidden,
 					"device is already bound to another client; ask your administrator to reset it")
 				return
@@ -221,11 +218,10 @@ func (s *Server) claimDeviceTx(tx *gorm.DB, orgID uint, rustdeskID, uuid string)
 	switch {
 	case errors.Is(err, gorm.ErrRecordNotFound):
 		created, rerr := device.RegisterTx(tx, orgID, model.Device{
-			OrganizationID:    orgID,
-			RustdeskID:        rustdeskID,
-			Name:              rustdeskID,
-			BoundUUID:         uuid,
-			BindingGeneration: firstClaimGeneration(uuid),
+			OrganizationID: orgID,
+			RustdeskID:     rustdeskID,
+			Name:           rustdeskID,
+			BoundUUID:      uuid,
 		})
 		if rerr != nil {
 			return 0, rerr
@@ -253,6 +249,13 @@ func (s *Server) claimDeviceTx(tx *gorm.DB, orgID uint, rustdeskID, uuid string)
 		if res.RowsAffected == 0 {
 			// Another request claimed the row first: re-read and compare
 			// against the stored binding before issuing anything.
+			// Caveat (not reproducible on SQLite): under MySQL REPEATABLE
+			// READ this re-read sees the transaction's snapshot, so a
+			// concurrent same-uuid claimer can be misjudged as
+			// errDeviceBound (the client retries and wins) and the
+			// registration-conflict re-read inside RegisterTx can hit
+			// ErrRecordNotFound (a 500 instead of the 403). Both are
+			// self-healing; Postgres Read Committed and SQLite are exact.
 			if err := store.ScopedByOrg(tx, orgID).
 				First(&dev, dev.ID).Error; err != nil {
 				return 0, err
@@ -269,15 +272,6 @@ func (s *Server) claimDeviceTx(tx *gorm.DB, orgID uint, rustdeskID, uuid string)
 		return 0, err
 	}
 	return final.BindingGeneration, nil
-}
-
-// firstClaimGeneration is the generation a registration carrying a binding
-// starts at: 1, so no session can ever match the unbound generation 0.
-func firstClaimGeneration(uuid string) uint64 {
-	if uuid == "" {
-		return 0
-	}
-	return 1
 }
 
 // resolveOrg applies the C16 disambiguation: no selector requires exactly

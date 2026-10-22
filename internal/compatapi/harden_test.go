@@ -51,7 +51,12 @@ func TestRevokeOrgSessions_KillsCompatToken(t *testing.T) {
 		Where("rustdesk_id = ?", "333333333").First(&dev).Error)
 	require.Nil(t, dev.LastSeenAt, "a revoked session must not drive the heartbeat")
 
-	// The logout path stays idempotent on an already-revoked session.
+	// A repeat logout on the already-revoked session is a plain 401 from the
+	// session guard (logout sits behind requireSession): it neither revives
+	// the session nor errors the server.
+	w = h.do(t, http.MethodPost, "/api/logout", nil, token)
+	require.Equal(t, http.StatusUnauthorized, w.Code, w.Body.String())
+
 	var count int64
 	require.NoError(t, h.db.DB.Model(&model.CompatSession{}).
 		Where("organization_id = ? AND revoked_at IS NOT NULL", org.ID).
@@ -220,6 +225,11 @@ func TestSysinfo_StaleGenerationRejected(t *testing.T) {
 
 // The winning session of the concurrent-claim race carries the device's
 // generation, and the losers have no session at all.
+//
+// Known uncovered branch (SQLite serialises writes, so it cannot be forced):
+// claimDeviceTx's RowsAffected==0 re-read — the conditional update losing a
+// race between the First and the UPDATE. Its behaviour is pinned only by the
+// conditional-update structure and the shared-database CI runs.
 func TestLogin_ConcurrentClaim_SessionGenerationMatches(t *testing.T) {
 	h := newHarness(t)
 	u := h.seedUser(t, "racegen@example.com", "password123", true)
