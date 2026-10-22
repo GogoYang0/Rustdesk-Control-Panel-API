@@ -416,3 +416,77 @@ func TestAllowTenantTransfer_RejectsSliceSaveTenantColumn(t *testing.T) {
 	require.ErrorIs(t, err, store.ErrTenantColumnWrite,
 		"a batch save is an upsert and cannot carry a transfer")
 }
+
+// A payload that merely echoes the scoped organization id back (a loaded row
+// saved through ScopedByOrg) is not a tenant transfer: it sends the row to
+// the tenant it already belongs to. Rejecting it would leave read-modify-
+// write with no legal spelling for the whole struct.
+func TestScopedUpdate_AllowsEchoingScopedOrganizationID(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	org := model.Organization{Name: "guard-echo"}
+	require.NoError(t, db.Create(&org).Error)
+
+	m := model.Membership{OrganizationID: org.ID, UserID: 21, Role: model.RoleMember}
+	require.NoError(t, db.Create(&m).Error)
+
+	loaded := model.Membership{OrganizationID: org.ID, Role: model.RoleAdmin}
+	require.NoError(t, store.ScopedByOrg(db, org.ID).
+		Model(&model.Membership{}).
+		Where("id = ?", m.ID).
+		Updates(&loaded).Error)
+
+	var reloaded model.Membership
+	require.NoError(t, store.WithoutTenantScope(db).Where("id = ?", m.ID).First(&reloaded).Error)
+	require.Equal(t, model.RoleAdmin, reloaded.Role)
+	require.Equal(t, org.ID, reloaded.OrganizationID, "the echoed id stays the same")
+
+	// WithoutTenantScope still refuses everything: the echo is only allowed
+	// when it matches the scoped organization.
+	other := model.Organization{Name: "guard-echo-other"}
+	require.NoError(t, db.Create(&other).Error)
+	echoing := model.Membership{OrganizationID: org.ID, Role: model.RoleMember}
+	err := store.WithoutTenantScope(db).
+		Model(&model.Membership{}).
+		Where("id = ?", m.ID).
+		Updates(&echoing).Error
+	require.Error(t, err, "WithoutTenantScope must keep refusing a tenant-column write")
+	require.ErrorIs(t, err, store.ErrTenantColumnWrite)
+}
+
+// GORM re-parses Dest when Model and Dest are heterogeneous, so the guard has
+// to inspect the payload's own schema: a DTO whose org column is declared
+// under a different field name (Org + column tag) must still be caught —
+// resolving the field from the Model's schema and reading it from the Dest
+// value by the Model's field name returns an invalid value and the write
+// would sail through (CWE-863).
+type aliasedOrgDTO struct {
+	Org  uint   `gorm:"column:organization_id"`
+	Role string `gorm:"column:role"`
+}
+
+func TestScopedUpdate_RejectsTenantColumnThroughAliasedDTOField(t *testing.T) {
+	db, cleanup := newDB(t)
+	defer cleanup()
+
+	orgA := model.Organization{Name: "guard-alias-a"}
+	orgB := model.Organization{Name: "guard-alias-b"}
+	require.NoError(t, db.Create(&orgA).Error)
+	require.NoError(t, db.Create(&orgB).Error)
+
+	m := model.Membership{OrganizationID: orgA.ID, UserID: 22, Role: model.RoleMember}
+	require.NoError(t, db.Create(&m).Error)
+
+	dto := aliasedOrgDTO{Org: orgB.ID, Role: model.RoleAdmin}
+	err := store.ScopedByOrg(db, orgA.ID).
+		Model(&model.Membership{}).
+		Where("id = ?", m.ID).
+		Updates(&dto).Error
+	require.Error(t, err, "an aliased DTO field must not bypass the guard")
+	require.ErrorIs(t, err, store.ErrTenantColumnWrite)
+
+	var reloaded model.Membership
+	require.NoError(t, store.WithoutTenantScope(db).Where("id = ?", m.ID).First(&reloaded).Error)
+	require.Equal(t, orgA.ID, reloaded.OrganizationID, "the row was not moved")
+}

@@ -211,7 +211,10 @@ func (s *Scheduler) execute(ctx context.Context, t Task) error {
 		zap.Duration("elapsed", elapsed),
 	}
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		// Only a shutdown of the scheduler's own context counts as a
+		// cancellation: a task-internal timeout (its own sub-context) is a
+		// real failure and must reach the error log and the audit trail.
+		if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 			// Shutdown cancels the root context; that is not a task failure and
 			// must not produce an error log or an audit entry on every stop. A
 			// partial pass that already changed rows is still worth a line, so
