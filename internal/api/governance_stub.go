@@ -102,21 +102,6 @@ func (a *AdminAPI) DecideApproval(c *gin.Context, orgId int64, approvalId int64)
 	a.stubMembership(c, orgId, "approvals")
 }
 
-// IssueTicket implements gen.ServerInterface (stub, T4).
-func (a *AdminAPI) IssueTicket(c *gin.Context, orgId int64) {
-	a.stubMembership(c, orgId, "connection tickets")
-}
-
-// GetTicket implements gen.ServerInterface (stub, T4).
-func (a *AdminAPI) GetTicket(c *gin.Context, orgId int64, ticketId int64) {
-	a.stubMembership(c, orgId, "connection tickets")
-}
-
-// RedeemTicket implements gen.ServerInterface (stub, T4).
-func (a *AdminAPI) RedeemTicket(c *gin.Context, orgId int64, ticketId int64) {
-	a.stubMembership(c, orgId, "connection tickets")
-}
-
 // ListAlerts implements gen.ServerInterface (stub, T7).
 func (a *AdminAPI) ListAlerts(c *gin.Context, orgId int64, params gen.ListAlertsParams) {
 	a.stubMembership(c, orgId, "alerts")

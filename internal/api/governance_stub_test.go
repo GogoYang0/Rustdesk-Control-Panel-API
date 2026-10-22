@@ -34,6 +34,28 @@ var governanceRoutes = []struct {
 	{http.MethodGet, "/api/v1/orgs/{org}/alerts", "/api/v1/orgs/:orgId/alerts"},
 }
 
+// stubRoutes are the governance endpoints still answered by a placeholder.
+// Tickets moved to their real handlers in T4, so they keep the shared
+// registration/auth/tenant assertions but drop the 501 ones.
+func stubRoutes() []struct {
+	method  string
+	path    string
+	ginPath string
+} {
+	out := make([]struct {
+		method  string
+		path    string
+		ginPath string
+	}, 0, len(governanceRoutes))
+	for _, route := range governanceRoutes {
+		if strings.Contains(route.path, "/tickets") {
+			continue
+		}
+		out = append(out, route)
+	}
+	return out
+}
+
 // withOrg substitutes the {org} placeholder.
 func withOrg(template string, orgID int64) string {
 	return strings.Replace(template, "{org}", strconv.FormatInt(orgID, 10), 1)
@@ -89,7 +111,9 @@ func TestGovernanceRoutesRejectNonMembers(t *testing.T) {
 
 	// The same caller reaches their own organization (501 = the placeholder),
 	// which proves the rejection above is about membership, not about the route.
-	for _, route := range governanceRoutes {
+	// Ticket routes are implemented now, so they are excluded here; their own
+	// suite covers the positive path.
+	for _, route := range stubRoutes() {
 		t.Run("own org "+route.method+" "+route.path, func(t *testing.T) {
 			w := h.do(t, route.method, withOrg(route.path, orgB), map[string]any{}, outsiderToken)
 			require.Equal(t, http.StatusNotImplemented, w.Code, w.Body.String())
@@ -105,7 +129,7 @@ func TestGovernanceRoutesAreStubsUntilImplemented(t *testing.T) {
 	h := newHarness(t)
 	token, orgID := seedOrgOwner(t, h, "gov-stub@example.com")
 
-	for _, route := range governanceRoutes {
+	for _, route := range stubRoutes() {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
 			w := h.do(t, route.method, withOrg(route.path, orgID), map[string]any{}, token)
 			require.Equal(t, http.StatusNotImplemented, w.Code, w.Body.String())
