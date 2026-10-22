@@ -486,6 +486,18 @@ func TestScopedUpdate_RejectsTenantColumnThroughAliasedDTOField(t *testing.T) {
 	require.Error(t, err, "an aliased DTO field must not bypass the guard")
 	require.ErrorIs(t, err, store.ErrTenantColumnWrite)
 
+	// Select("OrganizationID") names the column through the Model's field
+	// name while the payload field is aliased: the select check is by
+	// database column name, so this variant is guarded too.
+	dto2 := aliasedOrgDTO{Org: orgB.ID, Role: model.RoleAdmin}
+	err = store.ScopedByOrg(db, orgA.ID).
+		Model(&model.Membership{}).
+		Where("id = ?", m.ID).
+		Select("OrganizationID").
+		Updates(&dto2).Error
+	require.Error(t, err, "Select with the Model's field name must not bypass the guard on an aliased payload")
+	require.ErrorIs(t, err, store.ErrTenantColumnWrite)
+
 	var reloaded model.Membership
 	require.NoError(t, store.WithoutTenantScope(db).Where("id = ?", m.ID).First(&reloaded).Error)
 	require.Equal(t, orgA.ID, reloaded.OrganizationID, "the row was not moved")
