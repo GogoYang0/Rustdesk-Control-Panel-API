@@ -46,12 +46,18 @@ type Scheduler struct {
 	logger  *zap.Logger
 	auditor AuditRecorder
 
-	mu      sync.Mutex
-	tasks   []Task
-	names   map[string]struct{}
-	cancel  context.CancelFunc
-	stopped bool
-	wg      sync.WaitGroup
+	mu       sync.Mutex
+	tasks    []Task
+	names    map[string]struct{}
+	cancel   context.CancelFunc
+	stopped  bool
+	stopping chan struct{}
+	wg       sync.WaitGroup
+	// stopOnce keeps Stop idempotent and, crucially, keeps the order
+	// "close(stopping) before cancel": a task's error is only treated as a
+	// shutdown when the stopping signal was already raised, so a task-internal
+	// timeout racing with Stop can never swallow its own failure.
+	stopOnce sync.Once
 }
 
 // New builds an empty scheduler. auditor may be nil (entries are skipped).
@@ -59,7 +65,7 @@ func New(logger *zap.Logger, auditor AuditRecorder) *Scheduler {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	return &Scheduler{logger: logger, auditor: auditor, names: map[string]struct{}{}}
+	return &Scheduler{logger: logger, auditor: auditor, names: map[string]struct{}{}, stopping: make(chan struct{})}
 }
 
 // Register adds a task. Duplicate names and non-positive intervals are
@@ -143,6 +149,11 @@ func (s *Scheduler) Start(ctx context.Context) {
 
 // Stop cancels every loop and waits for the in-flight passes to return.
 func (s *Scheduler) Stop() {
+	// The stopping signal goes up BEFORE the context is cancelled: execute
+	// classifies an error by this signal, not by reading ctx.Err() after the
+	// fact (a task's own sub-context timeout returning at the same moment as
+	// Stop must still be a failure).
+	s.stopOnce.Do(func() { close(s.stopping) })
 	s.mu.Lock()
 	cancel := s.cancel
 	s.cancel = nil
@@ -210,11 +221,21 @@ func (s *Scheduler) execute(ctx context.Context, t Task) error {
 		zap.Int64("changed", changed),
 		zap.Duration("elapsed", elapsed),
 	}
+	shutdown := false
 	if err != nil {
-		// Only a shutdown of the scheduler's own context counts as a
-		// cancellation: a task-internal timeout (its own sub-context) is a
-		// real failure and must reach the error log and the audit trail.
-		if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		// Only a shutdown of the scheduler itself counts as a cancellation,
+		// and the signal is the stopping channel — not ctx.Err() read after
+		// the fact, which a Stop racing the task's return could taint. A
+		// task-internal timeout (its own sub-context) is a real failure and
+		// must reach the error log and the audit trail.
+		select {
+		case <-s.stopping:
+			shutdown = true
+		default:
+		}
+	}
+	if err != nil {
+		if shutdown && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 			// Shutdown cancels the root context; that is not a task failure and
 			// must not produce an error log or an audit entry on every stop. A
 			// partial pass that already changed rows is still worth a line, so

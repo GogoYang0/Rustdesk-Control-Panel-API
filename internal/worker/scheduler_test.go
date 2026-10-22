@@ -244,15 +244,38 @@ func TestExecute_ContextCancelledIsNotAFailure(t *testing.T) {
 		Name:     "cancelled",
 		Interval: time.Hour,
 		Run: func(ctx context.Context) (int64, error) {
-			return 0, ctx.Err()
+			return 0, context.Canceled
 		},
 	}))
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	err := s.RunOnce(ctx, "cancelled")
-	require.ErrorIs(t, err, context.Canceled)
+	// The shutdown classification comes from the scheduler's own stopping
+	// signal, not from ctx.Err() read after the fact: Stop raises it before
+	// cancelling, so a shutdown racing the task's return is still classified
+	// correctly.
+	s.Start(context.Background())
+	s.Stop()
 	require.Empty(t, aud.all(), "shutdown cancellation is not audited as a failure")
+}
+
+// A task-internal timeout (its own sub-context) is a real failure even though
+// the error travels as context.DeadlineExceeded: the scheduler has not
+// signalled stopping, so the failure reaches the audit trail. This pins the
+// Stop-vs-task-timeout race the stopping-channel fix closes.
+func TestExecute_TaskInternalTimeoutIsAuditedAsFailure(t *testing.T) {
+	aud := &captureAuditor{}
+	s := worker.New(zap.NewNop(), aud)
+	require.NoError(t, s.Register(worker.Task{
+		Name:     "timed-out",
+		Interval: time.Hour,
+		Run: func(ctx context.Context) (int64, error) {
+			return 0, context.DeadlineExceeded
+		},
+	}))
+
+	err := s.RunOnce(context.Background(), "timed-out")
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Len(t, aud.all(), 1, "a task-internal timeout is a real failure and must be audited")
+	require.Contains(t, aud.all()[0].Action, "worker.timed-out")
 }
 
 func TestRegister_RejectedAfterStart(t *testing.T) {

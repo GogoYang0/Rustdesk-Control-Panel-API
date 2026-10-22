@@ -350,7 +350,7 @@ func structTenantColumn(stmt *gorm.Statement, value reflect.Value) (string, bool
 	if omitted(stmt, field.Name) {
 		return "", false
 	}
-	if !selected(stmt, field.Name) {
+	if !selectedTenantColumn(stmt) {
 		return "", false
 	}
 	fieldValue := field.ReflectValueOf(stmt.Context, value)
@@ -431,9 +431,13 @@ func isTenantColumnKey(stmt *gorm.Statement, key string) bool {
 	return normalizeColumn(key) == tenantColumn
 }
 
-// selected reports whether a struct field will be written. With no explicit
-// Select everything non-zero is written; with Select only the listed columns are.
-func selected(stmt *gorm.Statement, fieldName string) bool {
+// selectedTenantColumn reports whether the statement's explicit Select (if
+// any) includes the tenant column. The comparison is by database column name:
+// with a heterogeneous Dest the payload field can carry the org column under
+// a different Go name (Org -> organization_id), and matching the payload's
+// field name against the Model's would skip the check — Select("OrganizationID")
+// must select the tenant column no matter what either schema calls its field.
+func selectedTenantColumn(stmt *gorm.Statement) bool {
 	if len(stmt.Selects) == 0 {
 		return true
 	}
@@ -443,7 +447,7 @@ func selected(stmt *gorm.Statement, fieldName string) bool {
 		}
 		if stmt.Schema != nil {
 			if field := stmt.Schema.LookUpField(sel); field != nil {
-				if field.Name == fieldName {
+				if field.DBName == tenantColumn {
 					return true
 				}
 				continue
