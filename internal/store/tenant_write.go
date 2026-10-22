@@ -337,7 +337,7 @@ func structTenantColumn(stmt *gorm.Statement, value reflect.Value) (string, bool
 	// field name — FieldByName returns an invalid value and the write would
 	// sail through (CWE-863). schema.Parse is cached by GORM, so the
 	// per-call cost is a map lookup.
-	payloadSchema, err := schema.Parse(value.Interface(), &sync.Map{}, stmt.DB.NamingStrategy)
+	payloadSchema, err := schema.Parse(value.Interface(), &sync.Map{}, stmt.NamingStrategy)
 	if err != nil {
 		// Unparseable payload: fail closed — refuse the write instead of
 		// waving it through uninspected.
