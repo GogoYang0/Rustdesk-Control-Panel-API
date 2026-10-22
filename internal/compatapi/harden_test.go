@@ -142,13 +142,24 @@ func TestHeartbeat_StaleGenerationRejected(t *testing.T) {
 	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).
 		Where("rustdesk_id = ?", "555555555").First(&dev).Error)
 	require.NotNil(t, dev.LastSeenAt)
-	firstSeen := *dev.LastSeenAt
 
-	// The binding moves on without deleting the row (administrator re-bind).
+	// The heartbeat coalescing window (30s) would swallow the next report,
+	// which would make the stale session look rejected even without the
+	// generation check. Pull last_seen back so the window lets it through.
+	staleSeen := time.Now().Add(-2 * time.Hour)
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).Model(&model.Device{}).
+		Where("id = ?", dev.ID).
+		Update("last_seen_at", staleSeen).Error)
+
+	firstSeen := staleSeen
+
+	// The binding generation moves on without changing the uuid — e.g. an
+	// administrator re-bind flow that re-issues the binding record. Only the
+	// generation check can refuse the old session here; the uuid still
+	// matches on purpose.
 	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).Model(&model.Device{}).
 		Where("id = ?", dev.ID).
 		Updates(map[string]any{
-			"bound_uuid":         "new-instance-uuid",
 			"binding_generation": dev.BindingGeneration + 1,
 		}).Error)
 
@@ -161,9 +172,8 @@ func TestHeartbeat_StaleGenerationRejected(t *testing.T) {
 
 	var after model.Device
 	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).First(&after, dev.ID).Error)
-	require.Equal(t, firstSeen, *after.LastSeenAt,
-		"a stale-generation session must not move last_seen")
-	require.Equal(t, firstSeen, *after.LastSeenAt)
+	require.True(t, firstSeen.Equal(*after.LastSeenAt),
+		"a stale-generation session must not move last_seen: got %v want %v", after.LastSeenAt, firstSeen)
 }
 
 // The sysinfo path enforces the same generation check.
@@ -184,12 +194,16 @@ func TestSysinfo_StaleGenerationRejected(t *testing.T) {
 	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).
 		Where("rustdesk_id = ?", "666666667").First(&dev).Error)
 	require.NotNil(t, dev.LastSeenAt)
-	firstSeen := *dev.LastSeenAt
+
+	staleSeen := time.Now().Add(-2 * time.Hour)
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).Model(&model.Device{}).
+		Where("id = ?", dev.ID).
+		Update("last_seen_at", staleSeen).Error)
+	firstSeen := staleSeen
 
 	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).Model(&model.Device{}).
 		Where("id = ?", dev.ID).
 		Updates(map[string]any{
-			"bound_uuid":         "another-instance",
 			"binding_generation": dev.BindingGeneration + 1,
 		}).Error)
 
@@ -200,8 +214,8 @@ func TestSysinfo_StaleGenerationRejected(t *testing.T) {
 
 	var after model.Device
 	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).First(&after, dev.ID).Error)
-	require.Equal(t, firstSeen, *after.LastSeenAt,
-		"a stale-generation sysinfo must not move last_seen")
+	require.True(t, firstSeen.Equal(*after.LastSeenAt),
+		"a stale-generation sysinfo must not move last_seen: got %v want %v", after.LastSeenAt, firstSeen)
 }
 
 // The winning session of the concurrent-claim race carries the device's
