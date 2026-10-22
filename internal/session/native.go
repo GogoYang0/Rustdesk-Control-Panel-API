@@ -269,38 +269,41 @@ func (s *Service) recordConnEvent(ctx context.Context, orgID, deviceID uint, occ
 			if err != nil {
 				return err
 			}
-			if !active {
-				// The session was closed meanwhile: no timeline, no alert.
-				return nil
-			}
-			// The connected timeline row is what marks the session as having
-			// absorbed its one connection event, so it is written for panel
-			// and native alike — without it the panel's absorption could not
-			// be judged and a second connection would slip into the same
-			// session. The panel difference is what is *not* written: no
-			// alert, no further bookkeeping.
-			if err := s.appendEvent(tx, orgID, c.ID, SessionEventConnected, occurred, detail); err != nil {
-				return err
-			}
-			// For a native candidate this event is the first observed moment
-			// of the connection, so the window is evaluated here too: the
-			// session may have been started by an activity event, which does
-			// not judge the window (an activity line is not a connection).
-			if c.Origin == model.SessionOriginNative {
-				limits, lerr := s.limits(tx, orgID)
-				if lerr != nil {
-					return lerr
+			if active {
+				// The connected timeline row is what marks the session as
+				// having absorbed its one connection event, so it is written
+				// for panel and native alike — without it the panel's
+				// absorption could not be judged and a second connection
+				// would slip into the same session. The panel difference is
+				// what is *not* written: no alert, no further bookkeeping.
+				if err := s.appendEvent(tx, orgID, c.ID, SessionEventConnected, occurred, detail); err != nil {
+					return err
 				}
-				if !limits.WithinWindow(occurred) {
-					if err := s.recordAlert(tx, orgID, &c.ID, &deviceID, model.AlertKindOutsideWindow, model.AlertSeverityWarning, map[string]any{
-						"occurred_at": occurred,
-					}); err != nil {
-						return err
+				// For a native candidate this event is the first observed
+				// moment of the connection, so the window is evaluated here
+				// too: the session may have been started by an activity
+				// event, which does not judge the window (an activity line
+				// is not a connection).
+				if c.Origin == model.SessionOriginNative {
+					limits, lerr := s.limits(tx, orgID)
+					if lerr != nil {
+						return lerr
+					}
+					if !limits.WithinWindow(occurred) {
+						if err := s.recordAlert(tx, orgID, &c.ID, &deviceID, model.AlertKindOutsideWindow, model.AlertSeverityWarning, map[string]any{
+							"occurred_at": occurred,
+						}); err != nil {
+							return err
+						}
 					}
 				}
+				sess = c
+				return nil
 			}
-			sess = c
-			return nil
+			// The candidate was closed meanwhile by a sweep or a concurrent
+			// disconnect — nothing may be written to it, but the connection
+			// event itself must not be lost: fall through and give it its
+			// own native session.
 		}
 
 		// Zero candidates, or every candidate already absorbed its connection
