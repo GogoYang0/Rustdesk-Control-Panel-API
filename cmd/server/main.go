@@ -249,6 +249,10 @@ func main() {
 	// configurable (session.idleTimeout, default 10m) per the contract.
 	idleWindow := cfg.Session.IdleTimeout
 	if idleWindow <= 0 {
+		// A misconfigured window must not silently disable the sweep.
+		lg.Warn("session.idleTimeout is not positive; falling back to the default",
+			zap.Duration("configured", cfg.Session.IdleTimeout),
+			zap.Duration("using", session.DefaultIdleWindow))
 		idleWindow = session.DefaultIdleWindow
 	}
 	if err := sched.Register(worker.Task{

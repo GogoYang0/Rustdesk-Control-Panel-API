@@ -36,7 +36,7 @@
 { "code": "invalid_request", "message": "human readable", "data": null }
 ```
 
-`code` 取值（契约枚举）：`ok` `invalid_request` `unauthorized` `not_found` `conflict` `forbidden` `email_not_verified` `rate_limited` `internal` `approval_required`。`unauthorized` 映射 **401**（登录/刷新的凭据拒绝路径）；`internal` 映射 **500**（未预期的服务端错误，不向客户端泄露细节）。**唯一的例外**：v0.4.0 过渡期内，**尚未实现**的会话治理端点（当前为审批与告警）返回 `501 / internal`（见 §3.6），实现合并后该状态消失。
+`code` 取值（契约枚举）：`ok` `invalid_request` `unauthorized` `not_found` `conflict` `forbidden` `email_not_verified` `rate_limited` `internal` `approval_required`。`unauthorized` 映射 **401**（登录/刷新的凭据拒绝路径）；`internal` 映射 **500**（未预期的服务端错误，不向客户端泄露细节）。
 
 `approval_required` 是唯一**必须携带 `data` 对象**的错误码（`data.approval_id` 指向待审批请求），其余错误码的 `data` 为 `null`。
 
@@ -63,7 +63,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `unauthorized` | 401 | 登录/刷新的凭据拒绝 |
 | `rate_limited` | 429 | 登录锁定（LoginGuard） |
 | `internal` | 500 | 未预期的服务端错误（不向客户端泄露细节） |
-| `internal` | **501** | **过渡期专用**：仅剩审批与告警端点（v0.4.0 契约先行、T6/T7 未合并，见 §3.6）。票据/策略/会话记录已实现，不再返回 501 |
+| `internal` | 500 | 未预期的服务端错误，不向客户端泄露细节 |
 
 ### 2.4 分页
 
@@ -154,7 +154,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `POST .../tickets/{ticketId}/redeem` | 成员 | 兑换票据 → **复查并发/时段** → 创建 open panel 会话（同一事务） |
 | `GET .../alerts` | 成员 | 违规告警（`severity`/`kind`/`since` 过滤 + 分页） |
 
-会话生命周期（契约语义，实现见 T4/T5/T7）：
+会话生命周期（契约语义，v0.4.0 实现语义）：
 
 - **panel 会话在兑换时创建**：`POST .../tickets/{ticketId}/redeem` 在同一事务里复查并发/时段 → 原子占用 `used_at` → 写入 `open` 会话，`started_at` = 兑换时刻。票据签发本身不建会话、不算并发（否则 TTL 30–900 秒的票据会变成"幽灵并发"）。
 - **并发闸门在兑换，不在签发**：签发时看不到任何新会话，在那里判并发等于恒不超限——"先连签 N 张票再并行兑换"会绕过上限。兑换必须做「count(open,panel) < 上限 → 插入」，且**显式串行化同一组织的兑换**：READ COMMITTED 下仅把两步放进同一事务不够（两个事务都能读到旧计数），实现需先锁组织行/策略行（`SELECT ... FOR UPDATE`）再计数与插入。**不要用按设备的唯一约束代替**——上限是按组织统计的，设备级约束既拦不住不同设备同时占满名额，又会错误拒绝同一设备的第二个合法会话。锁粒度到组织即可，跨组织互不影响。
@@ -164,7 +164,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
   - 取舍单向：宁可多记一条 native 会话，也不漏记一条连接（CWE-778）。面板远控与原生直连并发时，第二条连接会被独立记下来。
   - 采集规则能提取连接级标识时按标识精确匹配，取代上述保守规则。关联不到组织设备的事件不建会话（`device_id` 必填）。
 - **活动时钟**：`status=open` 的会话 `last_activity_at` 非空，为 null 时以 `started_at` 作为空闲基线；日志事件命中会话即刷新。
-- **关闭**：可识别的连接结束事件（采集规则映射为 `SessionEvent.kind=disconnected`，规则随 T7 落地），或空闲超时（默认 10 分钟无关联事件，可由部署配置覆盖）→ `closed`，`end_reason` 取 `disconnected` / `idle_timeout`。**已关闭的会话不会被重新打开**：窗口内再来的事件新建会话（重连 = 新会话）。没有客户端主动关闭端点——面板不在信令链路上。
+- **关闭**：可识别的连接结束事件（采集规则映射为 `SessionEvent.kind=disconnected`；rustdesk-server 默认日志级别不打印断开行，默认规则集不含该规则——见部署指南 §6，规则随部署配置提供），或空闲超时（默认 10 分钟无关联事件，可由部署配置覆盖）→ `closed`，`end_reason` 取 `disconnected` / `idle_timeout`。**已关闭的会话不会被重新打开**：窗口内再来的事件新建会话（重连 = 新会话）。没有客户端主动关闭端点——面板不在信令链路上。
 - **时长上限是后置的**：超过 `max_session_minutes` 由后台任务把会话置 `closed`（`end_reason=policy_exceeded`）并告警，**不断开真实连接**。panel 会话的强制手段是"兑换时拦截"，不是"中途掐断"。
 - **并发口径**：`max_concurrent_sessions` 只统计 `status=open` **且** `origin=panel` 的会话。native 只告警不阻断（D10），把 native 计入会让策略不可执行。
 - **`denied` 会话**：仅 panel 来源，由**签发**路径在策略拒绝时写入（`ticket_id=null`、`started_at=ended_at=拒绝时刻`、`end_reason=policy_denied`），不占并发额度；它不经兑换创建。

@@ -53,7 +53,7 @@
 | 任务 | 语义 | 运维关注 |
 |---|---|---|
 | `approval-expiry` | 超期 pending 审批置 `expired`（仅标记，不发通知） | 审批中心不再显示死请求；无告警 |
-| `session-idle` | `last_activity_at`（缺省回退 `started_at`）超过 **10 分钟** 的 open 会话置 `closed`（`end_reason=idle_timeout`） | 日志断流（容器停止/采集中断）的会话由它兜底关闭；非违规、无告警 |
+| `session-idle` | `last_activity_at`（缺省回退 `started_at`）超过 `session.idleTimeout`（默认 10 分钟，可配置）的 open 会话置 `closed`（`end_reason=idle_timeout`） | 日志断流（容器停止/采集中断）的会话由它兜底关闭；非违规、无告警 |
 | `session-duration` | 超过策略 `max_session_minutes` 的 open 会话置 `closed`（`end_reason=policy_exceeded`）并写 **critical** 告警 | 真实连接不被掐断（面板不在信令链路）——告警是唯一信号，**必须处置** |
 
 **告警处置**（`GET .../alerts`，severity 语义）：
@@ -73,7 +73,7 @@
 - **完整性**：每条审计行带 per-org 连续序列号，序列断裂即表示行被删除或篡改——巡检时应检查序列连续性
 - 无租户请求（login、healthz）不产生持久审计行（`GormAuditor` 对 org 0 直接丢弃，有意 fail-closed）
 - 遗留：compat 写路径的**事务级**审计（与业务写同事务）尚未实现，当前为请求级归因
-- **M3 新增的领域审计动作**（`TxRecorder` 在实体事务内记录）：`session.ticket.issued`（票据签发）、`session.ticket.denied`（策略拒绝）、`session.approval.request`（新建审批请求；复用不重复记）、`session.approval.decide`（approve/deny 决策）。会话治理的**列表轮询不产生审计**（读静默），单个详情读会记录；provision 供应与保留期清扫等基础设施动作的审计见 provision 相关节（#46）
+- **M3 新增的领域审计动作**（`TxRecorder` 在实体事务内记录）：`session.ticket.issue`（票据签发）、`session.ticket.redeem`（票据兑换）、`session.ticket.denied`（策略拒绝）、`session.approval.request`（新建审批请求；复用不重复记）、`session.approval.decide`（approve/deny 决策）。会话治理的**列表轮询不产生审计**（读静默），单个详情读会记录；provision 供应与保留期清扫等基础设施动作的审计见 provision 相关节（#46）
 
 ---
 
