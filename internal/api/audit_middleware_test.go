@@ -12,6 +12,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/api"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/session"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
 
@@ -94,6 +95,11 @@ func TestMiddleware_FallbackWithoutTxRecorder(t *testing.T) {
 	spy := &spyAuditor{inner: audit.Nop{}}
 	h := newHarnessWith(t, func(d *api.Deps) {
 		d.Auditor = spy
+		// A non-TxRecorder auditor plus no explicit Tickets is refused by the
+		// dependency boundary; this test exercises the middleware fallback, so
+		// it wires a real transactional recorder into the session service and
+		// keeps the spy on the middleware path only.
+		d.Tickets = session.NewService(d.DB, audit.NewGormAuditor(d.DB), nil)
 	})
 	h.seedUser(t, "fallback-owner@example.com", "password123")
 	token := h.login(t, "fallback-owner@example.com", "password123")
@@ -117,7 +123,10 @@ func TestMiddleware_FallbackWithoutTxRecorder(t *testing.T) {
 // silently drops. The fallback must carry the compat actor and organization.
 func TestMiddleware_AttributesCompatMutations(t *testing.T) {
 	spy := &spyAuditor{inner: audit.Nop{}}
-	h := newHarnessWith(t, func(d *api.Deps) { d.Auditor = spy })
+	h := newHarnessWith(t, func(d *api.Deps) {
+		d.Auditor = spy
+		d.Tickets = session.NewService(d.DB, audit.NewGormAuditor(d.DB), nil)
+	})
 	h.seedUser(t, "compat-audit@example.com", "password123")
 
 	// Management side: create the organization and make the user a member.

@@ -74,8 +74,33 @@ func (s *Service) Register(ctx context.Context, orgID uint, in RegisterInput) (*
 		RustdeskID:     in.RustdeskID,
 		Name:           in.Name,
 		BoundUUID:      in.BoundUUID,
+		// A registration that carries a binding is the first claim: the
+		// generation starts at 1 so a session can never match generation 0
+		// (no binding yet).
+		BindingGeneration: firstBindingGeneration(in.BoundUUID),
 	}
-	err := store.ScopedByOrg(s.db.WithContext(ctx), orgID).
+	return RegisterTx(s.db.WithContext(ctx), orgID, row)
+}
+
+// firstBindingGeneration maps a registration binding to its generation: a
+// bound row starts at 1, an unbound row at 0.
+func firstBindingGeneration(boundUUID string) uint64 {
+	if boundUUID == "" {
+		return 0
+	}
+	return 1
+}
+
+// RegisterTx is Register on a caller-supplied transaction, so the compat
+// login can claim a device and persist its session atomically. The upsert
+// never touches bound_uuid or binding_generation on conflict: the stored
+// binding belongs to whoever claimed first.
+func RegisterTx(db *gorm.DB, orgID uint, row model.Device) (*model.Device, error) {
+	// The binding generation is normalized here so every caller agrees on
+	// it: a row that arrives with a binding starts at 1, an unbound row at
+	// 0 — no session can ever match the unbound generation.
+	row.BindingGeneration = firstBindingGeneration(row.BoundUUID)
+	err := store.ScopedByOrg(db, orgID).
 		Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "organization_id"}, {Name: "rustdesk_id"}},
 			DoUpdates: clause.AssignmentColumns([]string{"name", "updated_at"}),
@@ -85,10 +110,17 @@ func (s *Service) Register(ctx context.Context, orgID uint, in RegisterInput) (*
 		return nil, fmt.Errorf("register device: %w", err)
 	}
 
+	// The re-read after a unique-key conflict must be a current read: under
+	// MySQL REPEATABLE READ a plain SELECT keeps seeing the transaction's
+	// snapshot and would report the rival's just-committed row as missing.
+	// SQLite has no row locks, so it keeps the plain read.
 	var stored model.Device
-	if err := store.ScopedByOrg(s.db.WithContext(ctx), orgID).
-		Where("rustdesk_id = ?", in.RustdeskID).
-		First(&stored).Error; err != nil {
+	lookup := store.ScopedByOrg(db, orgID).
+		Where("rustdesk_id = ?", row.RustdeskID)
+	if db.Name() != "sqlite" {
+		lookup = lookup.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	if err := lookup.First(&stored).Error; err != nil {
 		return nil, fmt.Errorf("load device: %w", err)
 	}
 	return &stored, nil

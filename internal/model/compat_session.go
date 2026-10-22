@@ -7,15 +7,19 @@ import "time"
 // session fixes the tenant for /api/peers, heartbeat and sysinfo. The JWT
 // jti matches the session row; logout revokes by jti.
 type CompatSession struct {
-	ID             uint      `gorm:"primaryKey"`
-	OrganizationID uint      `gorm:"index;not null"`
-	UserID         uint      `gorm:"index;not null"`
-	JTI            string    `gorm:"size:64;uniqueIndex;not null"`
-	DeviceID       string    `gorm:"size:64"`
-	UUID           string    `gorm:"size:128;index"`
-	ExpiresAt      time.Time `gorm:"not null"`
-	RevokedAt      *time.Time
-	CreatedAt      time.Time
+	ID             uint   `gorm:"primaryKey"`
+	OrganizationID uint   `gorm:"index;not null"`
+	UserID         uint   `gorm:"index;not null"`
+	JTI            string `gorm:"size:64;uniqueIndex;not null"`
+	DeviceID       string `gorm:"size:64"`
+	UUID           string `gorm:"size:128;index"`
+	// BindingGeneration snapshots the device's binding generation at login
+	// (0 for sessions without a device claim). Heartbeats and sysinfo from a
+	// session whose generation no longer matches the device's are dropped.
+	BindingGeneration uint64    `gorm:"not null;default:0"`
+	ExpiresAt         time.Time `gorm:"not null"`
+	RevokedAt         *time.Time
+	CreatedAt         time.Time
 }
 
 // Active reports whether the session may still be used.

@@ -96,6 +96,12 @@ func (s *Server) touchDevice(c *gin.Context, session *model.CompatSession, rustd
 		// The binding moved to another client instance meanwhile.
 		return nil
 	}
+	if dev.BindingGeneration != session.BindingGeneration {
+		// The binding was re-issued (administrator re-bind) after this
+		// session was logged in: the session is stale no matter which uuid
+		// it carries, so its activity is dropped (#40).
+		return nil
+	}
 	_, err = s.deps.Devices.Heartbeat(c.Request.Context(), orgID, dev.ID)
 	return err
 }

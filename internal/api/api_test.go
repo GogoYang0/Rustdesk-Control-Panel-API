@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/api"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
@@ -42,6 +43,17 @@ func newHarnessWith(t *testing.T, tune func(*api.Deps)) *harness {
 
 	// One named in-memory database per test keeps runs independent, so
 	// go test -count=2 does not collide on unique indexes.
+	//
+	// This suite is deliberately SQLite-only. Pointing it at CI's
+	// TEST_POSTGRES_DSN / TEST_MYSQL_DSN was tried and fails immediately:
+	// a shared database means tests see each other's rows, and several of them
+	// count globally (TestCreateOrg_ConcurrentRequestsRespectQuota expects one
+	// organization, the verification tests expect one token row, the ticket
+	// tests expect one denied session). Making that safe needs per-test
+	// isolation on the shared database — a truncation helper or a schema per
+	// test — which is its own task, not a one-line change. The service-layer
+	// suites (internal/session) already run on all three dialects, which is
+	// where the dialect-sensitive code lives (locking, affected rows, upsert).
 	dsn := "file:apitest_" + sanitize(t.Name()) + "?mode=memory&cache=shared"
 	st, err := store.Open(config.DatabaseConfig{Driver: "sqlite", DSN: dsn})
 	require.NoError(t, err)
@@ -53,6 +65,8 @@ func newHarnessWith(t *testing.T, tune func(*api.Deps)) *harness {
 		&model.AddressBook{}, &model.AddressBookPeer{},
 		&model.AddressBookTag{}, &model.SyncCursor{}, &model.VerificationToken{},
 		&model.MigrationMark{}, &model.CompatSession{}, &model.LogEvent{},
+		&model.Policy{}, &model.Ticket{}, &model.Session{},
+		&model.SessionEvent{}, &model.Approval{}, &model.Alert{},
 	))
 
 	issuer := auth.NewIssuer("test-secret", time.Minute, time.Hour)
@@ -63,6 +77,7 @@ func newHarnessWith(t *testing.T, tune func(*api.Deps)) *harness {
 		Auth:          svc,
 		Devices:       device.NewService(st.DB, nil),
 		Issuer:        issuer,
+		Auditor:       audit.NewGormAuditor(st.DB),
 		AccessTTL:     time.Minute,
 		RefreshTTL:    time.Hour,
 		InvitationTTL: time.Hour,
@@ -515,6 +530,7 @@ func TestCreateOrg_QuotaEnforced(t *testing.T) {
 		Auth:          auth.NewService(h.db.DB, h.issuer, nil),
 		Issuer:        h.issuer,
 		Devices:       device.NewService(h.db.DB, nil),
+		Auditor:       audit.NewGormAuditor(h.db.DB),
 		AccessTTL:     time.Minute,
 		RefreshTTL:    time.Hour,
 		InvitationTTL: time.Hour,
@@ -540,6 +556,7 @@ func TestCreateOrg_ConcurrentRequestsRespectQuota(t *testing.T) {
 		Auth:          auth.NewService(h.db.DB, h.issuer, nil),
 		Issuer:        h.issuer,
 		Devices:       device.NewService(h.db.DB, nil),
+		Auditor:       audit.NewGormAuditor(h.db.DB),
 		AccessTTL:     time.Minute,
 		RefreshTTL:    time.Hour,
 		InvitationTTL: time.Hour,

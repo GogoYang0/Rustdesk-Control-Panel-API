@@ -19,6 +19,15 @@ type Config struct {
 	Web        WebConfig        `mapstructure:"web"`
 	Compat     CompatConfig     `mapstructure:"compat"`
 	Logcollect LogcollectConfig `mapstructure:"logcollect"`
+	Session    SessionConfig    `mapstructure:"session"`
+}
+
+// SessionConfig tunes the session-governance background sweeps.
+type SessionConfig struct {
+	// IdleTimeout is how long an open session may go without activity
+	// before the idle sweep closes it. Sessions with no recorded activity
+	// fall back to their start time. Must be positive.
+	IdleTimeout time.Duration `mapstructure:"idleTimeout"`
 }
 
 // LogcollectConfig tunes the hbbs/hbbr log collector. Rules are evaluated in
@@ -31,6 +40,10 @@ type LogcollectConfig struct {
 	// (panel-org-<orgID>-hbbs / -hbbr).
 	ContainerPrefix string           `mapstructure:"containerPrefix"`
 	Rules           []LogcollectRule `mapstructure:"rules"`
+	// RetentionSweepInterval is the period of the log-event retention sweep.
+	// Zero disables retention cleanup entirely (no periodic sweep and no
+	// startup sweep); any non-zero value must be at least one minute.
+	RetentionSweepInterval time.Duration `mapstructure:"retentionSweepInterval"`
 }
 
 // LogcollectRule is one configurable parsing rule.
@@ -135,9 +148,11 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("mail.devMode", true)
 	v.SetDefault("mail.smtp.port", 587)
 	v.SetDefault("compat.accessTTL", "720h")
+	v.SetDefault("session.idleTimeout", "10m")
 	// Log collection is opt-in: without rules nothing can be parsed.
 	v.SetDefault("logcollect.enabled", false)
 	v.SetDefault("logcollect.containerprefix", "panel-org")
+	v.SetDefault("logcollect.retentionsweepinterval", 6*time.Hour)
 	// Frontend origin for links inside outgoing emails.
 	v.SetDefault("web.baseurl", "http://localhost:5173")
 	if err := v.BindEnv("web.baseurl", "PANEL_WEB_BASE_URL"); err != nil {
@@ -161,7 +176,25 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("unmarshal config %s: %w", path, err)
 	}
 
+	if err := validateLogcollect(cfg.Logcollect); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+	}
+
 	return &cfg, nil
+}
+
+// validateLogcollect rejects sweep intervals that would either hammer the
+// database or silently masquerade as "disabled".
+func validateLogcollect(cfg LogcollectConfig) error {
+	v := cfg.RetentionSweepInterval
+	// Zero disables the periodic sweep on purpose; anything between is a
+	// misconfiguration (a 1s sweep scans the table every second).
+	// Negative values are covered by the same bound: anything below a minute
+	// that is not exactly zero is a misconfiguration.
+	if v != 0 && v < time.Minute {
+		return fmt.Errorf("logcollect.retentionSweepInterval must be 0 (disabled) or at least 1m, got %s", v)
+	}
+	return nil
 }
 
 // devSecretPlaceholder is rejected so a shipped config cannot become production.

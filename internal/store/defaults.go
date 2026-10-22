@@ -19,4 +19,10 @@ func registerDefaultScopedModels() {
 	RegisterScopedModel(&model.AddressBookTag{})
 	RegisterScopedModel(&model.SyncCursor{})
 	RegisterScopedModel(&model.LogEvent{})
+	RegisterScopedModel(&model.Session{})
+	RegisterScopedModel(&model.SessionEvent{})
+	RegisterScopedModel(&model.Ticket{})
+	RegisterScopedModel(&model.Policy{})
+	RegisterScopedModel(&model.Approval{})
+	RegisterScopedModel(&model.Alert{})
 }

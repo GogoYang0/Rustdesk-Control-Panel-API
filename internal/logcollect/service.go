@@ -36,6 +36,28 @@ type Options struct {
 	Streamer LineStreamer
 	// PersistTimeout overrides the event-write bound (tests shorten it).
 	PersistTimeout time.Duration
+	// Sessions receives session-relevant events after they are stored. It may
+	// be nil (session tracking disabled); a panicking or failing hook never
+	// affects event storage (C7).
+	Sessions SessionRecorder
+}
+
+// SessionRecorder is the session tracker's consumer side of the collector:
+// one call per stored event that references a known device of the
+// organization. It is called synchronously in tailer order — log lines are
+// ordered, and session aggregation (last_activity_at) relies on that order —
+// but the collector treats every failure as the hook's own problem.
+// SessionRecorderFunc adapts a plain function, for callers whose tracking
+// method already has a richer signature.
+type SessionRecorderFunc func(ctx context.Context, orgID, deviceID uint, kind string, at time.Time, detail map[string]any) error
+
+// RecordLogEvent implements SessionRecorder.
+func (f SessionRecorderFunc) RecordLogEvent(ctx context.Context, orgID, deviceID uint, kind string, at time.Time, detail map[string]any) error {
+	return f(ctx, orgID, deviceID, kind, at, detail)
+}
+
+type SessionRecorder interface {
+	RecordLogEvent(ctx context.Context, orgID, deviceID uint, kind string, at time.Time, detail map[string]any) error
 }
 
 // Service runs one tailer pair per provisioned organization, parses the lines
@@ -86,15 +108,13 @@ func NewService(db *gorm.DB, parser *Parser, streamer LineStreamer, devices *dev
 	}
 }
 
-// Start sweeps expired events and begins tailing every organization whose
+// Start begins tailing every organization whose
 // server group is deployed. The tailers stop when ctx is cancelled; Start
 // itself returns immediately.
 func (s *Service) Start(ctx context.Context) {
 	s.mu.Lock()
 	s.ctx = ctx
 	s.mu.Unlock()
-
-	s.pruneExpired()
 
 	var rows []model.ServerGroup
 	if err := store.WithoutTenantScope(s.db).
@@ -108,28 +128,6 @@ func (s *Service) Start(ctx context.Context) {
 	}
 	s.logger.Info("log collector started",
 		zap.Int("organizations", len(rows)), zap.Int("rules", s.parser.Rules()))
-}
-
-// pruneExpired enforces the documented retention window at startup. M2 has no
-// background scheduler yet, so the sweep runs once per process start; it is
-// idempotent and bounded by the occurred_at index.
-func (s *Service) pruneExpired() {
-	// occurred_at is stored as UTC text and compared lexicographically, so the
-	// cutoff must share that timeline: a local-zone value shifts the window by
-	// the host's offset.
-	cutoff := s.now().UTC().Add(-time.Duration(model.DefaultLogEventRetentionDays) * 24 * time.Hour)
-	res := store.WithoutTenantScope(s.db).
-		Where("occurred_at < ?", cutoff).
-		Delete(&model.LogEvent{})
-	if res.Error != nil {
-		s.logger.Warn("prune expired log events failed", zap.Error(res.Error))
-		return
-	}
-	if res.RowsAffected > 0 {
-		s.logger.Info("pruned expired log events",
-			zap.Int64("rows", res.RowsAffected),
-			zap.Int("retention_days", model.DefaultLogEventRetentionDays))
-	}
 }
 
 // Watch starts tailing one organization; repeated calls are no-ops, so the
@@ -317,7 +315,28 @@ func (s *Service) handleLine(ctx context.Context, orgID uint, source, line strin
 		// line and replays it after reconnecting.
 		return err
 	}
+
+	// Session tracking runs after the event is safely stored, synchronously
+	// (tailer order keeps last_activity_at monotonic) and fully fenced: a
+	// hook panic or failure is logged and forgotten, never propagated (C7).
+	if s.opts.Sessions != nil && deviceID != nil {
+		s.deliverToSessions(persistCtx, orgID, *deviceID, &row, event.Detail)
+	}
 	return nil
+}
+
+// deliverToSessions isolates the hook call. Any panic or error stays here.
+func (s *Service) deliverToSessions(ctx context.Context, orgID, deviceID uint, row *model.LogEvent, detail map[string]any) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Warn("session hook panicked",
+				zap.Uint("org_id", orgID), zap.Any("recover", r))
+		}
+	}()
+	if err := s.opts.Sessions.RecordLogEvent(ctx, orgID, deviceID, row.Kind, row.OccurredAt, detail); err != nil {
+		s.logger.Warn("session hook failed",
+			zap.Uint("org_id", orgID), zap.Error(err))
+	}
 }
 
 // logParseError emits the unparseable-line signal at most once per interval.

@@ -13,6 +13,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/session"
 )
 
 // Deps carries everything the HTTP layer needs.
@@ -44,6 +45,10 @@ type Deps struct {
 	// CompatTTL bounds the RustDesk compatibility session/token lifetime
 	// (config compat.accessTTL, default 720h).
 	CompatTTL time.Duration
+
+	// Tickets issues and redeems connection tickets. NewAdminAPI builds one
+	// from DB/Auditor/Now when it is nil, so tests can leave it out.
+	Tickets *session.Service
 }
 
 // Provisioner schedules asynchronous server provisioning.
@@ -53,10 +58,11 @@ type Provisioner interface {
 
 // AdminAPI implements the generated gen.ServerInterface.
 type AdminAPI struct {
-	deps   Deps
-	guard  *loginGuard
-	resend *loginGuard
-	books  *addressbook.Service
+	deps    Deps
+	guard   *loginGuard
+	resend  *loginGuard
+	books   *addressbook.Service
+	tickets *session.Service
 }
 
 // NewAdminAPI builds the handler set.
@@ -84,10 +90,26 @@ func NewAdminAPI(d Deps) *AdminAPI {
 		// dependency wiring optional in tests that do not exercise mail.
 		d.Mailer = mail.NewDev(io.Discard)
 	}
+	tickets := d.Tickets
+	if tickets == nil {
+		// The service fails closed without a recorder, and governance
+		// mutations without their audit entries are exactly what it refuses
+		// to be. Derive the session service only from a transactional
+		// auditor (the GormAuditor production wires); anything else is a
+		// wiring error and must stop the process at startup, not run with
+		// silently discarded audit entries (#58 review).
+		recorder, ok := d.Auditor.(audit.TxRecorder)
+		if !ok {
+			panic("api: transactional auditor required when Tickets is nil")
+		}
+		tickets = session.NewService(d.DB, recorder, d.Now)
+	}
+
 	return &AdminAPI{
-		deps:   d,
-		guard:  newLoginGuard(),
-		resend: newLoginGuard(),
-		books:  addressbook.NewService(d.DB),
+		deps:    d,
+		guard:   newLoginGuard(),
+		resend:  newLoginGuard(),
+		books:   addressbook.NewService(d.DB),
+		tickets: tickets,
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -28,7 +29,9 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/provision"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/session"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/worker"
 )
 
 // main loads configuration, prepares persistence and services, and starts the API server.
@@ -69,6 +72,9 @@ func main() {
 		&model.MigrationMark{},
 		&model.CompatSession{},
 		&model.LogEvent{},
+		&model.Session{}, &model.SessionEvent{},
+		&model.Ticket{}, &model.Policy{},
+		&model.Approval{}, &model.Alert{},
 	); err != nil {
 		lg.Fatal("migrate database", zap.Error(err))
 	}
@@ -166,6 +172,15 @@ func main() {
 		})
 	}
 
+	// The shared audit recorder: everything below (session service, worker
+	// scheduler) writes through it.
+	auditor := audit.NewGormAuditor(st.DB)
+
+	// One session service shared by the API handlers, the log collector's
+	// session hook and the background tasks: all three mutate the same rows,
+	// so they must see one clock and one audit recorder.
+	sessionSvc := session.NewService(st.DB, auditor, time.Now)
+
 	// Log collection: one tailer pair per provisioned organization. The queue
 	// hook starts the tailers of a fresh deployment immediately instead of
 	// waiting for the next process start.
@@ -177,7 +192,7 @@ func main() {
 		}
 		collector = logcollect.NewService(
 			st.DB, parser, logcollect.DockerCLIStreamer{}, deviceSvc,
-			logcollect.Options{ContainerPrefix: cfg.Logcollect.ContainerPrefix}, lg,
+			logcollect.Options{ContainerPrefix: cfg.Logcollect.ContainerPrefix, Sessions: logcollect.SessionRecorderFunc(sessionSvc.ReportLogEvent)}, lg,
 		)
 		collector.Start(rootCtx)
 		provQueue.OnProvisioned(collector.Watch)
@@ -188,12 +203,114 @@ func main() {
 
 	provQueue.Start(rootCtx)
 
+	// Background workers: the retention sweep must run regardless of whether
+	// log collection itself is enabled (#41), and every pass is audited so
+	// infrastructure housekeeping stays observable (#46).
+
+	// Tenant transfers are the one write path that can move a row between
+	// organizations. The store refuses them unless a recorder is registered, so
+	// wiring it here is what makes the channel usable at all; leaving it out
+	// keeps the channel closed.
+	store.RegisterTransferRecorder(func(tx *gorm.DB, aud store.TransferAudit) error {
+		return auditor.RecordTx(tx, audit.Entry{
+			OrganizationID: aud.OrganizationID,
+			ActorUserID:    aud.ActorUserID,
+			Action:         "tenant.transfer",
+			TargetType:     "organization",
+			Detail:         map[string]any{"reason": aud.Reason},
+		})
+	})
+	sched := worker.New(lg, auditor)
+
+	// One session service shared by the API handlers, the log collector's
+	// session hook and the background tasks: all three mutate the same rows,
+	// so they must see one clock and one audit recorder.
+
+	// (sessionSvc is created above, before the collector, so the hook can be
+	// wired into it.)
+	// Pending approvals expire on their own deadline; the sweep only marks
+	// the rows so the inbox stops offering dead requests.
+	if err := sched.Register(worker.Task{
+		Name:       "approval-expiry",
+		Interval:   time.Minute,
+		RunOnStart: true,
+		Run: func(ctx context.Context) (int64, error) {
+			return sessionSvc.ExpirePendingApprovals(ctx, time.Now())
+		},
+	}); err != nil {
+		lg.Fatal("register approval expiry sweep", zap.Error(err))
+	}
+
+	// Session maintenance: the idle sweep closes sessions whose trail went
+	// quiet (otherwise a lost-log session would hold its concurrency slot
+	// forever), and the duration sweep enforces max_session_minutes after the
+	// fact — the panel is not in the signalling path, so the real connection
+	// is never cut, only recorded and alerted. The idle window is deployment
+	// configurable (session.idleTimeout, default 10m) per the contract.
+	idleWindow := cfg.Session.IdleTimeout
+	if idleWindow <= 0 {
+		// A misconfigured window must not silently disable the sweep.
+		lg.Warn("session.idleTimeout is not positive; falling back to the default",
+			zap.Duration("configured", cfg.Session.IdleTimeout),
+			zap.Duration("using", session.DefaultIdleWindow))
+		idleWindow = session.DefaultIdleWindow
+	}
+	if err := sched.Register(worker.Task{
+		Name:       "session-idle",
+		Interval:   time.Minute,
+		RunOnStart: true,
+		Run: func(ctx context.Context) (int64, error) {
+			return sessionSvc.CloseIdleSessions(ctx, time.Now(), idleWindow)
+		},
+	}); err != nil {
+		lg.Fatal("register idle session sweep", zap.Error(err))
+	}
+	if err := sched.Register(worker.Task{
+		Name:       "session-duration",
+		Interval:   time.Minute,
+		RunOnStart: true,
+		Run: func(ctx context.Context) (int64, error) {
+			return sessionSvc.ClosePolicyExceededSessions(ctx, time.Now())
+		},
+	}); err != nil {
+		lg.Fatal("register duration session sweep", zap.Error(err))
+	}
+
+	if cfg.Logcollect.RetentionSweepInterval > 0 {
+		if err := sched.Register(worker.Task{
+			Name:     "logcollect-retention",
+			Interval: cfg.Logcollect.RetentionSweepInterval,
+			// The startup pass doubles as the first sweep, so a disabled
+			// collector still trims overdue history right after boot (#41).
+			RunOnStart: true,
+			Run: func(ctx context.Context) (int64, error) {
+				return logcollect.PruneExpired(st.DB.WithContext(ctx), time.Now())
+			},
+		}); err != nil {
+			lg.Fatal("register retention sweep", zap.Error(err))
+		}
+	} else {
+		lg.Warn("periodic retention sweep disabled (logcollect.retentionSweepInterval = 0)")
+	}
+	sched.Start(rootCtx)
+
 	// Drain the tailers on shutdown: exec.CommandContext kills the
 	// `docker logs -f` children only when their context is cancelled, and
 	// waiting here keeps them from outliving the panel.
 	var drainCollector func()
 	if collector != nil {
-		drainCollector = collector.Wait
+		// Stop the scheduler and drain the tailers concurrently: a stuck
+		// `docker logs` drain must not keep in-flight sweeps writing to a
+		// database that is about to be closed.
+		drainCollector = func() {
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() { defer wg.Done(); sched.Stop() }()
+			go func() { defer wg.Done(); collector.Wait() }()
+			wg.Wait()
+		}
+	} else {
+		drainCollector = sched.Stop
 	}
 	// The organization row is the durable record of a provisioning intent, so a
 	// sweep re-enqueues anything that never reached a worker (full queue, crash).
@@ -215,9 +332,10 @@ func main() {
 			ProvisionQueue: provQueue,
 			OrgsPerUser:    cfg.Provision.MaxOrgsPerUser,
 			Issuer:         issuer,
-			Auditor:        audit.NewGormAuditor(st.DB),
+			Auditor:        auditor,
 			Logger:         lg,
 			Mailer:         mailer,
+			Tickets:        sessionSvc,
 			AccessTTL:      cfg.Auth.AccessTTL,
 			RefreshTTL:     cfg.Auth.RefreshTTL,
 			InvitationTTL:  7 * 24 * time.Hour,

@@ -58,7 +58,10 @@ go build -o panel ./cmd/server
 | `web.baseURL` | | `http://localhost:5173` | 前端 origin，用于构造邮件链接 |
 | `logcollect.enabled` | | `false` | 日志采集总开关（见运维指南 §4） |
 | `logcollect.containerPrefix` | | `panel-org` | 容器命名前缀，实际为 `panel-org-<orgId>-hbbs/hbbr` |
-| `logcollect.rules` | | 内置 4 条 | 规则按序匹配、首条命中即停；命名捕获组 `device` 关联设备 |
+| `logcollect.retentionSweepInterval` | | `6h` | 日志事件保留期（30 天）的清扫间隔，最小 `1m`；`0` 表示**完全停用保留期清理**。非 0 时启动即清扫一次并按间隔周期执行，与 `logcollect.enabled` 无关，见运维指南 §4.2 |
+| `logcollect.rules` | | **空（无内置默认）** | 省略即零规则：所有行按 unparseable 计数丢弃。必须显式配置（示例 `configs/config.yaml` 含 4 条经 1.1.11/1.1.16 实测的规则）；规则按序匹配、首条命中即停；命名捕获组 `device` 关联设备。断开事件（`kind: disconnected`）默认不配置，原因与加法见 §6 第 6 条 |
+| `compat.accessTTL` | | `720h` | compat 会话（RustDesk 客户端令牌）的有效期；成员失去组织访问时应通过会话撤销立即失效（见运维指南 §2.1/#39） |
+| `session.idleTimeout` | | `10m` | 会话空闲超时：open 会话超过该时长无活动（无活动记录则回退 `started_at`）由空闲清扫任务置 `closed`（`end_reason=idle_timeout`）；契约的"部署可配置"项。**必须为正**：`0`/负值不是禁用清扫，而是记 warning 并回退默认 `10m` |
 
 ---
 
@@ -73,12 +76,12 @@ go build -o panel ./cmd/server
 3. **AutoMigrate** 全部模型（GORM 自动建表/加列）
 4. **一次性回填**：`email_verified` 历史数据回填，成功后写迁移标记（MigrationMark）；已有标记则跳过
 5. 校验邮件配置（`mail.devMode=false` 时的三项检查）
-6. 启动后台 worker（日志采集 tailer、provision 队列、对账 reconciler）
+6. 启动后台 worker（日志采集 tailer、provision 队列、**worker 调度器**（保留期清扫等周期任务）、对账 reconciler）
 7. 监听
 
 ### 4.2 升级
 
-- 新版本新增列时 AutoMigrate 自动处理；**删除列/收窄列不会自动执行**（如 `Device.BoundUUID` 保持 255 的原因）
+- 新版本新增列时 AutoMigrate 自动处理（**含新增索引**——已有大表的 MySQL/PostgreSQL 上首次启动会执行建索引 DDL，可能短暂持写锁，请避开业务高峰）；**删除列/收窄列不会自动执行**（如 `Device.BoundUUID` 保持 255 的原因）
 - **升级期间禁止并行启动实例**：回填会把当前所有未验证账户标为已验证——若另一实例在回填完成前启动并创建了新的未验证账户，该账户也会被误标为已验证，**绕过邮箱验证边界**。正确流程：先停止或隔离其他实例 → 启动一个实例完成回填并写入迁移标记 → 再启动其余实例
 - 升级前备份 `panel.db`（或数据库快照）与 `data/servergroups/`
 
@@ -118,7 +121,8 @@ database:
 2. `provision.image` 是 `rustdesk/rustdesk-server:1.1.11`（或已按其真实日志格式校准规则）
 3. 用 `docker logs -t panel-org-<id>-hbbs` 抽样验证规则能匹配真实行（本地可跑 `TestExampleConfigRules_MatchServerFormat` 参照）
 4. 首次连接只跟随新行（`--tail 0`），历史日志不会回灌——需要历史数据请在启用前导出
-5. 启用后 30 天内的事件自动保留，超期在启动时清扫（见运维指南 §4）
+5. 启用后 30 天内的事件自动保留，超期事件在启动时及每个 `logcollect.retentionSweepInterval` 周期清扫——与采集启停无关（见运维指南 §4.2）
+6. **断开事件（`disconnected` 规则）默认不配置**：rustdesk-server 在默认日志级别下不打印任何连接结束日志（其唯一 close 行是 debug 级且只含 socket 地址、无设备 id——已对照 rustdesk-server `src/rendezvous_server.rs` 核实），因此没有可匹配的真实格式。无法产生结束事件的会话由空闲清扫兜底关闭（窗口 `session.idleTimeout`，默认 10 分钟）。若你的日志源确实产生可识别的断开行（改过日志级别或自定义服务端），在 `configs/config.yaml` 的 `connection` 规则**之前**添加 `kind: disconnected` 规则（规则按序首匹配，否则会被宽泛的 connection 规则吞成连接事件）
 
 ---
 

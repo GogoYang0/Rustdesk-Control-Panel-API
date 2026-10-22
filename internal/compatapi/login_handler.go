@@ -1,7 +1,6 @@
 package compatapi
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
@@ -132,11 +132,40 @@ func (s *Server) login(c *gin.Context) {
 		return
 	}
 
-	// Claim the device before issuing a session: a login presenting a
-	// rustdesk id already claimed by another client instance is refused
-	// here, so it can never drive that device's heartbeat (CWE-863).
+	// The device claim and the session row land in one transaction (#40): a
+	// login that fails to persist its session must not leave a binding
+	// behind, and a session must never exist without the binding it was
+	// issued under. A login without a device id skips the claim entirely.
+	token, jti, err := s.deps.Issuer.IssueCompat(user.ID, orgID, s.deps.AccessTTL)
+	if err != nil {
+		compatError(c, http.StatusInternalServerError, "login failed")
+		return
+	}
+
 	if req.ID != "" {
-		if err := s.claimDevice(c.Request.Context(), orgID, req.ID, req.UUID); err != nil {
+		err = s.deps.DB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+			generation, cerr := s.claimDeviceTx(tx, orgID, req.ID, req.UUID)
+			if cerr != nil {
+				// Roll back everything: errDeviceBound is answered below from
+				// the returned error, and any other failure must not commit
+				// a half state (a binding without its session).
+				return cerr
+			}
+			session := model.CompatSession{
+				OrganizationID:    orgID,
+				UserID:            user.ID,
+				JTI:               jti,
+				DeviceID:          req.ID,
+				UUID:              req.UUID,
+				BindingGeneration: generation,
+				ExpiresAt:         s.deps.Now().Add(s.deps.AccessTTL),
+			}
+			if err := store.WithoutTenantScope(tx).Create(&session).Error; err != nil {
+				return err
+			}
+			return nil
+		})
+		if err != nil {
 			if errors.Is(err, errDeviceBound) {
 				compatError(c, http.StatusForbidden,
 					"device is already bound to another client; ask your administrator to reset it")
@@ -145,31 +174,23 @@ func (s *Server) login(c *gin.Context) {
 			compatError(c, http.StatusInternalServerError, "login failed")
 			return
 		}
+	} else {
+		session := model.CompatSession{
+			OrganizationID: orgID,
+			UserID:         user.ID,
+			JTI:            jti,
+			ExpiresAt:      s.deps.Now().Add(s.deps.AccessTTL),
+		}
+		if err := store.WithoutTenantScope(s.deps.DB).Create(&session).Error; err != nil {
+			compatError(c, http.StatusInternalServerError, "login failed")
+			return
+		}
 	}
 
 	s.deps.Guard.Reset(lockKey, ip)
 
-	token, jti, err := s.deps.Issuer.IssueCompat(user.ID, orgID, s.deps.AccessTTL)
-	if err != nil {
-		compatError(c, http.StatusInternalServerError, "login failed")
-		return
-	}
-	session := model.CompatSession{
-		OrganizationID: orgID,
-		UserID:         user.ID,
-		JTI:            jti,
-		DeviceID:       req.ID,
-		UUID:           req.UUID,
-		ExpiresAt:      s.deps.Now().Add(s.deps.AccessTTL),
-	}
-	if err := store.WithoutTenantScope(s.deps.DB).Create(&session).Error; err != nil {
-		compatError(c, http.StatusInternalServerError, "login failed")
-		return
-	}
-
-	// The device binding happened in claimDevice before the session was
-	// issued; heartbeats and sysinfo then resolve devices only through the
-	// session-bound id (see device_handler.go).
+	// Heartbeats and sysinfo resolve devices only through the session-bound
+	// id and the generation snapshotted above (see device_handler.go).
 
 	c.JSON(http.StatusOK, authBody{
 		AccessToken: token,
@@ -182,57 +203,86 @@ func (s *Server) login(c *gin.Context) {
 // claimed by another client instance.
 var errDeviceBound = errors.New("device already bound")
 
-// claimDevice binds the logging-in device to the organization. The client
-// protocol carries no ownership secret (heartbeat/sysinfo travel without
-// credentials), so the device uuid — a stable hardware identifier — is the
-// strongest ownership signal available: the first client presenting a
-// rustdesk id claims it, an unbound row is claimed on arrival, and a login
-// presenting a different uuid is rejected instead of taking the binding
-// over (CWE-863). Admins recover a lost binding by deleting the device row.
-func (s *Server) claimDevice(ctx context.Context, orgID uint, rustdeskID, uuid string) error {
+// claimDeviceTx binds the logging-in device to the organization on the
+// caller's transaction, and returns the device's binding generation for the
+// session snapshot. The client protocol carries no ownership secret
+// (heartbeat/sysinfo travel without credentials), so the device uuid — a
+// stable hardware identifier — is the strongest ownership signal available:
+// the first client presenting a rustdesk id claims it, an unbound row is
+// claimed on arrival, and a login presenting a different uuid is rejected
+// instead of taking the binding over (CWE-863). Admins recover a lost
+// binding by deleting the device row.
+func (s *Server) claimDeviceTx(tx *gorm.DB, orgID uint, rustdeskID, uuid string) (uint64, error) {
 	var dev model.Device
-	err := store.ScopedByOrg(s.deps.DB, orgID).
+	err := store.ScopedByOrg(tx, orgID).
 		Where("rustdesk_id = ?", rustdeskID).First(&dev).Error
 	switch {
 	case errors.Is(err, gorm.ErrRecordNotFound):
-		created, rerr := s.deps.Devices.Register(ctx, orgID, device.RegisterInput{
-			Name:       rustdeskID,
-			RustdeskID: rustdeskID,
-			BoundUUID:  uuid,
+		created, rerr := device.RegisterTx(tx, orgID, model.Device{
+			OrganizationID: orgID,
+			RustdeskID:     rustdeskID,
+			Name:           rustdeskID,
+			BoundUUID:      uuid,
 		})
 		if rerr != nil {
-			return rerr
+			return 0, rerr
 		}
 		// A concurrent request may have registered and claimed the row
 		// first: the upsert never overwrites an existing binding, so the
 		// race loser must judge on the actually stored value.
 		dev = *created
 	case err != nil:
-		return err
+		return 0, err
 	}
 	if dev.BoundUUID != "" && uuid != "" && dev.BoundUUID != uuid {
-		return errDeviceBound
+		return 0, errDeviceBound
 	}
 	if dev.BoundUUID == "" && uuid != "" {
-		res := store.ScopedByOrg(s.deps.DB, orgID).Model(&model.Device{}).
+		res := store.ScopedByOrg(tx, orgID).Model(&model.Device{}).
 			Where("id = ? AND bound_uuid = ''", dev.ID).
-			Update("bound_uuid", uuid)
+			Updates(map[string]any{
+				"bound_uuid":         uuid,
+				"binding_generation": gorm.Expr("binding_generation + 1"),
+			})
 		if res.Error != nil {
-			return res.Error
+			return 0, res.Error
 		}
 		if res.RowsAffected == 0 {
 			// Another request claimed the row first: re-read and compare
 			// against the stored binding before issuing anything.
-			if err := store.ScopedByOrg(s.deps.DB, orgID).
-				First(&dev, dev.ID).Error; err != nil {
-				return err
+			// Caveat (not reproducible on SQLite): under MySQL REPEATABLE
+			// READ this re-read sees the transaction's snapshot, so a
+			// concurrent same-uuid claimer can be misjudged as
+			// errDeviceBound (the client retries and wins) and the
+			// registration-conflict re-read inside RegisterTx can hit
+			// ErrRecordNotFound (a 500 instead of the 403). Both are
+			// self-healing; Postgres Read Committed and SQLite are exact.
+			reRead := store.ScopedByOrg(tx, orgID)
+			if tx.Name() != "sqlite" {
+				// Current read — same REPEATABLE READ reasoning as
+				// device.RegisterTx.
+				reRead = reRead.Clauses(clause.Locking{Strength: "UPDATE"})
+			}
+			if err := reRead.First(&dev, dev.ID).Error; err != nil {
+				return 0, err
 			}
 			if dev.BoundUUID != uuid {
-				return errDeviceBound
+				return 0, errDeviceBound
 			}
 		}
 	}
-	return nil
+	// Re-read so the returned generation reflects the row the session will
+	// be judged against (current read on non-SQLite dialects, same as
+	// device.RegisterTx).
+	final := model.Device{}
+	finalRead := store.ScopedByOrg(tx, orgID)
+	if tx.Name() != "sqlite" {
+		finalRead = finalRead.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	if err := finalRead.First(&final, dev.ID).Error; err != nil {
+		return 0, err
+	}
+	return final.BindingGeneration, nil
 }
 
 // resolveOrg applies the C16 disambiguation: no selector requires exactly

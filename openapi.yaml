@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Rustdesk-Control-Panel API
-  version: 0.3.0
+  version: 0.4.0
   contact:
     name: Rustdesk-Control-Panel
     url: https://github.com/GogoYang0/Rustdesk-Control-Panel-API
@@ -12,6 +12,17 @@ info:
     破坏性变更需升主版本（见设计文档 C10）；0.x 阶段破坏性变更以 minor 承载。
     0.3.0 破坏性变更：Invitation.token 不再随响应返回（邀请令牌仅通过邮件投递，
     修复 #17 邮箱所有权缺口）。
+
+    0.4.0 新增**会话治理域**：会话记录（sessions）、连接策略（policies）、
+    敏感操作审批（approvals）、连接票据（tickets，挂在 sessions 标签下）与
+    策略违规告警（alerts）。既有端点的**请求/响应形状与字段不变**。
+
+    但 `ErrorCode` 新增了 `approval_required`（票据签发被策略的事前审批要求阻断时
+    返回，附 `data.approval_id`）——它是所有响应共用的 `code` 类型，**对穷尽式
+    `switch` 或严格枚举解码的客户端属于 breaking**。重新生成类型后需要处理该分支
+    （0.x 阶段按 C10 以 minor 承载）。
+    分页响应本域统一为 `data.items/page/page_size/total`（会话与告警是无限增长的
+    历史表，需要总数支撑 UI 翻页；既有列表端点保持原形状）。
 
     统一响应包：所有业务响应为 `{code, message, data}`。
     `code` 为机器可读错误码（见 ErrorCode），成功时为 `ok`。
@@ -31,6 +42,14 @@ tags:
     description: 地址簿（个人/共享）
   - name: logs
     description: 采集日志查询
+  - name: sessions
+    description: 会话记录（面板签发与日志推断）与连接票据
+  - name: policies
+    description: 连接策略（并发、时长、时段、事前审批）
+  - name: approvals
+    description: 敏感操作审批（事前阻断与事后追认）
+  - name: alerts
+    description: 策略违规告警
 paths:
   /healthz:
     get:
@@ -715,6 +734,744 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v1/orgs/{orgId}/sessions:
+    get:
+      operationId: listSessions
+      summary: 会话记录列表
+      description: |
+        本组织的会话记录，按 `started_at` 倒序（同秒按 `id` 倒序，保证翻页稳定），
+        分页返回。组织成员即可读取。
+
+        `origin` 区分两类来源：`panel`（面板签发：网页客户端与地址簿下发的连接
+        票据，策略强制且可事前阻断）与 `native`（原生客户端直连，由 hbbs/hbbr
+        日志采集推断，只记录不阻断）。`denied` 状态的会话只出现在 `panel` 来源，
+        表示签发阶段即被策略拒绝，用于留痕。
+      tags:
+        - sessions
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: origin
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/SessionOrigin"
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/SessionStatus"
+        - name: deviceId
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: since
+          in: query
+          required: false
+          description: 起始时间（含），按 `started_at` 过滤
+          schema:
+            type: string
+            format: date-time
+        - name: until
+          in: query
+          required: false
+          description: 结束时间（含），按 `started_at` 过滤
+          schema:
+            type: string
+            format: date-time
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: 会话列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/sessions/{sessionId}:
+    get:
+      operationId: getSession
+      summary: 会话详情（含事件序列）
+      description: |
+        返回单个会话及其事件序列（`started`/`approved`/`denied`/`closed` 等，
+        按时间正序）。事件序列是审计留痕：超过 200 条时只返回最早 200 条并置
+        `truncated=true`。组织成员即可读取。
+      tags:
+        - sessions
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 会话详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionDetailResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/policies:
+    get:
+      operationId: listPolicies
+      summary: 连接策略列表
+      description: |
+        本组织的连接策略（单次返回全部，不分页）。组织成员即可读取。
+
+        评估票据签发时**所有 `enabled` 策略同时生效**，各维度取最严约束
+        （并发/时长的最小值、时段的交集、任一条要求审批即需审批）。时段按模 1440
+        求交（跨零点窗口先展开成区间再取交），**交集为空表示该时段完全禁止**。
+      tags:
+        - policies
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 策略列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      operationId: createPolicy
+      summary: 创建连接策略
+      description: |
+        需要 `owner`/`admin` 角色。创建即生效（`enabled` 由请求体显式给出）。
+        同一组织内策略 `name` 唯一，重复创建返回 `409 conflict`。
+      tags:
+        - policies
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PolicyRequest"
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/policies/{policyId}:
+    put:
+      operationId: updatePolicy
+      summary: 更新连接策略
+      description: |
+        全量更新策略：`enabled`/`require_approval` 必填，限额字段为 null 表示「不限」。
+        需要 `owner`/`admin` 角色。改名撞上同组织内其他策略返回 `409 conflict`。
+      tags:
+        - policies
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: policyId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PolicyRequest"
+      responses:
+        "200":
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      operationId: deletePolicy
+      summary: 删除连接策略
+      description: 删除后该策略不再参与评估；已签发的票据保留签发时的策略快照。需要 `owner`/`admin` 角色。
+      tags:
+        - policies
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: policyId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/approvals:
+    get:
+      operationId: listApprovals
+      summary: 审批请求列表
+      description: |
+        本组织的审批请求，按 `requested_at` 倒序（同秒按 `id` 倒序），分页返回。审批中心按
+        `status=pending` 拉取待办。组织成员即可读取（审批中心对 member 只读）。
+      tags:
+        - approvals
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/ApprovalStatus"
+        - name: deviceId
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: 审批请求列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      operationId: createApproval
+      summary: 提交审批请求
+      description: |
+        为指定设备提交事前审批请求（默认 15 分钟有效）。组织成员均可提交；
+        组织无需审批时也可提交，但票据签发并不依赖它——是否需要审批由策略决定。
+
+        复用规则按 `kind` 区分，两种都不重复创建：
+
+        - `pre_approval`：同一 actor + 设备已有 `pending` 请求 → 复用，返回 200
+        - `ratification`：同一会话已有 `pending` 或 `approved` 的追认 → 复用，返回 200
+          （同一会话被不同 approver 重复点开时不应该产生多条待办）
+
+        首次创建返回 201。
+      tags:
+        - approvals
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApprovalCreateRequest"
+      responses:
+        "201":
+          description: 已创建待审批请求
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalResponse"
+        "200":
+          description: 复用既有待审批请求
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/approvals/{approvalId}/decision:
+    post:
+      operationId: decideApproval
+      summary: 审批决定（approve/deny）
+      description: |
+        需要 `owner`/`admin` 角色。只有 `pending` 请求可决策；已决策或已过期返回
+        `409 conflict`。
+
+        - `kind=pre_approval`：`approve` 后该 actor 对该设备的**下一次**票据签发不再
+          被审批阻断。审批本身不签发任何东西（不返回 token）——客户端重试
+          `POST .../tickets` 才拿到票据，审批与票据**一次性绑定**（签发票据即消费审批）。
+
+          消费点在签发而不是兑换：票据过期（默认 300 秒）**不退还审批**，需要重新申请。
+          这样"一次审批 = 一次签发许可"的语义最简单，也不会因为客户端反复兑换失败
+          而重复消耗审批。
+        - `kind=ratification`：`approve` 即「已追认」，仅改状态并落审计，
+          不产生票据、不消费任何额度（`ticket_id` 恒为 null）。
+
+        `expires_at` 对两类一致：请求时刻 + 15 分钟；超期未决策由后台任务置 `expired`。
+        已结束的原生会话同样可以追认（追认针对已发生的事实，与连接是否还在无关）。
+      tags:
+        - approvals
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: approvalId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApprovalDecisionRequest"
+      responses:
+        "200":
+          description: 决策结果
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/tickets:
+    post:
+      operationId: issueTicket
+      summary: 签发连接票据
+      description: |
+        为一次远控签发一次性、短时效的连接票据（默认 300 秒，范围 30–900）。
+        组织成员均可签发（是否放行由策略决定，不看角色）。
+
+        签发前评估**时段**与**审批要求**：时段外返回 `409 conflict`；策略要求事前
+        审批而该 actor 对设备没有已批准且未消费的审批时返回 `409 approval_required`，
+        `data.approval_id` 指向新建或复用的待审批请求——审批通过后重试本端点即可。
+
+        **并发上限与时长上限不在这里评估**：签发不产生会话，此刻看不到任何新会话，
+        在这里判并发等于恒不超限。并发在兑换时复查（见
+        `POST .../tickets/{ticketId}/redeem`），时长是后置处理（超时由后台任务关闭
+        会话并告警，不掐断真实连接——面板不在信令链路上）。
+
+        明文 `token` **仅在本次响应中返回一次**，服务端只保存摘要。
+      tags:
+        - sessions
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TicketCreateRequest"
+      responses:
+        "201":
+          description: 已签发
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuedTicketResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: |
+            策略阻断：`approval_required`（需事前审批，`data.approval_id` 为待审批
+            请求）或 `conflict`（时段外等约束不满足）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/orgs/{orgId}/alerts:
+    get:
+      operationId: listAlerts
+      summary: 策略违规告警列表
+      description: |
+        本组织的告警，按 `created_at` 倒序（同秒按 `id` 倒序），分页返回。
+
+        告警来源（对应约束实际生效的位置）：
+        - 签发时时段外被拒 → `outside_window`
+        - 兑换时并发超限被拒 → `concurrency_exceeded`
+        - 后台任务发现会话超过时长上限 → `duration_exceeded`（后置，不掐断连接）
+        - 原生直连会话违反时段/时长 → 只告警不阻断（D10）
+
+        事前审批阻断不产生告警（见 Alert.kind）；与 open 会话归并的 panel 日志事件
+        也不产生 native 告警（见 Session 生命周期）。
+        组织成员即可读取。
+      tags:
+        - alerts
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: severity
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/AlertSeverity"
+        - name: kind
+          in: query
+          required: false
+          description: 告警类型（自由字符串，见 Alert.kind 的已知取值）
+          schema:
+            type: string
+            maxLength: 64
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: 告警列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AlertListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/approvals/{approvalId}:
+    get:
+      operationId: getApproval
+      summary: 审批请求详情
+      description: 单个审批请求（审批中心深链）。组织成员即可读取。
+      tags:
+        - approvals
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: approvalId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 审批请求
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/tickets/{ticketId}:
+    get:
+      operationId: getTicket
+      summary: 票据详情
+      description: |
+        票据的记账状态（是否已兑换、过期、撤销）。明文 token **不会**返回。
+        组织成员即可读取。
+      tags:
+        - sessions
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: ticketId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 票据
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TicketResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/tickets/{ticketId}/redeem:
+    post:
+      operationId: redeemTicket
+      summary: 兑换连接票据（创建面板会话）
+      description: |
+        兑换一次性票据：在**同一个事务**里复查并发与时段 → 原子占用 `used_at` →
+        创建一条 `origin=panel`、`status=open` 的会话（`started_at` 为兑换时刻），
+        返回该会话。这是 open panel 会话的唯一创建入口，也是并发配额的真正闸门。
+
+        **并发复查必须在兑换时做**：统计本组织 `status=open` 且 `origin=panel` 的会话数，
+        达到策略上限就拒绝——否则「先连签 N 张票据再并行兑换」可以绕过并发上限。
+
+        ⚠️ 只把计数与插入放进同一事务**不够**：在默认的 READ COMMITTED 隔离级别下，
+        两个事务可以各自读到旧计数、各自通过检查、各自插入，上限照样被突破。
+        必须显式串行化同一组织的兑换：**先 `SELECT ... FOR UPDATE` 锁住组织行
+        （或该组织的策略行），再做计数与插入**。
+
+        不要用「按设备」的唯一约束来代替：上限是按**组织**统计的，设备级约束既拦不住
+        不同设备同时占满名额（上限=1 时两台设备照样各自通过），又会错误拒绝同一设备的
+        第二个合法会话（上限>1 时）。串行化范围只需到组织粒度，跨组织的兑换互不影响。
+        SQLite 上写事务本身串行，但实现不得因此省掉锁——生产是 MySQL/PostgreSQL。
+
+        票据只能兑换一次：已兑换、已过期、已撤销或 token 不匹配一律返回
+        `409 conflict`（不区分原因，避免探测）；并发或时段约束不满足同样返回 409
+        （`conflict`，原因写在 message 里）。票据不存在或不属于本组织返回 404。
+        组织成员即可兑换（M4 托管客户端若需未登录兑换，走面板内部路径，不在本契约内）。
+
+        M3 阶段票据不注入信令（面板不在信令链路），这里是面板侧记账入口；
+        网页客户端托管与票据注入见 M4。
+      tags:
+        - sessions
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: ticketId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TicketRedeemRequest"
+      responses:
+        "201":
+          description: 已兑换，返回新建的会话
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: |
+            票据已兑换、已过期、已撤销、token 不匹配，或并发/时段约束不满足
+            （统一 `conflict`，message 说明具体原因）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -780,6 +1537,7 @@ components:
         - rate_limited：触发限流
         - internal：服务端错误
         - email_not_verified：邮箱未验证（登录被拒）
+        - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
       enum:
         - ok
         - invalid_request
@@ -790,6 +1548,7 @@ components:
         - rate_limited
         - internal
         - email_not_verified
+        - approval_required
 
     ErrorResponse:
       type: object
@@ -806,6 +1565,9 @@ components:
             - object
             - "null"
           additionalProperties: true
+          description: |
+            错误上下文；多数错误为 null。`code=approval_required` 时带
+            `approval_id`（int64，待审批请求 id），客户端据此跳转审批中心。
 
     LoginRequest:
       type: object
@@ -1357,3 +2119,811 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/LogEvent"
+
+    SessionOrigin:
+      type: string
+      description: |
+        会话来源：
+        - panel：面板签发（网页客户端 / 地址簿下发的连接票据），策略强制、可事前阻断
+        - native：RustDesk 原生客户端直连，由 hbbs/hbbr 日志采集推断，只记录不阻断
+      enum:
+        - panel
+        - native
+
+    SessionStatus:
+      type: string
+      description: |
+        - open：进行中
+        - closed：已结束
+        - denied：签发阶段被策略拒绝（仅 panel 来源，用于留痕）
+      enum:
+        - open
+        - closed
+        - denied
+
+    Session:
+      type: object
+      description: |
+        会话生命周期（契约语义；实现见 M3 T4/T5/T7）：
+
+        - **panel**：票据被兑换（`POST .../tickets/{ticketId}/redeem`）时创建，
+          `started_at` 为兑换时刻。票据未兑换不产生会话、不占并发额度。
+        - **native**：由 hbbs/hbbr 日志事件按 `device` 关联推断。归并规则按事件类型
+          分开，关键在于**连接事件与活动事件不是一回事**——日志里没有连接级标识
+          （连接号 / 对端地址）时，"同设备 30 秒窗口"无法证明两条连接事件来自同一条
+          连接，把它们并起来就会漏记连接、连带漏掉该连接的违规告警（CWE-778）。
+
+          **活动事件**（非连接建立类：文件传输、错误、心跳类）：
+          - 只有**一个**未关闭候选 → 并入它：panel 会话只刷新 `last_activity_at`
+            （面板远控也走本组织 hbbs/hbbr，不新建 native、不发 native 告警）；
+            native 会话除刷新外记录该事件。
+          - 有**多个**候选（同一设备的 panel 与 native 并发）→ **刷新所有候选的
+            `last_activity_at`**，只把事件记在 native 会话上，不新建会话。不能"panel 优先"：
+            那会把 native 的活动算给 panel，让 native 会话按空闲超时关闭，随后真实连接
+            超过 `max_session_minutes` 时就再也产生不了时长告警——丢一次告警比多留一个
+            会话严重得多。设备彻底安静后所有候选一起按空闲超时关闭。
+          - 没有候选 → 新建 native 会话。
+
+          **连接事件** → **一个会话最多吸收一条**（吸收时记一条
+          `SessionEvent.kind=connected`）：
+          - 命中一个**尚未吸收连接事件**的 panel 会话 → 判定为该面板远控的连接，
+            只刷新 `last_activity_at`；
+          - 命中一个**尚未吸收连接事件**的 native 会话 → 归属该会话；
+          - 否则（候选都已有连接事件，或有多个候选无法判定）→ **新建 native 会话**。
+
+          取舍是单向的：宁可多记一条 native 会话，也不漏记一条连接。一台机器上
+          面板远控与原生直连并发时，第二条连接就这样被独立记下来。
+          关联不到组织设备的事件不建会话（`device_id` 必填，不做无主会话）。
+        - 采集规则若能从日志中提取连接级标识，实现应按该标识精确匹配、取代上面的
+          保守规则；标识的有无属于采集层细节，不改变本契约的可观测语义。
+        - **活动时钟**：`status=open` 的会话 `last_activity_at` 非空；为 null 时以
+          `started_at` 作为空闲判定基线。日志事件命中会话即刷新。
+        - **结束**：可识别的连接结束事件（采集规则映射为 `SessionEvent.kind=disconnected`，
+          规则随 T7 落地），或空闲超时（`last_activity_at` 之后默认 10 分钟、可由部署
+          配置覆盖）把状态置 `closed`；`end_reason` 取值见该字段的说明。
+          **已关闭的会话不会被重新打开**：窗口内再来的事件新建会话（重连 = 新会话）。
+        - **时长上限是后置处理**：`max_session_minutes` 超限时由后台任务把会话置
+          `closed`（`end_reason=policy_exceeded`）并产生告警；面板不在信令链路上，
+          **不会掐断真实连接**——时长策略是记账与告警语义，不是强制断连。
+        - **denied**：仅 panel 来源，由 `POST .../tickets`（签发阶段被策略拒绝）写入
+          留痕行：`ticket_id=null`、`started_at`=`ended_at`=拒绝时刻、
+          `end_reason=policy_denied`，不占并发额度。它不经兑换创建。
+        - **并发口径**：`max_concurrent_sessions` 只统计 `status=open` 且
+          `origin=panel` 的会话——native 只告警不阻断，计入会让策略不可执行。
+
+        面板不在信令链路上（设计 D10）：M3 的票据是面板侧记账凭据，不注入信令。
+      required:
+        - id
+        - organization_id
+        - device_id
+        - origin
+        - status
+        - started_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        organization_id:
+          type: integer
+          format: int64
+        device_id:
+          type: integer
+          format: int64
+          description: 组织内设备行 id
+        rustdesk_id:
+          type: string
+          description: 设备对外 ID（RustDesk id），便于展示
+        actor_user_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: 发起人；native 直连无法识别发起人时为 null
+        origin:
+          $ref: "#/components/schemas/SessionOrigin"
+        status:
+          $ref: "#/components/schemas/SessionStatus"
+        ticket_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: 签发该会话的票据；native 会话为 null
+        policy_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: |
+            本次生效的策略中 `id` 最小者（多条策略各管不同维度时无法唯一归因，
+            因此固定取最小 id；具体约束以全部 enabled 策略的交集为准），
+            组织没有启用中的策略时为 null
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        last_activity_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+          description: |
+            最近一次关联事件时间：native 会话由日志事件驱动，panel 会话在日志事件
+            归并到它时刷新。`status=open` 的会话该值非空；为 null 时以 `started_at`
+            作为空闲判定基线。
+        end_reason:
+          type:
+            - string
+            - "null"
+          maxLength: 64
+          description: |
+            结束原因（进行中的会话为 null）：
+            - `disconnected`：日志中识别到连接结束事件
+            - `idle_timeout`：空闲超时（默认 10 分钟无关联事件）
+            - `policy_exceeded`：超过 `max_session_minutes`（后置关闭，不断连）
+            - `policy_denied`：签发阶段被策略拒绝（仅 `denied` 会话）
+        revision:
+          type: integer
+          format: int64
+          description: 会话记录修订号，每次状态变更递增
+
+    SessionEvent:
+      type: object
+      required:
+        - id
+        - kind
+        - at
+      properties:
+        id:
+          type: integer
+          format: int64
+        kind:
+          type: string
+          maxLength: 64
+          description: |
+            事件类型（自由字符串）。已知取值：`started`、`ticket_issued`、`approved`、
+            `denied`、`disconnected`（日志中识别的连接结束）、`closed`。
+        at:
+          type: string
+          format: date-time
+        detail:
+          type:
+            - object
+            - "null"
+          additionalProperties: true
+
+    SessionDetail:
+      type: object
+      required:
+        - session
+        - events
+        - truncated
+      properties:
+        session:
+          $ref: "#/components/schemas/Session"
+        events:
+          type: array
+          description: |
+            事件序列（按时间正序，取**最早** 200 条）。保留开头而非结尾：
+            `started` / `ticket_issued` 这些审计上最关键的条目不能因为会话很长而丢失。
+          items:
+            $ref: "#/components/schemas/SessionEvent"
+        truncated:
+          type: boolean
+          description: 事件超过 200 条时为 true（此时只返回最早的 200 条）
+
+    SessionDetailResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/SessionDetail"
+
+    SessionListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/SessionPage"
+
+    PolicyRequest:
+      type: object
+      description: |
+        策略请求体。`PUT` 是**全量替换**：`enabled` 与 `require_approval` 必填且必须
+        显式给出布尔值（缺失或 null → 400），避免"省略即按默认值"的静默绕过——
+        静默按 false 会把已启用的策略关掉或把审批要求取消。限额字段为 null（或省略）
+        表示不限。
+
+        服务端须从原始 JSON 判定这两个字段是否真的出现（生成的强类型默认值无法
+        区分「没给」与「给了 false」）；schema 本身已拒绝 null。
+      required:
+        - name
+        - enabled
+        - require_approval
+      dependentRequired:
+        allowed_start_minute:
+          - allowed_end_minute
+        allowed_end_minute:
+          - allowed_start_minute
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        enabled:
+          type: boolean
+        max_concurrent_sessions:
+          type:
+            - integer
+            - "null"
+          format: int64
+          minimum: 1
+          description: 同一组织并发会话上限（只统计 open+panel 会话）；null 表示不限
+        max_session_minutes:
+          type:
+            - integer
+            - "null"
+          format: int64
+          minimum: 1
+          description: 单会话时长上限（分钟）；null 表示不限
+        allowed_start_minute:
+          type:
+            - integer
+            - "null"
+          format: int64
+          minimum: 0
+          maximum: 1439
+          description: |
+            允许时段起点（UTC 当日分钟数，0 = 00:00）；与 `allowed_end_minute` 同为
+            null 表示全天允许。起点大于终点表示跨零点窗口（如 1320–360 即
+            22:00–06:00）
+        allowed_end_minute:
+          type:
+            - integer
+            - "null"
+          format: int64
+          minimum: 0
+          maximum: 1439
+          description: |
+            允许时段终点（UTC 当日分钟数，不含）。必须与起点同时提供或同时为 null；
+            两者相等（`start == end`）不是合法窗口——全天请用 null——返回 400。
+        require_approval:
+          type: boolean
+          description: |
+            为 true 时，票据签发需先有已批准的审批请求。**必须显式给出 true/false**：
+            缺失或 null 返回 400。服务端不得依赖 bool 零值判断（零值无法区分「没给」
+            与「给了 false」，静默按 false 处理会把审批要求关掉），应从原始 JSON
+            判定字段存在性。
+
+    Policy:
+      type: object
+      required:
+        - id
+        - organization_id
+        - name
+        - enabled
+        - require_approval
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        organization_id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        enabled:
+          type: boolean
+        max_concurrent_sessions:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: null 表示不限
+        max_session_minutes:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: null 表示不限
+        allowed_start_minute:
+          type:
+            - integer
+            - "null"
+          format: int64
+        allowed_end_minute:
+          type:
+            - integer
+            - "null"
+          format: int64
+        require_approval:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    PolicyResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/Policy"
+
+    PolicyListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Policy"
+
+    ApprovalKind:
+      type: string
+      description: |
+        - pre_approval：事前审批——为**将要发起**的连接放行一次票据签发
+        - ratification：事后追认——对**已发生**的原生直连违规会话（日志推断）做确认，
+          不产生票据
+      enum:
+        - pre_approval
+        - ratification
+
+    ApprovalStatus:
+      type: string
+      description: |
+        - pending：待审批
+        - approved：已批准。`kind=pre_approval` 时可被**一次**票据签发消费；
+          `kind=ratification` 时表示「已追认」，不可消费、不产生票据
+        - denied：已拒绝
+        - expired：超期未决策（后台任务标记）
+      enum:
+        - pending
+        - approved
+        - denied
+        - expired
+
+    Approval:
+      type: object
+      required:
+        - id
+        - organization_id
+        - device_id
+        - kind
+        - status
+        - requested_at
+        - expires_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        organization_id:
+          type: integer
+          format: int64
+        device_id:
+          type: integer
+          format: int64
+        kind:
+          $ref: "#/components/schemas/ApprovalKind"
+        session_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: 事后追认关联的会话（`kind=ratification`）；事前审批为 null
+        actor_user_id:
+          type: integer
+          format: int64
+          description: 发起审批的成员
+        status:
+          $ref: "#/components/schemas/ApprovalStatus"
+        requested_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          description: 待审批请求的有效期；超期由后台任务置为 expired
+        decided_by:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: 决策人（owner/admin）
+        decided_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        reason:
+          type:
+            - string
+            - "null"
+          maxLength: 500
+          description: 申请理由或拒绝理由
+        ticket_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: 批准后被消费签发的票据（一次性绑定）
+
+    ApprovalResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/Approval"
+
+    ApprovalListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/ApprovalPage"
+
+    ApprovalCreateRequest:
+      type: object
+      description: |
+        提交审批请求，按 `kind` 二选一：
+
+        - `pre_approval`：必须提供 `device_id`
+        - `ratification`（事后追认）：必须提供 `session_id`，且该会话必须属于本组织、
+          `origin=native`（面板会话本身已受策略管控，无需追认）；`device_id` 由服务端
+          从会话派生
+
+        两者都给、都不给，或 `kind` 与字段不匹配，返回 `400 invalid_request`。
+        同一 actor + 设备已有 `pending` 的事前审批时**复用**该请求（返回 200）；
+        同一会话已有 `pending`/`approved` 的追认时同样复用，不重复创建。
+      required:
+        - kind
+      properties:
+        kind:
+          $ref: "#/components/schemas/ApprovalKind"
+        device_id:
+          type: integer
+          format: int64
+        session_id:
+          type: integer
+          format: int64
+        reason:
+          type: string
+          maxLength: 500
+
+    ApprovalDecision:
+      type: string
+      description: |
+        - approve：批准（pre_approval 放行一次签发；ratification 即「已追认」）
+        - deny：拒绝
+      enum:
+        - approve
+        - deny
+
+    ApprovalDecisionRequest:
+      type: object
+      required:
+        - decision
+      properties:
+        decision:
+          $ref: "#/components/schemas/ApprovalDecision"
+        reason:
+          type: string
+          maxLength: 500
+
+    TicketCreateRequest:
+      type: object
+      required:
+        - device_id
+      properties:
+        device_id:
+          type: integer
+          format: int64
+        ttl_seconds:
+          type: integer
+          format: int64
+          minimum: 30
+          maximum: 900
+          default: 300
+          description: 票据有效期（秒），默认 300
+
+    Ticket:
+      type: object
+      required:
+        - id
+        - organization_id
+        - device_id
+        - expires_at
+        - created_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        organization_id:
+          type: integer
+          format: int64
+        device_id:
+          type: integer
+          format: int64
+        actor_user_id:
+          type: integer
+          format: int64
+        approval_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: 绑定的审批请求（审批放行时）
+        policy_snapshot:
+          type:
+            - object
+            - "null"
+          additionalProperties: true
+          description: 签发时生效的策略快照（审计与排障用）
+        expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        used_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+          description: 首次被兑换的时间；一次性，非 null 即不可再用
+        revoked_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+          description: |
+            撤销时间。没有独立的撤销端点：成员被移出组织、角色降级或组织停用时，
+            由 offboarding 路径撤销其**未兑换**的票据（T8）。
+
+    IssuedTicket:
+      type: object
+      required:
+        - ticket
+        - token
+      properties:
+        ticket:
+          $ref: "#/components/schemas/Ticket"
+        token:
+          type: string
+          description: 明文票据令牌，**仅此响应返回一次**（服务端只存摘要）
+
+    IssuedTicketResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/IssuedTicket"
+
+    AlertSeverity:
+      type: string
+      description: 告警级别
+      enum:
+        - info
+        - warning
+        - critical
+
+    Alert:
+      type: object
+      required:
+        - id
+        - organization_id
+        - kind
+        - severity
+        - created_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        organization_id:
+          type: integer
+          format: int64
+        session_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+        device_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+        kind:
+          type: string
+          maxLength: 64
+          description: |
+            告警类型（自由字符串，已知取值）：
+            - `concurrency_exceeded`：并发会话超限
+            - `duration_exceeded`：会话时长超限
+            - `outside_window`：时段外发起
+
+            事前审批阻断**不算告警**（正常的受控流程，每次都告警会让告警列表变成
+            噪音）；它体现在 `409 approval_required` 与审计里。原生直连无法事前审批
+            （审批是签发的前提），所以 native 会话的告警只用 `duration_exceeded` /
+            `outside_window` 表达实际违规。
+        severity:
+          $ref: "#/components/schemas/AlertSeverity"
+        detail:
+          type:
+            - object
+            - "null"
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+
+    AlertListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/AlertPage"
+
+    SessionPage:
+      type: object
+      required:
+        - items
+        - page
+        - page_size
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Session"
+        page:
+          type: integer
+        page_size:
+          type: integer
+          format: int64
+        total:
+          type: integer
+          format: int64
+
+    ApprovalPage:
+      type: object
+      required:
+        - items
+        - page
+        - page_size
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Approval"
+        page:
+          type: integer
+        page_size:
+          type: integer
+          format: int64
+        total:
+          type: integer
+          format: int64
+
+    AlertPage:
+      type: object
+      required:
+        - items
+        - page
+        - page_size
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Alert"
+        page:
+          type: integer
+        page_size:
+          type: integer
+          format: int64
+        total:
+          type: integer
+          format: int64
+
+    TicketRedeemRequest:
+      type: object
+      required:
+        - token
+      properties:
+        token:
+          type: string
+          minLength: 16
+          description: 签发响应里返回的明文票据令牌
+
+    TicketResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/Ticket"
+
+    SessionResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/Session"

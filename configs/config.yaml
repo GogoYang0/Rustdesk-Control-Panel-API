@@ -67,7 +67,8 @@ web:
 # Note the level sits *outside* the first bracket and sits ahead of a second
 # bracket holding the source location; the timestamp itself contains spaces.
 # Verify against `docker logs -t panel-org-<id>-hbbs` before enabling.
-# Collected events are kept for 30 days (pruned at startup).
+# Collected events are kept for 30 days: pruned on start and every
+# retentionSweepInterval (see below), independently of logcollect.enabled.
 logcollect:
   enabled: false
   containerPrefix: "panel-org"
@@ -80,6 +81,15 @@ logcollect:
       pattern: '^\[[^\]]+\]\s+INFO\s+\[[^\]]+\]\s+.*?(?P<device>\d{6,12})'
       level: info
       kind: conn
+    # There is deliberately NO default `disconnected` rule: the pinned
+    # rustdesk-server prints nothing about a peer's connection ending at the
+    # default log level (its only close line, "Tcp connection from {:?}
+    # closed", is log::debug! and carries a socket address but no device id —
+    # rustdesk-server src/rendezvous_server.rs). Sessions that never see an
+    # end event are closed by the idle sweep instead. If your log source does
+    # emit an identifiable end line (a patched server, or debug level), add a
+    # `disconnected` rule ABOVE the connection rule — rules are first-match —
+    # or the broad connection pattern will absorb those lines as `conn`.
     - name: warnings
       pattern: '^\[[^\]]+\]\s+WARN\s+\[[^\]]+\]\s+(?P<msg>.*)$'
       level: warn
@@ -88,3 +98,17 @@ logcollect:
       pattern: '^\[[^\]]+\]\s+ERROR\s+\[[^\]]+\]\s+(?P<msg>.*)$'
       level: error
       kind: error
+  # Period of the log-event retention sweep (30-day window), minimum 1m.
+  # 0 disables retention cleanup entirely (no periodic sweep, no startup
+  # sweep). With a non-zero value the sweep runs on start and every interval,
+  # independently of logcollect.enabled.
+  retentionSweepInterval: 6h
+
+# Session governance sweeps. The idle timeout is how long an open session may
+# go without activity (or from its start, when no activity was ever recorded)
+# before the background idle sweep closes it — sessions whose logs stop
+# arriving are closed here. Contract: "默认 10 分钟、可由部署配置覆盖".
+session:
+  # Must be positive: a non-positive value is not "disable the sweep" —
+  # it logs a warning and falls back to the 10m default.
+  idleTimeout: 10m
