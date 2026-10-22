@@ -110,10 +110,17 @@ func RegisterTx(db *gorm.DB, orgID uint, row model.Device) (*model.Device, error
 		return nil, fmt.Errorf("register device: %w", err)
 	}
 
+	// The re-read after a unique-key conflict must be a current read: under
+	// MySQL REPEATABLE READ a plain SELECT keeps seeing the transaction's
+	// snapshot and would report the rival's just-committed row as missing.
+	// SQLite has no row locks, so it keeps the plain read.
 	var stored model.Device
-	if err := store.ScopedByOrg(db, orgID).
-		Where("rustdesk_id = ?", row.RustdeskID).
-		First(&stored).Error; err != nil {
+	lookup := store.ScopedByOrg(db, orgID).
+		Where("rustdesk_id = ?", row.RustdeskID)
+	if db.Name() != "sqlite" {
+		lookup = lookup.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	if err := lookup.First(&stored).Error; err != nil {
 		return nil, fmt.Errorf("load device: %w", err)
 	}
 	return &stored, nil

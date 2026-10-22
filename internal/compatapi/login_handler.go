@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
@@ -256,8 +257,13 @@ func (s *Server) claimDeviceTx(tx *gorm.DB, orgID uint, rustdeskID, uuid string)
 			// registration-conflict re-read inside RegisterTx can hit
 			// ErrRecordNotFound (a 500 instead of the 403). Both are
 			// self-healing; Postgres Read Committed and SQLite are exact.
-			if err := store.ScopedByOrg(tx, orgID).
-				First(&dev, dev.ID).Error; err != nil {
+			reRead := store.ScopedByOrg(tx, orgID)
+			if tx.Name() != "sqlite" {
+				// Current read — same REPEATABLE READ reasoning as
+				// device.RegisterTx.
+				reRead = reRead.Clauses(clause.Locking{Strength: "UPDATE"})
+			}
+			if err := reRead.First(&dev, dev.ID).Error; err != nil {
 				return 0, err
 			}
 			if dev.BoundUUID != uuid {
@@ -266,9 +272,14 @@ func (s *Server) claimDeviceTx(tx *gorm.DB, orgID uint, rustdeskID, uuid string)
 		}
 	}
 	// Re-read so the returned generation reflects the row the session will
-	// be judged against.
+	// be judged against (current read on non-SQLite dialects, same as
+	// device.RegisterTx).
 	final := model.Device{}
-	if err := store.ScopedByOrg(tx, orgID).First(&final, dev.ID).Error; err != nil {
+	finalRead := store.ScopedByOrg(tx, orgID)
+	if tx.Name() != "sqlite" {
+		finalRead = finalRead.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	if err := finalRead.First(&final, dev.ID).Error; err != nil {
 		return 0, err
 	}
 	return final.BindingGeneration, nil
