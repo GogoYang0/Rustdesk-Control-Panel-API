@@ -30,6 +30,15 @@ func (a *AdminAPI) ListApprovals(c *gin.Context, orgId int64, params gen.ListApp
 
 	filter := session.ApprovalFilter{}
 	if params.Status != nil {
+		// The generated binding converts the query string without checking the
+		// enum, so an unknown status would silently filter to an empty page —
+		// which a client would read as "nothing pending in this state" instead
+		// of "my parameter is wrong". The contract types this parameter as the
+		// ApprovalStatus enum, so an unknown value is a 400.
+		if !params.Status.Valid() {
+			abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid status")
+			return
+		}
 		filter.Status = (*string)(params.Status)
 	}
 	if params.DeviceId != nil {

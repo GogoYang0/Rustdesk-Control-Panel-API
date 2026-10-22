@@ -382,6 +382,11 @@ func TestApproval_ListFiltersAndOrdering(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &list))
 	require.Equal(t, int64(1), list.Data.Total)
 	require.Equal(t, int64(other.ID), list.Data.Items[0].DeviceId)
+
+	// An unknown status is a 400, not a 200 with an empty list: the client
+	// would otherwise read its own typo as "nothing pending in this state".
+	w = h.do(t, http.MethodGet, approvalPath(orgID)+"?status=bogus", nil, owner)
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 }
 
 // The inbox is polled: reads add no audit rows, mutations do.
