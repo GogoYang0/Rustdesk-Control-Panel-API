@@ -301,6 +301,25 @@ func TestSessions_NegativeDeviceIdIsRejected(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 }
 
+// An unknown origin or status is a 400, not an empty 200: the parameters are
+// contract enums, and a silent empty page would read as "nothing in this
+// state" instead of a bad parameter (the ruling from the task 6 review).
+func TestSessions_UnknownEnumFiltersAreRejected(t *testing.T) {
+	h := newHarness(t)
+	token, orgID := seedOrgOwner(t, h, "sessions-enum@example.com")
+
+	for _, q := range []string{"origin=bogus", "status=bogus", "origin=panel&status=bogus"} {
+		w := h.do(t, http.MethodGet,
+			"/api/v1/orgs/"+strconv.FormatInt(orgID, 10)+"/sessions?"+q, nil, token)
+		require.Equal(t, http.StatusBadRequest, w.Code, q+": "+w.Body.String())
+	}
+
+	// Valid values still pass.
+	w := h.do(t, http.MethodGet,
+		"/api/v1/orgs/"+strconv.FormatInt(orgID, 10)+"/sessions?origin=panel&status=open", nil, token)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+}
+
 func TestSessions_Detail(t *testing.T) {
 	h := newHarness(t)
 	token, orgID := seedOrgOwner(t, h, "sessions-detail@example.com")

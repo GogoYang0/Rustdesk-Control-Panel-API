@@ -19,6 +19,15 @@ type Config struct {
 	Web        WebConfig        `mapstructure:"web"`
 	Compat     CompatConfig     `mapstructure:"compat"`
 	Logcollect LogcollectConfig `mapstructure:"logcollect"`
+	Session    SessionConfig    `mapstructure:"session"`
+}
+
+// SessionConfig tunes the session-governance background sweeps.
+type SessionConfig struct {
+	// IdleTimeout is how long an open session may go without activity
+	// before the idle sweep closes it. Sessions with no recorded activity
+	// fall back to their start time. Must be positive.
+	IdleTimeout time.Duration `mapstructure:"idleTimeout"`
 }
 
 // LogcollectConfig tunes the hbbs/hbbr log collector. Rules are evaluated in
@@ -139,6 +148,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("mail.devMode", true)
 	v.SetDefault("mail.smtp.port", 587)
 	v.SetDefault("compat.accessTTL", "720h")
+	v.SetDefault("session.idleTimeout", "10m")
 	// Log collection is opt-in: without rules nothing can be parsed.
 	v.SetDefault("logcollect.enabled", false)
 	v.SetDefault("logcollect.containerprefix", "panel-org")
