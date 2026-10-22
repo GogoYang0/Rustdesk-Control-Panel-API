@@ -209,10 +209,7 @@ func (s *Service) startNativeSession(tx *gorm.DB, orgID uint, dev *model.Device,
 // session. The organization lock serialises the check-then-insert so two
 // events for the same device cannot both miss and create duplicates.
 func (s *Service) recordConnEvent(ctx context.Context, orgID, deviceID uint, occurred time.Time, detail map[string]any) (*model.Session, error) {
-	var (
-		sess  model.Session
-		found bool
-	)
+	var sess model.Session
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := lockOrganization(tx, orgID); err != nil {
 			return err
@@ -257,8 +254,24 @@ func (s *Service) recordConnEvent(ctx context.Context, orgID, deviceID uint, occ
 			if err := s.appendEvent(tx, orgID, c.ID, SessionEventConnected, occurred, detail); err != nil {
 				return err
 			}
+			// For a native candidate this event is the first observed moment
+			// of the connection, so the window is evaluated here too: the
+			// session may have been started by an activity event, which does
+			// not judge the window (an activity line is not a connection).
+			if c.Origin == model.SessionOriginNative {
+				limits, lerr := s.limits(tx, orgID)
+				if lerr != nil {
+					return lerr
+				}
+				if !limits.WithinWindow(occurred) {
+					if err := s.recordAlert(tx, orgID, &c.ID, &deviceID, model.AlertKindOutsideWindow, model.AlertSeverityWarning, map[string]any{
+						"occurred_at": occurred,
+					}); err != nil {
+						return err
+					}
+				}
+			}
 			sess = c
-			found = true
 			return nil
 		}
 
@@ -269,14 +282,10 @@ func (s *Service) recordConnEvent(ctx context.Context, orgID, deviceID uint, occ
 		if err != nil {
 			return err
 		}
-		found = true
 		return nil
 	})
 	if err != nil {
 		return nil, err
-	}
-	if !found {
-		return nil, nil
 	}
 	return &sess, nil
 }
