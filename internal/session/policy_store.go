@@ -36,6 +36,9 @@ const (
 // requirement. The HTTP layer therefore reads presence from the raw payload and
 // hands the service pointers; a nil here is a 400.
 type PolicyInput struct {
+	// ActorUserID is the member performing the write; it lands in the audit
+	// entry, which is what answers "who changed this policy".
+	ActorUserID           uint
 	Name                  string
 	Enabled               *bool
 	RequireApproval       *bool
@@ -136,10 +139,16 @@ func (s *Service) CreatePolicy(ctx context.Context, orgID uint, in PolicyInput) 
 			UpdatedAt:             now,
 		}
 		if err := tx.Create(&created).Error; err != nil {
+			// The pre-check above cannot close the race: two concurrent writes
+			// both pass it and one hits the unique index.
+			if errors.Is(err, gorm.ErrDuplicatedKey) {
+				return fmt.Errorf("%w: %q", ErrDuplicatePolicy, in.Name)
+			}
 			return fmt.Errorf("create policy: %w", err)
 		}
 		return s.record(tx, audit.Entry{
 			OrganizationID: orgID,
+			ActorUserID:    in.ActorUserID,
 			Action:         "session.policy.create",
 			TargetType:     "policy",
 			TargetID:       fmt.Sprint(created.ID),
@@ -181,8 +190,12 @@ func (s *Service) UpdatePolicy(ctx context.Context, orgID, policyID uint, in Pol
 		// An explicit column list rather than Save: the tenant-column guard
 		// rejects any write that carries organization_id, and a full replacement
 		// must not include it anyway.
+		// updated_at is written explicitly so the service clock (not the
+		// database's) is the source of truth, and the response can state what
+		// was actually stored. GORM's auto-update yields to an explicit value.
 		updates := map[string]any{
 			"name":                    in.Name,
+			"updated_at":              s.now().UTC(),
 			"enabled":                 *in.Enabled,
 			"require_approval":        *in.RequireApproval,
 			"max_concurrent_sessions": in.MaxConcurrentSessions,
@@ -195,11 +208,14 @@ func (s *Service) UpdatePolicy(ctx context.Context, orgID, policyID uint, in Pol
 			Where("id = ?", policyID).
 			Updates(updates)
 		if res.Error != nil {
+			if errors.Is(res.Error, gorm.ErrDuplicatedKey) {
+				return fmt.Errorf("%w: %q", ErrDuplicatePolicy, in.Name)
+			}
 			return fmt.Errorf("update policy: %w", res.Error)
 		}
-		if res.RowsAffected == 0 {
-			return ErrPolicyNotFound
-		}
+		// No RowsAffected check: the scoped First above already proved the row
+		// exists, and MySQL reports 0 for a value-identical update (the T4
+		// lesson), which would turn an idempotent PUT into a 404.
 
 		updated = existing
 		updated.Name = in.Name
@@ -209,9 +225,11 @@ func (s *Service) UpdatePolicy(ctx context.Context, orgID, policyID uint, in Pol
 		updated.MaxSessionMinutes = in.MaxSessionMinutes
 		updated.AllowedStartMinute = in.AllowedStartMinute
 		updated.AllowedEndMinute = in.AllowedEndMinute
+		updated.UpdatedAt = s.now().UTC()
 
 		return s.record(tx, audit.Entry{
 			OrganizationID: orgID,
+			ActorUserID:    in.ActorUserID,
 			Action:         "session.policy.update",
 			TargetType:     "policy",
 			TargetID:       fmt.Sprint(policyID),
@@ -227,7 +245,7 @@ func (s *Service) UpdatePolicy(ctx context.Context, orgID, policyID uint, in Pol
 // DeletePolicy removes a policy. Deleting a policy is not an emergency stop:
 // the remaining enabled policies keep applying, and an organization with none
 // is unrestricted by design.
-func (s *Service) DeletePolicy(ctx context.Context, orgID, policyID uint) error {
+func (s *Service) DeletePolicy(ctx context.Context, orgID, policyID, actorID uint) error {
 	if orgID == 0 || policyID == 0 {
 		return fmt.Errorf("%w: organization and policy are required", ErrInvalidInput)
 	}
@@ -241,6 +259,7 @@ func (s *Service) DeletePolicy(ctx context.Context, orgID, policyID uint) error 
 		}
 		return s.record(tx, audit.Entry{
 			OrganizationID: orgID,
+			ActorUserID:    actorID,
 			Action:         "session.policy.delete",
 			TargetType:     "policy",
 			TargetID:       fmt.Sprint(policyID),
@@ -250,9 +269,16 @@ func (s *Service) DeletePolicy(ctx context.Context, orgID, policyID uint) error 
 
 // policyNameTaken reports the contract's duplicate-name conflict, ignoring the
 // policy being updated (excludeID == 0 on create).
+//
+// The comparison is case-insensitive on purpose. The unique index behind it is
+// dialect-dependent — MySQL's default collation is case-insensitive, SQLite and
+// PostgreSQL are not — so an exact match would let "Policy" and "policy"
+// coexist on one deployment and collide on another. Doing the check in SQL makes
+// the observable rule identical everywhere; the index error stays as the
+// backstop for the race between this check and the write.
 func policyNameTaken(tx *gorm.DB, orgID uint, name string, excludeID uint) error {
 	var count int64
-	q := store.ScopedByOrg(tx, orgID).Model(&model.Policy{}).Where("name = ?", name)
+	q := store.ScopedByOrg(tx, orgID).Model(&model.Policy{}).Where("LOWER(name) = LOWER(?)", name)
 	if excludeID != 0 {
 		q = q.Where("id <> ?", excludeID)
 	}

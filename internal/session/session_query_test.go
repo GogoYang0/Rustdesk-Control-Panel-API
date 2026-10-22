@@ -63,6 +63,23 @@ func TestListSessions_Ordering(t *testing.T) {
 	require.Equal(t, older.ID, items[2].ID, "oldest last")
 }
 
+// A row that started earlier but was written later: if the sort were id DESC the
+// order would flip, so this case is what proves the started_at sort.
+func TestListSessions_OrderingIgnoresInsertionOrder(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	base := time.Date(2026, 10, 22, 8, 0, 0, 0, time.UTC)
+	older := seedSession(t, h, base, model.SessionOriginPanel, model.SessionStatusClosed)
+	newer := seedSession(t, h, base.Add(time.Hour), model.SessionOriginPanel, model.SessionStatusClosed)
+	require.Less(t, older.ID, newer.ID, "the older row must have the smaller id")
+
+	items, _, err := h.svc.ListSessions(ctx, h.org.ID, session.SessionFilter{})
+	require.NoError(t, err)
+	require.Equal(t, newer.ID, items[0].ID, "started_at decides, not the id")
+	require.Equal(t, older.ID, items[1].ID)
+}
+
 func TestListSessions_Filters(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

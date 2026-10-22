@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/api"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
@@ -26,6 +27,14 @@ func (c *countingAuditor) Record(_ context.Context, _ audit.Entry) error {
 	return nil
 }
 
+// RecordTx makes the auditor transactional, so the domain services write their
+// own rows through it instead of falling back to the discard recorder. Without
+// this the suppression would hide the mutation's audit entirely.
+func (c *countingAuditor) RecordTx(_ *gorm.DB, _ audit.Entry) error {
+	c.entries++
+	return nil
+}
+
 // reset drops the entries produced by test seeding.
 func (c *countingAuditor) reset() { c.entries = 0 }
 
@@ -36,6 +45,16 @@ func seedOrgMember(t *testing.T, h *harness, orgID int64, email string) string {
 	user := h.seedUser(t, email, "password123")
 	require.NoError(t, h.db.DB.Create(&model.Membership{
 		OrganizationID: uint(orgID), UserID: user.ID, Role: model.RoleMember,
+	}).Error)
+	return h.login(t, email, "password123")
+}
+
+// seedOrgAdmin adds an admin to an existing organization.
+func seedOrgAdmin(t *testing.T, h *harness, orgID int64, email string) string {
+	t.Helper()
+	user := h.seedUser(t, email, "password123")
+	require.NoError(t, h.db.DB.Create(&model.Membership{
+		OrganizationID: uint(orgID), UserID: user.ID, Role: model.RoleAdmin,
 	}).Error)
 	return h.login(t, email, "password123")
 }
@@ -87,6 +106,26 @@ func TestPolicy_PermissionMatrix(t *testing.T) {
 	// The owner can.
 	w = h.do(t, http.MethodPost, policyPath(orgID), validPolicyBody(), owner)
 	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+
+	// …and so can an admin. The contract grants policy writes to owner/admin;
+	// gating on the owner-only org.admin permission is what made admins 403
+	// here, so this case is the regression net.
+	admin := seedOrgAdmin(t, h, orgID, "policy-admin@example.com")
+	w = h.do(t, http.MethodPost, policyPath(orgID), map[string]any{
+		"name": "admin-policy", "enabled": true, "require_approval": false,
+	}, admin)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+
+	var created struct {
+		Data struct {
+			Id int64 `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
+	w = h.do(t, http.MethodPut, policyItemPath(orgID, created.Data.Id), map[string]any{
+		"name": "admin-policy", "enabled": false, "require_approval": false,
+	}, admin)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 }
 
 // An omitted or null required boolean is a 400 — not a silent false, which would
@@ -326,5 +365,6 @@ func TestSessions_ReadsAreNotAuditedButMutationsAre(t *testing.T) {
 
 	w = h.do(t, http.MethodPost, policyPath(orgID), validPolicyBody(), token)
 	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
-	require.NotZero(t, auditor.entries, "a policy mutation must still be audited")
+	require.Equal(t, 1, auditor.entries,
+		"a policy mutation writes exactly one audit row: the domain one, not the request fallback")
 }

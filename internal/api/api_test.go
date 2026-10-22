@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -36,14 +37,30 @@ func newHarness(t *testing.T) *harness {
 
 // newHarnessWith builds the standard harness and lets a test tweak the Deps
 // (e.g. inject a mailer) before the router is created.
+// testDatabase picks the database a test runs against.
+func testDatabase(t *testing.T) (driver, dsn string) {
+	t.Helper()
+	switch {
+	case os.Getenv("TEST_POSTGRES_DSN") != "":
+		return "postgres", os.Getenv("TEST_POSTGRES_DSN")
+	case os.Getenv("TEST_MYSQL_DSN") != "":
+		return "mysql", os.Getenv("TEST_MYSQL_DSN")
+	}
+	return "sqlite", "file:apitest_" + sanitize(t.Name()) + "?mode=memory&cache=shared"
+}
+
 func newHarnessWith(t *testing.T, tune func(*api.Deps)) *harness {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
-	// One named in-memory database per test keeps runs independent, so
-	// go test -count=2 does not collide on unique indexes.
-	dsn := "file:apitest_" + sanitize(t.Name()) + "?mode=memory&cache=shared"
-	st, err := store.Open(config.DatabaseConfig{Driver: "sqlite", DSN: dsn})
+	// CI's test-db job exports TEST_POSTGRES_DSN / TEST_MYSQL_DSN, and the HTTP
+	// layer is where dialect differences surface (error mapping for duplicate
+	// keys, affected-row semantics), so these tests run on those dialects too
+	// when they are available. Locally each test gets its own in-memory
+	// database, which also keeps go test -count=2 from colliding on unique
+	// indexes.
+	driver, dsn := testDatabase(t)
+	st, err := store.Open(config.DatabaseConfig{Driver: driver, DSN: dsn})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.DB.AutoMigrate(

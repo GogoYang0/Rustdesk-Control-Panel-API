@@ -100,7 +100,7 @@ func (a *AdminAPI) CreatePolicy(c *gin.Context, orgId int64) {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid organization id")
 		return
 	}
-	if !a.requirePerm(c, uid, uint(orgId), authz.PermOrgAdmin) {
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermPolicyWrite) {
 		return
 	}
 
@@ -110,11 +110,14 @@ func (a *AdminAPI) CreatePolicy(c *gin.Context, orgId int64) {
 		return
 	}
 
-	policy, err := a.tickets.CreatePolicy(c.Request.Context(), uint(orgId), body.toInput())
+	in := body.toInput()
+	in.ActorUserID = uid
+	policy, err := a.tickets.CreatePolicy(c.Request.Context(), uint(orgId), in)
 	if err != nil {
 		a.writePolicyError(c, err)
 		return
 	}
+	c.Set(contextAuditRecorded, true)
 	c.JSON(http.StatusCreated, gen.PolicyResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
@@ -132,7 +135,7 @@ func (a *AdminAPI) UpdatePolicy(c *gin.Context, orgId int64, policyId int64) {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid id")
 		return
 	}
-	if !a.requirePerm(c, uid, uint(orgId), authz.PermOrgAdmin) {
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermPolicyWrite) {
 		return
 	}
 
@@ -142,11 +145,14 @@ func (a *AdminAPI) UpdatePolicy(c *gin.Context, orgId int64, policyId int64) {
 		return
 	}
 
-	policy, err := a.tickets.UpdatePolicy(c.Request.Context(), uint(orgId), uint(policyId), body.toInput())
+	in := body.toInput()
+	in.ActorUserID = uid
+	policy, err := a.tickets.UpdatePolicy(c.Request.Context(), uint(orgId), uint(policyId), in)
 	if err != nil {
 		a.writePolicyError(c, err)
 		return
 	}
+	c.Set(contextAuditRecorded, true)
 	c.JSON(http.StatusOK, gen.PolicyResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
@@ -166,14 +172,15 @@ func (a *AdminAPI) DeletePolicy(c *gin.Context, orgId int64, policyId int64) {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid id")
 		return
 	}
-	if !a.requirePerm(c, uid, uint(orgId), authz.PermOrgAdmin) {
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermPolicyWrite) {
 		return
 	}
 
-	if err := a.tickets.DeletePolicy(c.Request.Context(), uint(orgId), uint(policyId)); err != nil {
+	if err := a.tickets.DeletePolicy(c.Request.Context(), uint(orgId), uint(policyId), uid); err != nil {
 		a.writePolicyError(c, err)
 		return
 	}
+	c.Set(contextAuditRecorded, true)
 	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
 }
 

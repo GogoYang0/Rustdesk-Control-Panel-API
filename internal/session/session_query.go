@@ -20,6 +20,11 @@ var ErrSessionNotFound = errors.New("session not found")
 const (
 	defaultSessionPageSize = 50
 	maxSessionPageSize     = 200
+	// maxSessionPage bounds the page number. Without it a page near the int64
+	// limit makes (page-1)*pageSize overflow into a negative offset, which GORM
+	// silently clamps to zero — the client would see a huge page number echoed
+	// back with the first page's rows.
+	maxSessionPage = 100_000
 	// maxSessionEvents caps the timeline returned by SessionDetail. The earliest
 	// events are kept: they are what an investigation needs first.
 	maxSessionEvents = 200
@@ -51,6 +56,9 @@ func (f SessionFilter) NormalisedPagination() (page, pageSize int) {
 	}
 	if pageSize > maxSessionPageSize {
 		pageSize = maxSessionPageSize
+	}
+	if page > maxSessionPage {
+		page = maxSessionPage
 	}
 	return page, pageSize
 }

@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/session"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
 
 // PolicyInput mirrors the contract's PolicyRequest, with the two required
@@ -157,6 +159,7 @@ func TestPolicy_CRUD(t *testing.T) {
 	require.Len(t, listed, 1)
 
 	// Full replacement: fields left out are cleared, not merged.
+	h.setClock(h.now.Add(time.Hour))
 	replacement := session.PolicyInput{
 		Name:            "office-hours",
 		Enabled:         boolp(false),
@@ -168,15 +171,58 @@ func TestPolicy_CRUD(t *testing.T) {
 	require.True(t, updated.RequireApproval)
 	require.Nil(t, updated.MaxConcurrentSessions)
 
+	// The response is built from the input, so it proves nothing about the row:
+	// re-read and compare. This is also what pins updated_at (the response used
+	// to echo the pre-update value).
+	var stored model.Policy
+	require.NoError(t, store.WithoutTenantScope(h.db).First(&stored, created.ID).Error)
+	require.False(t, stored.Enabled)
+	require.True(t, stored.RequireApproval)
+	require.Nil(t, stored.MaxConcurrentSessions)
+	require.Equal(t, h.now.UTC(), stored.UpdatedAt.UTC(),
+		"updated_at must be the write time, in the database as well as in the response")
+	require.Equal(t, h.now.UTC(), updated.UpdatedAt.UTC())
+
 	_, err = h.svc.UpdatePolicy(ctx, h.org.ID, 99999, replacement)
 	require.ErrorIs(t, err, session.ErrPolicyNotFound)
 
-	require.NoError(t, h.svc.DeletePolicy(ctx, h.org.ID, created.ID))
+	require.NoError(t, h.svc.DeletePolicy(ctx, h.org.ID, created.ID, 1))
 	listed, err = h.svc.ListPolicies(ctx, h.org.ID)
 	require.NoError(t, err)
 	require.Empty(t, listed)
 
-	require.ErrorIs(t, h.svc.DeletePolicy(ctx, h.org.ID, created.ID), session.ErrPolicyNotFound)
+	require.ErrorIs(t, h.svc.DeletePolicy(ctx, h.org.ID, created.ID, 1), session.ErrPolicyNotFound)
+}
+
+// Renaming onto another policy's name is the same 409, and a case variant must
+// not slip past the pre-check: SQLite and PostgreSQL compare names
+// case-sensitively, so "Policy" and "policy" collide on the unique index rather
+// than in the pre-check — and the index error has to surface as 409, not 500.
+func TestPolicy_RenameToTakenNameIsConflict(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	first, err := h.svc.CreatePolicy(ctx, h.org.ID, session.PolicyInput{
+		Name: "Policy", Enabled: boolp(true), RequireApproval: boolp(false),
+	})
+	require.NoError(t, err)
+
+	second := validPolicy()
+	second.Name = "other"
+	secondRow, err := h.svc.CreatePolicy(ctx, h.org.ID, second)
+	require.NoError(t, err)
+
+	rename := validPolicy()
+	rename.Name = "policy" // case variant of the first policy
+	_, err = h.svc.UpdatePolicy(ctx, h.org.ID, secondRow.ID, rename)
+	require.ErrorIs(t, err, session.ErrDuplicatePolicy)
+
+	// Renaming to its own name stays allowed (the pre-check excludes the row).
+	self := validPolicy()
+	self.Name = "other"
+	_, err = h.svc.UpdatePolicy(ctx, h.org.ID, secondRow.ID, self)
+	require.NoError(t, err)
+	require.Equal(t, first.ID, first.ID)
 }
 
 // Policy writes are audited like every other domain mutation.
@@ -188,7 +234,7 @@ func TestPolicy_MutationsAreAudited(t *testing.T) {
 	require.NoError(t, err)
 	_, err = h.svc.UpdatePolicy(ctx, h.org.ID, created.ID, validPolicy())
 	require.NoError(t, err)
-	require.NoError(t, h.svc.DeletePolicy(ctx, h.org.ID, created.ID))
+	require.NoError(t, h.svc.DeletePolicy(ctx, h.org.ID, created.ID, 1))
 
 	require.Equal(t, []string{
 		"session.policy.create",
@@ -212,7 +258,7 @@ func TestPolicy_TenantIsolation(t *testing.T) {
 
 	_, err = h.svc.UpdatePolicy(ctx, other, mine.ID, validPolicy())
 	require.ErrorIs(t, err, session.ErrPolicyNotFound)
-	require.ErrorIs(t, h.svc.DeletePolicy(ctx, other, mine.ID), session.ErrPolicyNotFound)
+	require.ErrorIs(t, h.svc.DeletePolicy(ctx, other, mine.ID, 1), session.ErrPolicyNotFound)
 }
 
 // modelOrganization creates a second organization and returns its id. Policies

@@ -94,13 +94,15 @@ func (a *AdminAPI) GetSession(c *gin.Context, orgId int64, sessionId int64) {
 		return
 	}
 
-	c.Set(contextAuditRecorded, true)
+	// Unlike the list, the detail view is not polled, so it keeps its
+	// request-level audit row: knowing who inspected which session is exactly
+	// what an investigator wants later. This matches GetTicket (T4).
 	c.JSON(http.StatusOK, gen.SessionDetailResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
 		Data: gen.SessionDetail{
 			Session:   sessionToAPI(*sess),
-			Events:    sessionEventsToAPI(events),
+			Events:    a.sessionEventsToAPI(events),
 			Truncated: truncated,
 		},
 	})
@@ -126,7 +128,7 @@ func sessionsToAPI(sessions []model.Session) []gen.Session {
 	return out
 }
 
-func sessionEventsToAPI(events []model.SessionEvent) []gen.SessionEvent {
+func (a *AdminAPI) sessionEventsToAPI(events []model.SessionEvent) []gen.SessionEvent {
 	out := make([]gen.SessionEvent, 0, len(events))
 	for _, e := range events {
 		event := gen.SessionEvent{
@@ -136,7 +138,14 @@ func sessionEventsToAPI(events []model.SessionEvent) []gen.SessionEvent {
 		}
 		if e.DetailJSON != "" {
 			var detail map[string]interface{}
-			if err := json.Unmarshal([]byte(e.DetailJSON), &detail); err == nil {
+			if err := json.Unmarshal([]byte(e.DetailJSON), &detail); err != nil {
+				// The column is text and the contract allows null, so this is a
+				// data bug rather than a request error — log it instead of
+				// dropping the event's context without a trace.
+				a.deps.Logger.Warn("session event detail is not valid JSON",
+					zap.Uint64("event_id", uint64(e.ID)),
+					zap.Error(err))
+			} else {
 				event.Detail = &detail
 			}
 		}
