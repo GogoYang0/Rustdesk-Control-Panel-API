@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
@@ -143,10 +144,15 @@ func absorbedConnIDs(tx *gorm.DB, orgID uint, sessionIDs []uint) (map[uint]bool,
 // refreshActivity moves a session's activity clock forward. The timestamp
 // condition keeps the value monotonic: the two tailers (hbbs + hbbr) process
 // lines concurrently, so an older event can be applied after a newer one, and
-// a backwards last_activity_at would make the idle sweep fire early. Callers
-// treat a false result as "the session was closed meanwhile", not as an
-// error. (The interleaving itself is not reproducible on SQLite, which
-// serialises writes locally — same recorded limitation as the row locks.)
+// a backwards last_activity_at would make the idle sweep fire early.
+//
+// A zero-row update is ambiguous — the session was closed meanwhile (by a
+// disconnect or a sweep), or the event is simply older than the clock. The
+// status is re-read under a row lock to tell the two apart: still open means
+// the event is a late fact of a live session and is recorded; closed means
+// the caller must not append anything to it. (The interleaving itself is not
+// reproducible on SQLite, which serialises writes locally — same recorded
+// limitation as the row locks.)
 func refreshActivity(tx *gorm.DB, orgID, sessionID uint, occurred time.Time) (bool, error) {
 	res := store.ScopedByOrg(tx, orgID).
 		Model(&model.Session{}).
@@ -160,7 +166,22 @@ func refreshActivity(tx *gorm.DB, orgID, sessionID uint, occurred time.Time) (bo
 	if res.Error != nil {
 		return false, fmt.Errorf("refresh activity: %w", res.Error)
 	}
-	return res.RowsAffected == 1, nil
+	if res.RowsAffected == 1 {
+		return true, nil
+	}
+
+	var current model.Session
+	err := store.ScopedByOrg(tx, orgID).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Select("status").
+		First(&current, sessionID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check session status: %w", err)
+	}
+	return current.Status == model.SessionStatusOpen, nil
 }
 
 // startNativeSession creates the native session the event starts and
@@ -244,8 +265,13 @@ func (s *Service) recordConnEvent(ctx context.Context, orgID, deviceID uint, occ
 		}
 		if len(unabsorbed) == 1 {
 			c := unabsorbed[0]
-			if _, err := refreshActivity(tx, orgID, c.ID, occurred); err != nil {
+			active, err := refreshActivity(tx, orgID, c.ID, occurred)
+			if err != nil {
 				return err
+			}
+			if !active {
+				// The session was closed meanwhile: no timeline, no alert.
+				return nil
 			}
 			// The connected timeline row is what marks the session as having
 			// absorbed its one connection event, so it is written for panel
@@ -327,18 +353,23 @@ func (s *Service) recordActivityEvent(ctx context.Context, orgID, deviceID uint,
 			return nil
 		}
 
+		active := make(map[uint]bool, len(candidates))
 		for _, c := range candidates {
-			if _, err := refreshActivity(tx, orgID, c.ID, occurred); err != nil {
+			stillOpen, err := refreshActivity(tx, orgID, c.ID, occurred)
+			if err != nil {
 				return err
 			}
+			active[c.ID] = stillOpen
 		}
-		if len(candidates) == 1 {
+		if len(candidates) == 1 && active[candidates[0].ID] {
 			sess = candidates[0]
 			found = true
 		}
-		// The event itself is recorded on the native session(s) only.
+		// The event itself is recorded on the native session(s) only, and
+		// only on the ones still open: a session closed by a concurrent
+		// disconnect or sweep must not receive a posthumous timeline row.
 		for _, c := range candidates {
-			if c.Origin == model.SessionOriginNative {
+			if c.Origin == model.SessionOriginNative && active[c.ID] {
 				if err := s.appendEvent(tx, orgID, c.ID, kind, occurred, detail); err != nil {
 					return err
 				}
