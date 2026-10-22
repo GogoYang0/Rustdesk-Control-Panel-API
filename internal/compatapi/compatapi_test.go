@@ -605,8 +605,10 @@ func TestLogin_ConcurrentClaim_ExactlyOneWinner(t *testing.T) {
 	close(start)
 
 	winner := ""
+	outcomes := make([]result, 0, contenders)
 	for i := 0; i < contenders; i++ {
 		r := <-results
+		outcomes = append(outcomes, r)
 		switch r.code {
 		case http.StatusOK:
 			require.Empty(t, winner, "two concurrent claims cannot both win")
@@ -623,6 +625,24 @@ func TestLogin_ConcurrentClaim_ExactlyOneWinner(t *testing.T) {
 		Where("rustdesk_id = ?", "666666666").First(&dev).Error)
 	require.Equal(t, winner, dev.BoundUUID,
 		"the stored binding must belong to the winning login")
+
+	// No losing login may leave a session row behind.
+	for _, r := range outcomes {
+		if r.code == http.StatusOK {
+			continue
+		}
+		var sessions int64
+		require.NoError(t, h.db.DB.Model(&model.CompatSession{}).
+			Where("user_id = ? AND device_id = ? AND uuid = ?", u.ID, "666666666", r.uuid).
+			Count(&sessions).Error)
+		require.Zero(t, sessions, "losing login %s must not create a session", r.uuid)
+	}
+
+	// The winner's session snapshots the device's binding generation.
+	var winnerSession model.CompatSession
+	require.NoError(t, h.db.DB.Where("device_id = ? AND uuid = ?", "666666666", winner).
+		First(&winnerSession).Error)
+	require.Equal(t, dev.BindingGeneration, winnerSession.BindingGeneration)
 }
 
 // The uuid is not a secret and is not verified at login, so two client

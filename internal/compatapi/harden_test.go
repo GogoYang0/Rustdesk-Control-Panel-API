@@ -223,31 +223,6 @@ func TestSysinfo_StaleGenerationRejected(t *testing.T) {
 		"a stale-generation sysinfo must not move last_seen: got %v want %v", after.LastSeenAt, firstSeen)
 }
 
-// The winning session of the concurrent-claim race carries the device's
-// generation, and the losers have no session at all.
-//
-// Known uncovered branch (SQLite serialises writes, so it cannot be forced):
-// claimDeviceTx's RowsAffected==0 re-read — the conditional update losing a
-// race between the First and the UPDATE. Its behaviour is pinned only by the
-// conditional-update structure and the shared-database CI runs.
-func TestLogin_ConcurrentClaim_SessionGenerationMatches(t *testing.T) {
-	h := newHarness(t)
-	u := h.seedUser(t, "racegen@example.com", "password123", true)
-	org := h.seedOrg(t, "acme")
-	h.seedMembership(t, u.ID, org.ID)
-
-	token, _ := h.login(t, "racegen@example.com", "password123", "777777777", "racegen-uuid")
-
-	var dev model.Device
-	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).
-		Where("rustdesk_id = ?", "777777777").First(&dev).Error)
-
-	var sess model.CompatSession
-	require.NoError(t, h.db.DB.Where("device_id = ?", "777777777").First(&sess).Error)
-	require.Equal(t, dev.BindingGeneration, sess.BindingGeneration)
-	require.NotEmpty(t, token)
-}
-
 // The claim and the session row land in one transaction: a client presenting
 // a bound device it does not own gets a 403 and leaves no session row behind.
 func TestLogin_ForeignClaimLeavesNoSession(t *testing.T) {
