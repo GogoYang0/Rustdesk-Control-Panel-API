@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
@@ -55,7 +57,9 @@ func (in PolicyInput) validate() error {
 	if strings.TrimSpace(in.Name) == "" {
 		return fmt.Errorf("%w: name is required", ErrInvalidInput)
 	}
-	if len(in.Name) > maxPolicyNameLen {
+	// The column is sized in characters; len() counts bytes, which would reject
+	// a 50-character Chinese name (150 bytes) that fits comfortably.
+	if utf8.RuneCountInString(in.Name) > maxPolicyNameLen {
 		return fmt.Errorf("%w: name must be at most %d characters", ErrInvalidInput, maxPolicyNameLen)
 	}
 	if in.Enabled == nil || in.RequireApproval == nil {
@@ -122,6 +126,14 @@ func (s *Service) CreatePolicy(ctx context.Context, orgID uint, in PolicyInput) 
 
 	var created model.Policy
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Serialise policy writes per organization. The pre-check is
+		// case-insensitive but the unique index is on the raw name, so on
+		// SQLite/PostgreSQL two concurrent creates of "Policy" and "policy"
+		// would both pass the check and both be accepted. The lock makes the
+		// check authoritative on every dialect.
+		if err := lockOrganization(tx, orgID); err != nil {
+			return err
+		}
 		if err := policyNameTaken(tx, orgID, in.Name, 0); err != nil {
 			return err
 		}
@@ -174,6 +186,16 @@ func (s *Service) UpdatePolicy(ctx context.Context, orgID, policyID uint, in Pol
 
 	var updated model.Policy
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// One reading for the whole transaction: a second call could land on a
+		// different tick, and then the stored updated_at and the response would
+		// disagree — which is exactly what this field is trusted not to do.
+		now := s.now().UTC()
+
+		// Same serialisation as CreatePolicy: the rename check has to hold.
+		if err := lockOrganization(tx, orgID); err != nil {
+			return err
+		}
+
 		var existing model.Policy
 		if err := store.ScopedByOrg(tx, orgID).Where("id = ?", policyID).First(&existing).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -195,7 +217,7 @@ func (s *Service) UpdatePolicy(ctx context.Context, orgID, policyID uint, in Pol
 		// was actually stored. GORM's auto-update yields to an explicit value.
 		updates := map[string]any{
 			"name":                    in.Name,
-			"updated_at":              s.now().UTC(),
+			"updated_at":              now,
 			"enabled":                 *in.Enabled,
 			"require_approval":        *in.RequireApproval,
 			"max_concurrent_sessions": in.MaxConcurrentSessions,
@@ -225,7 +247,7 @@ func (s *Service) UpdatePolicy(ctx context.Context, orgID, policyID uint, in Pol
 		updated.MaxSessionMinutes = in.MaxSessionMinutes
 		updated.AllowedStartMinute = in.AllowedStartMinute
 		updated.AllowedEndMinute = in.AllowedEndMinute
-		updated.UpdatedAt = s.now().UTC()
+		updated.UpdatedAt = now
 
 		return s.record(tx, audit.Entry{
 			OrganizationID: orgID,
@@ -287,6 +309,21 @@ func policyNameTaken(tx *gorm.DB, orgID uint, name string, excludeID uint) error
 	}
 	if count > 0 {
 		return fmt.Errorf("%w: %q", ErrDuplicatePolicy, name)
+	}
+	return nil
+}
+
+// lockOrganization takes the organization row's write lock, serialising policy
+// writes for that organization.
+func lockOrganization(tx *gorm.DB, orgID uint) error {
+	var org model.Organization
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ?", orgID).
+		First(&org).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("%w: organization %d does not exist", ErrInvalidInput, orgID)
+		}
+		return fmt.Errorf("lock organization: %w", err)
 	}
 	return nil
 }

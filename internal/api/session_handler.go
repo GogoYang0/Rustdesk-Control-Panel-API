@@ -41,6 +41,13 @@ func (a *AdminAPI) ListSessions(c *gin.Context, orgId int64, params gen.ListSess
 		filter.Status = &status
 	}
 	if params.DeviceId != nil {
+		// int64 → uint without a sign check turns -1 into 2^64-1, which reaches
+		// the database as a device id nobody has and comes back as a 500 from
+		// the driver rather than a 400 from us.
+		if *params.DeviceId <= 0 {
+			abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "deviceId must be positive")
+			return
+		}
 		device := uint(*params.DeviceId)
 		filter.DeviceID = &device
 	}

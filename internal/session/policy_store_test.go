@@ -2,7 +2,11 @@ package session_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +30,9 @@ type PolicyInput struct {
 }
 
 func boolp(v bool) *bool { return &v }
+
+// maxPolicyName mirrors the service's character limit.
+const maxPolicyName = 128
 
 func validPolicy() session.PolicyInput {
 	return session.PolicyInput{
@@ -223,6 +230,62 @@ func TestPolicy_RenameToTakenNameIsConflict(t *testing.T) {
 	_, err = h.svc.UpdatePolicy(ctx, h.org.ID, secondRow.ID, self)
 	require.NoError(t, err)
 	require.Equal(t, first.ID, first.ID)
+}
+
+// The column is sized in characters. len() counts bytes, so a byte-based check
+// would reject a 50-character Chinese name (150 bytes) that fits comfortably.
+func TestPolicy_NameLengthCountsCharacters(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	fifty := strings.Repeat("策", 50)
+	_, err := h.svc.CreatePolicy(ctx, h.org.ID, session.PolicyInput{
+		Name: fifty, Enabled: boolp(true), RequireApproval: boolp(false),
+	})
+	require.NoError(t, err, "50 characters must be accepted whatever their byte length")
+
+	tooLong := strings.Repeat("x", maxPolicyName+1)
+	_, err = h.svc.CreatePolicy(ctx, h.org.ID, session.PolicyInput{
+		Name: tooLong, Enabled: boolp(true), RequireApproval: boolp(false),
+	})
+	require.ErrorIs(t, err, session.ErrInvalidInput)
+}
+
+// The name rule is case-insensitive, and it has to hold under concurrency.
+//
+// Scope note, stated honestly: on SQLite this passes even without the
+// organization-row lock, because the driver serialises writes anyway. What the
+// lock buys is on MySQL/PostgreSQL — where this suite also runs in CI — since
+// the unique index is on the raw name while the pre-check is case-insensitive.
+// So this test pins the *rule*; the lock is what makes the rule hold where two
+// transactions really can interleave.
+func TestPolicy_CaseInsensitiveUniquenessUnderConcurrency(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	var okCount, conflictCount int32
+	var wg sync.WaitGroup
+	for _, name := range []string{"Policy", "policy", "POLICY"} {
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+			_, err := h.svc.CreatePolicy(ctx, h.org.ID, session.PolicyInput{
+				Name: name, Enabled: boolp(true), RequireApproval: boolp(false),
+			})
+			switch {
+			case err == nil:
+				atomic.AddInt32(&okCount, 1)
+			case errors.Is(err, session.ErrDuplicatePolicy):
+				atomic.AddInt32(&conflictCount, 1)
+			default:
+				t.Errorf("unexpected error: %v", err)
+			}
+		}(name)
+	}
+	wg.Wait()
+
+	require.Equal(t, int32(1), atomic.LoadInt32(&okCount), "exactly one case variant may be created")
+	require.Equal(t, int32(2), atomic.LoadInt32(&conflictCount), "the others must be refused")
 }
 
 // Policy writes are audited like every other domain mutation.

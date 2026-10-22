@@ -290,6 +290,17 @@ func TestSessions_List(t *testing.T) {
 }
 
 // The detail view carries the session and its timeline.
+// A negative deviceId must not reach the database as a wrapped uint: the driver
+// would answer with a 500 for an id nobody has.
+func TestSessions_NegativeDeviceIdIsRejected(t *testing.T) {
+	h := newHarness(t)
+	token, orgID := seedOrgOwner(t, h, "sessions-negdev@example.com")
+
+	w := h.do(t, http.MethodGet,
+		"/api/v1/orgs/"+strconv.FormatInt(orgID, 10)+"/sessions?deviceId=-1", nil, token)
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+}
+
 func TestSessions_Detail(t *testing.T) {
 	h := newHarness(t)
 	token, orgID := seedOrgOwner(t, h, "sessions-detail@example.com")
