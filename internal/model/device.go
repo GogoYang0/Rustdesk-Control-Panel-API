@@ -22,10 +22,16 @@ type Device struct {
 	// rejects anything longer than 128 before writing here, so the wider column
 	// only avoids a schema shrink that could fail on rows written by an earlier
 	// build.
-	BoundUUID  string     `gorm:"size:255" json:"-"`
-	LastSeenAt *time.Time `json:"last_seen_at"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
+	BoundUUID string `gorm:"size:255" json:"-"`
+	// BindingGeneration increments every time the binding changes (first
+	// claim, administrator re-bind). Compat sessions snapshot the generation
+	// they were issued under and their credential-free activity is dropped
+	// once the device's generation has moved past it, so a session issued
+	// under an earlier binding can never drive the device again.
+	BindingGeneration uint64     `gorm:"not null;default:0" json:"-"`
+	LastSeenAt        *time.Time `json:"last_seen_at"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
 }
 
 // OnlineWindow is how fresh a heartbeat must be for the device to count as
