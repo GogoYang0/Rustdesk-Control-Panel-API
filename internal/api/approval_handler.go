@@ -207,7 +207,7 @@ func (a *AdminAPI) writeApprovalError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, session.ErrInvalidInput):
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
-	case errors.Is(err, session.ErrApprovalNotFound):
+	case errors.Is(err, session.ErrApprovalNotFound), errors.Is(err, session.ErrDeviceNotFound):
 		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, err.Error())
 	case errors.Is(err, session.ErrConflict):
 		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, err.Error())

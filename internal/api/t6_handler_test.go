@@ -409,7 +409,7 @@ func TestApproval_AuditCounts(t *testing.T) {
 		"kind": "pre_approval", "device_id": dev.ID,
 	}, owner)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	require.Zero(t, auditor.entries-1, "a reuse is not a new fact")
+	require.Equal(t, 1, auditor.entries, "a reuse is not a new fact")
 
 	// The decision is audited exactly once.
 	auditor.reset()

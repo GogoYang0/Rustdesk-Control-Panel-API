@@ -128,6 +128,13 @@ func (s *Service) CreateApproval(ctx context.Context, orgID, actorID uint, in Ap
 		var sessionID *uint
 
 		if in.Kind == model.ApprovalKindPre {
+			// The device must exist in this organization: an approval for a
+			// phantom or foreign device could never be consumed (issuance
+			// verifies the device first) and would pollute the inbox.
+			if _, err := s.loadDevice(tx, orgID, in.DeviceID); err != nil {
+				return err
+			}
+
 			var existing model.Approval
 			err := store.ScopedByOrg(tx, orgID).
 				Where("actor_user_id = ? AND device_id = ? AND kind = ? AND status = ? AND expires_at > ?",
@@ -162,14 +169,28 @@ func (s *Service) CreateApproval(ctx context.Context, orgID, actorID uint, in Ap
 			deviceID = sess.DeviceID
 			sessionID = &sessID
 
-			// pending or approved counts: an acknowledged session stays
-			// acknowledged, so a second approver clicking the same alert must
-			// land on the existing row rather than open a second one.
+			// An approved acknowledgement is reused unconditionally: the fact
+			// is acknowledged and stays so. A pending one is only reused while
+			// it is still actionable — same reasoning as the pre-approval path,
+			// an expired pending row is dead and reusing it would loop the
+			// client between this 200 and the decision's 409.
 			var existing model.Approval
 			err = store.ScopedByOrg(tx, orgID).
-				Where("session_id = ? AND kind = ? AND status IN ?",
-					sessID, model.ApprovalKindRatification,
-					[]string{model.ApprovalStatusPending, model.ApprovalStatusApproved}).
+				Where("session_id = ? AND kind = ? AND status = ?",
+					sessID, model.ApprovalKindRatification, model.ApprovalStatusApproved).
+				Order("id").
+				First(&existing).Error
+			if err == nil {
+				created = existing
+				reused = true
+				return nil
+			}
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return fmt.Errorf("load approved ratification: %w", err)
+			}
+			err = store.ScopedByOrg(tx, orgID).
+				Where("session_id = ? AND kind = ? AND status = ? AND expires_at > ?",
+					sessID, model.ApprovalKindRatification, model.ApprovalStatusPending, now).
 				Order("id").
 				First(&existing).Error
 			if err == nil {
@@ -242,6 +263,7 @@ func (s *Service) DecideApproval(ctx context.Context, orgID, approvalID, approve
 		return nil, fmt.Errorf("%w: reason must be at most %d characters", ErrInvalidInput, maxApprovalReasonLen)
 	}
 
+	var decided model.Approval
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := lockOrganization(tx, orgID); err != nil {
 			return err
@@ -284,6 +306,14 @@ func (s *Service) DecideApproval(ctx context.Context, orgID, approvalID, approve
 			return fmt.Errorf("%w: the approval is no longer pending", ErrConflict)
 		}
 
+		// Re-read inside the transaction so the response shows the row as
+		// committed. A second read after the commit could hit a cancelled
+		// context and turn a successful decision into a 500, which the client
+		// would retry into a 409.
+		if err := store.ScopedByOrg(tx, orgID).Where("id = ?", approvalID).First(&decided).Error; err != nil {
+			return fmt.Errorf("reload decided approval: %w", err)
+		}
+
 		return s.record(tx, audit.Entry{
 			OrganizationID: orgID,
 			ActorUserID:    approverID,
@@ -301,7 +331,7 @@ func (s *Service) DecideApproval(ctx context.Context, orgID, approvalID, approve
 	if err != nil {
 		return nil, err
 	}
-	return s.Approval(ctx, orgID, approvalID)
+	return &decided, nil
 }
 
 // Approval returns one approval. The plaintext-free bookkeeping view, like

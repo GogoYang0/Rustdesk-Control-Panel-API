@@ -17,7 +17,8 @@ import (
 //   - tickets: issueTicket / getTicket / redeemTicket (T4)
 //   - policies and session records: list/CRUD (T5)
 //   - approvals: list/get/create/decide (T6)
-//   - alerts: list (T7)//
+//   - alerts: list (T7)
+//
 // They answer 501 so a client generated from the contract fails loudly instead
 // of assuming the feature exists. Shipping this state is safe only because the
 // endpoints are new: no existing behaviour changes.

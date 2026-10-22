@@ -245,6 +245,40 @@ func TestCreateApproval_UnknownKindIsRejected(t *testing.T) {
 	require.ErrorIs(t, err, session.ErrInvalidInput)
 }
 
+// A pre-approval for a device that does not exist in this organization is a
+// 404: the request could never be consumed and would pollute the inbox.
+func TestCreatePreApproval_UnknownDeviceIsNotFound(t *testing.T) {
+	h := newHarness(t)
+
+	_, _, err := h.svc.CreateApproval(context.Background(), h.org.ID, 7, session.ApprovalCreateInput{
+		Kind:     model.ApprovalKindPre,
+		DeviceID: 9999,
+	})
+	require.ErrorIs(t, err, session.ErrDeviceNotFound)
+}
+
+// An expired pending ratification is dead just like a pre-approval's: reusing
+// it would hand back an id the decision endpoint refuses with 409.
+func TestCreateRatification_ExpiredPendingIsNotReused(t *testing.T) {
+	h := newHarness(t)
+	sessionID := h.newNativeSession(t)
+
+	first, _, err := h.svc.CreateApproval(context.Background(), h.org.ID, 7, session.ApprovalCreateInput{
+		Kind:      model.ApprovalKindRatification,
+		SessionID: &sessionID,
+	})
+	require.NoError(t, err)
+
+	h.setClock(h.now.Add(16 * time.Minute))
+	second, reused, err := h.svc.CreateApproval(context.Background(), h.org.ID, 8, session.ApprovalCreateInput{
+		Kind:      model.ApprovalKindRatification,
+		SessionID: &sessionID,
+	})
+	require.NoError(t, err)
+	require.False(t, reused, "the expired request is dead; a fresh one is created")
+	require.NotEqual(t, first.ID, second.ID)
+}
+
 // A reason longer than the contract's 500 characters is refused.
 func TestCreateApproval_ReasonTooLongIsRejected(t *testing.T) {
 	h := newHarness(t)
