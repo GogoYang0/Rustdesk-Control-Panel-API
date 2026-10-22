@@ -241,7 +241,7 @@ func (s *Scheduler) execute(ctx context.Context, t Task) error {
 		shutdown := s.isStopping() &&
 			(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
 		if shutdown {
-			s.logger.Warn("worker task cancelled by shutdown", fields...)
+			s.logger.Warn("worker task returned while a shutdown was in effect", fields...)
 			if changed > 0 {
 				s.logger.Info("worker task cancelled after partial progress", fields...)
 			}
