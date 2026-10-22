@@ -46,12 +46,18 @@ type Scheduler struct {
 	logger  *zap.Logger
 	auditor AuditRecorder
 
-	mu      sync.Mutex
-	tasks   []Task
-	names   map[string]struct{}
-	cancel  context.CancelFunc
-	stopped bool
-	wg      sync.WaitGroup
+	mu       sync.Mutex
+	tasks    []Task
+	names    map[string]struct{}
+	cancel   context.CancelFunc
+	stopped  bool
+	stopping chan struct{}
+	wg       sync.WaitGroup
+	// stopOnce keeps Stop idempotent and, crucially, keeps the order
+	// "close(stopping) before cancel": a task's error is only treated as a
+	// shutdown when the stopping signal was already raised, so a task-internal
+	// timeout racing with Stop can never swallow its own failure.
+	stopOnce sync.Once
 }
 
 // New builds an empty scheduler. auditor may be nil (entries are skipped).
@@ -59,7 +65,7 @@ func New(logger *zap.Logger, auditor AuditRecorder) *Scheduler {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	return &Scheduler{logger: logger, auditor: auditor, names: map[string]struct{}{}}
+	return &Scheduler{logger: logger, auditor: auditor, names: map[string]struct{}{}, stopping: make(chan struct{})}
 }
 
 // Register adds a task. Duplicate names and non-positive intervals are
@@ -143,6 +149,11 @@ func (s *Scheduler) Start(ctx context.Context) {
 
 // Stop cancels every loop and waits for the in-flight passes to return.
 func (s *Scheduler) Stop() {
+	// The stopping signal goes up BEFORE the context is cancelled: execute
+	// classifies an error by this signal, not by reading ctx.Err() after the
+	// fact (a task's own sub-context timeout returning at the same moment as
+	// Stop must still be a failure).
+	s.stopOnce.Do(func() { close(s.stopping) })
 	s.mu.Lock()
 	cancel := s.cancel
 	s.cancel = nil
@@ -154,6 +165,16 @@ func (s *Scheduler) Stop() {
 		cancel()
 	}
 	s.wg.Wait()
+}
+
+// isStopping reports whether Stop has raised the shutdown signal.
+func (s *Scheduler) isStopping() bool {
+	select {
+	case <-s.stopping:
+		return true
+	default:
+		return false
+	}
 }
 
 // RunOnce executes a registered task once, synchronously. It exists for tests
@@ -211,24 +232,28 @@ func (s *Scheduler) execute(ctx context.Context, t Task) error {
 		zap.Duration("elapsed", elapsed),
 	}
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			// Shutdown cancels the root context; that is not a task failure and
-			// must not produce an error log or an audit entry on every stop. A
-			// partial pass that already changed rows is still worth a line, so
-			// the work is not invisible.
-			s.logger.Debug("worker task cancelled", fields...)
+		// The stopping signal only tunes the log level, never auditability:
+		// every failure is audited, because "classify then maybe skip" is
+		// exactly how a Stop racing the task's return loses a failure (the
+		// signal cannot prove what the error was caused by). A shutdown that
+		// aborted a pass is still worth its row — marked as cancelled, with
+		// partial progress visible instead of invisible.
+		shutdown := s.isStopping() &&
+			(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
+		if shutdown {
+			s.logger.Warn("worker task returned while a shutdown was in effect", fields...)
 			if changed > 0 {
 				s.logger.Info("worker task cancelled after partial progress", fields...)
 			}
-			return err
+		} else {
+			s.logger.Error("worker task failed", append(fields, zap.Error(err))...)
 		}
-		s.logger.Error("worker task failed", append(fields, zap.Error(err))...)
-		s.record(ctx, t.Name, changed, elapsed, err)
+		s.record(ctx, t.Name, changed, elapsed, err, shutdown)
 		return err
 	}
 	if changed > 0 {
 		s.logger.Info("worker task completed", fields...)
-		s.record(ctx, t.Name, changed, elapsed, nil)
+		s.record(ctx, t.Name, changed, elapsed, nil, false)
 	} else {
 		s.logger.Debug("worker task idle", fields...)
 	}
@@ -247,7 +272,7 @@ func (s *Scheduler) safeRun(ctx context.Context, t Task) (changed int64, err err
 	return t.Run(ctx)
 }
 
-func (s *Scheduler) record(ctx context.Context, name string, changed int64, elapsed time.Duration, runErr error) {
+func (s *Scheduler) record(ctx context.Context, name string, changed int64, elapsed time.Duration, runErr error, cancelledByShutdown bool) {
 	if s.auditor == nil {
 		return
 	}
@@ -257,6 +282,11 @@ func (s *Scheduler) record(ctx context.Context, name string, changed int64, elap
 	}
 	if runErr != nil {
 		detail["error"] = truncate(runErr.Error(), maxErrorDetail)
+	}
+	// The marker records the fact that the stop signal was active during
+	// this pass; it deliberately makes no claim about what caused the error.
+	if cancelledByShutdown {
+		detail["stopped"] = true
 	}
 	entry := audit.Entry{
 		Action:     audit.SystemActionPrefix + name,

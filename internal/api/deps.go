@@ -92,16 +92,15 @@ func NewAdminAPI(d Deps) *AdminAPI {
 	}
 	tickets := d.Tickets
 	if tickets == nil {
-		// The service fails closed without a recorder, so this branch must
-		// always supply one. A transactional auditor (the GORM auditor
-		// production uses) is wired straight in; anything else falls back to
-		// the discard recorder and says so, because "silently unaudited
-		// mutations" is exactly what the service refuses to be.
-		var recorder audit.TxRecorder = discardRecorder{}
-		if r, ok := d.Auditor.(audit.TxRecorder); ok {
-			recorder = r
-		} else {
-			d.Logger.Warn("auditor is not transactional: ticket and session audit entries will be discarded")
+		// The service fails closed without a recorder, and governance
+		// mutations without their audit entries are exactly what it refuses
+		// to be. Derive the session service only from a transactional
+		// auditor (the GormAuditor production wires); anything else is a
+		// wiring error and must stop the process at startup, not run with
+		// silently discarded audit entries (#58 review).
+		recorder, ok := d.Auditor.(audit.TxRecorder)
+		if !ok {
+			panic("api: transactional auditor required when Tickets is nil")
 		}
 		tickets = session.NewService(d.DB, recorder, d.Now)
 	}

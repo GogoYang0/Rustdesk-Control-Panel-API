@@ -550,6 +550,9 @@ func (s *Service) closeSweptSessions(ctx context.Context, reason string, scope f
 
 	var total int64
 	for _, id := range ids {
+		// Only rows this sweep actually closed count: a row closed by a
+		// concurrent disconnect or sweep must not inflate the audited number.
+		closed := false
 		err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			res := store.WithoutTenantScope(tx).
 				Model(&model.Session{}).
@@ -566,9 +569,10 @@ func (s *Service) closeSweptSessions(ctx context.Context, reason string, scope f
 			}
 			if res.RowsAffected != 1 {
 				// Closed meanwhile (disconnect or a concurrent sweep): no
-				// timeline, no alert.
+				// timeline, no alert, no count.
 				return nil
 			}
+			closed = true
 			if err := s.appendEvent(tx, 0, id, reason, now.UTC(), nil); err != nil {
 				return err
 			}
@@ -580,7 +584,9 @@ func (s *Service) closeSweptSessions(ctx context.Context, reason string, scope f
 		if err != nil {
 			return total, err
 		}
-		total++
+		if closed {
+			total++
+		}
 	}
 	return total, nil
 }

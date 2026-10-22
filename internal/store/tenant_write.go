@@ -10,6 +10,7 @@ import (
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"gorm.io/gorm/schema"
 )
 
 // ErrTenantColumnWrite reports an update that tried to change the tenant column.
@@ -326,22 +327,44 @@ func payloadTenantColumn(stmt *gorm.Statement, value reflect.Value) (string, boo
 
 // structTenantColumn reports whether a struct payload writes the tenant column.
 func structTenantColumn(stmt *gorm.Statement, value reflect.Value) (string, bool) {
-	if stmt.Schema == nil {
+	if stmt.Schema == nil || stmt.DB == nil || !value.IsValid() || value.Kind() != reflect.Struct {
 		return "", false
 	}
-	field, ok := stmt.Schema.FieldsByDBName[tenantColumn]
+	// GORM re-parses Dest when Model and Dest are heterogeneous, so the guard
+	// must inspect the payload's own schema: resolving the field from the
+	// Model schema and reading it from the Dest value by the Model's field
+	// name silently misses DTOs whose org column lives under a different
+	// field name — FieldByName returns an invalid value and the write would
+	// sail through (CWE-863). schema.Parse is cached by GORM, so the
+	// per-call cost is a map lookup.
+	payloadSchema, err := schema.Parse(value.Interface(), &sync.Map{}, stmt.NamingStrategy)
+	if err != nil {
+		// Unparseable payload: fail closed — refuse the write instead of
+		// waving it through uninspected.
+		return tenantColumn, true
+	}
+	field, ok := payloadSchema.FieldsByDBName[tenantColumn]
 	if !ok || field.FieldType.Kind() == reflect.Struct {
 		return "", false
 	}
 	if omitted(stmt, field.Name) {
 		return "", false
 	}
-	if !selected(stmt, field.Name) {
+	if !selectedTenantColumn(stmt) {
 		return "", false
 	}
-	fieldValue := value.FieldByName(field.Name)
+	fieldValue := field.ReflectValueOf(stmt.Context, value)
 	if !fieldValue.IsValid() {
 		return "", false
+	}
+	// A payload that merely echoes the scoped organization id back (a loaded
+	// row saved through ScopedByOrg) is not a transfer: it sends the row to
+	// the tenant it already belongs to. WithoutTenantScope carries no org id
+	// and keeps refusing every tenant-column write.
+	if scopedOrg, ok := stmt.Context.Value(orgContextKey).(uint); ok && scopedOrg != 0 && !isCrossTenant(stmt) {
+		if fieldValue.CanUint() && uint(fieldValue.Uint()) == scopedOrg {
+			return "", false
+		}
 	}
 	// Without an explicit Select GORM skips zero values, so an unset
 	// OrganizationID is simply not part of the write. With Select("*") or
@@ -408,9 +431,13 @@ func isTenantColumnKey(stmt *gorm.Statement, key string) bool {
 	return normalizeColumn(key) == tenantColumn
 }
 
-// selected reports whether a struct field will be written. With no explicit
-// Select everything non-zero is written; with Select only the listed columns are.
-func selected(stmt *gorm.Statement, fieldName string) bool {
+// selectedTenantColumn reports whether the statement's explicit Select (if
+// any) includes the tenant column. The comparison is by database column name:
+// with a heterogeneous Dest the payload field can carry the org column under
+// a different Go name (Org -> organization_id), and matching the payload's
+// field name against the Model's would skip the check — Select("OrganizationID")
+// must select the tenant column no matter what either schema calls its field.
+func selectedTenantColumn(stmt *gorm.Statement) bool {
 	if len(stmt.Selects) == 0 {
 		return true
 	}
@@ -420,7 +447,7 @@ func selected(stmt *gorm.Statement, fieldName string) bool {
 		}
 		if stmt.Schema != nil {
 			if field := stmt.Schema.LookUpField(sel); field != nil {
-				if field.Name == fieldName {
+				if field.DBName == tenantColumn {
 					return true
 				}
 				continue

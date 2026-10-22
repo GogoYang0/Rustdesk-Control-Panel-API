@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/api"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
@@ -76,6 +77,7 @@ func newHarnessWith(t *testing.T, tune func(*api.Deps)) *harness {
 		Auth:          svc,
 		Devices:       device.NewService(st.DB, nil),
 		Issuer:        issuer,
+		Auditor:       audit.NewGormAuditor(st.DB),
 		AccessTTL:     time.Minute,
 		RefreshTTL:    time.Hour,
 		InvitationTTL: time.Hour,
@@ -528,6 +530,7 @@ func TestCreateOrg_QuotaEnforced(t *testing.T) {
 		Auth:          auth.NewService(h.db.DB, h.issuer, nil),
 		Issuer:        h.issuer,
 		Devices:       device.NewService(h.db.DB, nil),
+		Auditor:       audit.NewGormAuditor(h.db.DB),
 		AccessTTL:     time.Minute,
 		RefreshTTL:    time.Hour,
 		InvitationTTL: time.Hour,
@@ -553,6 +556,7 @@ func TestCreateOrg_ConcurrentRequestsRespectQuota(t *testing.T) {
 		Auth:          auth.NewService(h.db.DB, h.issuer, nil),
 		Issuer:        h.issuer,
 		Devices:       device.NewService(h.db.DB, nil),
+		Auditor:       audit.NewGormAuditor(h.db.DB),
 		AccessTTL:     time.Minute,
 		RefreshTTL:    time.Hour,
 		InvitationTTL: time.Hour,
