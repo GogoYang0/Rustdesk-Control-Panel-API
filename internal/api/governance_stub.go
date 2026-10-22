@@ -52,26 +52,6 @@ func (a *AdminAPI) stubMembership(c *gin.Context, orgID int64, feature string) {
 	notImplemented(c, feature)
 }
 
-// ListApprovals implements gen.ServerInterface (stub, T6).
-func (a *AdminAPI) ListApprovals(c *gin.Context, orgId int64, params gen.ListApprovalsParams) {
-	a.stubMembership(c, orgId, "approvals")
-}
-
-// GetApproval implements gen.ServerInterface (stub, T6).
-func (a *AdminAPI) GetApproval(c *gin.Context, orgId int64, approvalId int64) {
-	a.stubMembership(c, orgId, "approvals")
-}
-
-// CreateApproval implements gen.ServerInterface (stub, T6).
-func (a *AdminAPI) CreateApproval(c *gin.Context, orgId int64) {
-	a.stubMembership(c, orgId, "approvals")
-}
-
-// DecideApproval implements gen.ServerInterface (stub, T6).
-func (a *AdminAPI) DecideApproval(c *gin.Context, orgId int64, approvalId int64) {
-	a.stubMembership(c, orgId, "approvals")
-}
-
 // ListAlerts implements gen.ServerInterface (stub, T7).
 func (a *AdminAPI) ListAlerts(c *gin.Context, orgId int64, params gen.ListAlertsParams) {
 	a.stubMembership(c, orgId, "alerts")

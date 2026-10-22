@@ -29,6 +29,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/provision"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/session"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/worker"
 )
@@ -212,6 +213,24 @@ func main() {
 		})
 	})
 	sched := worker.New(lg, auditor)
+
+	// One session service shared by the API handlers and the background
+	// tasks: the approval-expiry sweep mutates the same rows the handlers
+	// serve, so both must see one clock and one audit recorder.
+	sessionSvc := session.NewService(st.DB, auditor, time.Now)
+
+	// Pending approvals expire on their own deadline; the sweep only marks
+	// the rows so the inbox stops offering dead requests.
+	if err := sched.Register(worker.Task{
+		Name:       "approval-expiry",
+		Interval:   time.Minute,
+		RunOnStart: true,
+		Run: func(ctx context.Context) (int64, error) {
+			return sessionSvc.ExpirePendingApprovals(ctx, time.Now())
+		},
+	}); err != nil {
+		lg.Fatal("register approval expiry sweep", zap.Error(err))
+	}
 	if cfg.Logcollect.RetentionSweepInterval > 0 {
 		if err := sched.Register(worker.Task{
 			Name:     "logcollect-retention",
@@ -271,6 +290,7 @@ func main() {
 			Auditor:        auditor,
 			Logger:         lg,
 			Mailer:         mailer,
+			Tickets:        sessionSvc,
 			AccessTTL:      cfg.Auth.AccessTTL,
 			RefreshTTL:     cfg.Auth.RefreshTTL,
 			InvitationTTL:  7 * 24 * time.Hour,

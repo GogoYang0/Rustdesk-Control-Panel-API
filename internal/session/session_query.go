@@ -47,7 +47,13 @@ type SessionFilter struct {
 // Input is clamped rather than rejected: a pager that asks for page 0 or an
 // oversized page is a client bug, not a 500.
 func (f SessionFilter) NormalisedPagination() (page, pageSize int) {
-	page, pageSize = f.Page, f.PageSize
+	return normalisePage(f.Page, f.PageSize)
+}
+
+// normalisePage is the shared clamping rule behind every paginated listing in
+// this package (sessions, approvals): page and size floors, the contract's
+// size cap, and the page cap that keeps (page-1)*pageSize from overflowing.
+func normalisePage(page, pageSize int) (int, int) {
 	if page < 1 {
 		page = 1
 	}
