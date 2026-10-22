@@ -103,3 +103,10 @@ logcollect:
   # sweep). With a non-zero value the sweep runs on start and every interval,
   # independently of logcollect.enabled.
   retentionSweepInterval: 6h
+
+# Session governance sweeps. The idle timeout is how long an open session may
+# go without activity (or from its start, when no activity was ever recorded)
+# before the background idle sweep closes it — sessions whose logs stop
+# arriving are closed here. Contract: "默认 10 分钟、可由部署配置覆盖".
+session:
+  idleTimeout: 10m

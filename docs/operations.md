@@ -73,6 +73,7 @@
 - **完整性**：每条审计行带 per-org 连续序列号，序列断裂即表示行被删除或篡改——巡检时应检查序列连续性
 - 无租户请求（login、healthz）不产生持久审计行（`GormAuditor` 对 org 0 直接丢弃，有意 fail-closed）
 - 遗留：compat 写路径的**事务级**审计（与业务写同事务）尚未实现，当前为请求级归因
+- **M3 新增的领域审计动作**（`TxRecorder` 在实体事务内记录）：`session.ticket.issued`（票据签发）、`session.ticket.denied`（策略拒绝）、`session.approval.request`（新建审批请求；复用不重复记）、`session.approval.decide`（approve/deny 决策）。会话治理的**列表轮询不产生审计**（读静默），单个详情读会记录；provision 供应与保留期清扫等基础设施动作的审计见 provision 相关节（#46）
 
 ---
 
@@ -94,6 +95,7 @@
 - 规则按序匹配、首条命中即停；命名捕获组写入 `DetailJSON`，`device` 捕获组把事件关联到设备并产生辅助心跳
 - 匹配不上的行**按设计丢弃**（C7），每分钟至多记一条 `unparseable` 速率限制告警——大量 unparseable 说明规则与镜像实际格式不符
 - 事件保留 30 天（`DefaultLogEventRetentionDays`）：由后台调度器按 `logcollect.retentionSweepInterval`（默认 6h）执行，启动即清扫一次——**与采集启停解耦**，停用采集也会执行（#41）；设为 `0` 则完全停用保留期清理。清扫是**分批删除**（每批 `pruneBatchSize` 行，默认 1000），避免大表长事务
+- 事件 kind 与会话治理的映射：`conn`=连接事件、`file`/`error`=活动事件、`disconnected`=连接结束（**默认规则集不含**——rustdesk-server 默认日志级别不打印断开行，见部署指南 §6 第 6 条；自定义规则必须放在宽泛 connection 规则之前）。kind→会话语义的完整规则见运维指南 §2.2 与 API 规范 §3.6
 
 ### 4.3 常见问题
 

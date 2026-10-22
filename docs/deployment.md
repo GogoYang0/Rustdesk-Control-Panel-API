@@ -59,7 +59,9 @@ go build -o panel ./cmd/server
 | `logcollect.enabled` | | `false` | 日志采集总开关（见运维指南 §4） |
 | `logcollect.containerPrefix` | | `panel-org` | 容器命名前缀，实际为 `panel-org-<orgId>-hbbs/hbbr` |
 | `logcollect.retentionSweepInterval` | | `6h` | 日志事件保留期（30 天）的清扫间隔，最小 `1m`；`0` 表示**完全停用保留期清理**。非 0 时启动即清扫一次并按间隔周期执行，与 `logcollect.enabled` 无关，见运维指南 §4.2 |
-| `logcollect.rules` | | **空（无内置默认）** | 省略即零规则：所有行按 unparseable 计数丢弃。必须显式配置（示例 `configs/config.yaml` 含 4 条经 1.1.11/1.1.16 实测的规则）；规则按序匹配、首条命中即停；命名捕获组 `device` 关联设备 |
+| `logcollect.rules` | | **空（无内置默认）** | 省略即零规则：所有行按 unparseable 计数丢弃。必须显式配置（示例 `configs/config.yaml` 含 4 条经 1.1.11/1.1.16 实测的规则）；规则按序匹配、首条命中即停；命名捕获组 `device` 关联设备。断开事件（`kind: disconnected`）默认不配置，原因与加法见 §6 第 6 条 |
+| `compat.accessTTL` | | `720h` | compat 会话（RustDesk 客户端令牌）的有效期；成员失去组织访问时应通过会话撤销立即失效（见运维指南 §2.1/#39） |
+| `session.idleTimeout` | | `10m` | 会话空闲超时：open 会话超过该时长无活动（无活动记录则回退 `started_at`）由空闲清扫任务置 `closed`（`end_reason=idle_timeout`）；契约的"部署可配置"项 |
 
 ---
 

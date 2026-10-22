@@ -92,7 +92,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | 端点 | 说明 |
 |---|---|
 | `POST /api/v1/orgs` | 创建组织（受 `maxOrgsPerUser` 限制，超出 409/400） |
-| `GET /api/v1/orgs/{orgId}/members` | 成员列表及其组织内角色（**组织成员即可访问**，不限 admin）。成员的角色在邀请时指定；v0.3.0 没有独立的角色变更端点（契约里 members 路径只有 GET） |
+| `GET /api/v1/orgs/{orgId}/members` | 成员列表及其组织内角色（**组织成员即可访问**，不限 admin）。成员的角色在邀请时指定；v0.4.0 仍无独立的角色变更/成员移除端点（契约里 members 路径只有 GET）——移除成员的管理端点落地时必须接线会话撤销（见 §4.1 与运维指南 §2.1） |
 | `POST /api/v1/orgs/{orgId}/invitations` | 邀请（admin 生成邀请令牌，邮件下发） |
 | `POST /api/v1/invitations/accept` | 接受邀请并加入组织 |
 
