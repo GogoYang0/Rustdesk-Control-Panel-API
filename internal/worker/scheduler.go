@@ -283,8 +283,10 @@ func (s *Scheduler) record(ctx context.Context, name string, changed int64, elap
 	if runErr != nil {
 		detail["error"] = truncate(runErr.Error(), maxErrorDetail)
 	}
+	// The marker records the fact that the stop signal was active during
+	// this pass; it deliberately makes no claim about what caused the error.
 	if cancelledByShutdown {
-		detail["shutdown"] = true
+		detail["stopped"] = true
 	}
 	entry := audit.Entry{
 		Action:     audit.SystemActionPrefix + name,

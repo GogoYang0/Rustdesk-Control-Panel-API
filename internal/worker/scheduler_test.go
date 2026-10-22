@@ -285,7 +285,7 @@ func TestExecute_TaskInternalTimeoutIsAuditedAsFailure(t *testing.T) {
 	err = s.RunOnce(context.Background(), "timed-out")
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	require.Len(t, aud.all(), 2, "audited even under the shutdown signal")
-	require.Contains(t, aud.all()[1].Detail, "shutdown", "the row carries the shutdown marker")
+	require.Contains(t, aud.all()[1].Detail, "stopped", "the row records that a stop was in effect")
 }
 
 func TestRegister_RejectedAfterStart(t *testing.T) {
