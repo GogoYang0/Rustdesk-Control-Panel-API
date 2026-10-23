@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -282,4 +283,85 @@ func Status(d *model.Device, now time.Time) string {
 		return "online"
 	}
 	return "offline"
+}
+
+// Device listing pagination bounds mirror the contract and the session listing.
+const (
+	defaultDevicePageSize = 50
+	maxDevicePageSize     = 200
+	maxDevicePage         = 100_000
+)
+
+// DeviceFilter carries the list parameters accepted by the contract.
+type DeviceFilter struct {
+	// Query matches name or rustdesk_id as a case-insensitive substring.
+	Query    string
+	Bound    *bool
+	Page     int
+	PageSize int
+}
+
+// NormalisedPagination returns the page and page size actually applied, so the
+// HTTP layer can echo them instead of repeating the clamping rules. Input is
+// clamped rather than rejected: a pager that asks for page 0 or an oversized
+// page is a client bug, not a 500.
+func (f DeviceFilter) NormalisedPagination() (page, pageSize int) {
+	page, pageSize = f.Page, f.PageSize
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = defaultDevicePageSize
+	}
+	if pageSize > maxDevicePageSize {
+		pageSize = maxDevicePageSize
+	}
+	if page > maxDevicePage {
+		page = maxDevicePage
+	}
+	return page, pageSize
+}
+
+// List returns one page of the organization's devices plus the unpaginated
+// total. Ordering is id ascending so pages stay stable.
+func (s *Service) List(ctx context.Context, orgID uint, f DeviceFilter) ([]model.Device, int64, error) {
+	if orgID == 0 {
+		return nil, 0, fmt.Errorf("%w: organization is required", ErrInvalidInput)
+	}
+	page, pageSize := f.NormalisedPagination()
+
+	query := store.ScopedByOrg(s.db.WithContext(ctx), orgID).Model(&model.Device{})
+	if q := strings.TrimSpace(f.Query); q != "" {
+		// Escape with '!' rather than a backslash: the SQL literal '\' is a
+		// syntax error on MySQL and a two-character string on PostgreSQL, so
+		// no backslash form works on all three dialects.
+		escaped := strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(strings.ToLower(q))
+		pattern := "%" + escaped + "%"
+		query = query.Where(
+			"LOWER(name) LIKE ? ESCAPE '!' OR LOWER(rustdesk_id) LIKE ? ESCAPE '!'",
+			pattern, pattern,
+		)
+	}
+	if f.Bound != nil {
+		if *f.Bound {
+			query = query.Where("bound_uuid <> ''")
+		} else {
+			query = query.Where("bound_uuid = ''")
+		}
+	}
+
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("count devices: %w", err)
+	}
+
+	var items []model.Device
+	if err := query.
+		Order("id ASC").
+		Offset((page - 1) * pageSize).
+		Limit(pageSize).
+		Find(&items).Error; err != nil {
+		return nil, 0, fmt.Errorf("list devices: %w", err)
+	}
+	return items, total, nil
 }
