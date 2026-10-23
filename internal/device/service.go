@@ -392,7 +392,16 @@ func (s *Service) ResetBinding(ctx context.Context, orgID, deviceID, actorID uin
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var dev model.Device
-		if err := store.ScopedByOrg(tx, orgID).First(&dev, deviceID).Error; err != nil {
+		// Lock the row on the dialects that support it: a concurrent compat
+		// login can claim the device between this read and the update below,
+		// and the reset would then clear the fresh binding while reporting a
+		// stale had_binding. SQLite has no row locks (same convention as
+		// RegisterTx / claimDeviceTx).
+		read := store.ScopedByOrg(tx, orgID)
+		if tx.Name() != "sqlite" {
+			read = read.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		if err := read.First(&dev, deviceID).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrDeviceNotFound
 			}
