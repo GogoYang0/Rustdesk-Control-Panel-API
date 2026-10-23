@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Rustdesk-Control-Panel API
-  version: 0.4.0
+  version: 0.5.0
   contact:
     name: Rustdesk-Control-Panel
     url: https://github.com/GogoYang0/Rustdesk-Control-Panel-API
@@ -23,6 +23,11 @@ info:
     （0.x 阶段按 C10 以 minor 承载）。
     分页响应本域统一为 `data.items/page/page_size/total`（会话与告警是无限增长的
     历史表，需要总数支撑 UI 翻页；既有列表端点保持原形状）。
+
+    0.5.0 新增**设备管理增量**：`GET /orgs/{orgId}/devices`（分页列表，沿用上述
+    页对象形状）与 `POST /orgs/{orgId}/devices/{deviceId}/rebind`（重置绑定：清
+    `bound_uuid`、绑定代数 +1、审计留存理由）。`Device` 增加必填字段 `bound`，
+    既有端点其余字段不变。**不提供 DELETE**：换机/重装后的绑定恢复用 rebind。
 
     统一响应包：所有业务响应为 `{code, message, data}`。
     `code` 为机器可读错误码（见 ErrorCode），成功时为 `ok`。
@@ -275,6 +280,65 @@ paths:
           $ref: "#/components/responses/Conflict"
 
   /api/v1/orgs/{orgId}/devices:
+    get:
+      operationId: listDevices
+      summary: 列出组织设备
+      description: |
+        分页返回本组织的设备，按 `id` 升序（翻页稳定）。需要 device.read 权限
+        （组织成员即可）。`q` 对 `name` 与 `rustdesk_id` 做大小写不敏感子串匹配，
+        `%`/`_` 按字面量处理。
+      tags:
+        - devices
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: q
+          in: query
+          required: false
+          description: 按名称或 rustdesk_id 大小写不敏感子串匹配
+          schema:
+            type: string
+            maxLength: 64
+        - name: bound
+          in: query
+          required: false
+          description: 是否已绑定客户端
+          schema:
+            type: boolean
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: 设备列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
     post:
       operationId: createDevice
       summary: 注册设备
@@ -727,6 +791,56 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DeviceResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/devices/{deviceId}/rebind:
+    post:
+      operationId: resetDeviceBinding
+      summary: 重置设备绑定
+      description: |
+        清空设备的 `bound_uuid` 并把 `binding_generation` +1，使此前登录取到该设备
+        的 compat 会话立即失去驱动设备的能力（其心跳与系统信息被丢弃）。`reason`
+        必填并随审计一同留存。需要 device.write 权限。
+
+        重复调用是安全的：每次都成功且代数继续 +1，不会把系统带进半个状态。
+        设备不属于本组织与设备不存在都返回 404。
+      tags:
+        - devices
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: deviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceRebindRequest"
+      responses:
+        "200":
+          description: 重置后的设备（`bound=false`）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -1812,6 +1926,7 @@ components:
         - rustdesk_id
         - status
         - last_seen_at
+        - bound
       properties:
         id:
           type: integer
@@ -1832,6 +1947,9 @@ components:
             - string
             - "null"
           format: date-time
+        bound:
+          type: boolean
+          description: 是否已绑定某个客户端实例（重置绑定后为 false）
 
     DeviceCreateRequest:
       type: object
@@ -1861,6 +1979,52 @@ components:
           type: string
         data:
           $ref: "#/components/schemas/Device"
+
+    DeviceRebindRequest:
+      type: object
+      required:
+        - reason
+      properties:
+        reason:
+          type: string
+          description: 重置绑定的理由，随审计留存
+          minLength: 1
+          maxLength: 500
+
+    DevicePage:
+      type: object
+      required:
+        - items
+        - page
+        - page_size
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Device"
+        page:
+          type: integer
+        page_size:
+          type: integer
+          format: int64
+        total:
+          type: integer
+          format: int64
+
+    DeviceListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/DevicePage"
 
     OkResponse:
       type: object

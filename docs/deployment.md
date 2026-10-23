@@ -204,6 +204,8 @@ server {
 客户端「ID/中继服务器」指向该组织分配的 hbbs/hbbr 地址（provision 时按 `relayHost` + 分配端口生成）。客户端登录面板走 **compat 层**（协议与官方客户端一致）：
 
 - 登录凭据 = 面板账号（邮箱 + 密码）+ 组织；首次登录会认领设备（rustdesk id + uuid 绑定）
-- 换机器/重装后 uuid 变化会报 403「设备已绑定」。v0.3.0 **没有设备删除的管理面端点**（跟踪 [#43](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/43)），恢复需直接删除数据库中的设备行（临时流程）
+- 换机器/重装后 uuid 变化会报 403「设备已绑定」。v0.5.0 起由管理员在面板/API 调
+  `POST /api/v1/orgs/{orgId}/devices/{deviceId}/rebind`（填理由）重置绑定，客户端重新登录即重新认领；
+  仍不提供删除设备端点。**不要直接改库**（只改 `bound_uuid` 不动代数会让旧会话继续驱动设备）
 
 详细协议见 [API 规范 §4](api-spec.md)。

@@ -14,11 +14,12 @@
 | 创建组织 | `POST /api/v1/orgs` | 任意已验证用户（受 `maxOrgsPerUser` 限制） |
 | 邀请成员 | `POST /api/v1/orgs/{orgId}/invitations` | admin |
 | 接受邀请 | `POST /api/v1/invitations/accept` | 被邀请人 |
-| 查看设备 | **v0.3.0 无设备列表端点**（契约 devices 路径只有 POST 注册，[#43](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/43)） | — |
-| ~~删除设备（解绑 compat 客户端）~~ | **v0.3.0 无此端点**（[#43](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/43)）——解绑需直接删除数据库设备行（临时流程） | — |
+| 查看设备 | `GET /api/v1/orgs/{orgId}/devices`（v0.5.0；分页、`q` 搜索、`bound` 过滤） | member |
+| 重置设备绑定（换机/重装） | `POST /api/v1/orgs/{orgId}/devices/{deviceId}/rebind`（v0.5.0；`reason` 必填） | owner/admin |
 | 查询日志事件 | `GET /api/v1/orgs/{orgId}/log-events` | member |
 
-**设备解绑**是 compat 层最高频的管理操作：客户端重装/换机后 uuid 变化，登录报 403「设备已绑定」→ 管理员删除设备行 → 客户端重新登录即重新认领。删除设备不影响历史心跳与日志事件（按组织保留）。
+**设备解绑**是 compat 层最高频的管理操作：客户端重装/换机后 uuid 变化，登录报 403「设备已绑定」→ 管理员在设备列表找到该设备（同名多组织时先确认组织）→ 调 `rebind` 填理由 → 客户端重新登录即重新认领。`rebind` 会清绑定并让代数 +1，旧客户端随后的心跳/系统信息被丢弃；重复调用安全。
+**不要手改数据库**：只改 `bound_uuid` 而不动 `binding_generation` 会让旧会话继续驱动设备（最长到 token 过期），且没有审计可追。
 
 ---
 
@@ -43,7 +44,7 @@
 
 - **免凭据心跳 = 不可信的活跃提示**。`/api/heartbeat`、`/api/sysinfo` 无凭据，任何知道 `(rustdesk id, uuid)` 组合的调用者都可提交活动。设备活跃数据**不得作为安全决策依据**：授权判断一律基于管理令牌或 compat 会话（签名令牌 + 活跃 JTI）。写放大已由 30s 窗口收敛；全局请求限流为后续硬化项；日志保留期的周期化清扫见 [#41](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/41)。
 - **offboarding 即时撤销钩子（v0.4.0 已提供，路径尚未实现）**。撤销函数 `compatapi.RevokeOrgSessions(orgID, userID)` 已就绪（批量撤销该用户在该组织的全部活跃 compat 会话），但**当前生产代码没有成员移除或角色降级的调用方**——契约 v0.4.0 尚无对应端点。后续实现 offboarding 路径时**必须**调用该函数，且撤销失败时不得向客户端返回成功（否则 720h 的 compat 令牌会在除名后继续有效，这是 #39 的核心要求）。
-- **设备认领的竞态已关闭（v0.4.0）**。认领与会话落库在同一事务，落败方不留会话行；设备带**绑定代数**（每次绑定变更 +1），会话快照登录时的代数，旧代数会话的心跳/系统信息被丢弃——绑定的所有权语义不依赖 uuid 保密性。免凭据心跳仍是**不可信活跃提示**（无凭据的本质不变），但落败/过期会话不再能驱动设备活动。
+- **设备认领的竞态已关闭（v0.4.0）**。认领与会话落库在同一事务，落败方不留会话行；设备带**绑定代数**（每次绑定变更 +1，v0.5.0 起由 `rebind` 端点承担重置），会话快照登录时的代数，旧代数会话的心跳/系统信息被丢弃——绑定的所有权语义不依赖 uuid 保密性。免凭据心跳仍是**不可信活跃提示**（无凭据的本质不变），但落败/过期会话不再能驱动设备活动。
 - **审批中心轮询是静默读**：`GET .../approvals`、`GET .../alerts` 不写审计（请求级审计回退被抑制），详情读（单个 approval）会记录——与票据/会话详情同规则。
 
 ### 2.2 会话治理运维（v0.4.0）

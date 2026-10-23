@@ -666,6 +666,8 @@ type ApprovalStatus string
 
 // Device defines model for Device.
 type Device struct {
+	// Bound 是否已绑定某个客户端实例（重置绑定后为 false）
+	Bound      bool         `json:"bound"`
 	Id         int64        `json:"id"`
 	LastSeenAt *time.Time   `json:"last_seen_at"`
 	Name       string       `json:"name"`
@@ -680,6 +682,38 @@ type DeviceStatus string
 type DeviceCreateRequest struct {
 	Name       string `json:"name"`
 	RustdeskId string `json:"rustdesk_id"`
+}
+
+// DeviceListResponse defines model for DeviceListResponse.
+type DeviceListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode  `json:"code"`
+	Data    DevicePage `json:"data"`
+	Message string     `json:"message"`
+}
+
+// DevicePage defines model for DevicePage.
+type DevicePage struct {
+	Items    []Device `json:"items"`
+	Page     int      `json:"page"`
+	PageSize int64    `json:"page_size"`
+	Total    int64    `json:"total"`
+}
+
+// DeviceRebindRequest defines model for DeviceRebindRequest.
+type DeviceRebindRequest struct {
+	// Reason 重置绑定的理由，随审计留存
+	Reason string `json:"reason"`
 }
 
 // DeviceResponse defines model for DeviceResponse.
@@ -1488,6 +1522,17 @@ type ListApprovalsParams struct {
 	PageSize *int            `form:"pageSize,omitempty" json:"pageSize,omitempty"`
 }
 
+// ListDevicesParams defines parameters for ListDevices.
+type ListDevicesParams struct {
+	// Q 按名称或 rustdesk_id 大小写不敏感子串匹配
+	Q *string `form:"q,omitempty" json:"q,omitempty"`
+
+	// Bound 是否已绑定客户端
+	Bound    *bool `form:"bound,omitempty" json:"bound,omitempty"`
+	Page     *int  `form:"page,omitempty" json:"page,omitempty"`
+	PageSize *int  `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
 // ListLogEventsParams defines parameters for ListLogEvents.
 type ListLogEventsParams struct {
 	DeviceId *int64                    `form:"deviceId,omitempty" json:"deviceId,omitempty"`
@@ -1555,6 +1600,9 @@ type DecideApprovalJSONRequestBody = ApprovalDecisionRequest
 
 // CreateDeviceJSONRequestBody defines body for CreateDevice for application/json ContentType.
 type CreateDeviceJSONRequestBody = DeviceCreateRequest
+
+// ResetDeviceBindingJSONRequestBody defines body for ResetDeviceBinding for application/json ContentType.
+type ResetDeviceBindingJSONRequestBody = DeviceRebindRequest
 
 // CreateInvitationJSONRequestBody defines body for CreateInvitation for application/json ContentType.
 type CreateInvitationJSONRequestBody = InvitationCreateRequest
@@ -1630,12 +1678,18 @@ type ServerInterface interface {
 	// DecideApproval 审批决定（approve/deny）
 	// (POST /api/v1/orgs/{orgId}/approvals/{approvalId}/decision)
 	DecideApproval(c *gin.Context, orgId int64, approvalId int64)
+	// ListDevices 列出组织设备
+	// (GET /api/v1/orgs/{orgId}/devices)
+	ListDevices(c *gin.Context, orgId int64, params ListDevicesParams)
 	// CreateDevice 注册设备
 	// (POST /api/v1/orgs/{orgId}/devices)
 	CreateDevice(c *gin.Context, orgId int64)
 	// DeviceHeartbeat 设备心跳
 	// (POST /api/v1/orgs/{orgId}/devices/{deviceId}/heartbeat)
 	DeviceHeartbeat(c *gin.Context, orgId int64, deviceId int64)
+	// ResetDeviceBinding 重置设备绑定
+	// (POST /api/v1/orgs/{orgId}/devices/{deviceId}/rebind)
+	ResetDeviceBinding(c *gin.Context, orgId int64, deviceId int64)
 	// CreateInvitation 邀请成员加入组织
 	// (POST /api/v1/orgs/{orgId}/invitations)
 	CreateInvitation(c *gin.Context, orgId int64)
@@ -2218,6 +2272,66 @@ func (siw *ServerInterfaceWrapper) DecideApproval(c *gin.Context) {
 	siw.Handler.DecideApproval(c, orgId, approvalId)
 }
 
+// ListDevices operation middleware
+func (siw *ServerInterfaceWrapper) ListDevices(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListDevicesParams
+
+	// ------------- Optional query parameter "q" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "q", c.Request.URL.Query(), &params.Q, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter q: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "bound" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "bound", c.Request.URL.Query(), &params.Bound, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter bound: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "page" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "page", c.Request.URL.Query(), &params.Page, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter page: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "pageSize" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "pageSize", c.Request.URL.Query(), &params.PageSize, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter pageSize: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListDevices(c, orgId, params)
+}
+
 // CreateDevice operation middleware
 func (siw *ServerInterfaceWrapper) CreateDevice(c *gin.Context) {
 
@@ -2275,6 +2389,40 @@ func (siw *ServerInterfaceWrapper) DeviceHeartbeat(c *gin.Context) {
 	}
 
 	siw.Handler.DeviceHeartbeat(c, orgId, deviceId)
+}
+
+// ResetDeviceBinding operation middleware
+func (siw *ServerInterfaceWrapper) ResetDeviceBinding(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "deviceId" -------------
+	var deviceId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "deviceId", c.Param("deviceId"), &deviceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ResetDeviceBinding(c, orgId, deviceId)
 }
 
 // CreateInvitation operation middleware
@@ -2764,6 +2912,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/members", wrapper.ListMembers)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/invitations", wrapper.CreateInvitation)
 	router.POST(options.BaseURL+"/api/v1/invitations/accept", wrapper.AcceptInvitation)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/devices", wrapper.ListDevices)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices", wrapper.CreateDevice)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/address-books", wrapper.ListAddressBooks)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/address-books", wrapper.CreateAddressBook)
@@ -2776,6 +2925,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/auth/verify-email", wrapper.VerifyEmail)
 	router.POST(options.BaseURL+"/api/v1/auth/resend-verification", wrapper.ResendVerification)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/heartbeat", wrapper.DeviceHeartbeat)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/rebind", wrapper.ResetDeviceBinding)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/sessions", wrapper.ListSessions)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/sessions/:sessionId", wrapper.GetSession)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/policies", wrapper.ListPolicies)

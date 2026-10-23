@@ -85,6 +85,108 @@ func (a *AdminAPI) DeviceHeartbeat(c *gin.Context, orgId int64, deviceId int64) 
 	})
 }
 
+// ListDevices returns one page of the organization's devices.
+//
+// Reading is member-level. This is a polled read, so the handler marks the
+// request as already audited: otherwise a dashboard refreshing every few
+// seconds writes an audit row per poll (#19).
+func (a *AdminAPI) ListDevices(c *gin.Context, orgId int64, params gen.ListDevicesParams) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid organization id")
+		return
+	}
+	if _, ok := a.membershipFor(c, uid, uint(orgId)); !ok {
+		return
+	}
+
+	filter := device.DeviceFilter{
+		Bound: params.Bound,
+	}
+	if params.Q != nil {
+		filter.Query = *params.Q
+	}
+	if params.Page != nil {
+		filter.Page = *params.Page
+	}
+	if params.PageSize != nil {
+		filter.PageSize = *params.PageSize
+	}
+
+	items, total, err := a.deps.Devices.List(c.Request.Context(), uint(orgId), filter)
+	if err != nil {
+		a.deps.Logger.Error("list devices failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not list devices")
+		return
+	}
+
+	views := make([]gen.Device, 0, len(items))
+	for i := range items {
+		views = append(views, a.deviceToAPI(&items[i]))
+	}
+	page, pageSize := filter.NormalisedPagination()
+
+	c.Set(contextAuditRecorded, true)
+	c.JSON(http.StatusOK, gen.DeviceListResponse{
+		Code:    gen.ErrorCodeOk,
+		Message: "ok",
+		Data: gen.DevicePage{
+			Items:    views,
+			Page:     page,
+			PageSize: int64(pageSize),
+			Total:    total,
+		},
+	})
+}
+
+// ResetDeviceBinding clears the device binding, advances the binding
+// generation and records the operator's reason in the same transaction.
+func (a *AdminAPI) ResetDeviceBinding(c *gin.Context, orgId int64, deviceId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 || deviceId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid id")
+		return
+	}
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermDeviceWrite) {
+		return
+	}
+
+	var req gen.DeviceRebindRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "reason is required")
+		return
+	}
+
+	dev, err := a.deps.Devices.ResetBinding(c.Request.Context(), uint(orgId), uint(deviceId), uid, req.Reason)
+	switch {
+	case errors.Is(err, device.ErrInvalidInput):
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
+		return
+	case errors.Is(err, device.ErrDeviceNotFound):
+		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "device not found")
+		return
+	case err != nil:
+		a.deps.Logger.Error("reset device binding failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not reset device binding")
+		return
+	}
+
+	// The domain entry committed with the binding change; suppress the
+	// request-level fallback so one reset produces exactly one audit row.
+	c.Set(contextAuditRecorded, true)
+	c.JSON(http.StatusOK, gen.DeviceResponse{
+		Code:    gen.ErrorCodeOk,
+		Message: "ok",
+		Data:    a.deviceToAPI(dev),
+	})
+}
+
 // deviceToAPI maps a stored device to the contract representation.
 func (a *AdminAPI) deviceToAPI(d *model.Device) gen.Device {
 	status := device.Status(d, a.deps.Now())
@@ -94,5 +196,6 @@ func (a *AdminAPI) deviceToAPI(d *model.Device) gen.Device {
 		RustdeskId: d.RustdeskID,
 		Status:     gen.DeviceStatus(status),
 		LastSeenAt: d.LastSeenAt,
+		Bound:      d.BoundUUID != "",
 	}
 }
