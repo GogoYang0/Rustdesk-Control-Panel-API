@@ -1,6 +1,6 @@
 # 运维指南（Operations Guide）
 
-> 适用版本：v0.4.0（M3）。本文档随版本演进持续更新——每次发布前必须复核一遍。
+> 适用版本：v0.5.0（设备管理增量）。本文档随版本演进持续更新——每次发布前必须复核一遍。
 > 配套文档：[部署指南](deployment.md) · [后端 API 规范](api-spec.md)
 
 ---
@@ -19,6 +19,7 @@
 | 查询日志事件 | `GET /api/v1/orgs/{orgId}/log-events` | member |
 
 **设备解绑**是 compat 层最高频的管理操作：客户端重装/换机后 uuid 变化，登录报 403「设备已绑定」→ 管理员在设备列表找到该设备（同名多组织时先确认组织）→ 调 `rebind` 填理由 → 客户端重新登录即重新认领。`rebind` 会清绑定并让代数 +1，旧客户端随后的心跳/系统信息被丢弃；重复调用安全。
+**先让旧机离线再让新机登录**：`rebind` 不吊销旧机的 compat token，也无法阻止一台仍在线、持同账号凭据的旧机**先于**新机重新认领（绑定是先到先得）。若新机仍报 403，说明旧机抢先认领了，先让旧机退出登录/离线，再重置一次即可。
 **不要手改数据库**：只改 `bound_uuid` 而不动 `binding_generation` 会让旧会话继续驱动设备（最长到 token 过期），且没有审计可追。
 
 ---
@@ -74,7 +75,7 @@
 - **完整性**：每条审计行带 per-org 连续序列号，序列断裂即表示行被删除或篡改——巡检时应检查序列连续性
 - 无租户请求（login、healthz）不产生持久审计行（`GormAuditor` 对 org 0 直接丢弃，有意 fail-closed）
 - 遗留：compat 写路径的**事务级**审计（与业务写同事务）尚未实现，当前为请求级归因
-- **M3 新增的领域审计动作**（`TxRecorder` 在实体事务内记录）：`session.ticket.issue`（票据签发）、`session.ticket.redeem`（票据兑换）、`session.ticket.denied`（策略拒绝）、`session.approval.request`（新建审批请求；复用不重复记）、`session.approval.decide`（approve/deny 决策）。会话治理的**列表轮询不产生审计**（读静默），单个详情读会记录；provision 供应与保留期清扫等基础设施动作的审计见 provision 相关节（#46）
+- **M3 新增的领域审计动作**（`TxRecorder` 在实体事务内记录）：`session.ticket.issue`（票据签发）、`session.ticket.redeem`（票据兑换）、`session.ticket.denied`（策略拒绝）、`session.approval.request`（新建审批请求；复用不重复记）、`session.approval.decide`（approve/deny 决策）、**`device.binding.reset`（v0.5.0 重置设备绑定；含 actor、`rustdesk_id`、reason、had_binding）**。会话治理与设备列表的**轮询读不产生审计**（读静默），单个详情读会记录；provision 供应与保留期清扫等基础设施动作的审计见 provision 相关节（#46）
 
 ---
 

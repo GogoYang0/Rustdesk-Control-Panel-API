@@ -205,7 +205,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 **设备认领语义**（重要，v0.4.0 事务化 + 绑定代数，v0.5.0 增加重置入口）：
 
 - 设备 `rustdesk_id` 首次登录时绑定提交的 `uuid`（`BoundUUID`）；之后不同 uuid 登录同一 id → 403 `device is already bound`
-- **解绑只能走管理面 `POST .../devices/{deviceId}/rebind`**（owner/admin，`reason` 必填随审计留存）：清 `BoundUUID` + `binding_generation` **无条件 +1** + 同一事务写 `device.binding.reset` 审计。重复调用每次成功且代数继续 +1；审计写失败则绑定不变（fail closed）。**禁止直接改 `bound_uuid` 而不动代数**——那会让旧会话仍能驱动设备
+- **解绑只能走管理面 `POST .../devices/{deviceId}/rebind`**（owner/admin，`reason` 必填随审计留存）：清 `BoundUUID` + `binding_generation` **无条件 +1** + 同一事务写 `device.binding.reset` 审计。重复调用每次成功且代数继续 +1；审计写失败则绑定不变（fail closed）。**禁止直接改 `bound_uuid` 而不动代数**——那会让旧会话仍能驱动设备。重置不吊销旧机 token，重新认领是**先到先得**：要让新机赢得认领，先让旧机退出登录/离线
 - **认领与会话在同一事务**（#40）：认领成功但会话落库失败会整体回滚——不存在「已绑定但无会话」或「有会话无绑定」的中间态；被拒绝的认领（403）不会留下任何会话行
 - **绑定代数**：每次绑定变更（首次认领、管理员改绑）使 `binding_generation` +1；登录会话快照当时的代数，`heartbeat`/`sysinfo` 校验会话代数与设备当前代数一致——**旧代数会话的活动被丢弃**（不落库、不推进 `last_seen_at`）。绑定的所有权语义因此不依赖 uuid 的保密性
 - uuid 非秘密且登录时不校验归属——这正是心跳必须按 `(uuid, device_id)` 双条件解析会话的原因

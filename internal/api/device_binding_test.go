@@ -187,6 +187,11 @@ func TestListDevices_QueryAndBoundFilter(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &clamped))
 	require.EqualValues(t, 200, clamped.Data.PageSize)
+
+	// q above the contract's maxLength is a client bug, not an empty result.
+	long := strings.Repeat("a", 65)
+	w = h.do(t, http.MethodGet, "/api/v1/orgs/"+itoa(orgID)+"/devices?q="+long, nil, token)
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 }
 
 func TestListDevices_WritesNoAuditRows(t *testing.T) {

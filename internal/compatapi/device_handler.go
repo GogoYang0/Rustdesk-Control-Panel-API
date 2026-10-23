@@ -85,8 +85,8 @@ func (s *Server) touchDevice(c *gin.Context, session *model.CompatSession, rustd
 	var dev model.Device
 	err := store.ScopedByOrg(s.deps.DB, orgID).Where("rustdesk_id = ?", rustdeskID).First(&dev).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		// The admin deleted the row to reset the binding; the old session
-		// must not resurrect or re-claim it.
+		// The row was removed out of band (the supported reset is the rebind
+		// endpoint); the old session must not resurrect or re-claim it.
 		return nil
 	}
 	if err != nil {

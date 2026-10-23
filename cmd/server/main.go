@@ -224,12 +224,6 @@ func main() {
 	})
 	sched := worker.New(lg, auditor)
 
-	// One session service shared by the API handlers, the log collector's
-	// session hook and the background tasks: all three mutate the same rows,
-	// so they must see one clock and one audit recorder.
-
-	// (sessionSvc is created above, before the collector, so the hook can be
-	// wired into it.)
 	// Pending approvals expire on their own deadline; the sweep only marks
 	// the rows so the inbox stops offering dead requests.
 	if err := sched.Register(worker.Task{

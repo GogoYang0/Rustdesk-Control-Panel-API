@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 
@@ -11,6 +12,9 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 )
+
+// maxDeviceQueryLen mirrors the contract's q maxLength (runes).
+const maxDeviceQueryLen = 64
 
 // CreateDevice registers (or re-registers) a RustDesk device in the org.
 func (a *AdminAPI) CreateDevice(c *gin.Context, orgId int64) {
@@ -107,6 +111,10 @@ func (a *AdminAPI) ListDevices(c *gin.Context, orgId int64, params gen.ListDevic
 		Bound: params.Bound,
 	}
 	if params.Q != nil {
+		if utf8.RuneCountInString(*params.Q) > maxDeviceQueryLen {
+			abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "q is too long")
+			return
+		}
 		filter.Query = *params.Q
 	}
 	if params.Page != nil {
