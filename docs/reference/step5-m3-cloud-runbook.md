@@ -122,7 +122,9 @@ PUBLIC_HOST=<同上> ./docs/reference/step5-m3-run.sh /root/step5m3-work --probe
 
 > 注意：`sessions` 的分页参数是 `page`/`pageSize`，**不是 `limit`**（`limit` 只属于 `log-events`）。
 
-> **客户端 `api-server` 端口（云端实测踩过）**：RustDesk 客户端把 `custom-rendezvous-server` 的端口 **减 2** 当作 API 端口（本例 21117−2 = 21115），而该端口在宿主上没有映射到任何 HTTP 服务 → 客户端日志出现 `POST .../api/sysinfo → Connection refused`，随后 TCP proxy fallback 超时，**启动被拖慢约 40 s**。注册（`register_pk`）在此之前已发出，因此不影响本手册的断言；若要消除延迟，在客户端里显式把 `api-server` 指向面板的 compat 入口（`http://<panel>:8080`，或留空）。
+> **客户端 `api-server` 端口（云端实测踩过）**：RustDesk 客户端把 `custom-rendezvous-server` 的端口 **减 2** 当作 API 端口（本例 21117−2 = 21115），而该端口在宿主上没有映射到任何 HTTP 服务 → 客户端日志出现 `POST .../api/sysinfo → Connection refused`，随后 TCP proxy fallback 超时，**启动被拖慢约 40 s**。注册（`register_pk`）在此之前已发出，因此不影响本手册的断言。
+>
+> **唯一有效的处置**：把 `api-server` **显式**指向可达的 HTTP 入口——面板的 compat 入口 `http://<panel>:8080`（面板已提供 `POST /api/sysinfo` 与 `/api/heartbeat`，语义为「不可信活跃提示」，见 `compatapi`），或把「id 端口 −2」映射到面板。**留空不会消除延迟**：源码 `get_api_server_()`（`rustdesk/src/common.rs`）在 `api-server` 为空时取 `increase_port(custom_rendezvous_server, -2)`，即仍会推导到 21115。
 
 ---
 
@@ -144,7 +146,7 @@ bash docs/reference/step5-collision-probe.sh "100 1000 5000 20000"
 | 5000 | 1540 | 0 (0.0000%) | 1880 (37.6%) | 4996 |
 | 20000 | 2134 | 0 (0.0000%) | 2693 (53.9%) | 4996 |
 
-结论：各档同纳秒碰撞率 **0** → `+1ns` 游标方案（重连 `--since <last+1ns>`）可行，**#36 维持低优先级**。附带约束：高吞吐档同毫秒碰撞达 37–54%，**游标不得降级到毫秒精度**（会漏行）。
+结论（**仅限本次测试范围**）：本次云端运行每档 5,000 行，各档同纳秒碰撞数为 **0**；该样本未观察到碰撞，因此 `+1ns` 游标方案（重连 `--since <last+1ns>`）**在本次测试范围内**可行，**#36 维持低优先级**的结论同样只针对本次样本。**尚未验证**：`--since` 的边界行为、容器重启后的恢复、日志轮转后的恢复——这些仍属未验证项，不能由本表外推。附带约束：高吞吐档同毫秒碰撞达 37–54%，**游标不得降级到毫秒精度**（会漏行）。
 
 
 ---
@@ -171,7 +173,7 @@ bash docs/reference/step5-collision-probe.sh "100 1000 5000 20000"
 - 面板侧 **12/12 PASS**；容器与 native 链路 **D1–D6 6/6 PASS**。
 - 一键脚本首轮 `PASS=16 / FAIL=3`——3 个 FAIL 全在 §6，因该环境无真人操作 GUI 客户端；补装客户端后三项转 PASS。
 - 容器侧新增证据：真实 `docker logs -f -t` 路径打通（`started_at` 取捕获时间，与行内时间差 0.11 ms）；**hbbs 写 stderr**，stdout/stderr 合并必需；provision 真实端口块与公钥；真实时间流逝下 `idle_timeout` 清扫（1m 窗口 90s 内 2 条转 closed）；panel 重启后采集器自动恢复（`organizations=2`）。
-- 首次云端实测暴露的**工具/文档缺陷**（已修，见本仓库 `fix/step5-probe-and-runbook`）：①碰撞率探针因 `docker exec` 造行而全部 `lines=0`；②D5 未写明「同密钥重连不产生 `update_pk`」；③客户端 `api-server` 端口推导（id 端口 −2）导致 40s 启动延迟，需显式指向面板。
+- 首次云端实测暴露的**工具/文档缺陷**（已修，见本仓库 `fix/step5-probe-and-runbook`）：①碰撞率探针因 `docker exec` 造行而全部 `lines=0`；②D5 未写明「同密钥重连不产生 `update_pk`」；③客户端 `api-server` 端口推导（id 端口 −2）导致 40s 启动延迟——处置见 §5 末：**必须显式**指向面板 compat（`http://<panel>:8080`），留空无效。
 - 仍未验证：时长清扫（`max_session_minutes`）、数据面 P2P/relay 实际连接、采集器在容器重启/日志轮转下的 `--since` 游标、端口池耗尽路径、GUI 密钥确认交互。
 
 ---

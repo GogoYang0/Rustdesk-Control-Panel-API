@@ -38,17 +38,27 @@ for RATE in $RATES; do
     >/dev/null 2>&1
 
   # Container has exited but its json-file log is still readable.
-  docker logs -t "$NAME" > "$OUT" 2>&1 || true
+  # Do NOT swallow a read failure here: an empty $OUT would otherwise be
+  # reported as "0 collisions", i.e. a false green (exactly the first-cloud-run
+  # failure mode). `set -e` propagates the non-zero status.
+  docker logs -t "$NAME" > "$OUT" 2>&1
 
-  python3 - "$RATE" "$OUT" <<'PY'
+  python3 - "$RATE" "$OUT" "$SAMPLES" <<'PY'
 import sys, re, datetime
 nominal = float(sys.argv[1]); path = sys.argv[2]
+expected = int(sys.argv[3])
 ts = []
 for line in open(path, errors='ignore'):
     # docker logs -t format: 2026-10-21T08:00:00.123456789Z line-0
     m = re.match(r'^(\S+T\S+Z)\s', line)
     if m:
         ts.append(m.group(1))
+
+# A successful read with fewer parsed lines is still invalid data: refuse to
+# turn "we could not see the stream" into "zero collisions".
+if len(ts) != expected:
+    raise SystemExit(
+        f"FAIL: parsed lines {len(ts)} != SAMPLES {expected} (log read incomplete)")
 
 def parse(s):
     return datetime.datetime.fromisoformat(s.replace('Z', '+00:00'))
