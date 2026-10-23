@@ -75,8 +75,7 @@ func TestGovernanceRoutesRequireAuth(t *testing.T) {
 func TestGovernanceRoutesRejectNonMembers(t *testing.T) {
 	h := newHarness(t)
 	_, orgA := seedOrgOwner(t, h, "gov-a@example.com")
-	outsiderToken, orgB := seedOrgOwner(t, h, "gov-b@example.com")
-	require.NotEqual(t, orgA, orgB, "the two seeded organizations must differ")
+	outsiderToken, _ := seedOrgOwner(t, h, "gov-b@example.com")
 
 	for _, route := range governanceRoutes {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
@@ -84,18 +83,24 @@ func TestGovernanceRoutesRejectNonMembers(t *testing.T) {
 			require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
 		})
 	}
+}
 
-	// The same caller must reach their own organization: the 403 above is about
-	// membership, not about the route, and a valid token must not be rejected as
-	// unauthenticated either. Every governance endpoint has a real handler since
-	// v0.4.0, so a legitimate owner must not be turned away. A 404 is allowed
-	// here — the handlers legitimately answer it for the non-existent resource
-	// ids these placeholders use (e.g. GET .../tickets/1) — but 401, 403 or 5xx
-	// means the request never reached a working handler, which is exactly the
-	// regression this net exists to catch.
+// TestGovernanceRoutesReachOwnOrg is the positive counterpart: the same caller
+// must get past the guards on their own organization, proving the 403 above is
+// about membership rather than a blanket deny. Every governance endpoint has a
+// real handler since v0.4.0, so a legitimate owner must not be turned away.
+//
+// A 404 is allowed — the handlers legitimately answer it for the non-existent
+// resource ids these placeholders use (e.g. GET .../tickets/1). A 401, 403 or
+// 5xx means the request never reached a working handler, which is exactly the
+// regression this net exists to catch.
+func TestGovernanceRoutesReachOwnOrg(t *testing.T) {
+	h := newHarness(t)
+	ownerToken, org := seedOrgOwner(t, h, "gov-owner@example.com")
+
 	for _, route := range governanceRoutes {
-		t.Run("own org "+route.method+" "+route.path, func(t *testing.T) {
-			w := h.do(t, route.method, withOrg(route.path, orgB), map[string]any{}, outsiderToken)
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			w := h.do(t, route.method, withOrg(route.path, org), map[string]any{}, ownerToken)
 			require.NotEqual(t, http.StatusUnauthorized, w.Code, w.Body.String())
 			require.NotEqual(t, http.StatusForbidden, w.Code, w.Body.String())
 			require.Less(t, w.Code, http.StatusInternalServerError, w.Body.String())

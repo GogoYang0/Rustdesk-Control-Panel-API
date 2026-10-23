@@ -96,6 +96,10 @@ jobs:
         # No test in this repo uses t.Parallel(), so serializing packages
         # removes the only source of that concurrency without weakening a single
         # assertion -- and real migration errors still fail loudly.
+        #
+        # This relies on that invariant: if a test ever adds t.Parallel(), the
+        # in-package concurrency returns and this serialization no longer covers
+        # #60's root cause. Re-evaluate this step when adding t.Parallel().
         run: go test -p 1 ./...
 
   contract:

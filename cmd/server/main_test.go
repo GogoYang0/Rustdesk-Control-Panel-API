@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"sync/atomic"
@@ -93,10 +94,20 @@ func TestServeUntilShutdown_CancelStopsServerAndDrains(t *testing.T) {
 	// Closing the listener is asynchronous: the kernel settles the socket state
 	// shortly after Shutdown returns, not necessarily before it does. A single
 	// sample is therefore flaky under load (issue #51), so wait bounded instead.
+	//
+	// A timeout must not be read as "the port is closed": it means the dial did
+	// not learn anything. Checking for the refusal errno itself was tried and
+	// rejected -- on Windows a refused connection reports WSAECONNREFUSED
+	// (0x274d), which errors.Is(err, syscall.ECONNREFUSED) does not match, so the
+	// check would fail on this platform.
 	require.Eventually(t, func() bool {
 		c, derr := net.DialTimeout("tcp", addr, 100*time.Millisecond)
 		if derr == nil {
 			_ = c.Close()
+			return false
+		}
+		var ne net.Error
+		if errors.As(derr, &ne) && ne.Timeout() {
 			return false
 		}
 		return true
