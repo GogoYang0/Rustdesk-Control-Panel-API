@@ -86,16 +86,17 @@ func TestGovernanceRoutesRejectNonMembers(t *testing.T) {
 	}
 
 	// The same caller must reach their own organization: the 403 above is about
-	// membership, not about the route. Every governance endpoint has a real
-	// handler since v0.4.0, so a legitimate owner must not be rejected. A 404 is
-	// allowed here — the handlers legitimately answer it for the non-existent
-	// resource ids these placeholders use (e.g. GET .../tickets/1) — but a 5xx
-	// means the handler blew up rather than served the owner, so it must fail:
-	// otherwise this net would stay green through exactly the regression it
-	// exists to catch.
+	// membership, not about the route, and a valid token must not be rejected as
+	// unauthenticated either. Every governance endpoint has a real handler since
+	// v0.4.0, so a legitimate owner must not be turned away. A 404 is allowed
+	// here — the handlers legitimately answer it for the non-existent resource
+	// ids these placeholders use (e.g. GET .../tickets/1) — but 401, 403 or 5xx
+	// means the request never reached a working handler, which is exactly the
+	// regression this net exists to catch.
 	for _, route := range governanceRoutes {
 		t.Run("own org "+route.method+" "+route.path, func(t *testing.T) {
 			w := h.do(t, route.method, withOrg(route.path, orgB), map[string]any{}, outsiderToken)
+			require.NotEqual(t, http.StatusUnauthorized, w.Code, w.Body.String())
 			require.NotEqual(t, http.StatusForbidden, w.Code, w.Body.String())
 			require.Less(t, w.Code, http.StatusInternalServerError, w.Body.String())
 		})
