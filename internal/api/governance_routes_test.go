@@ -68,10 +68,11 @@ func TestGovernanceRoutesRequireAuth(t *testing.T) {
 	}
 }
 
-// TestGovernanceRoutesRejectNonMembers pins the tenant boundary. The outsider
-// owns their own organization, so the 403 on the other organization proves the
-// check is per-organization rather than a blanket deny — and it is the
-// regression net for "forgot the permission check".
+// TestGovernanceRoutesRejectNonMembers pins half of the tenant boundary: an
+// outsider is refused with 403 on another organization. On its own a 403 does
+// not distinguish a per-organization check from a blanket deny — its positive
+// counterpart TestGovernanceRoutesReachOwnOrg supplies that half, so the pair
+// is the regression net for "forgot the permission check".
 func TestGovernanceRoutesRejectNonMembers(t *testing.T) {
 	h := newHarness(t)
 	_, orgA := seedOrgOwner(t, h, "gov-a@example.com")
@@ -85,10 +86,11 @@ func TestGovernanceRoutesRejectNonMembers(t *testing.T) {
 	}
 }
 
-// TestGovernanceRoutesReachOwnOrg is the positive counterpart: the same caller
-// must get past the guards on their own organization, proving the 403 above is
-// about membership rather than a blanket deny. Every governance endpoint has a
-// real handler since v0.4.0, so a legitimate owner must not be turned away.
+// TestGovernanceRoutesReachOwnOrg is the positive half of the tenant boundary:
+// the same kind of caller must get past the guards on their own organization,
+// which is what proves the 403 in TestGovernanceRoutesRejectNonMembers is about
+// membership rather than a blanket deny. Every governance endpoint has a real
+// handler since v0.4.0, so a legitimate owner must not be turned away.
 //
 // A 404 is allowed — the handlers legitimately answer it for the non-existent
 // resource ids these placeholders use (e.g. GET .../tickets/1). A 401, 403 or

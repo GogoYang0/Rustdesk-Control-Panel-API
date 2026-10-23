@@ -99,7 +99,9 @@ func TestServeUntilShutdown_CancelStopsServerAndDrains(t *testing.T) {
 	// not learn anything. Checking for the refusal errno itself was tried and
 	// rejected -- on Windows a refused connection reports WSAECONNREFUSED
 	// (0x274d), which errors.Is(err, syscall.ECONNREFUSED) does not match, so the
-	// check would fail on this platform.
+	// check would fail on this platform. Residual gap, accepted: a non-timeout
+	// failure that is not a refusal (unreachable network, exhausted ephemeral
+	// ports) still counts as closed, which cannot happen on loopback in practice.
 	require.Eventually(t, func() bool {
 		c, derr := net.DialTimeout("tcp", addr, 100*time.Millisecond)
 		if derr == nil {
