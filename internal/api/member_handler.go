@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/oapi-codegen/runtime/types"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/gen"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
@@ -62,12 +63,21 @@ func (a *AdminAPI) RemoveMember(c *gin.Context, orgId int64, userId int64) {
 	domainRecorded := false
 	err = a.deps.DB.Transaction(func(tx *gorm.DB) error {
 		if target.Role == model.RoleOwner {
-			var owners int64
-			if err := store.ScopedByOrg(tx, uint(orgId)).Model(&model.Membership{}).
-				Where("role = ?", model.RoleOwner).Count(&owners).Error; err != nil {
+			// Lock every owner row before counting: two concurrent removals
+			// could otherwise each see two owners and both proceed, leaving the
+			// organization without one. Ordering by id keeps the lock order
+			// deterministic across transactions. SQLite has no row locks, same
+			// convention as the device paths.
+			var owners []model.Membership
+			read := store.ScopedByOrg(tx, uint(orgId)).Select("id").
+				Where("role = ?", model.RoleOwner).Order("id ASC")
+			if tx.Name() != "sqlite" {
+				read = read.Clauses(clause.Locking{Strength: "UPDATE"})
+			}
+			if err := read.Find(&owners).Error; err != nil {
 				return err
 			}
-			if owners <= 1 {
+			if len(owners) <= 1 {
 				return errLastOwner
 			}
 		}
