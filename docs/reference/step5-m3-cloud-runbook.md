@@ -117,10 +117,12 @@ PUBLIC_HOST=<同上> ./docs/reference/step5-m3-run.sh /root/step5m3-work --probe
 | D2 | `docker logs -t panel-org-$O-hbbs \| head` | 时间戳前缀为 RFC3339Nano（采集游标消费的就是它） |
 | D3 | `curl $API/api/v1/orgs/$O/log-events -H "Authorization: Bearer $AT"` | 出现 `source=hbbs` 的 `conn` 事件，`device_id` 对应真实客户端（该 `rustdesk_id` 必须已登记在同组织） |
 | D4 | `curl "$API/api/v1/orgs/$O/sessions?origin=native&pageSize=50"` | 至少 1 条 `origin=native,status=open`，`started_at` = hbbs 行的 **docker 捕获时间** |
-| D5 | 客户端断开后再连 | 契约：已吸收连接的会话不重开 → 新建第二条 native 会话（**多记不漏记**） |
+| D5 | 客户端断开后再连 | 契约：已吸收连接的会话不重开 → 新建第二条 native 会话（**多记不漏记**）。**注意触发条件**：RustDesk 重连时若密钥未变，hbbs **不会**再打印 `update_pk`（源码 `rendezvous_server.rs` 仅在 pk/uuid 变化时调用 `update_pk`），因此**普通重连不产生新日志行、也就不会开新会话**；要构造该分支需让客户端更换密钥对（重装/重置密钥确认）或让 hbbs 侧丢失 peer 记录（重启 hbbs 容器） |
 | D6 | 把 `session.idleTimeout` 调小（如 `1m`）重启 panel | 超过窗口无事件的 open 会话被置 `closed/end_reason=idle_timeout` |
 
 > 注意：`sessions` 的分页参数是 `page`/`pageSize`，**不是 `limit`**（`limit` 只属于 `log-events`）。
+
+> **客户端 `api-server` 端口（云端实测踩过）**：RustDesk 客户端把 `custom-rendezvous-server` 的端口 **减 2** 当作 API 端口（本例 21117−2 = 21115），而该端口在宿主上没有映射到任何 HTTP 服务 → 客户端日志出现 `POST .../api/sysinfo → Connection refused`，随后 TCP proxy fallback 超时，**启动被拖慢约 40 s**。注册（`register_pk`）在此之前已发出，因此不影响本手册的断言；若要消除延迟，在客户端里显式把 `api-server` 指向面板的 compat 入口（`http://<panel>:8080`，或留空）。
 
 ---
 
@@ -129,7 +131,21 @@ PUBLIC_HOST=<同上> ./docs/reference/step5-m3-run.sh /root/step5m3-work --probe
 ```bash
 bash docs/reference/step5-collision-probe.sh "100 1000 5000 20000"
 ```
-口径：`docker logs -t` 的**捕获时间戳**（与 hbbs 消息内时间戳是两个时钟）。判定：各档同纳秒率 ≈ 0 → `+1ns` 游标可行、#36 维持低优先级；高吞吐出现显著同纳秒碰撞 → #36 升级为去重键方案。
+口径：`docker logs -t` 的**捕获时间戳**（与 hbbs 消息内时间戳是两个时钟）。
+
+实现要点（这两个坑第一次云端实测时踩过，现已内置修正）：**docker 只捕获 PID 1 的 stdout/stderr**，用 `docker exec ... echo` 造行 `docker logs` 永远读不到；因此每档把「输出循环」作为容器 entrypoint，并让**每档一个独立容器**、退出后一次性取样（无需 `--since`，也不会有上一档的行混入）。实测吞吐会远低于名义值（每行一次 fork + `sleep` 精度），脚本按时间戳跨度打印 `actual`，解读以 `actual` 为准。
+
+**2026-10-23 云端实测（Ubuntu 24.04 / Docker 27.5.1，SAMPLES=5000）**：
+
+| 名义(行/s) | 实测(行/s) | 同纳秒 | 同毫秒 | 同秒 |
+|---|---|---|---|---|
+| 100 | 95 | 0 (0.0000%) | 0 | 4947 |
+| 1000 | 686 | 0 (0.0000%) | 2 | 4992 |
+| 5000 | 1540 | 0 (0.0000%) | 1880 (37.6%) | 4996 |
+| 20000 | 2134 | 0 (0.0000%) | 2693 (53.9%) | 4996 |
+
+结论：各档同纳秒碰撞率 **0** → `+1ns` 游标方案（重连 `--since <last+1ns>`）可行，**#36 维持低优先级**。附带约束：高吞吐档同毫秒碰撞达 37–54%，**游标不得降级到毫秒精度**（会漏行）。
+
 
 ---
 
@@ -146,11 +162,17 @@ bash docs/reference/step5-collision-probe.sh "100 1000 5000 20000"
 
 ---
 
-## 8. 已知基线（来自 Windows 真机会话，2026-10-23）
+## 8. 已知基线
 
-- 面板侧 12 项：**12/12 PASS**（真实 panel + SQLite + 真实 worker）。
-- native 归并：**7/7 PASS**，证据覆盖——真实 hbbs 1.1.16 日志 14 行中 1 行命中 `conn`、`device=426649028`；连接事件被会话吸收且 `started_at` = 日志时间；「已吸收→新建」与「唯一未吸收→并入」两条分支均验证；时段外产生 `outside_window/warning` 且会话不被阻断（D10）。
-- 未验证（本手册要补的）：真实 `docker logs -f -t` 传输层、容器 stdout+stderr 合并、`--since` 纳秒精度与 #36 碰撞率、provision 端到端、空闲/时长清扫在真实时间流逝下的行为。
+**Windows（2026-10-23）**：面板侧 12 项 **12/12 PASS**；native 归并 **7/7 PASS**（仅替换 docker 传输层，回放离线日志）。
+
+**云端 Linux + Docker（2026-10-23，Ubuntu 24.04 / Docker 27.5.1 / Go 1.27.2 / rustdesk-server 1.1.16 / 客户端 1.5.0，commit `443b949`）**：
+
+- 面板侧 **12/12 PASS**；容器与 native 链路 **D1–D6 6/6 PASS**。
+- 一键脚本首轮 `PASS=16 / FAIL=3`——3 个 FAIL 全在 §6，因该环境无真人操作 GUI 客户端；补装客户端后三项转 PASS。
+- 容器侧新增证据：真实 `docker logs -f -t` 路径打通（`started_at` 取捕获时间，与行内时间差 0.11 ms）；**hbbs 写 stderr**，stdout/stderr 合并必需；provision 真实端口块与公钥；真实时间流逝下 `idle_timeout` 清扫（1m 窗口 90s 内 2 条转 closed）；panel 重启后采集器自动恢复（`organizations=2`）。
+- 首次云端实测暴露的**工具/文档缺陷**（已修，见本仓库 `fix/step5-probe-and-runbook`）：①碰撞率探针因 `docker exec` 造行而全部 `lines=0`；②D5 未写明「同密钥重连不产生 `update_pk`」；③客户端 `api-server` 端口推导（id 端口 −2）导致 40s 启动延迟，需显式指向面板。
+- 仍未验证：时长清扫（`max_session_minutes`）、数据面 P2P/relay 实际连接、采集器在容器重启/日志轮转下的 `--since` 游标、端口池耗尽路径、GUI 密钥确认交互。
 
 ---
 
