@@ -142,7 +142,7 @@ func run(dbPath, logFile, outDir, phase string, forceState bool) int {
 		fmt.Fprintf(os.Stderr, "open sqlite: %v\n", err)
 		return 1
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	h := &harness{
 		out:        outDir,
@@ -1369,7 +1369,7 @@ func (h *harness) checkOutsideWindow(ev *evidence) {
 	ev.logf("日志行 UTC=%s → 当日分钟 %d；策略时段=[%d,%d)（UTC 分钟，不含该分钟）",
 		h.logUTC.Format(time.RFC3339Nano), minute, start, end)
 	if !ev.expectEq("策略时段确实排除日志行分钟", "true",
-		strconv.FormatBool(!(minute >= start && minute < end))) {
+		strconv.FormatBool(minute < start || minute >= end)) {
 		return
 	}
 

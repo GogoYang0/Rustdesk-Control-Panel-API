@@ -122,7 +122,7 @@ func run(base, dbPath, outDir, phase string, confirmSeed bool) int {
 			fmt.Fprintf(os.Stderr, "flows init failed: %v\n", err)
 			return 1
 		}
-		defer h.st.Close()
+		defer func() { _ = h.st.Close() }()
 		return h.runFlows()
 	}
 	return 0
@@ -140,7 +140,7 @@ func runSeed(dbPath string) error {
 	if err != nil {
 		return fmt.Errorf("open sqlite: %w", err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	db := st.DB
 	// The seeding lookups below intentionally miss on a fresh database; silence
 	// GORM's default logger so the harness output stays readable.
@@ -568,7 +568,7 @@ func (h *harness) do(ev *evidence, name, method, path string, body any) apiResp 
 		})
 		return apiResp{Status: -1}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(resp.Body)
 
 	out := apiResp{Status: resp.StatusCode, Raw: string(raw)}
