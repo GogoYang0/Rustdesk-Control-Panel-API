@@ -159,6 +159,7 @@ func run(dbPath, logFile, outDir, phase string, forceState bool) int {
 	if err := h.db.AutoMigrate(
 		&model.Organization{}, &model.ServerGroup{}, &model.Device{},
 		&model.Session{}, &model.SessionEvent{}, &model.LogEvent{}, &model.Policy{},
+		&model.Alert{},
 	); err != nil {
 		fmt.Fprintf(os.Stderr, "auto migrate: %v\n", err)
 		return 1

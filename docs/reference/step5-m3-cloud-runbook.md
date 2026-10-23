@@ -96,9 +96,14 @@ PUBLIC_HOST=<同上> ./docs/reference/step5-m3-run.sh /root/step5m3-work --probe
 [...] INFO [src/peer.rs:102] update_pk <设备ID> [::ffff:<客户端IP>]:<端口> ...
 ```
 
-脚本随后会：从容器日志里**读出该设备 ID** → 在组织 `$ORG2` 里登记设备（面板只关联同组织内已登记的 `rustdesk_id`）→ 断言 `log-events` 出现 `kind=conn`、`sessions?origin=native` 出现 native 会话。
+脚本随后会分两步完成采集断言（顺序不能颠倒）：
 
-> 采集器是 `--tail 0` 起步（不回填历史）：**先启动 panel 再连客户端**才能采到。若客户端先连了，重连一次即可。
+1. 你启动客户端完成**第一次注册** → 脚本从 hbbs 容器日志读出该设备 ID（读不到会提示你手输客户端显示的 ID）；
+2. 脚本把该 `rustdesk_id` **登记到组织** `$ORG2`（面板只关联同组织内已登记的设备，登记前处理的行不会 retro-link）；
+3. 脚本提示你在客户端**断开并重连**一次，让新的注册行在设备登记之后到达；
+4. 脚本轮询最多 90 秒，断言 `log-events` 出现 `kind=conn`、`sessions?origin=native` 出现 native 会话。
+
+> 采集器是 `--tail 0` 起步（不回填历史）：**先启动 panel 再连客户端**才能采到。
 
 ---
 
@@ -173,5 +178,5 @@ docker logs -t panel-org-1-hbbs > hbbs.log
 go run ./tools/regression/m3native -db "file:/tmp/m3native.db" -logfile ./hbbs.log -out /tmp/m3native-evidence -phase all
 ```
 
-- **必须用一次性数据库**：它会在 `server_groups` 里写入/翻转该组织为 `deployed`（为了触发真实 `Service.Start` 的 tail 条件）。指向在用的面板库会让该组织后续 provision 报「已供应」，端口块被占。若组织行已存在且非 `deployed`，工具会拒绝执行并提示；确需翻转时加 `-force-state`。
+- **必须用一次性数据库**：它会在 `server_groups` 里写入/翻转该组织为 `deployed`（为了触发真实 `Service.Start` 的 tail 条件）。**运行前先停掉使用同一数据库的 panel**；指向在用的面板库会让该组织后续 provision 报「已供应」，端口块被占。若组织行已存在且非 `deployed`，工具会拒绝执行并提示；确需翻转时加 `-force-state`。
 - 它**不能**替代容器验证：docker CLI 本身、容器 stdout/stderr 合并、`--since` 纳秒精度与 #36 碰撞率都必须在云端真跑（工具的 SKIP 项会如实列出）。

@@ -201,24 +201,23 @@ cat <<TIP
   ID 服务器   $PUBLIC_HOST:${ID_PORT:-?}
   中继服务器  $PUBLIC_HOST:${RELAY_PORT:-?}
   Key         ${KEY:-?}
-启动客户端后会向 hbbs 注册；本脚本随后从容器日志里读出它分配到的设备 ID，
-在组织 $ORG2 里登记该设备，然后断言 LogEvent 与 native 会话（采集器是 --tail 0，
-面板先起、客户端后连，才能采到这次注册）。
 TIP
+# Two-step ordering matters: the collector attaches a session only when the
+# rustdesk_id is already registered in the organization at the time it handles
+# the line. So (1) let the client register once, (2) read its id from the hbbs
+# log and register the device, (3) have the operator reconnect so a *new*
+# registration line arrives after the device exists.
 if [ -t 0 ]; then
-  read -r -p "客户端已连接后按回车继续…" _ || true
+  read -r -p "第 1 步：客户端已启动并完成一次注册后按回车…" _ || true
 else
-  echo "（非交互环境：跳过等待，直接断言；请确保客户端已连接）"
+  echo "（非交互环境：跳过等待，直接读日志；请确保客户端已连接）"
 fi
-
-# The panel only links log events whose rustdesk_id exists in the same
-# organization (logcollect/service.go), so register the client's real id.
+docker logs "panel-org-$ORG2-hbbs" > "$EV/docker-logs.txt" 2>&1 || true
 CLIENT_ID=$(grep -oE 'update_pk [0-9]{6,12}' "$EV/docker-logs.txt" | tail -1 | awk '{print $2}' || true)
-if [ -z "${CLIENT_ID:-}" ]; then
-  docker logs "panel-org-$ORG2-hbbs" >> "$EV/docker-logs.txt" 2>&1 || true
-  CLIENT_ID=$(grep -oE 'update_pk [0-9]{6,12}' "$EV/docker-logs.txt" | tail -1 | awk '{print $2}' || true)
+if [ -z "${CLIENT_ID:-}" ] && [ -t 0 ]; then
+  read -r -p "日志里没读到设备 ID；请手动输入客户端显示的 ID（留空跳过）：" CLIENT_ID || true
 fi
-[ -n "${CLIENT_ID:-}" ] && ok "hbbs 日志检测到客户端设备 ID=$CLIENT_ID" || bad "hbbs 日志里没有 update_pk（客户端没连上，或采集未覆盖）"
+[ -n "${CLIENT_ID:-}" ] && ok "客户端设备 ID=$CLIENT_ID" || bad "拿不到客户端设备 ID（日志无 update_pk 且未手输）"
 if [ -n "${CLIENT_ID:-}" ]; then
   python3 - "$DB" "$ORG2" "$CLIENT_ID" <<'PY'
 import sqlite3,sys,datetime
@@ -232,9 +231,29 @@ con.execute("""INSERT INTO devices (organization_id, rustdesk_id, name, bound_uu
 con.commit()
 print("device registered:", rid)
 PY
+  ok "设备已登记到组织 $ORG2（rustdesk_id=$CLIENT_ID）"
+  if [ -t 0 ]; then
+    read -r -p "第 2 步：请在客户端断开并重新连接（产生新的注册行），然后按回车…" _ || true
+  fi
 fi
-curl -s --noproxy '*' "$API/api/v1/orgs/$ORG2/log-events?limit=50" -H "Authorization: Bearer $TOKEN" > "$EV/log-events.json"
-curl -s --noproxy '*' "$API/api/v1/orgs/$ORG2/sessions?origin=native&pageSize=50" -H "Authorization: Bearer $TOKEN" > "$EV/native-sessions.json"
+
+# Poll until the collector has seen a conn event and produced a native session
+# (or the bound expires). Events handled before the device row existed are
+# intentionally not retro-linked, so this waits for lines after registration.
+CONNS=0; NATIVE=0
+for _ in $(seq 1 30); do
+  curl -s --noproxy '*' "$API/api/v1/orgs/$ORG2/log-events?limit=50" -H "Authorization: Bearer $TOKEN" > "$EV/log-events.json"
+  curl -s --noproxy '*' "$API/api/v1/orgs/$ORG2/sessions?origin=native&pageSize=50" -H "Authorization: Bearer $TOKEN" > "$EV/native-sessions.json"
+  read -r CONNS NATIVE <<<"$(python3 - "$EV/log-events.json" "$EV/native-sessions.json" <<'PY'
+import json,sys
+le=json.load(open(sys.argv[1])); rows=le.get("data") or []
+ss=json.load(open(sys.argv[2])); items=(ss.get("data") or {}).get("items") or []
+print(sum(1 for r in rows if r.get("kind")=="conn"), len(items))
+PY
+)"
+  [ "${CONNS:-0}" -ge 1 ] && [ "${NATIVE:-0}" -ge 1 ] && break
+  sleep 3
+done
 python3 - "$EV/log-events.json" "$EV/native-sessions.json" <<'PY'
 import json,sys
 le=json.load(open(sys.argv[1])); rows=le.get("data") or []
@@ -243,13 +262,9 @@ for r in rows[:5]: print(" ", r.get("source"), r.get("kind"), r.get("device_id")
 ss=json.load(open(sys.argv[2])); items=(ss.get("data") or {}).get("items") or []
 print(f"native 会话条数={len(items)}")
 for s in items[:5]: print(" ", s.get("id"), s.get("status"), s.get("started_at"), s.get("end_reason"))
-open(sys.argv[1]+".summary","w").write(f"events={len(rows)} conns={sum(1 for r in rows if r.get('kind')=='conn')} native={len(items)}")
 PY
-SUMMARY=$(cat "$EV/log-events.json.summary")
-CONNS=$(printf '%s' "$SUMMARY" | sed -n 's/.*conns=\([0-9]*\).*/\1/p')
-NATIVE=$(printf '%s' "$SUMMARY" | sed -n 's/.*native=\([0-9]*\).*/\1/p')
 [ "${CONNS:-0}" -ge 1 ] && ok "采集到 conn 事件（真实 docker logs → LogEvent）" || bad "没有 conn 事件（客户端未注册到 hbbs，或采集器未覆盖该组织）"
-[ "${NATIVE:-0}" -ge 1 ] && ok "native 会话已由日志推断入库" || bad "没有 native 会话（检查设备是否登记到组织 $ORG2、采集器是否 tail 该组织）"
+[ "${NATIVE:-0}" -ge 1 ] && ok "native 会话已由日志推断入库" || bad "没有 native 会话（设备是否在注册后重新连接？设备需登记在组织 $ORG2）"
 
 section "7. #36 纳秒碰撞率专项（可选）"
 if [ "$RUN_PROBE" = "--probe" ]; then
