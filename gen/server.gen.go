@@ -310,6 +310,24 @@ func (e MemberRole) Valid() bool {
 	}
 }
 
+// Defines values for MemberRoleRequestRole.
+const (
+	MemberRoleRequestRoleAdmin  MemberRoleRequestRole = "admin"
+	MemberRoleRequestRoleMember MemberRoleRequestRole = "member"
+)
+
+// Valid indicates whether the value is a known member of the MemberRoleRequestRole enum.
+func (e MemberRoleRequestRole) Valid() bool {
+	switch e {
+	case MemberRoleRequestRoleAdmin:
+		return true
+	case MemberRoleRequestRoleMember:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SessionOrigin.
 const (
 	Native SessionOrigin = "native"
@@ -919,6 +937,30 @@ type MemberListResponse struct {
 	Message string    `json:"message"`
 }
 
+// MemberMutation defines model for MemberMutation.
+type MemberMutation struct {
+	// RevokedSessions 本次撤销的活跃 compat 会话数
+	RevokedSessions int64 `json:"revoked_sessions"`
+}
+
+// MemberMutationResponse defines model for MemberMutationResponse.
+type MemberMutationResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode      `json:"code"`
+	Data    MemberMutation `json:"data"`
+	Message string         `json:"message"`
+}
+
 // MemberResponse defines model for MemberResponse.
 type MemberResponse struct {
 	// Code 机器可读错误码：
@@ -936,6 +978,15 @@ type MemberResponse struct {
 	Data    Member    `json:"data"`
 	Message string    `json:"message"`
 }
+
+// MemberRoleRequest defines model for MemberRoleRequest.
+type MemberRoleRequest struct {
+	// Role 只接受 admin 或 member；所有权转移不在本端点范围
+	Role MemberRoleRequestRole `json:"role"`
+}
+
+// MemberRoleRequestRole 只接受 admin 或 member；所有权转移不在本端点范围
+type MemberRoleRequestRole string
 
 // OkResponse defines model for OkResponse.
 type OkResponse struct {
@@ -1607,6 +1658,9 @@ type ResetDeviceBindingJSONRequestBody = DeviceRebindRequest
 // CreateInvitationJSONRequestBody defines body for CreateInvitation for application/json ContentType.
 type CreateInvitationJSONRequestBody = InvitationCreateRequest
 
+// UpdateMemberRoleJSONRequestBody defines body for UpdateMemberRole for application/json ContentType.
+type UpdateMemberRoleJSONRequestBody = MemberRoleRequest
+
 // CreatePolicyJSONRequestBody defines body for CreatePolicy for application/json ContentType.
 type CreatePolicyJSONRequestBody = PolicyRequest
 
@@ -1699,6 +1753,12 @@ type ServerInterface interface {
 	// ListMembers 列出组织成员
 	// (GET /api/v1/orgs/{orgId}/members)
 	ListMembers(c *gin.Context, orgId int64)
+	// RemoveMember 移除组织成员
+	// (DELETE /api/v1/orgs/{orgId}/members/{userId})
+	RemoveMember(c *gin.Context, orgId int64, userId int64)
+	// UpdateMemberRole 变更成员角色
+	// (PATCH /api/v1/orgs/{orgId}/members/{userId})
+	UpdateMemberRole(c *gin.Context, orgId int64, userId int64)
 	// ListPolicies 连接策略列表
 	// (GET /api/v1/orgs/{orgId}/policies)
 	ListPolicies(c *gin.Context, orgId int64)
@@ -2535,6 +2595,74 @@ func (siw *ServerInterfaceWrapper) ListMembers(c *gin.Context) {
 	siw.Handler.ListMembers(c, orgId)
 }
 
+// RemoveMember operation middleware
+func (siw *ServerInterfaceWrapper) RemoveMember(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "userId" -------------
+	var userId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", c.Param("userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter userId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RemoveMember(c, orgId, userId)
+}
+
+// UpdateMemberRole operation middleware
+func (siw *ServerInterfaceWrapper) UpdateMemberRole(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "userId" -------------
+	var userId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", c.Param("userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter userId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UpdateMemberRole(c, orgId, userId)
+}
+
 // ListPolicies operation middleware
 func (siw *ServerInterfaceWrapper) ListPolicies(c *gin.Context) {
 
@@ -2910,6 +3038,8 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/v1/orgs", wrapper.ListOrgs)
 	router.POST(options.BaseURL+"/api/v1/orgs", wrapper.CreateOrg)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/members", wrapper.ListMembers)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId", wrapper.RemoveMember)
+	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId", wrapper.UpdateMemberRole)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/invitations", wrapper.CreateInvitation)
 	router.POST(options.BaseURL+"/api/v1/invitations/accept", wrapper.AcceptInvitation)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/devices", wrapper.ListDevices)

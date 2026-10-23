@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Rustdesk-Control-Panel API
-  version: 0.5.0
+  version: 0.6.0
   contact:
     name: Rustdesk-Control-Panel
     url: https://github.com/GogoYang0/Rustdesk-Control-Panel-API
@@ -31,6 +31,10 @@ info:
 
     统一响应包：所有业务响应为 `{code, message, data}`。
     `code` 为机器可读错误码（见 ErrorCode），成功时为 `ok`。
+
+    0.6.0 新增**成员离场**：`DELETE /orgs/{orgId}/members/{userId}` 与
+    `PATCH /orgs/{orgId}/members/{userId}`（仅 admin↔member）。两者在变更会籍的
+    同一事务内撤销该用户在本组织的活跃 compat 会话（#39）；撤销失败整体回滚。
 servers:
   - url: http://localhost:8080
     description: 本地开发
@@ -212,6 +216,96 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/members/{userId}:
+    delete:
+      operationId: removeMember
+      summary: 移除组织成员
+      description: |
+        移除成员并在**同一事务**内撤销该用户在本组织的全部活跃 compat 会话
+        （#39 offboarding）。需要 member.manage 权限；admin 不能移除 owner，
+        最后一个 owner 不能被移除，不能通过本端点移除自己。撤销失败则整体回滚。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已移除，返回被撤销的会话数
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberMutationResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    patch:
+      operationId: updateMemberRole
+      summary: 变更成员角色
+      description: |
+        在 `admin` 与 `member` 之间变更角色（**不接受 owner**，所有权转移另行设计）。
+        只有 owner 可以调用。降级（admin → member）会在同一事务内撤销该用户在本组织的
+        活跃 compat 会话；提升不撤销。不能变更自己的角色或 owner 的角色。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MemberRoleRequest"
+      responses:
+        "200":
+          description: 更新后的成员
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
 
   /api/v1/orgs/{orgId}/invitations:
     post:
@@ -1851,6 +1945,42 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Member"
+
+    MemberRoleRequest:
+      type: object
+      required:
+        - role
+      properties:
+        role:
+          type: string
+          description: 只接受 admin 或 member；所有权转移不在本端点范围
+          enum:
+            - admin
+            - member
+
+    MemberMutation:
+      type: object
+      required:
+        - revoked_sessions
+      properties:
+        revoked_sessions:
+          type: integer
+          format: int64
+          description: 本次撤销的活跃 compat 会话数
+
+    MemberMutationResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/MemberMutation"
 
     InvitationCreateRequest:
       type: object
