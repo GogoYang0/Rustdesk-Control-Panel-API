@@ -640,7 +640,7 @@ func (h *harness) checkPrerequisites(ev *evidence) {
 		lines:     h.lines,
 	}
 	h.sessSvc = session.NewService(h.db, audit.NewGormAuditor(h.db), time.Now)
-	h.devSvc = device.NewService(h.db, nil)
+	h.devSvc = device.NewService(h.db, nil, nil)
 	ev.logf("装配（与 cmd/server/main.go 一致）：logcollect.NewService(db, parser, streamer, deviceSvc, Options{Sessions: sessionSvc.ReportLogEvent})；仅 streamer 是夹具实现，容器名=%s", h.streamer.container)
 
 	var deployed int64

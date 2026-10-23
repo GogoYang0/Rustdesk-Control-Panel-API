@@ -53,7 +53,7 @@ func newListFixture(t *testing.T) (*store.Store, *device.Service, model.Organiza
 	))
 	org := model.Organization{Name: "list-org"}
 	require.NoError(t, st.DB.Create(&org).Error)
-	return st, device.NewService(st.DB, nil), org
+	return st, device.NewService(st.DB, nil, nil), org
 }
 
 func seedDevice(t *testing.T, st *store.Store, orgID uint, rustdeskID, name, boundUUID string) model.Device {

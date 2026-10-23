@@ -55,7 +55,7 @@ func newHarness(t *testing.T) *harness {
 	compatapi.Mount(r, compatapi.Deps{
 		DB:        st.DB,
 		Issuer:    issuer,
-		Devices:   device.NewService(st.DB, nil),
+		Devices:   device.NewService(st.DB, nil, nil),
 		Guard:     guard,
 		AccessTTL: time.Hour,
 	})

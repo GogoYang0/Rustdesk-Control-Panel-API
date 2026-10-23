@@ -210,8 +210,9 @@ var errDeviceBound = errors.New("device already bound")
 // stable hardware identifier — is the strongest ownership signal available:
 // the first client presenting a rustdesk id claims it, an unbound row is
 // claimed on arrival, and a login presenting a different uuid is rejected
-// instead of taking the binding over (CWE-863). Admins recover a lost
-// binding by deleting the device row.
+// instead of taking the binding over (CWE-863). Admins reset a lost binding
+// through POST /api/v1/orgs/{orgId}/devices/{deviceId}/rebind, which clears the
+// binding and advances the generation in one audited transaction.
 func (s *Server) claimDeviceTx(tx *gorm.DB, orgID uint, rustdeskID, uuid string) (uint64, error) {
 	var dev model.Device
 	err := store.ScopedByOrg(tx, orgID).
