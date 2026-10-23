@@ -98,7 +98,7 @@ func TestLogEvent_ScopedByOrg(t *testing.T) {
 			"2026-10-20T06:00:00.000000001Z INFO connection from 123456789 via 10.0.0.1:1",
 		},
 	})
-	svc := NewService(st.DB, parser, streamer, device.NewService(st.DB, nil),
+	svc := NewService(st.DB, parser, streamer, device.NewService(st.DB, nil, nil),
 		Options{InitialBackoff: time.Millisecond, MaxBackoff: 2 * time.Millisecond}, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -134,7 +134,7 @@ func TestLogActivity_UpdatesHeartbeat(t *testing.T) {
 	st, orgs := serviceFixture(t, "org-a")
 	org := orgs[0]
 
-	dev, err := device.NewService(st.DB, nil).Register(context.Background(), org.ID, device.RegisterInput{
+	dev, err := device.NewService(st.DB, nil, nil).Register(context.Background(), org.ID, device.RegisterInput{
 		Name: "office-pc", RustdeskID: "123456789",
 	})
 	require.NoError(t, err)
@@ -147,7 +147,7 @@ func TestLogActivity_UpdatesHeartbeat(t *testing.T) {
 	streamer := newMapStreamer(map[string][]string{
 		"panel-org-1-hbbs": {at + " INFO connection from 123456789 via 10.0.0.1:1"},
 	})
-	svc := NewService(st.DB, parser, streamer, device.NewService(st.DB, nil),
+	svc := NewService(st.DB, parser, streamer, device.NewService(st.DB, nil, nil),
 		Options{InitialBackoff: time.Millisecond, MaxBackoff: 2 * time.Millisecond}, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -182,7 +182,7 @@ func TestLogActivity_UpdatesHeartbeat(t *testing.T) {
 func TestLogActivity_StaleLine_Ignored(t *testing.T) {
 	st, orgs := serviceFixture(t, "org-a")
 	org := orgs[0]
-	devices := device.NewService(st.DB, nil)
+	devices := device.NewService(st.DB, nil, nil)
 
 	dev, err := devices.Register(context.Background(), org.ID, device.RegisterInput{
 		Name: "office-pc", RustdeskID: "123456789",
@@ -214,7 +214,7 @@ func TestWatchUnwatch_StopsTailers(t *testing.T) {
 
 	parser, err := NewParser(testRules())
 	require.NoError(t, err)
-	svc := NewService(st.DB, parser, newMapStreamer(nil), device.NewService(st.DB, nil),
+	svc := NewService(st.DB, parser, newMapStreamer(nil), device.NewService(st.DB, nil, nil),
 		Options{InitialBackoff: time.Millisecond, MaxBackoff: 2 * time.Millisecond}, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -246,14 +246,14 @@ func TestHandleLine_CancelledContext_StillPersists(t *testing.T) {
 	st, orgs := serviceFixture(t, "org-a")
 	org := orgs[0]
 
-	dev, err := device.NewService(st.DB, nil).Register(context.Background(), org.ID, device.RegisterInput{
+	dev, err := device.NewService(st.DB, nil, nil).Register(context.Background(), org.ID, device.RegisterInput{
 		Name: "office-pc", RustdeskID: "123456789",
 	})
 	require.NoError(t, err)
 
 	parser, err := NewParser(testRules())
 	require.NoError(t, err)
-	svc := NewService(st.DB, parser, newMapStreamer(nil), device.NewService(st.DB, nil),
+	svc := NewService(st.DB, parser, newMapStreamer(nil), device.NewService(st.DB, nil, nil),
 		Options{InitialBackoff: time.Millisecond, MaxBackoff: 2 * time.Millisecond}, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -312,7 +312,7 @@ func TestHandleLine_DeviceLookupHonoursPersistDeadline(t *testing.T) {
 	org := model.Organization{Name: "org-a"}
 	require.NoError(t, st.DB.Create(&org).Error)
 
-	dev, err := device.NewService(st.DB, nil).Register(context.Background(), org.ID, device.RegisterInput{
+	dev, err := device.NewService(st.DB, nil, nil).Register(context.Background(), org.ID, device.RegisterInput{
 		Name: "office-pc", RustdeskID: "123456789",
 	})
 	require.NoError(t, err)

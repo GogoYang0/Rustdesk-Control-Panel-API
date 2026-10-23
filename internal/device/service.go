@@ -5,11 +5,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
@@ -39,16 +42,20 @@ type RegisterInput struct {
 
 // Service owns device persistence.
 type Service struct {
-	db  *gorm.DB
-	now func() time.Time
+	db       *gorm.DB
+	recorder audit.TxRecorder
+	now      func() time.Time
 }
 
-// NewService builds the device service.
-func NewService(db *gorm.DB, now func() time.Time) *Service {
+// NewService builds the device service. recorder may be nil for callers that
+// never mutate bindings; ResetBinding fails closed without one, because an
+// unrecorded binding change is exactly what an administrator must be able to
+// trace.
+func NewService(db *gorm.DB, recorder audit.TxRecorder, now func() time.Time) *Service {
 	if now == nil {
 		now = time.Now
 	}
-	return &Service{db: db, now: now}
+	return &Service{db: db, recorder: recorder, now: now}
 }
 
 // Register upserts a device by (organization, rustdesk_id).
@@ -282,4 +289,173 @@ func Status(d *model.Device, now time.Time) string {
 		return "online"
 	}
 	return "offline"
+}
+
+// Device listing pagination bounds mirror the contract and the session listing.
+const (
+	defaultDevicePageSize = 50
+	maxDevicePageSize     = 200
+	maxDevicePage         = 100_000
+)
+
+// DeviceFilter carries the list parameters accepted by the contract.
+type DeviceFilter struct {
+	// Query matches name or rustdesk_id as a case-insensitive substring.
+	Query    string
+	Bound    *bool
+	Page     int
+	PageSize int
+}
+
+// NormalisedPagination returns the page and page size actually applied, so the
+// HTTP layer can echo them instead of repeating the clamping rules. Input is
+// clamped rather than rejected: a pager that asks for page 0 or an oversized
+// page is a client bug, not a 500.
+func (f DeviceFilter) NormalisedPagination() (page, pageSize int) {
+	page, pageSize = f.Page, f.PageSize
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = defaultDevicePageSize
+	}
+	if pageSize > maxDevicePageSize {
+		pageSize = maxDevicePageSize
+	}
+	if page > maxDevicePage {
+		page = maxDevicePage
+	}
+	return page, pageSize
+}
+
+// List returns one page of the organization's devices plus the unpaginated
+// total. Ordering is id ascending so pages stay stable.
+func (s *Service) List(ctx context.Context, orgID uint, f DeviceFilter) ([]model.Device, int64, error) {
+	if orgID == 0 {
+		return nil, 0, fmt.Errorf("%w: organization is required", ErrInvalidInput)
+	}
+	page, pageSize := f.NormalisedPagination()
+
+	query := store.ScopedByOrg(s.db.WithContext(ctx), orgID).Model(&model.Device{})
+	if q := strings.TrimSpace(f.Query); q != "" {
+		// Escape with '!' rather than a backslash: the SQL literal '\' is a
+		// syntax error on MySQL and a two-character string on PostgreSQL, so
+		// no backslash form works on all three dialects.
+		escaped := strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(strings.ToLower(q))
+		pattern := "%" + escaped + "%"
+		query = query.Where(
+			"LOWER(name) LIKE ? ESCAPE '!' OR LOWER(rustdesk_id) LIKE ? ESCAPE '!'",
+			pattern, pattern,
+		)
+	}
+	if f.Bound != nil {
+		if *f.Bound {
+			query = query.Where("bound_uuid <> ''")
+		} else {
+			query = query.Where("bound_uuid = ''")
+		}
+	}
+
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("count devices: %w", err)
+	}
+
+	var items []model.Device
+	if err := query.
+		Order("id ASC").
+		Offset((page - 1) * pageSize).
+		Limit(pageSize).
+		Find(&items).Error; err != nil {
+		return nil, 0, fmt.Errorf("list devices: %w", err)
+	}
+	return items, total, nil
+}
+
+// maxResetReasonLen mirrors the contract's reason maxLength, counted in runes.
+const maxResetReasonLen = 500
+
+// ResetBinding clears the device binding, advances its binding generation and
+// records the operator's reason in the same transaction. It exists because a
+// machine swap changes the client uuid while the rustdesk id stays: without
+// this action the only recovery was editing the database by hand, and a hand
+// edit that forgot the generation left the old client's session able to drive
+// the device.
+func (s *Service) ResetBinding(ctx context.Context, orgID, deviceID, actorID uint, reason string) (*model.Device, error) {
+	if orgID == 0 {
+		return nil, fmt.Errorf("%w: organization is required", ErrInvalidInput)
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" || utf8.RuneCountInString(reason) > maxResetReasonLen {
+		return nil, fmt.Errorf("%w: reason is required (max %d characters)", ErrInvalidInput, maxResetReasonLen)
+	}
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var dev model.Device
+		// Lock the row on the dialects that support it: a concurrent compat
+		// login can claim the device between this read and the update below,
+		// and the reset would then clear the fresh binding while reporting a
+		// stale had_binding. SQLite has no row locks (same convention as
+		// RegisterTx / claimDeviceTx).
+		read := store.ScopedByOrg(tx, orgID)
+		if tx.Name() != "sqlite" {
+			read = read.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		if err := read.First(&dev, deviceID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrDeviceNotFound
+			}
+			return err
+		}
+		hadBinding := dev.BoundUUID != ""
+
+		// The generation always moves: even an unbound row gets +1 so every
+		// previously issued snapshot is invalidated unconditionally, and the
+		// affected-row count stays 1 on MySQL (clearing an already empty
+		// bound_uuid on its own would report 0 changed rows there).
+		result := store.ScopedByOrg(tx, orgID).Model(&model.Device{}).
+			Where("id = ?", dev.ID).
+			Updates(map[string]any{
+				"bound_uuid":         "",
+				"binding_generation": gorm.Expr("binding_generation + 1"),
+				"updated_at":         s.now(),
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return ErrDeviceNotFound
+		}
+
+		return s.record(tx, audit.Entry{
+			OrganizationID: orgID,
+			ActorUserID:    actorID,
+			Action:         "device.binding.reset",
+			TargetType:     "device",
+			TargetID:       fmt.Sprint(dev.ID),
+			Detail: map[string]any{
+				"reason":      reason,
+				"had_binding": hadBinding,
+				"rustdesk_id": dev.RustdeskID,
+			},
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var stored model.Device
+	if err := store.ScopedByOrg(s.db.WithContext(ctx), orgID).First(&stored, deviceID).Error; err != nil {
+		return nil, fmt.Errorf("load device: %w", err)
+	}
+	return &stored, nil
+}
+
+// record writes the audit entry on the caller's transaction. A service without
+// a recorder refuses the mutation rather than commit an unauditable one.
+func (s *Service) record(tx *gorm.DB, entry audit.Entry) error {
+	if s.recorder == nil {
+		return errors.New("device: no audit recorder configured")
+	}
+	return s.recorder.RecordTx(tx, entry)
 }

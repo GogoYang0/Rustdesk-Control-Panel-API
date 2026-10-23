@@ -110,7 +110,13 @@ func main() {
 
 	issuer := auth.NewIssuer(cfg.Auth.Secret, cfg.Auth.AccessTTL, cfg.Auth.RefreshTTL)
 	authSvc := auth.NewService(st.DB, issuer, zapLogger{lg})
-	deviceSvc := device.NewService(st.DB, nil)
+
+	// The shared audit recorder: the device service needs it before the API
+	// layer is built (binding resets must commit with their audit entry), so it
+	// is created here rather than next to the session service.
+	auditor := audit.NewGormAuditor(st.DB)
+
+	deviceSvc := device.NewService(st.DB, auditor, nil)
 	orch := &provision.DockerOrchestrator{
 		OrgLabel:  cfg.Provision.OrgLabel,
 		RoleLabel: cfg.Provision.RoleLabel,
@@ -172,10 +178,6 @@ func main() {
 		})
 	}
 
-	// The shared audit recorder: everything below (session service, worker
-	// scheduler) writes through it.
-	auditor := audit.NewGormAuditor(st.DB)
-
 	// One session service shared by the API handlers, the log collector's
 	// session hook and the background tasks: all three mutate the same rows,
 	// so they must see one clock and one audit recorder.
@@ -222,12 +224,6 @@ func main() {
 	})
 	sched := worker.New(lg, auditor)
 
-	// One session service shared by the API handlers, the log collector's
-	// session hook and the background tasks: all three mutate the same rows,
-	// so they must see one clock and one audit recorder.
-
-	// (sessionSvc is created above, before the collector, so the hook can be
-	// wired into it.)
 	// Pending approvals expire on their own deadline; the sweep only marks
 	// the rows so the inbox stops offering dead requests.
 	if err := sched.Register(worker.Task{

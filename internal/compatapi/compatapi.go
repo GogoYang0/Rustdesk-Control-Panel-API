@@ -69,7 +69,7 @@ func Mount(r gin.IRouter, d Deps) *Server {
 		d.Guard = limit.NewLoginGuard()
 	}
 	if d.Devices == nil && d.DB != nil {
-		d.Devices = device.NewService(d.DB, nil)
+		d.Devices = device.NewService(d.DB, nil, nil)
 	}
 	if d.Books == nil && d.DB != nil {
 		d.Books = addressbook.NewService(d.DB)

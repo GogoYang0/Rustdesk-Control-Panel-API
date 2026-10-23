@@ -76,16 +76,17 @@ func (s *Server) sysinfo(c *gin.Context) {
 
 // touchDevice records a heartbeat for the device bound to the session's
 // organization. The row must exist and carry this session's binding: a
-// deleted row is not resurrected here — the admin's delete is the binding
-// reset, and the client re-claims the device through a fresh login
-// (claimDevice); a row re-bound to another client instance is left alone.
+// deleted row is not resurrected here — an administrator reset (the rebind
+// endpoint) is the binding reset, and the client re-claims the device through
+// a fresh login (claimDevice); a row re-bound to another client instance is
+// left alone.
 func (s *Server) touchDevice(c *gin.Context, session *model.CompatSession, rustdeskID string) error {
 	orgID := session.OrganizationID
 	var dev model.Device
 	err := store.ScopedByOrg(s.deps.DB, orgID).Where("rustdesk_id = ?", rustdeskID).First(&dev).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		// The admin deleted the row to reset the binding; the old session
-		// must not resurrect or re-claim it.
+		// The row was removed out of band (the supported reset is the rebind
+		// endpoint); the old session must not resurrect or re-claim it.
 		return nil
 	}
 	if err != nil {
