@@ -107,12 +107,13 @@ func main() {
 	logFile := flag.String("logfile", "", "real hbbs log file to replay")
 	outDir := flag.String("out", "", "evidence output directory")
 	phase := flag.String("phase", "all", "phase to run: native (A-D) | all (A-D plus the advisory record)")
+	force := flag.Bool("force-state", false, "allow flipping a non-deployed server group to deployed (see ensureDeployedServerGroup)")
 	flag.Parse()
 
-	os.Exit(run(*dbPath, *logFile, *outDir, *phase))
+	os.Exit(run(*dbPath, *logFile, *outDir, *phase, *force))
 }
 
-func run(dbPath, logFile, outDir, phase string) int {
+func run(dbPath, logFile, outDir, phase string, forceState bool) int {
 	switch phase {
 	case "native", "all":
 	default:
@@ -144,9 +145,10 @@ func run(dbPath, logFile, outDir, phase string) int {
 	defer st.Close()
 
 	h := &harness{
-		out:    outDir,
-		db:     st.DB,
-		logger: zap.NewNop(),
+		out:        outDir,
+		db:         st.DB,
+		logger:     zap.NewNop(),
+		forceState: forceState,
 	}
 	// The prerequisite lookups intentionally miss on a fresh database; silence
 	// GORM's default logger so the harness output stays readable.
@@ -201,6 +203,12 @@ type harness struct {
 	devSvc     *device.Service
 
 	seededSessionID uint
+
+	// forceState permits flipping a non-deployed server group to deployed. It
+	// exists because that write is destructive for a live deployment: the
+	// provisioning worker would then see an already-provisioned organization
+	// and refuse, and the collector would tail containers that do not exist.
+	forceState bool
 
 	pass1 passOutcome
 	pass2 passOutcome
@@ -704,6 +712,12 @@ func (h *harness) ensureDeployedServerGroup() (model.ServerGroup, bool, error) {
 	}
 	if sg.State == model.ServerGroupDeployed {
 		return sg, false, nil
+	}
+	if !h.forceState {
+		return sg, false, fmt.Errorf(
+			"server group %d is %q, not deployed; flipping it would break a live provisioning state — "+
+				"point -db at a dedicated database, or pass -force-state if you accept that",
+			sg.ID, sg.State)
 	}
 	// Start only tails deployed groups; this is the documented prerequisite
 	// write (the provisioning worker owns the real transition).

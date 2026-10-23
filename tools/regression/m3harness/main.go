@@ -76,12 +76,14 @@ func main() {
 	dbPath := flag.String("db", "", "sqlite database path (shared by seed and flows)")
 	outDir := flag.String("out", "", "evidence output directory")
 	phase := flag.String("phase", "all", "phase to run: seed | flows | all")
+	confirmSeed := flag.Bool("confirm-seed", false,
+		"acknowledge that seed writes a known-password verified owner into -db (required for seed)")
 	flag.Parse()
 
-	os.Exit(run(*base, *dbPath, *outDir, *phase))
+	os.Exit(run(*base, *dbPath, *outDir, *phase, *confirmSeed))
 }
 
-func run(base, dbPath, outDir, phase string) int {
+func run(base, dbPath, outDir, phase string, confirmSeed bool) int {
 	switch phase {
 	case "seed", "flows", "all":
 	default:
@@ -94,6 +96,12 @@ func run(base, dbPath, outDir, phase string) int {
 	}
 
 	if phase == "seed" || phase == "all" {
+		if !confirmSeed {
+			fmt.Fprintln(os.Stderr,
+				"refusing to seed: this writes a verified owner with a known password into -db.\n"+
+					"Pass -confirm-seed only when -db is a disposable regression database.")
+			return 2
+		}
 		if err := runSeed(dbPath); err != nil {
 			fmt.Fprintf(os.Stderr, "seed failed: %v\n", err)
 			return 1
@@ -1061,6 +1069,7 @@ func (h *harness) checkRatification(ev *evidence) {
 	var created struct {
 		Id        int64  `json:"id"`
 		Kind      string `json:"kind"`
+		Status    string `json:"status"`
 		SessionId *int64 `json:"session_id"`
 		TicketId  *int64 `json:"ticket_id"`
 	}
@@ -1076,6 +1085,16 @@ func (h *harness) checkRatification(ev *evidence) {
 		return
 	}
 	if !ev.expectEq("approval.ticket_id at creation", "null", intPtrStr(created.TicketId, created.TicketId != nil)) {
+		return
+	}
+	// Reruns reuse the previous ratification for this session (kind-scoped reuse
+	// returns 200, not 201). Deciding an already-approved approval is a 409 by
+	// design, so a previously ratified session is a PASS with a note rather than
+	// a decision attempt.
+	if created.Status == approvalApproved {
+		ev.logf("reused ratification %d is already approved (previous run)", created.Id)
+		ev.pass("ratification already approved in a previous run; ticket_id stays null",
+			fmt.Sprintf("approval_id=%d session_id=%d status=%s", created.Id, h.nativeSessionID, created.Status))
 		return
 	}
 

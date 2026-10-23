@@ -12,9 +12,11 @@
 |---|---|
 | `docs/reference/step5-m3-run.sh` | **一键脚本**：环境检查 → 构建 panel → 起 panel → 播种 → 面板侧 12 项断言 → provision 端到端 → 采集/native 断言 →（可选）碰撞率专项 |
 | `tools/regression/m3harness/` | Go 夹具：播种前置数据 + 驱动 M3 全部 HTTP 端点（12 项检查，逐项落证据 JSON） |
-| `tools/regression/m3native/` | Go 夹具：**只替换 docker 传输层**，用真实 hbbs 日志驱动「解析 → LogEvent → native 会话归并 → 告警」 |
+| `tools/regression/m3native/` | Go 夹具（**脚本不调用**）：只替换 docker 传输层，用**离线** hbbs 日志文件驱动「解析 → LogEvent → native 归并 → 告警」；用于无容器环境自测，需一次性数据库（见 §10） |
 | `docs/reference/step5-collision-probe.sh` | #36 纳秒碰撞率专项（本手册 §6 可选） |
 | 本手册 | 步骤、判定表、报告要求 |
+
+> 前置要求精确版：docker（`docker ps` 可用）、**go 1.27+**（`go.mod` 指定 `go 1.27` + `toolchain go1.27.2`，`GOTOOLCHAIN=local` 的机器会失败）、curl、python3、bash。
 
 ---
 
@@ -24,12 +26,15 @@
 git clone --depth 1 -b develop https://github.com/GogoYang0/Rustdesk-Control-Panel-API.git
 cd Rustdesk-Control-Panel-API
 chmod +x docs/reference/step5-m3-run.sh docs/reference/step5-collision-probe.sh
-./docs/reference/step5-m3-run.sh /root/step5m3-work          # 自动跑到 §6 之前
-# 按 §5 手工接入真实客户端，然后继续 §6 的断言（脚本内已给提示）
-./docs/reference/step5-m3-run.sh /root/step5m3-work --probe   # 或带碰撞率专项
+PUBLIC_HOST=<云主机公网IP或域名> ./docs/reference/step5-m3-run.sh /root/step5m3-work
+# 脚本跑到 §6 会打印客户端接入参数（ID/中继/Key）并等待回车；接完客户端回车继续
+# 可选：带碰撞率专项重跑（会复用已起的 panel 与组织）
+PUBLIC_HOST=<同上> ./docs/reference/step5-m3-run.sh /root/step5m3-work --probe
 ```
 
-脚本**可重跑**：panel 已在跑时会因端口占用失败——重跑前先 `kill $(cat panel-data/panel.pid)`，或换 `WORKDIR`。
+- `PUBLIC_HOST` 必填：`provision.relayHost` 会写进配置并下发给客户端，填 `127.0.0.1` 远程客户端将不可达。不传时脚本尝试用 `api.ipify.org` 探测。
+- **可重跑**：panel 已在跑（`panel-data/panel.pid` 存活）则跳过启动；组织按名字 `step5m3-provision-org` 复用，不会每次烧掉一个 5 端口块。
+- 若 `BRANCH` 不含 `tools/regression/`，脚本会在 §1 直接失败并提示——**先把本工具合入目标分支**再跑。
 
 ---
 
@@ -37,12 +42,12 @@ chmod +x docs/reference/step5-m3-run.sh docs/reference/step5-collision-probe.sh
 
 | 阶段 | 做什么 | 判定 |
 |---|---|---|
-| 0 | `docker ps` / `go version` / `curl` 检查 | 三项齐备 |
+| 0 | `docker ps` / `go version` / `curl` / `python3` 四项检查 | 四项齐备 |
 | 1 | 构建 panel（打印 commit） | 构建成功 |
-| 2 | 写配置（**`logcollect.enabled=true`**、规则用示例集、`session.idleTimeout=10m`）并启动 panel | `/healthz` = 200 |
-| 3 | 夹具 `seed`：直写库造 owner（`step5m3@example.com` / `step5m3-pass-123456`）、组织、设备（`123456789`）、一条 native 会话 | 退出码 0 |
+| 2 | 写配置（**`logcollect.enabled=true`**、示例规则、`session.idleTimeout=10m`、`relayHost=$PUBLIC_HOST`）并启动 panel | `/healthz` = 200 |
+| 3 | 夹具 `seed`（需 `-confirm-seed`）：直写库造 owner（`step5m3@example.com` / `step5m3-pass-123456`）、组织、设备（`123456789`）、一条 native 会话 | 退出码 0 |
 | 4 | 夹具 `flows`：12 项 HTTP 断言 | 全部 PASS（明细在 `evidence/*.json`） |
-| 5 | 用 API 建**第二个组织**触发 provision，等容器出现，检查 `docker ps` 与 `docker logs -t` | hbbs/hbbr 就绪、启动日志含 `Listening on tcp/udp :21116` |
+| 5 | 用 API 建**第二个组织**（或复用）触发 provision，等容器出现，读 `server_groups` 得到**真实端口**，检查 `docker logs -t` 与 hbbs 公钥 | 容器就绪、日志含监听行、拿到 Key |
 
 ### 2.1 面板侧 12 项断言（`m3harness -phase flows`）
 
@@ -69,23 +74,29 @@ chmod +x docs/reference/step5-m3-run.sh docs/reference/step5-collision-probe.sh
 
 系统没有公开注册端点：首个账号由**邀请接受**创建。夹具的 `seed` 用项目自己的 `internal/auth.HashPassword`（Argon2id）+ `internal/store` 直接写库，避免手工拼 SQL 与密码算法。它**幂等**：重复运行返回同一批 id。
 
+> 因为 `seed` 会向目标库写入一个**已知口令、已验证**的 owner，带 `-confirm-seed` 才允许执行；**永远不要把它指向生产库**。
+
 ---
 
 ## 4. 真实客户端接入（脚本 §6 前必须做）
 
-无法在无 GUI 容器里自动完成「客户端注册」这一步，需一台能连到云主机的 RustDesk 客户端（你的本机即可）：
+无法在无 GUI 容器里自动完成「客户端注册」这一步，需一台能连到云主机的 RustDesk 客户端（你的本机即可）。脚本会打印三个参数，照填：
 
-1. 取**新组织** hbbs 的公钥：
-   ```bash
-   docker logs panel-org-<orgId>-hbbs 2>&1 | grep "Key:" | tail -1
-   # 或：cat server-data/org-<orgId>/id_ed25519.pub
-   ```
-2. 客户端设置 → ID/中继服务器：`<云主机IP>:21116`，Key 填上一步的公钥；中继服务器 `<云主机IP>:21117`。
-3. 启动客户端（会向 hbbs 注册）。hbbs 容器日志应出现：
-   ```
-   [...] INFO [src/peer.rs:102] update_pk <设备ID> [::ffff:<客户端IP>]:<端口> ...
-   ```
-4. 回到脚本按回车，脚本会断言：`log-events` 里出现 `kind=conn` 的事件、`sessions?origin=native` 出现 native 会话。
+| 客户端字段 | 取值（脚本 §5 输出） |
+|---|---|
+| ID 服务器 | `$PUBLIC_HOST:<hbbs_port + 1>`（首块即 `21117`） |
+| 中继服务器 | `$PUBLIC_HOST:<hbbr_port + 1>`（首块即 `21119`） |
+| Key | `docker logs panel-org-<orgId>-hbbs \| grep "Key:"` 的最后一段 |
+
+> 端口映射规则：panel 给每个组织分配**连续 5 端口**（如 `21116..21120`），容器把 hbbs 映射到 `hbbs_port+1`、hbbr 映射到 `hbbr_port+1`。**不要照抄 `21116/21117`**——那是宿主/容器内部端口，不是客户端入口。
+
+启动客户端后，hbbs 容器日志应出现（1.1.16 实测为 `src/peer.rs:102`，某些版本/文档写作 `rendezvous_mediator.rs`）：
+
+```
+[...] INFO [src/peer.rs:102] update_pk <设备ID> [::ffff:<客户端IP>]:<端口> ...
+```
+
+脚本随后会：从容器日志里**读出该设备 ID** → 在组织 `$ORG2` 里登记设备（面板只关联同组织内已登记的 `rustdesk_id`）→ 断言 `log-events` 出现 `kind=conn`、`sessions?origin=native` 出现 native 会话。
 
 > 采集器是 `--tail 0` 起步（不回填历史）：**先启动 panel 再连客户端**才能采到。若客户端先连了，重连一次即可。
 
@@ -99,10 +110,12 @@ chmod +x docs/reference/step5-m3-run.sh docs/reference/step5-collision-probe.sh
 |---|---|---|
 | D1 | `docker ps --filter name=panel-org-$O-` | 两个容器 Running，端口在 `21116–22115` 池内且成对 |
 | D2 | `docker logs -t panel-org-$O-hbbs \| head` | 时间戳前缀为 RFC3339Nano（采集游标消费的就是它） |
-| D3 | `curl $API/api/v1/orgs/$O/log-events -H "Authorization: Bearer $AT"` | 出现 `source=hbbs` 的 `conn` 事件，`device_id` 对应真实客户端 |
-| D4 | `curl "$API/api/v1/orgs/$O/sessions?origin=native"` | 至少 1 条 `origin=native,status=open`，`started_at` = hbbs 行的 **docker 捕获时间** |
+| D3 | `curl $API/api/v1/orgs/$O/log-events -H "Authorization: Bearer $AT"` | 出现 `source=hbbs` 的 `conn` 事件，`device_id` 对应真实客户端（该 `rustdesk_id` 必须已登记在同组织） |
+| D4 | `curl "$API/api/v1/orgs/$O/sessions?origin=native&pageSize=50"` | 至少 1 条 `origin=native,status=open`，`started_at` = hbbs 行的 **docker 捕获时间** |
 | D5 | 客户端断开后再连 | 契约：已吸收连接的会话不重开 → 新建第二条 native 会话（**多记不漏记**） |
 | D6 | 把 `session.idleTimeout` 调小（如 `1m`）重启 panel | 超过窗口无事件的 open 会话被置 `closed/end_reason=idle_timeout` |
+
+> 注意：`sessions` 的分页参数是 `page`/`pageSize`，**不是 `limit`**（`limit` 只属于 `log-events`）。
 
 ---
 
@@ -143,5 +156,22 @@ bash docs/reference/step5-collision-probe.sh "100 1000 5000 20000"
 | `flows` 里并发闸门用例失败 | 库里有上轮遗留的 open panel 会话；夹具按「当前 open 数 + 1」限额，若仍有残留，清库重跑或手工关会话（当前无关闭端点，删行即可） |
 | `log-events` 为空 | 采集器 `--tail 0`；先起 panel 再连客户端。或 `logcollect.enabled` 仍为 false |
 | native 会话 `started_at` 是「现在」而非日志时间 | 说明走的是事件到达时间；检查是否绕过 docker 传输层（本脚本不绕过） |
+| 有 `conn` 事件但没有 native 会话 | 该 `rustdesk_id` 未登记在本组织（面板只关联已登记设备）；检查脚本 §6 的 device 登记输出 |
 | `provision` 容器一直不出现 | 端口池冲突（本机 21116 被占）或镜像拉取失败；`docker ps -a`、`panel-data/panel.log` 里的 provision 审计 |
 | panel 启动即退出 | 多半是 `auth.secret` 为空；脚本已生成随机 secret，手工部署时要设 `PANEL_AUTH_SECRET` |
+| 重跑报端口占用 | 说明 `panel.pid` 记录的不是 panel 本体（旧脚本缺陷，已改为 `exec nohup`）；手工 `pkill -f "$WORKDIR/panel"` 后重跑 |
+
+---
+
+## 10. `m3native`：无容器环境下的替代验证（不是本脚本的一部分）
+
+当云端暂时不可用时，可以用 `tools/regression/m3native` 在**任意有 Go 的机器**上验证「解析 → LogEvent → native 归并 → 告警」这段逻辑：它把 docker 传输层换成一个回放**离线 hbbs 日志文件**的 `LineStreamer`，其余全是生产代码。
+
+```bash
+# 需要一份真实 hbbs 日志（含 update_pk 行），例如从容器导出：
+docker logs -t panel-org-1-hbbs > hbbs.log
+go run ./tools/regression/m3native -db "file:/tmp/m3native.db" -logfile ./hbbs.log -out /tmp/m3native-evidence -phase all
+```
+
+- **必须用一次性数据库**：它会在 `server_groups` 里写入/翻转该组织为 `deployed`（为了触发真实 `Service.Start` 的 tail 条件）。指向在用的面板库会让该组织后续 provision 报「已供应」，端口块被占。若组织行已存在且非 `deployed`，工具会拒绝执行并提示；确需翻转时加 `-force-state`。
+- 它**不能**替代容器验证：docker CLI 本身、容器 stdout/stderr 合并、`--since` 纳秒精度与 #36 碰撞率都必须在云端真跑（工具的 SKIP 项会如实列出）。
