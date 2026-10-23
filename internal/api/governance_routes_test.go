@@ -1,7 +1,6 @@
 package api_test
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -32,38 +31,6 @@ var governanceRoutes = []struct {
 	{http.MethodGet, "/api/v1/orgs/{org}/tickets/1", "/api/v1/orgs/:orgId/tickets/:ticketId"},
 	{http.MethodPost, "/api/v1/orgs/{org}/tickets/1/redeem", "/api/v1/orgs/:orgId/tickets/:ticketId/redeem"},
 	{http.MethodGet, "/api/v1/orgs/{org}/alerts", "/api/v1/orgs/:orgId/alerts"},
-}
-
-// implementedPrefixes mark the governance endpoints that now have real handlers.
-// Tickets landed in T4, policies and session records in T5; they keep the shared
-// registration/auth/tenant assertions and drop only the "answers 501" ones.
-var implementedPrefixes = []string{"/tickets", "/policies", "/sessions", "/approvals", "/alerts"}
-
-// stubRoutes are the governance endpoints still answered by a placeholder.
-func stubRoutes() []struct {
-	method  string
-	path    string
-	ginPath string
-} {
-	out := make([]struct {
-		method  string
-		path    string
-		ginPath string
-	}, 0, len(governanceRoutes))
-	for _, route := range governanceRoutes {
-		implemented := false
-		for _, prefix := range implementedPrefixes {
-			if strings.Contains(route.path, prefix) {
-				implemented = true
-				break
-			}
-		}
-		if implemented {
-			continue
-		}
-		out = append(out, route)
-	}
-	return out
 }
 
 // withOrg substitutes the {org} placeholder.
@@ -101,11 +68,10 @@ func TestGovernanceRoutesRequireAuth(t *testing.T) {
 	}
 }
 
-// TestGovernanceRoutesRejectNonMembers pins the tenant boundary the placeholders
-// already enforce. The outsider owns their own organization, so the 403 on the
-// other organization proves the check is per-organization rather than a blanket
-// deny — and it is the regression net for "forgot the permission check" when
-// the real handlers land.
+// TestGovernanceRoutesRejectNonMembers pins the tenant boundary. The outsider
+// owns their own organization, so the 403 on the other organization proves the
+// check is per-organization rather than a blanket deny — and it is the
+// regression net for "forgot the permission check".
 func TestGovernanceRoutesRejectNonMembers(t *testing.T) {
 	h := newHarness(t)
 	_, orgA := seedOrgOwner(t, h, "gov-a@example.com")
@@ -119,44 +85,20 @@ func TestGovernanceRoutesRejectNonMembers(t *testing.T) {
 		})
 	}
 
-	// The same caller reaches their own organization (501 = the placeholder),
-	// which proves the rejection above is about membership, not about the route.
-	// Ticket routes are implemented now, so they are excluded here; their own
-	// suite covers the positive path.
-	for _, route := range stubRoutes() {
+	// The same caller must reach their own organization: the 403 above is about
+	// membership, not about the route, and a valid token must not be rejected as
+	// unauthenticated either. Every governance endpoint has a real handler since
+	// v0.4.0, so a legitimate owner must not be turned away. A 404 is allowed
+	// here — the handlers legitimately answer it for the non-existent resource
+	// ids these placeholders use (e.g. GET .../tickets/1) — but 401, 403 or 5xx
+	// means the request never reached a working handler, which is exactly the
+	// regression this net exists to catch.
+	for _, route := range governanceRoutes {
 		t.Run("own org "+route.method+" "+route.path, func(t *testing.T) {
 			w := h.do(t, route.method, withOrg(route.path, orgB), map[string]any{}, outsiderToken)
-			require.Equal(t, http.StatusNotImplemented, w.Code, w.Body.String())
-		})
-	}
-}
-
-// TestGovernanceRoutesAreStubsUntilImplemented pins the interim state: every
-// endpoint answers 501 with the standard envelope rather than pretending to
-// work. Each owning task (T4-T7) replaces its handlers and must drop the
-// corresponding case here.
-func TestGovernanceRoutesAreStubsUntilImplemented(t *testing.T) {
-	h := newHarness(t)
-	token, orgID := seedOrgOwner(t, h, "gov-stub@example.com")
-
-	for _, route := range stubRoutes() {
-		t.Run(route.method+" "+route.path, func(t *testing.T) {
-			w := h.do(t, route.method, withOrg(route.path, orgID), map[string]any{}, token)
-			require.Equal(t, http.StatusNotImplemented, w.Code, w.Body.String())
-			require.Contains(t, w.Header().Get("Content-Type"), "application/json")
-
-			var body struct {
-				Code    string          `json:"code"`
-				Message string          `json:"message"`
-				Data    json.RawMessage `json:"data"`
-			}
-			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-			require.Equal(t, "internal", body.Code)
-			require.Contains(t, body.Message, "not implemented yet:")
-			// The address-book envelope omits data on error; the placeholder
-			// must not invent one.
-			require.True(t, len(body.Data) == 0 || string(body.Data) == "null",
-				"stub response must not carry a data payload, got %s", string(body.Data))
+			require.NotEqual(t, http.StatusUnauthorized, w.Code, w.Body.String())
+			require.NotEqual(t, http.StatusForbidden, w.Code, w.Body.String())
+			require.Less(t, w.Code, http.StatusInternalServerError, w.Body.String())
 		})
 	}
 }

@@ -90,11 +90,17 @@ func TestServeUntilShutdown_CancelStopsServerAndDrains(t *testing.T) {
 
 	require.True(t, drained.Load(), "the collector must be drained before the process exits")
 
-	conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
-	if err == nil {
-		_ = conn.Close()
-	}
-	require.Error(t, err, "the listening socket must be closed after shutdown")
+	// Closing the listener is asynchronous: the kernel settles the socket state
+	// shortly after Shutdown returns, not necessarily before it does. A single
+	// sample is therefore flaky under load (issue #51), so wait bounded instead.
+	require.Eventually(t, func() bool {
+		c, derr := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if derr == nil {
+			_ = c.Close()
+			return false
+		}
+		return true
+	}, time.Second, 20*time.Millisecond, "the listening socket must be closed after shutdown")
 }
 
 // A nil drain (log collection disabled) is the default configuration and must

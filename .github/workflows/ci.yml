@@ -89,7 +89,14 @@ jobs:
       - name: wait for databases
         run: sleep 10
       - name: go test (postgres + mysql)
-        run: go test ./...
+        # Every package shares one Postgres/MySQL instance, and Go runs package
+        # test binaries in parallel (-p = GOMAXPROCS). Concurrent AutoMigrate of
+        # the same tables then races in the pg system catalogs (pg_type /
+        # pg_class) and surfaces as a bogus TestOpen_Postgres failure (#60).
+        # No test in this repo uses t.Parallel(), so serializing packages
+        # removes the only source of that concurrency without weakening a single
+        # assertion -- and real migration errors still fail loudly.
+        run: go test -p 1 ./...
 
   contract:
     runs-on: ubuntu-latest
