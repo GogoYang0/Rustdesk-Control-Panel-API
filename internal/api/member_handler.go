@@ -22,6 +22,48 @@ import (
 // owner.
 var errLastOwner = errors.New("organization must keep at least one owner")
 
+// errActorNoLongerAuthorized reports an actor whose membership disappeared or
+// whose role no longer grants the operation between the handler check and the
+// transaction: the stale permission must not be allowed to mutate the org.
+var errActorNoLongerAuthorized = errors.New("actor is no longer authorized")
+
+// lockActor re-reads the actor membership inside the mutation transaction and
+// re-checks its permission. When lockOwners is set, the actor row and every
+// owner row are locked in one id-ordered query, so concurrent owner removals
+// acquire locks in the same order (no deadlock) and a lost actor is detected
+// before any write or session revocation.
+func lockActor(tx *gorm.DB, orgID, actorID uint, lockOwners bool, perm string) ([]model.Membership, error) {
+	var rows []model.Membership
+	read := store.ScopedByOrg(tx, orgID).Select("id", "user_id", "role")
+	if lockOwners {
+		read = read.Where("user_id = ? OR role = ?", actorID, model.RoleOwner)
+	} else {
+		read = read.Where("user_id = ?", actorID)
+	}
+	read = read.Order("id ASC")
+	if tx.Name() != "sqlite" {
+		read = read.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	if err := read.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	var actor *model.Membership
+	var owners []model.Membership
+	for i := range rows {
+		if rows[i].UserID == actorID {
+			actor = &rows[i]
+		}
+		if rows[i].Role == model.RoleOwner {
+			owners = append(owners, rows[i])
+		}
+	}
+	if actor == nil || !authz.Can(actor.Role, perm) {
+		return nil, errActorNoLongerAuthorized
+	}
+	return owners, nil
+}
+
 // RemoveMember removes a membership and revokes the user's compat sessions in
 // the same transaction (#39): an offboarded member must not keep a 720h token
 // that can still drive devices or read the address book. A revocation failure
@@ -62,28 +104,16 @@ func (a *AdminAPI) RemoveMember(c *gin.Context, orgId int64, userId int64) {
 	var revoked int64
 	domainRecorded := false
 	err = a.deps.DB.Transaction(func(tx *gorm.DB) error {
-		if target.Role == model.RoleOwner {
-			// Lock every owner row before counting: two concurrent removals
-			// could otherwise each see two owners and both proceed, leaving the
-			// organization without one. Ordering by id keeps the lock order
-			// deterministic across transactions. SQLite has no row locks, same
-			// convention as the device paths.
-			var owners []model.Membership
-			read := store.ScopedByOrg(tx, uint(orgId)).Select("id").
-				Where("role = ?", model.RoleOwner).Order("id ASC")
-			if tx.Name() != "sqlite" {
-				read = read.Clauses(clause.Locking{Strength: "UPDATE"})
-			}
-			if err := read.Find(&owners).Error; err != nil {
-				return err
-			}
-			if len(owners) <= 1 {
-				return errLastOwner
-			}
+		owners, err := lockActor(tx, uint(orgId), uid, target.Role == model.RoleOwner, authz.PermMemberManage)
+		if err != nil {
+			return err
+		}
+		if target.Role == model.RoleOwner && len(owners) <= 1 {
+			return errLastOwner
 		}
 
 		res := store.ScopedByOrg(tx, uint(orgId)).
-			Where("user_id = ?", target.UserID).Delete(&model.Membership{})
+			Where("user_id = ? AND role = ?", target.UserID, target.Role).Delete(&model.Membership{})
 		if res.Error != nil {
 			return res.Error
 		}
@@ -113,6 +143,9 @@ func (a *AdminAPI) RemoveMember(c *gin.Context, orgId int64, userId int64) {
 		return nil
 	})
 	switch {
+	case errors.Is(err, errActorNoLongerAuthorized):
+		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "insufficient permissions")
+		return
 	case errors.Is(err, errLastOwner):
 		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "organization must keep at least one owner")
 		return
@@ -191,8 +224,11 @@ func (a *AdminAPI) UpdateMemberRole(c *gin.Context, orgId int64, userId int64) {
 	var revoked int64
 	domainRecorded := false
 	err = a.deps.DB.Transaction(func(tx *gorm.DB) error {
+		if _, err := lockActor(tx, uint(orgId), uid, false, authz.PermOrgAdmin); err != nil {
+			return err
+		}
 		res := store.ScopedByOrg(tx, uint(orgId)).Model(&model.Membership{}).
-			Where("user_id = ?", target.UserID).Update("role", role)
+			Where("user_id = ? AND role = ?", target.UserID, target.Role).Update("role", role)
 		if res.Error != nil {
 			return res.Error
 		}
@@ -224,6 +260,9 @@ func (a *AdminAPI) UpdateMemberRole(c *gin.Context, orgId int64, userId int64) {
 		return nil
 	})
 	switch {
+	case errors.Is(err, errActorNoLongerAuthorized):
+		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "insufficient permissions")
+		return
 	case errors.Is(err, gorm.ErrRecordNotFound):
 		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "member not found")
 		return
