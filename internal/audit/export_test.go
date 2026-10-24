@@ -41,7 +41,9 @@ func TestWriteCSV_EscapesFormulaCells(t *testing.T) {
 }
 
 func TestWriteCSV_EscapesEveryTrigger(t *testing.T) {
-	for _, trigger := range []string{"=x", "+x", "-x", "@x"} {
+	// Control prefixes are included: a spreadsheet may strip them and then
+	// evaluate the remainder.
+	for _, trigger := range []string{"=x", "+x", "-x", "@x", "\tx", "\rx", "\nx"} {
 		buf := &bytes.Buffer{}
 		require.NoError(t, audit.WriteCSV(buf, []model.AuditLog{{
 			Action: trigger, CreatedAt: time.Now().UTC(),

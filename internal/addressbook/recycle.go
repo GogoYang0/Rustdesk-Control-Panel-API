@@ -173,6 +173,11 @@ func (s *Service) RestorePeer(userID uint, perms []string, orgID, bookID uint, p
 		if _, err := lockBook(tx, orgID, book.ID); err != nil {
 			return err
 		}
+		// Restoring grows the live list, so the per-book limit applies here just
+		// as it does for a fresh AddPeer.
+		if err := ensurePeerCapacity(tx, orgID, book.ID); err != nil {
+			return err
+		}
 		res := store.ScopedByOrg(tx, orgID).Model(&model.AddressBookPeer{}).
 			Where("book_id = ? AND peer_id = ? AND deleted_at IS NOT NULL", book.ID, peerID).
 			Updates(map[string]any{"deleted_at": nil, "deleted_by": uint(0)})

@@ -57,6 +57,45 @@ func seedRetentionRow(t *testing.T, st *store.Store, orgID uint, seq uint64, at 
 	}).Error)
 }
 
+// A backlog larger than one batch must be drained completely, in separate
+// archive/verify/delete transactions, instead of loading every row at once.
+func TestAuditRetention_ProcessesBacklogInBatches(t *testing.T) {
+	svc, st, rec, org, dir := newRetentionFixture(t)
+	ctx := context.Background()
+	require.NoError(t, svc.SetDays(ctx, org.ID, 30))
+
+	const total = 1205
+	old := time.Now().UTC().AddDate(0, 0, -40)
+	rows := make([]model.AuditLog, 0, total)
+	for i := 0; i < total; i++ {
+		rows = append(rows, model.AuditLog{
+			OrganizationID: org.ID,
+			Seq:            uint64(i + 1),
+			ActorUserID:    3,
+			Action:         "test.action",
+			TargetType:     "device",
+			TargetID:       "1",
+			CreatedAt:      old,
+		})
+	}
+	require.NoError(t, st.DB.CreateInBatches(&rows, 200).Error)
+
+	archived, purged, err := svc.RunOnce(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, total, archived)
+	require.EqualValues(t, total, purged)
+
+	var remaining int64
+	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).Model(&model.AuditLog{}).Count(&remaining).Error)
+	require.Zero(t, remaining)
+
+	files, err := filepath.Glob(filepath.Join(dir, fmt.Sprintf("org-%d", org.ID), "audit-*.jsonl"))
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(files), 2, "the backlog must span more than one archive batch")
+	// Two batches archive and purge in their own transactions.
+	require.GreaterOrEqual(t, len(rec.entries), 4)
+}
+
 func TestAuditRetention_ArchivesThenPurges(t *testing.T) {
 	svc, st, rec, org, dir := newRetentionFixture(t)
 	ctx := context.Background()

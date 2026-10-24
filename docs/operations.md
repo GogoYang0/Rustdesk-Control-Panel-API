@@ -15,8 +15,10 @@
 | 邀请成员 | `POST /api/v1/orgs/{orgId}/invitations` | admin |
 | 接受邀请 | `POST /api/v1/invitations/accept` | 被邀请人 |
 | 移除成员（离场） | `DELETE /api/v1/orgs/{orgId}/members/{userId}`（v0.6.0；同事务撤销该用户 compat 会话） | owner/admin |
-| 变更成员角色 | `PATCH /api/v1/orgs/{orgId}/members/{userId}`（v0.6.0；仅 admin↔member，仅 owner 可调） | owner |
-| 查看设备 | `GET /api/v1/orgs/{orgId}/devices`（v0.5.0；分页、`q` 搜索、`bound` 过滤） | member |
+| 变更成员角色 | `PATCH /api/v1/orgs/{orgId}/members/{userId}`（仅 owner 可调；支持 admin、member 和自定义角色） | owner |
+| 停用/恢复成员 | `PATCH /api/v1/orgs/{orgId}/members/{userId}`（字段 `disabled`；停用在同一事务撤销该成员在本组织的 compat 会话；重复设置当前状态不产生审计） | `member.manage` |
+| 查看设备 | `GET /api/v1/orgs/{orgId}/devices`（v0.5.0；分页、`q` 搜索、`bound` 过滤） | `device.read` |
+| 停用/恢复设备 | `PATCH /api/v1/orgs/{orgId}/devices/{deviceId}`（字段 `disabled`；停用在同一事务撤销该设备的 compat 会话；重复设置当前状态不产生审计） | `device.write` |
 | 重置设备绑定（换机/重装） | `POST /api/v1/orgs/{orgId}/devices/{deviceId}/rebind`（v0.5.0；`reason` 必填） | owner/admin |
 | 查看/切换供应开关 | `GET/PUT /api/v1/orgs/{orgId}/provisioning`（v0.7.0；关闭同步下线；开启仅在无部署行即 `pending` 时异步入队，`deployed`/`failed` 不入队、`failed` 需人工恢复；`cleanup_pending` 表示清理未完成） | owner |
 | 查询日志事件 | `GET /api/v1/orgs/{orgId}/log-events` | member |
@@ -79,17 +81,17 @@
 - **完整性**：每条审计行带 per-org 连续序列号，序列断裂即表示行被删除或篡改——巡检时应检查序列连续性
 - 无租户请求（login、healthz）不产生持久审计行（`GormAuditor` 对 org 0 直接丢弃，有意 fail-closed）
 - 遗留：compat 写路径的**事务级**审计（与业务写同事务）尚未实现，当前为请求级归因
-- **M3 新增的领域审计动作**（`TxRecorder` 在实体事务内记录）：`session.ticket.issue`（票据签发）、`session.ticket.redeem`（票据兑换）、`session.ticket.denied`（策略拒绝）、`session.approval.request`（新建审批请求；复用不重复记）、`session.approval.decide`（approve/deny 决策）、**`device.binding.reset`（v0.5.0 重置设备绑定；含 actor、`rustdesk_id`、reason、had_binding）**、`organization.member.remove` / `organization.member.role`（v0.6.0 成员离场；含目标用户、角色变化与撤销会话数）。会话治理与设备列表的**轮询读不产生审计**（读静默），单个详情读会记录；provision 供应与保留期清扫等基础设施动作的审计见 provision 相关节（#46）
+- **领域审计动作**（`TxRecorder` 在实体事务内记录）：`session.ticket.issue`（票据签发）、`session.ticket.redeem`（票据兑换）、`session.ticket.denied`（策略拒绝）、`session.approval.request`（新建审批请求；复用不重复记）、`session.approval.decide`（approve/deny 决策）、**`device.binding.reset`（v0.5.0 重置设备绑定；含 actor、`rustdesk_id`、reason、had_binding）**、`organization.member.remove` / `organization.member.role`（v0.6.0 成员离场；含目标用户、角色变化与撤销会话数）、**v0.8.0 新增：`organization.member.disable` / `organization.member.enable`（成员停用/恢复，含撤销会话数）、`device.disable` / `device.enable`（设备停用/恢复，含撤销会话数）、`role.create` / `role.update` / `role.delete`、`token.create` / `token.revoke`（个人令牌，明文不入审计）、`user.2fa.reset`（管理员重置成员 2FA）、`organization.audit_retention.set`、`audit.retention.archive` / `audit.retention.purge`（系统动作，actor 0）**。地址簿授权与回收站动作仍由请求级中间件回退归因（与 compat 写路径同一机制）。会话治理与设备列表的**轮询读不产生审计**（读静默），单个详情读会记录；provision 供应与保留期清扫等基础设施动作的审计见 provision 相关节（#46）
 
 ### 3.1 审计保留期与本地归档（v0.8.0）
 
-- **按组织配置**：`GET/PUT /api/v1/orgs/{orgId}/audit-retention`（仅 owner）。`audit_retention_days=0` 永久保留；`1..3650` 为正的保留窗口。设置动作写 `organization.audit_retention.set` 审计。
-- **先归档、校验、后删除**：每小时后台任务对每个保留期 > 0 的组织，把 `created_at` 早于阈值的行写成 JSONL（每行一条），附同名 `.sha256`；**重新读取校验行数与摘要一致后**才按 id 精确删除。归档或校验失败则该组织本轮不删除任何行（fail closed），下个周期重试。
-- **归档位置**：`<audit.archiveDir>/org-<orgId>/audit-<UTC时间戳>.jsonl`（先写 `.tmp` 再原子改名）。归档文件不经 API 暴露；**运维备份必须覆盖该目录**，否则删除后的历史只存在于备份之外。
+- **按组织配置**：`GET/PUT /api/v1/orgs/{orgId}/audit-retention`（仅 owner）。`audit_retention_days=0` 永久保留；`1..3650` 为正的保留窗口；`days` 字段必填（缺失返回 400，避免误把空请求当成"永久保留"）。设置动作写 `organization.audit_retention.set` 审计。
+- **先归档、校验、后删除**：每小时后台任务对每个保留期 > 0 的组织，把 `created_at` 早于阈值的行写成 JSONL（每行一条），附同名 `.sha256`；**重新读取校验行数与摘要一致后**才按 id 精确删除。归档或校验失败则该组织本轮不删除任何行（fail closed），下个周期重试。**按批处理**：每批最多 1000 行，逐批归档/校验/删除，直到该组织剩余不足一批——首次开启或长期停摆造成的积压不会一次性载入内存，也不会撞上数据库的占位符上限。
+- **归档位置**：`<audit.archiveDir>/org-<orgId>/audit-<UTC时间戳>-<minId>-<maxId>.jsonl`（先写 `.tmp` 再原子改名；id 区间保证同一次运行的多批不会互相覆盖）。归档文件不经 API 暴露；**运维备份必须覆盖该目录**，否则删除后的历史只存在于备份之外。
 - **系统动作也审计**：归档写 `audit.retention.archive`（`Detail` 含 rows/path/sha256/threshold）、清理写 `audit.retention.purge`；actor 为 0（系统）。两条审计与删除在同一事务提交；无事务审计器时整轮拒绝删除。
 - **回收站（地址簿 v0.8.0）**：删除的 peer 软删除保留 30 天，每小时清扫永久删除过期行；恢复会 bump revision，永久删除不动 revision 与 live 内容。
 - **个人令牌（v0.8.0）**：只在组织路径生效；有效权限 = 申请集 ∩ 当前角色权限集，每请求实时重算。列表只显示 `token_prefix`，明文只在创建响应出现一次；遗失令牌请直接撤销后重建。
-- **管理面 2FA（v0.8.0）**：启用后用户登录需要第二步（`/auth/2fa/verify`）。用户丢失设备与恢复码时，由 owner/admin 用 `POST /orgs/{orgId}/members/{userId}/2fa/reset` 重置（写 `user.2fa.reset` 审计）。TOTP 密钥以 `auth.secret` 派生的密钥加密存储，**轮换 `auth.secret` 会让既有 2FA 配置无法解密**，须先重置相关用户 2FA 再轮换。
+- **管理面 2FA（v0.8.0）**：启用后用户登录需要第二步（`/auth/2fa/verify`，与登录共用两轨限流）。用户丢失设备与恢复码时，由 owner/admin 用 `POST /orgs/{orgId}/members/{userId}/2fa/reset` 重置（写 `user.2fa.reset` 审计）。**边界**：2FA 是账号级而非组织级——管理员不能重置自己（409，自服务走 `/auth/2fa/disable`）；目标在本组织是 owner 时只有 owner（`org.admin`）能重置；目标在**其他组织**是 owner 时一律拒绝（403），必须到其拥有的组织里重置，否则任一组织的管理员都能削弱别租户的登录保护。TOTP 密钥以 `auth.secret` 派生的密钥加密存储，**未配置 `auth.secret` 时 2FA 操作 fail closed**（500）；**轮换 `auth.secret` 会让既有 2FA 配置无法解密**，须先重置相关用户 2FA 再轮换。
 
 ---
 

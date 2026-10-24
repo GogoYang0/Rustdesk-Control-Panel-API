@@ -38,6 +38,15 @@ func newTOTPFixture(t *testing.T) (*store.Store, *auth.TOTPService, *time.Time, 
 	return st, svc, &now, user
 }
 
+// An empty auth secret must not silently become a public, deterministic key:
+// every operation that needs the key fails closed instead.
+func TestTOTP_EmptySecretFailsClosed(t *testing.T) {
+	st, _, _, user := newTOTPFixture(t)
+	svc := auth.NewTOTPService(st.DB, "", nil)
+	_, _, err := svc.Setup(user.ID)
+	require.ErrorIs(t, err, auth.ErrTOTPSecretMissing)
+}
+
 // totpCode computes the RFC 6238 code independently of the implementation.
 func totpCode(secret string, at time.Time) string {
 	raw, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(secret)

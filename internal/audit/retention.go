@@ -22,6 +22,12 @@ import (
 // MaxRetentionDays bounds the configurable retention window.
 const MaxRetentionDays = 3650
 
+// retentionBatchSize bounds one archive/delete batch. A large backlog (first
+// enable, or a long-stalled worker) must not be loaded whole: memory grows with
+// the row count and a single `id IN (...)` delete exceeds the placeholder limit
+// of PostgreSQL, MySQL and SQLite alike.
+const retentionBatchSize = 1000
+
 // ErrInvalidRetention reports an out-of-range retention setting.
 var ErrInvalidRetention = errors.New("audit retention days must be between 0 and 3650")
 
@@ -95,19 +101,30 @@ func (s *RetentionService) RunOnce(ctx context.Context) (archived, purged int64,
 	}
 	var firstErr error
 	for _, org := range orgs {
-		a, p, err := s.runOrg(ctx, org)
-		archived += a
-		purged += p
-		if err != nil && firstErr == nil {
-			firstErr = err
+		// Drain the organization in batches: each one is archived, verified and
+		// deleted on its own, so a failure only repeats that batch next cycle.
+		for {
+			a, p, err := s.runOrg(ctx, org)
+			archived += a
+			purged += p
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				break
+			}
+			if a < retentionBatchSize {
+				break
+			}
 		}
 	}
 	return archived, purged, firstErr
 }
 
-// runOrg handles one organization: archive the expired rows, verify the file,
-// then delete exactly those rows and record both system audit entries in the
-// deletion transaction.
+// runOrg handles one batch of an organization: archive the expired rows, verify
+// the file, then delete exactly those rows and record both system audit entries
+// in the deletion transaction. The caller repeats it while a full batch comes
+// back.
 func (s *RetentionService) runOrg(ctx context.Context, org model.Organization) (archived, purged int64, err error) {
 	cutoff := s.now().UTC().AddDate(0, 0, -org.AuditRetentionDays)
 	var rows []model.AuditLog
@@ -115,6 +132,7 @@ func (s *RetentionService) runOrg(ctx context.Context, org model.Organization) (
 		Where("created_at < ?", cutoff).
 		Order("created_at").
 		Order("id").
+		Limit(retentionBatchSize).
 		Find(&rows).Error; err != nil {
 		return 0, 0, err
 	}
@@ -181,7 +199,18 @@ func (s *RetentionService) writeArchive(orgID uint, rows []model.AuditLog) (path
 		return "", "", fmt.Errorf("create audit archive directory: %w", err)
 	}
 	stamp := s.now().UTC().Format("20060102T150405.000000000Z")
-	path = filepath.Join(dir, "audit-"+stamp+".jsonl")
+	// The id range keeps consecutive batches of one run apart even when the
+	// clock is frozen (tests) or two runs land in the same nanosecond.
+	minID, maxID := rows[0].ID, rows[0].ID
+	for _, row := range rows[1:] {
+		if row.ID < minID {
+			minID = row.ID
+		}
+		if row.ID > maxID {
+			maxID = row.ID
+		}
+	}
+	path = filepath.Join(dir, fmt.Sprintf("audit-%s-%d-%d.jsonl", stamp, minID, maxID))
 	tmp := path + ".tmp"
 	shaTmp := path + ".sha256.tmp"
 

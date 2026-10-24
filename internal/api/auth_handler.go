@@ -15,6 +15,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
 
 // Login validates credentials and issues an access/refresh pair.
@@ -221,7 +222,35 @@ func (a *AdminAPI) CreateToken(c *gin.Context) {
 		ttl = time.Duration(*req.ExpiresInDays) * 24 * time.Hour
 	}
 
-	plaintext, row, err := a.deps.Tokens.Create(c.Request.Context(), uid, orgID, req.Name, normalized, ttl)
+	var plaintext string
+	var row *model.APIToken
+	ctx := c.Request.Context()
+	err = a.deps.DB.Transaction(func(tx *gorm.DB) error {
+		var cerr error
+		plaintext, row, cerr = a.deps.Tokens.CreateTx(ctx, tx, uid, orgID, req.Name, normalized, ttl)
+		if cerr != nil {
+			return cerr
+		}
+		// The token and its audit entry commit together (issue #19): a token
+		// that exists without a creation record must not be possible.
+		tr, ok := a.deps.Auditor.(audit.TxRecorder)
+		if !ok {
+			return errAuditUnavailable
+		}
+		return tr.RecordTx(tx, audit.Entry{
+			OrganizationID: orgID,
+			ActorUserID:    uid,
+			Action:         "token.create",
+			TargetType:     "api_token",
+			TargetID:       fmt.Sprint(row.ID),
+			Detail: map[string]any{
+				"name":        row.Name,
+				"prefix":      row.TokenPrefix,
+				"permissions": row.PermissionList(),
+				"expires_at":  row.ExpiresAt,
+			},
+		})
+	})
 	switch {
 	case errors.Is(err, auth.ErrTooManyTokens):
 		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, err.Error())
@@ -229,15 +258,18 @@ func (a *AdminAPI) CreateToken(c *gin.Context) {
 	case errors.Is(err, auth.ErrInvalidTokenInput):
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
 		return
+	case errors.Is(err, errAuditUnavailable):
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "audit unavailable")
+		return
 	case err != nil:
 		a.deps.Logger.Error("create token failed")
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not create token")
 		return
 	}
 
-	// The request-level audit fallback records token creation against the
-	// token's organization (the plaintext itself is never logged).
-	c.Set(contextOrgID, orgID)
+	// The domain audit record committed with the transaction; skip the
+	// request-level fallback (the plaintext itself is never logged).
+	c.Set(contextAuditRecorded, true)
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusCreated, gen.IssuedAPITokenResponse{
 		Code:    gen.ErrorCodeOk,
@@ -259,15 +291,38 @@ func (a *AdminAPI) RevokeToken(c *gin.Context, tokenId int64) {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid token id")
 		return
 	}
-	if err := a.deps.Tokens.Revoke(c.Request.Context(), uid, uint(tokenId)); err != nil {
-		if errors.Is(err, auth.ErrTokenNotFound) {
-			abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "token not found")
-			return
+	ctx := c.Request.Context()
+	err := a.deps.DB.Transaction(func(tx *gorm.DB) error {
+		row, rerr := a.deps.Tokens.RevokeTx(ctx, tx, uid, uint(tokenId))
+		if rerr != nil {
+			return rerr
 		}
+		tr, ok := a.deps.Auditor.(audit.TxRecorder)
+		if !ok {
+			return errAuditUnavailable
+		}
+		return tr.RecordTx(tx, audit.Entry{
+			OrganizationID: row.OrganizationID,
+			ActorUserID:    uid,
+			Action:         "token.revoke",
+			TargetType:     "api_token",
+			TargetID:       fmt.Sprint(row.ID),
+			Detail:         map[string]any{"name": row.Name, "prefix": row.TokenPrefix},
+		})
+	})
+	switch {
+	case errors.Is(err, auth.ErrTokenNotFound):
+		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "token not found")
+		return
+	case errors.Is(err, errAuditUnavailable):
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "audit unavailable")
+		return
+	case err != nil:
 		a.deps.Logger.Error("revoke token failed")
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not revoke token")
 		return
 	}
+	c.Set(contextAuditRecorded, true)
 	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
 }
 
@@ -440,7 +495,13 @@ func (a *AdminAPI) ResetMemberTOTP(c *gin.Context, orgId int64, userId int64) {
 		a.writeMemberError(c, err, "could not load membership")
 		return
 	}
+	orgID, targetID := uint(orgId), uint(userId)
 	err := a.deps.DB.Transaction(func(tx *gorm.DB) error {
+		// Authorization is re-checked inside the transaction: 2FA state is
+		// global per user, so org-local member.manage is not enough on its own.
+		if err := a.assertResettableTOTP(tx, c, orgID, targetID); err != nil {
+			return err
+		}
 		res := tx.Where("user_id = ?", userId).Delete(&model.UserTOTP{})
 		if res.Error != nil {
 			return res.Error
@@ -450,7 +511,7 @@ func (a *AdminAPI) ResetMemberTOTP(c *gin.Context, orgId int64, userId int64) {
 			return errAuditUnavailable
 		}
 		return tr.RecordTx(tx, audit.Entry{
-			OrganizationID: uint(orgId),
+			OrganizationID: orgID,
 			ActorUserID:    uid,
 			Action:         "user.2fa.reset",
 			TargetType:     "user",
@@ -458,12 +519,18 @@ func (a *AdminAPI) ResetMemberTOTP(c *gin.Context, orgId int64, userId int64) {
 			Detail:         map[string]any{"had_configuration": res.RowsAffected > 0},
 		})
 	})
-	if err != nil {
-		if errors.Is(err, errAuditUnavailable) {
-			a.deps.Logger.Error("reset 2fa failed: transactional auditor unavailable")
-			abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "audit unavailable")
-			return
-		}
+	switch {
+	case errors.Is(err, errTOTPOwnerReset):
+		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "only an owner can reset an owner's two-factor")
+		return
+	case errors.Is(err, errTOTPOtherOwner):
+		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "target owns another organization; their two-factor must be reset there")
+		return
+	case errors.Is(err, errAuditUnavailable):
+		a.deps.Logger.Error("reset 2fa failed: transactional auditor unavailable")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "audit unavailable")
+		return
+	case err != nil:
 		a.deps.Logger.Error("reset 2fa failed")
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not reset two-factor")
 		return
@@ -471,6 +538,48 @@ func (a *AdminAPI) ResetMemberTOTP(c *gin.Context, orgId int64, userId int64) {
 	c.Set(contextAuditRecorded, true)
 	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
 }
+
+// assertResettableTOTP guards the global second factor of a user against
+// tenant-local administrators: an owner inside the organization may only be
+// reset by an owner (org.admin), and a user who owns a different organization
+// must be reset from there instead, otherwise any admin could weaken the login
+// protection of a tenant they do not administer (CWE-269).
+func (a *AdminAPI) assertResettableTOTP(tx *gorm.DB, c *gin.Context, orgID, targetID uint) error {
+	var m model.Membership
+	if err := store.ScopedByOrg(tx, orgID).Where("user_id = ?", targetID).First(&m).Error; err != nil {
+		return err
+	}
+	var role model.Role
+	if err := store.ScopedByOrg(tx, orgID).First(&role, m.RoleID).Error; err != nil {
+		return err
+	}
+	if role.Kind == model.RoleKindOwner {
+		perms, _ := authz.OrgPermissions(c)
+		if !authz.Has(perms, authz.PermOrgAdmin) {
+			return errTOTPOwnerReset
+		}
+	}
+	var otherOwned int64
+	if err := store.WithoutTenantScope(tx).
+		Model(&model.Membership{}).
+		Joins("JOIN roles ON roles.id = memberships.role_id AND roles.organization_id = memberships.organization_id").
+		Where("memberships.user_id = ? AND roles.kind = ? AND memberships.organization_id <> ?",
+			targetID, model.RoleKindOwner, orgID).
+		Count(&otherOwned).Error; err != nil {
+		return err
+	}
+	if otherOwned > 0 {
+		return errTOTPOtherOwner
+	}
+	return nil
+}
+
+// errTOTPOwnerReset and errTOTPOtherOwner refuse an administrator reset that
+// would cross the authority boundary of the (global) second factor.
+var (
+	errTOTPOwnerReset = errors.New("only an owner can reset an owner's two-factor")
+	errTOTPOtherOwner = errors.New("target owns another organization")
+)
 
 // writeTOTPError maps second-factor failures onto 401/409 responses.
 func (a *AdminAPI) writeTOTPError(c *gin.Context, err error, logMsg string) {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/api"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 )
 
@@ -35,7 +36,10 @@ type m4MemberView struct {
 // m4Org seeds an organization with one owner, one admin, and one member.
 func m4Org(t *testing.T) (h *harness, orgID int64, owner, admin, member model.User, ownerToken, adminToken, memberToken string) {
 	t.Helper()
-	h = newHarness(t)
+	h = newHarnessWith(t, func(d *api.Deps) {
+		// 2FA setup needs a real key: an empty secret now fails closed.
+		d.AuthSecret = "test-secret"
+	})
 	owner = h.seedUser(t, "m4-owner@example.com", "password123")
 	ownerToken = h.login(t, "m4-owner@example.com", "password123")
 	orgID = createOrg(t, h, ownerToken, "m4-org")

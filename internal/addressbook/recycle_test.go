@@ -2,6 +2,7 @@ package addressbook
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -156,6 +157,103 @@ func TestRecycle_CompatReplaceSoftDeletesAndSweep(t *testing.T) {
 	bin, err = svc.ListRecycleBin(ownerID, nil, orgID, book.ID)
 	require.NoError(t, err)
 	require.Empty(t, bin)
+}
+
+// Restoring a recycled peer grows the live list, so both the management and the
+// compat restore paths must respect the per-book limit.
+func TestRecycle_RestoreRespectsPeerCapacity(t *testing.T) {
+	svc, orgID, ownerID, _ := newGrantFixture(t)
+	book, err := svc.Create(ownerID, orgID, model.AddressBookScopeShared, "team")
+	require.NoError(t, err)
+	perms := []string{authz.PermAddressBook}
+
+	fill := make([]model.AddressBookPeer, 0, MaxPeersPerBook-1)
+	for i := 0; i < MaxPeersPerBook-1; i++ {
+		fill = append(fill, model.AddressBookPeer{
+			OrganizationID: orgID, BookID: book.ID, PeerID: fmt.Sprintf("live-%d", i),
+		})
+	}
+	require.NoError(t, store.ScopedByOrg(svc.db, orgID).CreateInBatches(&fill, 200).Error)
+
+	recycledAt := time.Now().UTC().Add(-time.Hour)
+	seedRecycled := func(peerID string) {
+		t.Helper()
+		require.NoError(t, store.ScopedByOrg(svc.db, orgID).Create(&model.AddressBookPeer{
+			OrganizationID: orgID, BookID: book.ID, PeerID: peerID,
+			DeletedAt: &recycledAt, DeletedBy: ownerID,
+		}).Error)
+	}
+
+	// One slot left: restoring fills the book exactly to the limit.
+	seedRecycled("recycled")
+	require.NoError(t, svc.RestorePeer(ownerID, perms, orgID, book.ID, "recycled"))
+
+	// At the limit now: a second restore is refused instead of overshooting.
+	seedRecycled("recycled-2")
+	require.ErrorIs(t, svc.RestorePeer(ownerID, perms, orgID, book.ID, "recycled-2"), ErrInvalidContent)
+}
+
+// The compat AddPeer path restores recycled rows in place; it must apply the
+// per-book limit as well (personal books are the compat write surface).
+func TestRecycle_CompatAddPeerRestoreRespectsCapacity(t *testing.T) {
+	svc, orgID, ownerID, _ := newGrantFixture(t)
+	book, err := svc.EnsurePersonalBook(ownerID, orgID)
+	require.NoError(t, err)
+
+	fill := make([]model.AddressBookPeer, 0, MaxPeersPerBook)
+	for i := 0; i < MaxPeersPerBook; i++ {
+		fill = append(fill, model.AddressBookPeer{
+			OrganizationID: orgID, BookID: book.ID, PeerID: fmt.Sprintf("live-%d", i),
+		})
+	}
+	require.NoError(t, store.ScopedByOrg(svc.db, orgID).CreateInBatches(&fill, 200).Error)
+
+	recycledAt := time.Now().UTC().Add(-time.Hour)
+	require.NoError(t, store.ScopedByOrg(svc.db, orgID).Create(&model.AddressBookPeer{
+		OrganizationID: orgID, BookID: book.ID, PeerID: "recycled",
+		DeletedAt: &recycledAt, DeletedBy: ownerID,
+	}).Error)
+
+	require.ErrorIs(t, svc.AddPeer(ownerID, orgID, book.ID, PeerJSON{ID: "recycled"}), ErrInvalidContent)
+}
+
+// Tag rename/delete rewrites every peer of the book, including recycled rows:
+// otherwise a restored peer would reference a tag that no longer exists.
+func TestRecycle_TagRewriteIncludesRecycledPeers(t *testing.T) {
+	svc, orgID, ownerID, _ := newGrantFixture(t)
+	book, err := svc.EnsurePersonalBook(ownerID, orgID)
+	require.NoError(t, err)
+
+	require.NoError(t, svc.AddTag(ownerID, orgID, book.ID, "old", 0))
+	require.NoError(t, svc.AddPeer(ownerID, orgID, book.ID, PeerJSON{ID: "1", Tags: []string{"old"}}))
+	require.NoError(t, svc.DeletePeer(ownerID, nil, orgID, book.ID, "1"))
+	require.NoError(t, svc.RenameTag(ownerID, orgID, book.ID, "old", "new"))
+
+	var row model.AddressBookPeer
+	require.NoError(t, store.WithoutTenantScope(svc.db).
+		Where("book_id = ? AND peer_id = ?", book.ID, "1").First(&row).Error)
+	require.NotNil(t, row.DeletedAt, "the peer stays in the recycle bin")
+	require.Contains(t, row.TagsJSON, `"new"`)
+	require.NotContains(t, row.TagsJSON, `"old"`)
+}
+
+// Deleting a book must remove its grants: they are keyed by book id without a
+// foreign key, and a reused id would otherwise inherit stale access.
+func TestGrants_DeleteBookRemovesGrants(t *testing.T) {
+	svc, orgID, ownerID, memberID := newGrantFixture(t)
+	book, err := svc.Create(ownerID, orgID, model.AddressBookScopeShared, "team")
+	require.NoError(t, err)
+	_, _, err = svc.UpsertGrant(ownerID, orgID, book.ID, memberID,
+		model.GrantSubjectUser, model.GrantAccessRead, []string{authz.PermAddressBook})
+	require.NoError(t, err)
+
+	_, err = svc.Delete(ownerID, []string{authz.PermAddressBook}, orgID, book.ID)
+	require.NoError(t, err)
+
+	var grants int64
+	require.NoError(t, store.ScopedByOrg(svc.db, orgID).
+		Model(&model.AddressBookGrant{}).Where("book_id = ?", book.ID).Count(&grants).Error)
+	require.Zero(t, grants, "grants must not outlive the book")
 }
 
 func TestRecycle_CompatDeletePeersSoftDeletes(t *testing.T) {

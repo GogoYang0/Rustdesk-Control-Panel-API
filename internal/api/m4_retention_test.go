@@ -46,6 +46,10 @@ func TestAuditRetention_OwnerOnlyAndValidation(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 	}
 
+	// A body without days must not silently mean "keep forever".
+	w = h.do(t, http.MethodPut, path, map[string]any{}, ownerToken)
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+
 	// Zero is a valid setting (keep forever).
 	w = h.do(t, http.MethodPut, path, map[string]any{"days": 0}, ownerToken)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())

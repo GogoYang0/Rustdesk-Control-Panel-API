@@ -267,9 +267,9 @@ func bumpRevision(tx *gorm.DB, orgID, bookID uint) error {
 	return nil
 }
 
-// Delete removes the book together with its peers and tags. The book row is
-// locked first so a concurrent replace cannot re-insert children after the
-// cascading deletes.
+// Delete removes the book together with its peers, tags and access grants. The
+// book row is locked first so a concurrent replace cannot re-insert children
+// after the cascading deletes.
 func (s *Service) Delete(userID uint, perms []string, orgID, bookID uint) (*model.AddressBook, error) {
 	book, err := s.getBook(userID, orgID, bookID)
 	if err != nil {
@@ -292,6 +292,12 @@ func (s *Service) Delete(userID uint, perms []string, orgID, bookID uint) (*mode
 		}
 		if err := store.ScopedByOrg(tx, orgID).
 			Where("book_id = ?", book.ID).Delete(&model.AddressBookTag{}).Error; err != nil {
+			return err
+		}
+		// Grants are keyed by (book, subject) with no foreign key: leaving them
+		// behind would leak access onto a future book that reuses the id.
+		if err := store.ScopedByOrg(tx, orgID).
+			Where("book_id = ?", book.ID).Delete(&model.AddressBookGrant{}).Error; err != nil {
 			return err
 		}
 		return store.ScopedByOrg(tx, orgID).Delete(book).Error

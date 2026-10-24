@@ -98,11 +98,11 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 > **v0.8.0 个人访问令牌**：明文格式 `rdt_<32B base64url>`，服务端只存 SHA-256，列表只回 `token_prefix`（前 8 字符）。
 > 令牌只在**组织路径**上生效（路径 `orgId` 必须等于签发组织）；`/auth/tokens` 自身、`/orgs`、`/permissions` 等非组织端点仍只接受 JWT。
 > **有效权限 = 令牌申请集 ∩ 用户当前角色权限集**，每个请求实时重算：角色降级或会籍停用会立即收窄/失效，令牌不会绕过这些变更。
-> 每人每组织最多 20 个活跃令牌，有效期 1..365 天（默认 90）。令牌与 refresh/JWT 是不同凭证族，互不替代。
+> 每人每组织最多 20 个活跃令牌，有效期 1..365 天（默认 90）。令牌与 refresh/JWT 是不同凭证族，互不替代。创建与撤销都在**令牌写事务内**写审计（`token.create` / `token.revoke`，明文不入审计）；无事务审计器时拒绝写入。
 
 > **v0.8.0 管理面 2FA（TOTP）**：启用后 `/auth/login` 密码正确也**不直接发令牌**，而是返回 `401 + code=two_factor_required`，`data.challenge_token` 为 5 分钟有效的挑战令牌；客户端用它调用公开的 `/auth/2fa/verify`（TOTP 码或一次性恢复码）换取令牌对。挑战令牌本身可重复提交（不是一次性凭据），一次性体现在凭据层面——每个 TOTP 码仅在其时间步内可用且不可重放，每个恢复码只能成功使用一次；该端点与登录共用两轨限流（IP 桶 + 账户/IP 失败计数，超限 429）。
 > TOTP 秘密以 AES-256-GCM 加密存储（密钥由 `auth.secret` 经 HKDF-SHA256 派生）；验证窗口 ±1 步，`last_step` 保证同一码不可重放；恢复码 10 个、Argon2id 存储、成功后即作废。
-> 管理员 `member.manage` 可重置成员 2FA（丢失设备场景），重置动作写审计 `user.2fa.reset`；该审计失败则整体失败（fail closed）。管理员**不能重置自己**（409）——自服务移除走 `/auth/2fa/disable`（需当前密码 + TOTP/恢复码），否则该端点就成了第二因素的旁路。
+> 管理员 `member.manage` 可重置成员 2FA（丢失设备场景），重置动作写审计 `user.2fa.reset`；该审计失败则整体失败（fail closed）。管理员**不能重置自己**（409）——自服务移除走 `/auth/2fa/disable`（需当前密码 + TOTP/恢复码），否则该端点就成了第二因素的旁路。2FA 是**账号级**状态：目标在本组织是 owner 时只有 owner（`org.admin`）能重置；目标在**其他组织**是 owner 时一律 403，必须到其拥有的组织里重置。
 
 ### 3.2 组织与成员
 
@@ -270,10 +270,10 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | 端点 | 权限 | 说明 |
 |---|---|---|
 | `GET .../audit-retention` | `org.admin`（owner） | 返回 `audit_retention_days` 与最近一次成功归档摘要（`at`/`rows`/`path`） |
-| `PUT .../audit-retention` | `org.admin`（owner） | 设置保留天数：0 = 永久，1..3650；写 `organization.audit_retention.set` 审计 |
+| `PUT .../audit-retention` | `org.admin`（owner） | 设置保留天数：`days` 必填（缺失 400），0 = 永久，1..3650；写 `organization.audit_retention.set` 审计 |
 
-- **先归档、后删除（fail closed）**：每小时后台任务对每个保留期 > 0 的组织，把早于阈值的审计行写成 JSONL，附同名 `.sha256`，**重新读取校验行数与摘要一致后才删除**；归档或校验失败则该组织本轮不删除任何行。
-- **归档路径**：`<audit.archiveDir>/org-<orgId>/audit-<UTC时间戳>.jsonl`；临时文件原子改名落盘。归档文件不经 API 暴露，运维备份见运维指南。
+- **先归档、后删除（fail closed）**：每小时后台任务对每个保留期 > 0 的组织，把早于阈值的审计行写成 JSONL，附同名 `.sha256`，**重新读取校验行数与摘要一致后才删除**；归档或校验失败则该组织本轮不删除任何行。按批处理（每批 ≤1000 行，逐批归档/校验/删除，直到剩余不足一批），积压不会一次性载入或撞占位符上限。
+- **归档路径**：`<audit.archiveDir>/org-<orgId>/audit-<UTC时间戳>-<minId>-<maxId>.jsonl`；临时文件原子改名落盘，id 区间避免同轮多批重名。归档文件不经 API 暴露，运维备份见运维指南。
 - **系统动作也审计**：归档与清理分别写 `audit.retention.archive`（含行数、路径、摘要、阈值）与 `audit.retention.purge`；actor 为 0（系统）。
 - **删除与归档同事务**：两条系统审计与按 id 精确删除在同一事务提交；无事务审计器时整轮拒绝删除。
 

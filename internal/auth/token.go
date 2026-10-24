@@ -61,6 +61,12 @@ func NewTokenService(db *gorm.DB, now func() time.Time) *TokenService {
 // already be validated by the caller against the user's current role; the
 // effective set is re-intersected on every request anyway.
 func (s *TokenService) Create(ctx context.Context, userID, orgID uint, name string, permissions []string, ttl time.Duration) (string, *model.APIToken, error) {
+	return s.CreateTx(ctx, s.db, userID, orgID, name, permissions, ttl)
+}
+
+// CreateTx mints the token on the caller's transaction so the handler can
+// record its audit entry in the same commit.
+func (s *TokenService) CreateTx(ctx context.Context, tx *gorm.DB, userID, orgID uint, name string, permissions []string, ttl time.Duration) (string, *model.APIToken, error) {
 	if userID == 0 || orgID == 0 {
 		return "", nil, fmt.Errorf("%w: user and organization are required", ErrInvalidTokenInput)
 	}
@@ -74,7 +80,7 @@ func (s *TokenService) Create(ctx context.Context, userID, orgID uint, name stri
 
 	now := s.now().UTC()
 	var active int64
-	if err := store.ScopedByOrg(s.db.WithContext(ctx), orgID).
+	if err := store.ScopedByOrg(tx.WithContext(ctx), orgID).
 		Model(&model.APIToken{}).
 		Where("user_id = ? AND revoked_at IS NULL AND expires_at > ?", userID, now).
 		Count(&active).Error; err != nil {
@@ -102,7 +108,7 @@ func (s *TokenService) Create(ctx context.Context, userID, orgID uint, name stri
 	if err := row.SetPermissions(permissions); err != nil {
 		return "", nil, err
 	}
-	if err := store.ScopedByOrg(s.db.WithContext(ctx), orgID).Create(row).Error; err != nil {
+	if err := store.ScopedByOrg(tx.WithContext(ctx), orgID).Create(row).Error; err != nil {
 		return "", nil, err
 	}
 	return plaintext, row, nil
@@ -154,20 +160,34 @@ func (s *TokenService) List(ctx context.Context, userID, orgID uint) ([]model.AP
 // Revoke marks one of the caller's tokens revoked. Revoking an already revoked
 // token is idempotent; another user's token is a not-found.
 func (s *TokenService) Revoke(ctx context.Context, userID, tokenID uint) error {
+	_, err := s.RevokeTx(ctx, s.db, userID, tokenID)
+	return err
+}
+
+// RevokeTx revokes inside the caller's transaction and returns the row so the
+// handler can audit the change in the same commit. The row carries the token's
+// organization, which the request path does not (token management is not an
+// organization-scoped endpoint).
+func (s *TokenService) RevokeTx(ctx context.Context, tx *gorm.DB, userID, tokenID uint) (*model.APIToken, error) {
 	if userID == 0 || tokenID == 0 {
-		return ErrTokenNotFound
+		return nil, ErrTokenNotFound
 	}
-	res := store.WithoutTenantScope(s.db.WithContext(ctx)).
+	var row model.APIToken
+	if err := store.WithoutTenantScope(tx.WithContext(ctx)).
+		Where("id = ? AND user_id = ?", tokenID, userID).
+		First(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrTokenNotFound
+		}
+		return nil, err
+	}
+	if err := store.WithoutTenantScope(tx.WithContext(ctx)).
 		Model(&model.APIToken{}).
 		Where("id = ? AND user_id = ?", tokenID, userID).
-		Update("revoked_at", s.now().UTC())
-	if res.Error != nil {
-		return res.Error
+		Update("revoked_at", s.now().UTC()).Error; err != nil {
+		return nil, err
 	}
-	if res.RowsAffected == 0 {
-		return ErrTokenNotFound
-	}
-	return nil
+	return &row, nil
 }
 
 // trimTokenName trims and bounds a display name.

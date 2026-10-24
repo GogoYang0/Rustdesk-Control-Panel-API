@@ -613,6 +613,12 @@ func (a *AdminAPI) writePeerError(c *gin.Context, err error, logMsg string) {
 		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "address book peer not found")
 		return
 	}
+	if errors.Is(err, addressbook.ErrInvalidContent) {
+		// Restoring a peer can exceed the per-book limit; that is a client
+		// conflict with the book state, not a server failure.
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
+		return
+	}
 	if mapBookError(c, err) {
 		return
 	}

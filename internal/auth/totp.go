@@ -46,6 +46,10 @@ var (
 	ErrInvalidTOTP = errors.New("invalid authentication code")
 	// ErrInvalidPassword reports a wrong current password.
 	ErrInvalidPassword = errors.New("invalid password")
+	// ErrTOTPSecretMissing reports an empty auth secret: deriving an encryption
+	// key from empty input would be deterministic and public, so every operation
+	// that needs the key fails closed instead.
+	ErrTOTPSecretMissing = errors.New("two-factor encryption key is not configured")
 )
 
 // TOTPService owns TOTP enrollment, verification, recovery codes and reset.
@@ -57,14 +61,19 @@ type TOTPService struct {
 }
 
 // NewTOTPService derives the storage key from the auth secret via HKDF-SHA256.
-// A nil clock defaults to time.Now.
+// A nil clock defaults to time.Now. An empty secret leaves the service keyless:
+// operations that need the key then fail closed (ErrTOTPSecretMissing) rather
+// than encrypting under a key anyone can derive.
 func NewTOTPService(db *gorm.DB, authSecret string, now func() time.Time) *TOTPService {
 	if now == nil {
 		now = time.Now
 	}
-	reader := hkdf.New(sha256.New, []byte(authSecret), []byte("rustdesk-control-panel-totp-salt"), []byte("totp-secret-encryption-v1"))
-	key := make([]byte, 32)
-	_, _ = reader.Read(key)
+	var key []byte
+	if authSecret != "" {
+		reader := hkdf.New(sha256.New, []byte(authSecret), []byte("rustdesk-control-panel-totp-salt"), []byte("totp-secret-encryption-v1"))
+		key = make([]byte, 32)
+		_, _ = reader.Read(key)
+	}
 	return &TOTPService{db: db, key: key, now: now, issuer: "Rustdesk Control Panel"}
 }
 
@@ -311,6 +320,9 @@ func (s *TOTPService) checkPassword(userID uint, password string) error {
 
 // encrypt seals the secret with AES-256-GCM; the nonce is prepended.
 func (s *TOTPService) encrypt(plain []byte) (string, error) {
+	if len(s.key) == 0 {
+		return "", ErrTOTPSecretMissing
+	}
 	block, err := aes.NewCipher(s.key)
 	if err != nil {
 		return "", err
@@ -329,6 +341,9 @@ func (s *TOTPService) encrypt(plain []byte) (string, error) {
 
 // decrypt opens a stored ciphertext.
 func (s *TOTPService) decrypt(ciphertext string) ([]byte, error) {
+	if len(s.key) == 0 {
+		return nil, ErrTOTPSecretMissing
+	}
 	raw, err := base64.RawStdEncoding.DecodeString(ciphertext)
 	if err != nil {
 		return nil, fmt.Errorf("decode totp secret: %w", err)

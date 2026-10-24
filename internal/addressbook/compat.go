@@ -331,8 +331,12 @@ func (s *Service) AddPeer(userID uint, orgID, bookID uint, in PeerJSON) error {
 			updates["tags_json"] = TagsJSON(in.Tags)
 		}
 		// Re-adding a recycled peer restores it in place: the (book, peer) row
-		// survives deletion so the opaque hash/note stay attached.
+		// survives deletion so the opaque hash/note stay attached. Restoring
+		// grows the live list, so it must respect the per-book limit too.
 		if row.DeletedAt != nil {
+			if err := ensurePeerCapacity(tx, orgID, book.ID); err != nil {
+				return err
+			}
 			updates["deleted_at"] = nil
 			updates["deleted_by"] = uint(0)
 		}
@@ -802,11 +806,12 @@ func (s *Service) mutateBook(userID, orgID, bookID uint, fn func(tx *gorm.DB, bo
 }
 
 // rewritePeerTags decodes every peer's tag list in the book, applies fn and
-// writes the result back (tag rename/delete cascades).
+// writes the result back (tag rename/delete cascades). Recycled rows are
+// included: a restored peer must not reference a tag that no longer exists.
 func rewritePeerTags(tx *gorm.DB, orgID, bookID uint, fn func([]string) []string) error {
 	var rows []model.AddressBookPeer
 	if err := store.ScopedByOrg(tx, orgID).
-		Where("book_id = ? AND deleted_at IS NULL", bookID).Find(&rows).Error; err != nil {
+		Where("book_id = ?", bookID).Find(&rows).Error; err != nil {
 		return err
 	}
 	for _, row := range rows {

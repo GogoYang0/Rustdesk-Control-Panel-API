@@ -137,8 +137,19 @@ func (a *AdminAPI) RemoveMember(c *gin.Context, orgId int64, userId int64) {
 		if err != nil {
 			return err
 		}
-		if targetKind == model.RoleKindOwner && len(owners) <= 1 {
-			return errLastOwner
+		if targetKind == model.RoleKindOwner {
+			// Count the owners that remain after removing the target. A disabled
+			// co-owner is already excluded from the active set, so removing them
+			// must not trip this guard while the actor stays an active owner.
+			remaining := 0
+			for _, owner := range owners {
+				if owner.UserID != target.UserID {
+					remaining++
+				}
+			}
+			if remaining == 0 {
+				return errLastOwner
+			}
 		}
 
 		res := store.ScopedByOrg(tx, uint(orgId)).

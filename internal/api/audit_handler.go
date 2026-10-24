@@ -291,11 +291,16 @@ func (a *AdminAPI) SetAuditRetention(c *gin.Context, orgId int64) {
 	if !a.requirePerm(c, uid, uint(orgId), authz.PermOrgAdmin) {
 		return
 	}
-	var req gen.AuditRetentionRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	// Days is a pointer so an empty body is rejected instead of silently meaning
+	// "keep forever": 0 is a valid, explicit value.
+	var body struct {
+		Days *int `json:"days"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Days == nil {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "days is required")
 		return
 	}
+	req := gen.AuditRetentionRequest{Days: *body.Days}
 
 	err := a.deps.DB.Transaction(func(tx *gorm.DB) error {
 		if err := a.retention.SetDaysTx(tx, uint(orgId), req.Days); err != nil {

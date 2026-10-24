@@ -96,6 +96,109 @@ func TestTOTP_AdminCannotResetOwnFactor(t *testing.T) {
 	require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
 }
 
+// inviteAndVerify joins an email to the organization through the real
+// invitation flow and marks the mailbox verified, returning its user id.
+func inviteAndVerify(t *testing.T, h *harness, orgID int64, email, role string) int64 {
+	t.Helper()
+	invite := h.newInvitationForTest(t, orgID, email, role)
+	w := h.do(t, http.MethodPost, "/api/v1/invitations/accept",
+		map[string]string{"token": invite, "password": "newpass123"}, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var resp struct {
+		Data struct {
+			UserId int64 `json:"user_id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NoError(t, h.db.DB.Model(&model.User{}).
+		Where("email = ?", email).Update("email_verified", true).Error)
+	return resp.Data.UserId
+}
+
+// The second factor is global, so an organization admin must not be able to
+// clear an owner's configuration: only an owner (org.admin) may.
+func TestTOTP_AdminCannotResetOwner(t *testing.T) {
+	h := newHarness(t)
+	owner := h.seedUser(t, "totp-owner@example.com", "password123")
+	ownerToken := h.login(t, "totp-owner@example.com", "password123")
+	w := h.do(t, http.MethodPost, "/api/v1/orgs", map[string]string{"name": "totp-owner-org"}, ownerToken)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	var orgResp struct {
+		Data struct {
+			Id int64 `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &orgResp))
+	orgID := orgResp.Data.Id
+
+	inviteAndVerify(t, h, orgID, "totp-admin@example.com", model.RoleAdmin)
+	adminToken := h.login(t, "totp-admin@example.com", "newpass123")
+
+	w = h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgID)+"/members/"+itoa(int64(owner.ID))+"/2fa/reset", nil, adminToken)
+	require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+
+	// The owner can reset another member, which pins that the guard is about
+	// authority over the target rather than a blanket refusal.
+	memberID := inviteAndVerify(t, h, orgID, "totp-member@example.com", model.RoleMember)
+	w = h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgID)+"/members/"+itoa(memberID)+"/2fa/reset", nil, ownerToken)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+}
+
+// A user who owns another tenant keeps that tenant's login protection even when
+// they are only a member here: the local admin must not be able to clear it.
+func TestTOTP_AdminCannotResetOtherOrgOwner(t *testing.T) {
+	h := newHarness(t)
+	h.seedUser(t, "other-owner-admin@example.com", "password123")
+	ownerToken := h.login(t, "other-owner-admin@example.com", "password123")
+	w := h.do(t, http.MethodPost, "/api/v1/orgs", map[string]string{"name": "tenant-a"}, ownerToken)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	var orgA struct {
+		Data struct {
+			Id int64 `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &orgA))
+
+	inviteAndVerify(t, h, orgA.Data.Id, "tenant-b-owner@example.com", model.RoleMember)
+	memberToken := h.login(t, "tenant-b-owner@example.com", "newpass123")
+	w = h.do(t, http.MethodPost, "/api/v1/orgs", map[string]string{"name": "tenant-b"}, memberToken)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	var orgB struct {
+		Data struct {
+			Id int64 `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &orgB))
+	require.NotZero(t, orgB.Data.Id, "the target must own a second organization")
+
+	inviteAndVerify(t, h, orgA.Data.Id, "tenant-a-admin@example.com", model.RoleAdmin)
+	adminToken := h.login(t, "tenant-a-admin@example.com", "newpass123")
+
+	var target model.User
+	require.NoError(t, h.db.DB.Where("email = ?", "tenant-b-owner@example.com").First(&target).Error)
+	w = h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgA.Data.Id)+"/members/"+itoa(int64(target.ID))+"/2fa/reset", nil, adminToken)
+	require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+}
+
+// A disabled co-owner is outside the active owner set, so the remaining owner
+// must be able to remove them (the old count guard refused this case).
+func TestRemoveMember_DisabledCoOwnerCanBeRemoved(t *testing.T) {
+	h := newHarness(t)
+	h.seedUser(t, "remove-owner@example.com", "password123")
+	token := h.login(t, "remove-owner@example.com", "password123")
+	orgID := createOrg(t, h, token, "remove-disabled-owner-org")
+
+	co := h.seedUser(t, "remove-co-owner@example.com", "password123")
+	ownerRole := h.roleID(t, uint(orgID), model.RoleOwner)
+	require.NoError(t, h.db.DB.Create(&model.Membership{
+		OrganizationID: uint(orgID), UserID: co.ID, RoleID: ownerRole,
+		Role: model.RoleOwner, Disabled: true,
+	}).Error)
+
+	w := h.do(t, http.MethodDelete, "/api/v1/orgs/"+itoa(orgID)+"/members/"+itoa(int64(co.ID)), nil, token)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+}
+
 // Listing devices is gated by device.read, so a custom role that omits the
 // code cannot read the inventory even though it can manage other domains.
 func TestDevices_ListRequiresDeviceRead(t *testing.T) {

@@ -88,13 +88,15 @@ func WriteCSV(w io.Writer, rows []model.AuditLog, emails map[uint]string) error 
 }
 
 // escapeFormula prefixes a leading formula trigger with a single quote. The
-// escaped cell stays readable and the spreadsheet never evaluates it.
+// escaped cell stays readable and the spreadsheet never evaluates it. Control
+// prefixes (tab, CR, LF) are included: some spreadsheets strip them and then
+// evaluate the remainder as a formula.
 func escapeFormula(cell string) string {
 	if cell == "" {
 		return cell
 	}
 	switch cell[0] {
-	case '=', '+', '-', '@':
+	case '=', '+', '-', '@', '\t', '\r', '\n':
 		return "'" + cell
 	default:
 		return cell
