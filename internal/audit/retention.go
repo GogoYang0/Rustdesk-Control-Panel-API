@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"gorm.io/gorm"
@@ -244,6 +245,11 @@ func (s *RetentionService) writeArchive(orgID uint, rows []model.AuditLog) (path
 		_ = os.Remove(tmp)
 		return "", "", fmt.Errorf("write audit archive checksum: %w", err)
 	}
+	if err := syncFile(shaTmp); err != nil {
+		_ = os.Remove(tmp)
+		_ = os.Remove(shaTmp)
+		return "", "", fmt.Errorf("sync audit archive checksum: %w", err)
+	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		_ = os.Remove(shaTmp)
@@ -254,7 +260,41 @@ func (s *RetentionService) writeArchive(orgID uint, rows []model.AuditLog) (path
 		_ = os.Remove(shaTmp)
 		return "", "", fmt.Errorf("publish audit archive checksum: %w", err)
 	}
+	// The directory entry itself must be durable before the database rows are
+	// deleted: otherwise a crash can leave a committed deletion whose archive is
+	// only present as an unreachable inode (or not at all). Directories cannot
+	// be synced on Windows, where the rename is flushed with the file handles.
+	if err := syncDir(dir); err != nil {
+		_ = os.Remove(path)
+		_ = os.Remove(path + ".sha256")
+		return "", "", fmt.Errorf("sync audit archive directory: %w", err)
+	}
 	return path, sum, nil
+}
+
+// syncFile flushes one file's contents to stable storage. The handle is opened
+// for writing because Windows cannot flush a read-only handle.
+func syncFile(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	return f.Sync()
+}
+
+// syncDir flushes directory entries so a rename survives a crash. Windows has
+// no directory fsync; NTFS journals the rename with the file flush instead.
+func syncDir(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }()
+	return d.Sync()
 }
 
 // verifyArchive re-reads the archive and confirms both its line count and its

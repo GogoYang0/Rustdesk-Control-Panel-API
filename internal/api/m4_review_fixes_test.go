@@ -199,6 +199,56 @@ func TestRemoveMember_DisabledCoOwnerCanBeRemoved(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 }
 
+// The personal token's permission set is an upper bound, including where
+// ownership or a grant would otherwise authorize a write: a token without
+// addressbook.write must not mutate books at all.
+func TestToken_CannotMutateAddressBooksBeyondScope(t *testing.T) {
+	h, orgID, _, _, member, ownerToken, _, memberToken := m4Org(t)
+	orgPath := "/api/v1/orgs/" + itoa(orgID)
+	booksPath := orgPath + "/address-books"
+	narrow := createTokenAPI(t, h, orgID, ownerToken, "narrow", []string{authz.PermDeviceRead})
+
+	// Personal books authorize their owner independently of the role permission.
+	w := h.do(t, http.MethodPost, booksPath, map[string]any{"name": "own", "scope": "personal"}, ownerToken)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	var personal struct {
+		Data struct {
+			Id int64 `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &personal))
+	personalPath := booksPath + "/" + itoa(personal.Data.Id)
+
+	w = h.do(t, http.MethodDelete, personalPath, nil, narrow.Plaintext)
+	require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+	w = h.do(t, http.MethodPost, booksPath, map[string]any{"name": "via-token", "scope": "personal"}, narrow.Plaintext)
+	require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+	w = h.do(t, http.MethodDelete, personalPath, nil, ownerToken)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	// A full grant on a shared book raises the member's access, not the token's
+	// ceiling: deleting the book still requires addressbook.write.
+	w = h.do(t, http.MethodPost, booksPath, map[string]any{"name": "team", "scope": "shared"}, ownerToken)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	var shared struct {
+		Data struct {
+			Id int64 `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &shared))
+	sharedPath := booksPath + "/" + itoa(shared.Data.Id)
+	w = h.do(t, http.MethodPost, sharedPath+"/grants", map[string]any{
+		"subject_kind": "user", "subject_user_id": member.ID, "access": "full",
+	}, ownerToken)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+
+	memberNarrow := createTokenAPI(t, h, orgID, memberToken, "narrow-member", []string{authz.PermDeviceRead})
+	w = h.do(t, http.MethodDelete, sharedPath, nil, memberNarrow.Plaintext)
+	require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+	w = h.do(t, http.MethodDelete, sharedPath, nil, memberToken)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+}
+
 // Listing devices is gated by device.read, so a custom role that omits the
 // code cannot read the inventory even though it can manage other domains.
 func TestDevices_ListRequiresDeviceRead(t *testing.T) {

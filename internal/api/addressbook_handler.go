@@ -13,6 +13,7 @@ import (
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/gen"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/addressbook"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 )
@@ -109,12 +110,20 @@ func (a *AdminAPI) CreateAddressBook(c *gin.Context, orgId int64) {
 			return
 		}
 		perms, _ := authz.OrgPermissions(c)
+		if !a.requireBookWriteScope(c, perms) {
+			return
+		}
 		if !canWriteShared(perms) {
 			abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "insufficient permissions")
 			return
 		}
-	} else if _, member := a.membershipFor(c, uid, uint(orgId)); !member {
-		return
+	} else {
+		if _, member := a.membershipFor(c, uid, uint(orgId)); !member {
+			return
+		}
+		if perms, _ := authz.OrgPermissions(c); !a.requireBookWriteScope(c, perms) {
+			return
+		}
 	}
 
 	book, err := a.books.Create(uid, uint(orgId), string(req.Scope), req.Name)
@@ -179,6 +188,9 @@ func (a *AdminAPI) UpdateAddressBook(c *gin.Context, orgId int64, bookId int64) 
 	if !ok {
 		return
 	}
+	if !a.requireBookWriteScope(c, role) {
+		return
+	}
 	book, err := a.books.Update(uid, role, uint(orgId), uint(bookId), req.Name)
 	if err != nil && mapBookError(c, err) {
 		return
@@ -199,6 +211,9 @@ func (a *AdminAPI) DeleteAddressBook(c *gin.Context, orgId int64, bookId int64) 
 	}
 	role, ok := a.roleForBook(c, uid, orgId, bookId)
 	if !ok {
+		return
+	}
+	if !a.requireBookWriteScope(c, role) {
 		return
 	}
 	book, err := a.books.Delete(uid, role, uint(orgId), uint(bookId))
@@ -302,6 +317,9 @@ func (a *AdminAPI) ReplaceAddressBookPeers(c *gin.Context, orgId int64, bookId i
 	if !ok {
 		return
 	}
+	if !a.requireBookWriteScope(c, role) {
+		return
+	}
 	if !validatePeers(req.Peers) {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest,
 			"peer_id must be non-empty, at most 64 characters and unique within the request")
@@ -346,6 +364,9 @@ func (a *AdminAPI) ReplaceAddressBookTags(c *gin.Context, orgId int64, bookId in
 
 	role, ok := a.roleForBook(c, uid, orgId, bookId)
 	if !ok {
+		return
+	}
+	if !a.requireBookWriteScope(c, role) {
 		return
 	}
 	if !validateTags(req.Tags) {
@@ -425,6 +446,9 @@ func (a *AdminAPI) CreateAddressBookGrant(c *gin.Context, orgId int64, bookId in
 	if !ok {
 		return
 	}
+	if !a.requireBookWriteScope(c, perms) {
+		return
+	}
 
 	grant, created, err := a.books.UpsertGrant(uid, uint(orgId), uint(bookId), subjectUserID,
 		string(req.SubjectKind), string(req.Access), perms)
@@ -455,6 +479,9 @@ func (a *AdminAPI) DeleteAddressBookGrant(c *gin.Context, orgId int64, bookId in
 	}
 	perms, ok := a.roleForBook(c, uid, orgId, bookId)
 	if !ok {
+		return
+	}
+	if !a.requireBookWriteScope(c, perms) {
 		return
 	}
 	if err := a.books.DeleteGrant(uid, uint(orgId), uint(bookId), uint(grantId), perms); err != nil {
@@ -507,6 +534,9 @@ func grantToGen(g *model.AddressBookGrant) gen.AddressBookGrant {
 func (a *AdminAPI) DeleteAddressBookPeer(c *gin.Context, orgId int64, bookId int64, peerId string) {
 	uid, perms, ok := a.peerBookContext(c, orgId, bookId, peerId)
 	if !ok {
+		return
+	}
+	if !a.requireBookWriteScope(c, perms) {
 		return
 	}
 	if err := a.books.DeletePeer(uid, perms, uint(orgId), uint(bookId), peerId); err != nil {
@@ -565,6 +595,9 @@ func (a *AdminAPI) RestoreAddressBookPeer(c *gin.Context, orgId int64, bookId in
 	if !ok {
 		return
 	}
+	if !a.requireBookWriteScope(c, perms) {
+		return
+	}
 	if err := a.books.RestorePeer(uid, perms, uint(orgId), uint(bookId), peerId); err != nil {
 		a.writePeerError(c, err, "restore address book peer failed")
 		return
@@ -576,6 +609,9 @@ func (a *AdminAPI) RestoreAddressBookPeer(c *gin.Context, orgId int64, bookId in
 func (a *AdminAPI) PurgeAddressBookPeer(c *gin.Context, orgId int64, bookId int64, peerId string) {
 	uid, perms, ok := a.peerBookContext(c, orgId, bookId, peerId)
 	if !ok {
+		return
+	}
+	if !a.requireBookWriteScope(c, perms) {
 		return
 	}
 	if err := a.books.PurgePeer(uid, perms, uint(orgId), uint(bookId), peerId); err != nil {
@@ -664,6 +700,20 @@ func (a *AdminAPI) roleForBook(c *gin.Context, uid uint, orgId, bookId int64) ([
 
 func canWriteShared(perms []string) bool {
 	return authz.Has(perms, authz.PermAddressBook)
+}
+
+// requireBookWriteScope applies the personal-token ceiling to address-book
+// mutations. Ownership and grants can authorize write/full access independently
+// of the role permission, so without this check a token minted with unrelated
+// permissions (for example device.read only) could still delete its user's
+// personal book or a book the user holds a full grant on. The token's effective
+// set is the upper bound; JWT callers are unaffected.
+func (a *AdminAPI) requireBookWriteScope(c *gin.Context, perms []string) bool {
+	if _, tokenAuth := auth.TokenPermissions(c); tokenAuth && !authz.Has(perms, authz.PermAddressBook) {
+		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "personal token lacks addressbook.write")
+		return false
+	}
+	return true
 }
 
 // errStop marks "response already written" inside the load helpers.

@@ -92,16 +92,12 @@ func (s *TOTPService) Enabled(userID uint) (bool, error) {
 
 // Setup generates a new secret and returns it with the provisioning URI. The
 // secret only becomes active after Enable.
+//
+// Enrollment state is written atomically: the row is locked (outside SQLite,
+// which serialises writers) and the write is conditional on enabled_at staying
+// NULL, so a concurrent Enable either wins cleanly or this call reports the
+// conflict instead of silently clearing an active configuration.
 func (s *TOTPService) Setup(userID uint) (secret, uri string, err error) {
-	var row model.UserTOTP
-	err = s.db.First(&row, userID).Error
-	switch {
-	case err == nil && row.EnabledAt != nil:
-		return "", "", ErrTOTPAlreadyEnabled
-	case err != nil && !errors.Is(err, gorm.ErrRecordNotFound):
-		return "", "", err
-	}
-
 	raw := make([]byte, totpSecretSize)
 	if _, err := rand.Read(raw); err != nil {
 		return "", "", fmt.Errorf("generate totp secret: %w", err)
@@ -121,15 +117,57 @@ func (s *TOTPService) Setup(userID uint) (secret, uri string, err error) {
 	uri = fmt.Sprintf("otpauth://totp/%s?secret=%s&issuer=%s&digits=%d&period=%d",
 		label, secret, url.QueryEscape(s.issuer), totpDigits, totpPeriod)
 
-	next := model.UserTOTP{
-		UserID:           userID,
-		SecretCiphertext: ciphertext,
-		RecoveryCodes:    "[]",
-	}
-	if err := s.db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "user_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"secret_ciphertext", "enabled_at", "recovery_codes", "last_step", "updated_at"}),
-	}).Create(&next).Error; err != nil {
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		var row model.UserTOTP
+		read := tx
+		if tx.Name() != "sqlite" {
+			read = read.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		readErr := read.First(&row, userID).Error
+		switch {
+		case readErr == nil:
+			if row.EnabledAt != nil {
+				return ErrTOTPAlreadyEnabled
+			}
+			res := tx.Model(&model.UserTOTP{}).
+				Where("user_id = ? AND enabled_at IS NULL", userID).
+				Updates(map[string]any{
+					"secret_ciphertext": ciphertext,
+					"recovery_codes":    "[]",
+					"last_step":         0,
+					"updated_at":        s.now().UTC(),
+				})
+			if res.Error != nil {
+				return res.Error
+			}
+			if res.RowsAffected == 0 {
+				return ErrTOTPAlreadyEnabled
+			}
+			return nil
+		case errors.Is(readErr, gorm.ErrRecordNotFound):
+			next := model.UserTOTP{
+				UserID:           userID,
+				SecretCiphertext: ciphertext,
+				RecoveryCodes:    "[]",
+			}
+			// user_id is unique: a concurrent creator wins and this call treats
+			// the conflict as "already configured".
+			res := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "user_id"}},
+				DoNothing: true,
+			}).Create(&next)
+			if res.Error != nil {
+				return res.Error
+			}
+			if res.RowsAffected == 0 {
+				return ErrTOTPAlreadyEnabled
+			}
+			return nil
+		default:
+			return readErr
+		}
+	})
+	if err != nil {
 		return "", "", err
 	}
 	return secret, uri, nil
@@ -156,8 +194,12 @@ func (s *TOTPService) Enable(userID uint, code string) error {
 		return ErrInvalidTOTP
 	}
 	now := s.now().UTC()
+	// The update is bound to the exact secret that was verified: a concurrent
+	// Setup that replaced the pending secret must not be activated by a code
+	// belonging to the old one.
 	res := s.db.Model(&model.UserTOTP{}).
-		Where("user_id = ? AND enabled_at IS NULL AND last_step < ?", userID, step).
+		Where("user_id = ? AND enabled_at IS NULL AND last_step < ? AND secret_ciphertext = ?",
+			userID, step, row.SecretCiphertext).
 		Updates(map[string]any{"enabled_at": now, "last_step": step, "updated_at": now})
 	if res.Error != nil {
 		return res.Error

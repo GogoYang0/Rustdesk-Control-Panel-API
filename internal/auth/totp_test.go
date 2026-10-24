@@ -38,6 +38,36 @@ func newTOTPFixture(t *testing.T) (*store.Store, *auth.TOTPService, *time.Time, 
 	return st, svc, &now, user
 }
 
+// Enrollment must never rewrite an already active configuration: setup after a
+// successful enable is a conflict, not a silent downgrade to a pending secret.
+func TestTOTP_SetupCannotReplaceEnabledConfig(t *testing.T) {
+	_, svc, now, user := newTOTPFixture(t)
+	secret, _, err := svc.Setup(user.ID)
+	require.NoError(t, err)
+	require.NoError(t, svc.Enable(user.ID, totpCode(secret, *now)))
+
+	_, _, err = svc.Setup(user.ID)
+	require.ErrorIs(t, err, auth.ErrTOTPAlreadyEnabled)
+
+	enabled, err := svc.Enabled(user.ID)
+	require.NoError(t, err)
+	require.True(t, enabled, "the active configuration must survive the rejected setup")
+}
+
+// Re-enrollment before activation replaces the pending secret; a code from the
+// replaced secret must not activate the new one.
+func TestTOTP_EnableRejectsReplacedSecret(t *testing.T) {
+	_, svc, now, user := newTOTPFixture(t)
+	first, _, err := svc.Setup(user.ID)
+	require.NoError(t, err)
+	second, _, err := svc.Setup(user.ID)
+	require.NoError(t, err)
+	require.NotEqual(t, first, second)
+
+	require.ErrorIs(t, svc.Enable(user.ID, totpCode(first, *now)), auth.ErrInvalidTOTP)
+	require.NoError(t, svc.Enable(user.ID, totpCode(second, *now)))
+}
+
 // An empty auth secret must not silently become a public, deterministic key:
 // every operation that needs the key fails closed instead.
 func TestTOTP_EmptySecretFailsClosed(t *testing.T) {
