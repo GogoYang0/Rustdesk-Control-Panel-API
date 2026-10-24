@@ -517,7 +517,9 @@ func (h *harness) setupStalePolicies() error {
 		}
 		del := h.do(&evidence{}, "delete-policy-setup", http.MethodDelete,
 			fmt.Sprintf("/api/v1/orgs/%d/policies/%d", h.orgID, p.Id), nil)
-		if del.Status >= 400 {
+		// A transport error yields status -1, which must not pass: only 2xx
+		// means the policy is gone, and teardown has to report anything else.
+		if del.Status < 200 || del.Status >= 300 {
 			return fmt.Errorf("delete policy %q (id=%d): status %d", p.Name, p.Id, del.Status)
 		}
 		fmt.Printf("[setup] deleted harness policy %q (id=%d) -> %d\n", p.Name, p.Id, del.Status)
