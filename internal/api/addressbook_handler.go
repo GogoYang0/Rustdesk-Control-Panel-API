@@ -376,6 +376,134 @@ func (a *AdminAPI) ReplaceAddressBookTags(c *gin.Context, orgId int64, bookId in
 	respondBook(c, http.StatusOK, book)
 }
 
+// ListAddressBookGrants lists the grants of a shared book. Grant management
+// requires full access.
+func (a *AdminAPI) ListAddressBookGrants(c *gin.Context, orgId int64, bookId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	perms, ok := a.roleForBook(c, uid, orgId, bookId)
+	if !ok {
+		return
+	}
+	grants, err := a.books.ListGrants(uid, uint(orgId), uint(bookId), perms)
+	if err != nil && mapGrantError(c, err) {
+		return
+	}
+	if err != nil {
+		a.deps.Logger.Error("list address book grants failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not list grants")
+		return
+	}
+	out := make([]gen.AddressBookGrant, 0, len(grants))
+	for i := range grants {
+		out = append(out, grantToGen(&grants[i]))
+	}
+	c.JSON(http.StatusOK, gen.AddressBookGrantListResponse{Code: gen.ErrorCodeOk, Message: "ok", Data: out})
+}
+
+// CreateAddressBookGrant creates or updates one subject's grant.
+func (a *AdminAPI) CreateAddressBookGrant(c *gin.Context, orgId int64, bookId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	var req gen.AddressBookGrantRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid grant payload")
+		return
+	}
+	var subjectUserID uint
+	if req.SubjectUserId != nil {
+		if *req.SubjectUserId <= 0 {
+			abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "subject_user_id must be positive")
+			return
+		}
+		subjectUserID = uint(*req.SubjectUserId)
+	}
+	perms, ok := a.roleForBook(c, uid, orgId, bookId)
+	if !ok {
+		return
+	}
+
+	grant, created, err := a.books.UpsertGrant(uid, uint(orgId), uint(bookId), subjectUserID,
+		string(req.SubjectKind), string(req.Access), perms)
+	if err != nil && mapGrantError(c, err) {
+		return
+	}
+	if err != nil {
+		a.deps.Logger.Error("create address book grant failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not update grant")
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	c.JSON(status, gen.AddressBookGrantResponse{Code: gen.ErrorCodeOk, Message: "ok", Data: grantToGen(grant)})
+}
+
+// DeleteAddressBookGrant revokes one grant of a shared book.
+func (a *AdminAPI) DeleteAddressBookGrant(c *gin.Context, orgId int64, bookId int64, grantId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if grantId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid grant id")
+		return
+	}
+	perms, ok := a.roleForBook(c, uid, orgId, bookId)
+	if !ok {
+		return
+	}
+	if err := a.books.DeleteGrant(uid, uint(orgId), uint(bookId), uint(grantId), perms); err != nil {
+		if mapGrantError(c, err) {
+			return
+		}
+		a.deps.Logger.Error("delete address book grant failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not delete grant")
+		return
+	}
+	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
+}
+
+// mapGrantError translates grant-specific service errors; shared cases defer to
+// mapBookError.
+func mapGrantError(c *gin.Context, err error) bool {
+	switch {
+	case errors.Is(err, addressbook.ErrInvalidGrant):
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
+	case errors.Is(err, addressbook.ErrGrantNotShared):
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
+	case errors.Is(err, addressbook.ErrSubjectNotMember):
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
+	case errors.Is(err, addressbook.ErrGrantNotFound):
+		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "grant not found")
+	default:
+		return mapBookError(c, err)
+	}
+	return true
+}
+
+// grantToGen maps a grant row onto the contract shape. subject_user_id is
+// omitted for the everyone grant.
+func grantToGen(g *model.AddressBookGrant) gen.AddressBookGrant {
+	out := gen.AddressBookGrant{
+		Id:          int64(g.ID),
+		SubjectKind: gen.AddressBookGrantKind(g.SubjectKind),
+		Access:      gen.AddressBookGrantAccess(g.Access),
+		CreatedBy:   int64(g.CreatedBy),
+		CreatedAt:   g.CreatedAt,
+	}
+	if g.SubjectKind == model.GrantSubjectUser {
+		id := int64(g.SubjectUserID)
+		out.SubjectUserId = &id
+	}
+	return out
+}
+
 // loadBook resolves the caller's role and fetches the book with peers/tags,
 // mapping service errors onto the standard envelope.
 func (a *AdminAPI) loadBook(c *gin.Context, uid uint, orgId, bookId int64) (*model.AddressBook, []model.AddressBookPeer, []model.AddressBookTag, error) {

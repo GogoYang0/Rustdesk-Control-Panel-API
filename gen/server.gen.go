@@ -49,6 +49,45 @@ func (e AddressBookCreateRequestScope) Valid() bool {
 	}
 }
 
+// Defines values for AddressBookGrantAccess.
+const (
+	Full  AddressBookGrantAccess = "full"
+	Read  AddressBookGrantAccess = "read"
+	Write AddressBookGrantAccess = "write"
+)
+
+// Valid indicates whether the value is a known member of the AddressBookGrantAccess enum.
+func (e AddressBookGrantAccess) Valid() bool {
+	switch e {
+	case Full:
+		return true
+	case Read:
+		return true
+	case Write:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AddressBookGrantKind.
+const (
+	Everyone AddressBookGrantKind = "everyone"
+	User     AddressBookGrantKind = "user"
+)
+
+// Valid indicates whether the value is a known member of the AddressBookGrantKind enum.
+func (e AddressBookGrantKind) Valid() bool {
+	switch e {
+	case Everyone:
+		return true
+	case User:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AlertSeverity.
 const (
 	AlertSeverityCritical AlertSeverity = "critical"
@@ -461,6 +500,77 @@ type AddressBookCreateRequest struct {
 
 // AddressBookCreateRequestScope defines model for AddressBookCreateRequest.Scope.
 type AddressBookCreateRequestScope string
+
+// AddressBookGrant defines model for AddressBookGrant.
+type AddressBookGrant struct {
+	// Access - read：只读（当前共享簿默认成员可读，显式 everyone/user 授权可覆盖）
+	// - write：可替换 peers/tags
+	// - full：可改名、删除簿、管理授权
+	Access      AddressBookGrantAccess `json:"access"`
+	CreatedAt   time.Time              `json:"created_at"`
+	CreatedBy   int64                  `json:"created_by"`
+	Id          int64                  `json:"id"`
+	SubjectKind AddressBookGrantKind   `json:"subject_kind"`
+
+	// SubjectUserId `user` 主体为用户 id；`everyone` 为 null
+	SubjectUserId *int64 `json:"subject_user_id,omitempty"`
+}
+
+// AddressBookGrantAccess - read：只读（当前共享簿默认成员可读，显式 everyone/user 授权可覆盖）
+// - write：可替换 peers/tags
+// - full：可改名、删除簿、管理授权
+type AddressBookGrantAccess string
+
+// AddressBookGrantKind defines model for AddressBookGrantKind.
+type AddressBookGrantKind string
+
+// AddressBookGrantListResponse defines model for AddressBookGrantListResponse.
+type AddressBookGrantListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode          `json:"code"`
+	Data    []AddressBookGrant `json:"data"`
+	Message string             `json:"message"`
+}
+
+// AddressBookGrantRequest defines model for AddressBookGrantRequest.
+type AddressBookGrantRequest struct {
+	// Access - read：只读（当前共享簿默认成员可读，显式 everyone/user 授权可覆盖）
+	// - write：可替换 peers/tags
+	// - full：可改名、删除簿、管理授权
+	Access      AddressBookGrantAccess `json:"access"`
+	SubjectKind AddressBookGrantKind   `json:"subject_kind"`
+
+	// SubjectUserId `subject_kind=user` 时必填且必须是本组织成员；`everyone` 时必须省略或为 null
+	SubjectUserId *int64 `json:"subject_user_id,omitempty"`
+}
+
+// AddressBookGrantResponse defines model for AddressBookGrantResponse.
+type AddressBookGrantResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode        `json:"code"`
+	Data    AddressBookGrant `json:"data"`
+	Message string           `json:"message"`
+}
 
 // AddressBookListResponse defines model for AddressBookListResponse.
 type AddressBookListResponse struct {
@@ -1910,6 +2020,9 @@ type CreateAddressBookJSONRequestBody = AddressBookCreateRequest
 // UpdateAddressBookJSONRequestBody defines body for UpdateAddressBook for application/json ContentType.
 type UpdateAddressBookJSONRequestBody = AddressBookUpdateRequest
 
+// CreateAddressBookGrantJSONRequestBody defines body for CreateAddressBookGrant for application/json ContentType.
+type CreateAddressBookGrantJSONRequestBody = AddressBookGrantRequest
+
 // ReplaceAddressBookPeersJSONRequestBody defines body for ReplaceAddressBookPeers for application/json ContentType.
 type ReplaceAddressBookPeersJSONRequestBody = AddressBookPeersReplaceRequest
 
@@ -1996,6 +2109,15 @@ type ServerInterface interface {
 	// UpdateAddressBook 更新地址簿名称
 	// (PUT /api/v1/orgs/{orgId}/address-books/{bookId})
 	UpdateAddressBook(c *gin.Context, orgId int64, bookId int64)
+	// ListAddressBookGrants 列出共享地址簿授权
+	// (GET /api/v1/orgs/{orgId}/address-books/{bookId}/grants)
+	ListAddressBookGrants(c *gin.Context, orgId int64, bookId int64)
+	// CreateAddressBookGrant 新增或更新共享地址簿授权
+	// (POST /api/v1/orgs/{orgId}/address-books/{bookId}/grants)
+	CreateAddressBookGrant(c *gin.Context, orgId int64, bookId int64)
+	// DeleteAddressBookGrant 撤销共享地址簿授权
+	// (DELETE /api/v1/orgs/{orgId}/address-books/{bookId}/grants/{grantId})
+	DeleteAddressBookGrant(c *gin.Context, orgId int64, bookId int64, grantId int64)
 	// ReplaceAddressBookPeers 全量替换地址簿 peers
 	// (PUT /api/v1/orgs/{orgId}/address-books/{bookId}/peers)
 	ReplaceAddressBookPeers(c *gin.Context, orgId int64, bookId int64)
@@ -2359,6 +2481,117 @@ func (siw *ServerInterfaceWrapper) UpdateAddressBook(c *gin.Context) {
 	}
 
 	siw.Handler.UpdateAddressBook(c, orgId, bookId)
+}
+
+// ListAddressBookGrants operation middleware
+func (siw *ServerInterfaceWrapper) ListAddressBookGrants(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "bookId" -------------
+	var bookId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "bookId", c.Param("bookId"), &bookId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter bookId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListAddressBookGrants(c, orgId, bookId)
+}
+
+// CreateAddressBookGrant operation middleware
+func (siw *ServerInterfaceWrapper) CreateAddressBookGrant(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "bookId" -------------
+	var bookId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "bookId", c.Param("bookId"), &bookId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter bookId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateAddressBookGrant(c, orgId, bookId)
+}
+
+// DeleteAddressBookGrant operation middleware
+func (siw *ServerInterfaceWrapper) DeleteAddressBookGrant(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "bookId" -------------
+	var bookId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "bookId", c.Param("bookId"), &bookId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter bookId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "grantId" -------------
+	var grantId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "grantId", c.Param("grantId"), &grantId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter grantId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteAddressBookGrant(c, orgId, bookId, grantId)
 }
 
 // ReplaceAddressBookPeers operation middleware
@@ -3795,6 +4028,9 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId", wrapper.GetAddressBook)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId", wrapper.UpdateAddressBook)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId/peers", wrapper.ReplaceAddressBookPeers)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId/grants", wrapper.ListAddressBookGrants)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId/grants", wrapper.CreateAddressBookGrant)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId/grants/:grantId", wrapper.DeleteAddressBookGrant)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId/tags", wrapper.ReplaceAddressBookTags)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/log-events", wrapper.ListLogEvents)
 	router.POST(options.BaseURL+"/api/v1/auth/verify-email", wrapper.VerifyEmail)

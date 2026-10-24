@@ -140,6 +140,8 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `GET/PUT/DELETE .../address-books/{bookId}` | 详情 / 更新 / 删除 |
 | `PUT .../address-books/{bookId}/peers` | **全量替换** peers（上限 2000；单 peer ≤64 tags；TagsJSON ≤2048 runes） |
 | `PUT .../address-books/{bookId}/tags` | 全量替换 tags（上限 256；color 0..4294967295） |
+| `GET/POST .../address-books/{bookId}/grants` | 共享簿授权列表 / 新增或更新授权（v0.8.0，需 `full`：`addressbook.write` 或该簿 `full` 授权） |
+| `DELETE .../address-books/{bookId}/grants/{grantId}` | 撤销授权（v0.8.0，需 `full`） |
 
 语义要点：
 
@@ -147,6 +149,11 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 - `peer_id` ≤64 runes 且请求内唯一；`alias/username/hostname` ≤128；`platform` ≤64
 - color 越界（<0 或 >uint32）返回 400，不会被截断
 - 审计：替换/创建/删除会产生审计条目（含 actor 与组织）
+
+> **v0.8.0 共享簿授权**：授权主体为 `user`（`subject_user_id` 必填且须为本组织成员）或 `everyone`（无 subject id），访问级别 `read`/`write`/`full`。
+> 共享簿默认**所有成员可读**（保持 M2 行为），授权只升不降：`everyone` 授权可把全体成员升到 write/full；**显式 user 授权优先于 everyone**，因此可用 user=`read` 把某成员重新收紧。
+> `addressbook.write` 权限（owner/admin 与持有该码的自定义角色）始终是 full。`write` 可替换 peers/tags；`full` 还可改名、删除簿、管理授权。个人簿没有授权概念（400）。
+> 同一主体重复 POST 为更新（200），首次创建为 201。
 
 ### 3.5 日志事件
 

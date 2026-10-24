@@ -1159,6 +1159,139 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v1/orgs/{orgId}/address-books/{bookId}/grants:
+    get:
+      operationId: listAddressBookGrants
+      summary: 列出共享地址簿授权
+      description: |
+        列出共享簿的授权（v0.8.0）。需要 `full` 访问：`addressbook.write` 权限或
+        该簿的 `full` 授权。个人簿没有授权概念，返回 400。
+      tags:
+        - addressbooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: bookId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 授权列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddressBookGrantListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      operationId: createAddressBookGrant
+      summary: 新增或更新共享地址簿授权
+      description: |
+        为共享簿授予按用户或 `everyone` 的访问级别（v0.8.0）。需要 `full` 访问。
+        同一主体重复授权时改为更新其访问级别（201 创建 / 200 更新）。用户主体必须
+        是本组织成员。`user` 授权的优先级高于 `everyone`。
+      tags:
+        - addressbooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: bookId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddressBookGrantRequest"
+      responses:
+        "200":
+          description: 已更新授权
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddressBookGrantResponse"
+        "201":
+          description: 已创建授权
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddressBookGrantResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/address-books/{bookId}/grants/{grantId}:
+    delete:
+      operationId: deleteAddressBookGrant
+      summary: 撤销共享地址簿授权
+      description: 需要 `full` 访问（v0.8.0）。
+      tags:
+        - addressbooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: bookId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: grantId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已撤销
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/v1/orgs/{orgId}/address-books/{bookId}/tags:
     put:
       operationId: replaceAddressBookTags
@@ -3064,6 +3197,99 @@ components:
           minimum: 0
           maximum: 4294967295
           description: RGB 颜色值（同 RustDesk 客户端 tag_colors 语义）
+
+    AddressBookGrantKind:
+      type: string
+      enum:
+        - user
+        - everyone
+
+    AddressBookGrantAccess:
+      type: string
+      description: |
+        - read：只读（当前共享簿默认成员可读，显式 everyone/user 授权可覆盖）
+        - write：可替换 peers/tags
+        - full：可改名、删除簿、管理授权
+      enum:
+        - read
+        - write
+        - full
+
+    AddressBookGrant:
+      type: object
+      required:
+        - id
+        - subject_kind
+        - access
+        - created_by
+        - created_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        subject_kind:
+          $ref: "#/components/schemas/AddressBookGrantKind"
+        subject_user_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: "`user` 主体为用户 id；`everyone` 为 null"
+        access:
+          $ref: "#/components/schemas/AddressBookGrantAccess"
+        created_by:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+
+    AddressBookGrantRequest:
+      type: object
+      required:
+        - subject_kind
+        - access
+      properties:
+        subject_kind:
+          $ref: "#/components/schemas/AddressBookGrantKind"
+        subject_user_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: "`subject_kind=user` 时必填且必须是本组织成员；`everyone` 时必须省略或为 null"
+        access:
+          $ref: "#/components/schemas/AddressBookGrantAccess"
+
+    AddressBookGrantResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/AddressBookGrant"
+
+    AddressBookGrantListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AddressBookGrant"
 
     AddressBook:
       type: object

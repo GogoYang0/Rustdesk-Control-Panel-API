@@ -64,7 +64,7 @@ func newHarnessWith(t *testing.T, tune func(*api.Deps)) *harness {
 		&model.Organization{}, &model.Membership{}, &model.Role{}, &model.Invitation{},
 		&model.AuditLog{}, &model.Device{}, &model.DeviceHeartbeat{},
 		&model.AddressBook{}, &model.AddressBookPeer{},
-		&model.AddressBookTag{}, &model.SyncCursor{}, &model.VerificationToken{},
+		&model.AddressBookTag{}, &model.AddressBookGrant{}, &model.SyncCursor{}, &model.VerificationToken{},
 		&model.MigrationMark{}, &model.CompatSession{}, &model.LogEvent{},
 		&model.Policy{}, &model.Ticket{}, &model.Session{},
 		&model.SessionEvent{}, &model.Approval{}, &model.Alert{},

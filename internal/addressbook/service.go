@@ -165,7 +165,11 @@ func (s *Service) Update(userID uint, perms []string, orgID, bookID uint, name s
 	if err != nil {
 		return nil, err
 	}
-	if !canWrite(book, userID, perms) {
+	access, err := s.accessFor(userID, orgID, book, perms)
+	if err != nil {
+		return nil, err
+	}
+	if !AtLeast(access, AccessFull) {
 		return nil, ErrForbidden
 	}
 	err = s.db.Transaction(func(tx *gorm.DB) error {
@@ -270,7 +274,11 @@ func (s *Service) Delete(userID uint, perms []string, orgID, bookID uint) (*mode
 	if err != nil {
 		return nil, err
 	}
-	if !canWrite(book, userID, perms) {
+	access, err := s.accessFor(userID, orgID, book, perms)
+	if err != nil {
+		return nil, err
+	}
+	if !AtLeast(access, AccessFull) {
 		return nil, ErrForbidden
 	}
 	err = s.db.Transaction(func(tx *gorm.DB) error {
@@ -302,7 +310,11 @@ func (s *Service) ReplacePeers(userID uint, perms []string, orgID, bookID uint, 
 	if err != nil {
 		return nil, err
 	}
-	if !canWrite(book, userID, perms) {
+	access, err := s.accessFor(userID, orgID, book, perms)
+	if err != nil {
+		return nil, err
+	}
+	if !AtLeast(access, AccessWrite) {
 		return nil, ErrForbidden
 	}
 
@@ -365,7 +377,11 @@ func (s *Service) ReplaceTags(userID uint, perms []string, orgID, bookID uint, t
 	if err != nil {
 		return nil, err
 	}
-	if !canWrite(book, userID, perms) {
+	access, err := s.accessFor(userID, orgID, book, perms)
+	if err != nil {
+		return nil, err
+	}
+	if !AtLeast(access, AccessWrite) {
 		return nil, ErrForbidden
 	}
 

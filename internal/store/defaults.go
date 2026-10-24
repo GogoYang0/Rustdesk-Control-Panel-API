@@ -18,6 +18,7 @@ func registerDefaultScopedModels() {
 	RegisterScopedModel(&model.AddressBook{})
 	RegisterScopedModel(&model.AddressBookPeer{})
 	RegisterScopedModel(&model.AddressBookTag{})
+	RegisterScopedModel(&model.AddressBookGrant{})
 	RegisterScopedModel(&model.SyncCursor{})
 	RegisterScopedModel(&model.LogEvent{})
 	RegisterScopedModel(&model.Session{})

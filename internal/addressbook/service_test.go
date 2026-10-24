@@ -22,6 +22,7 @@ func newServiceFixture(t *testing.T) (*Service, uint, uint) {
 	require.NoError(t, st.DB.AutoMigrate(
 		&model.User{}, &model.Organization{}, &model.Membership{},
 		&model.AddressBook{}, &model.AddressBookPeer{}, &model.AddressBookTag{},
+		&model.AddressBookGrant{},
 	))
 
 	org := model.Organization{Name: "acme"}
