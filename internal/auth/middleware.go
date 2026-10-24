@@ -63,8 +63,10 @@ func RequireJWTOrToken(issuer *Issuer, tokens *TokenService) gin.HandlerFunc {
 		}
 
 		// Fall back to a personal token. Without an organization path there is
-		// no tenant to scope it to, so it cannot authenticate.
-		orgID, perr := strconv.ParseUint(c.Param("orgId"), 10, 64)
+		// no tenant to scope it to, so it cannot authenticate. The 32-bit parse
+		// bounds the value before it is narrowed to uint (CodeQL integer
+		// conversion), and organization ids never exceed that range.
+		orgID, perr := strconv.ParseUint(c.Param("orgId"), 10, 32)
 		if perr != nil || orgID == 0 || tokens == nil {
 			c.Header("WWW-Authenticate", `Bearer realm="api", error="invalid_token"`)
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
