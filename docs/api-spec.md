@@ -93,7 +93,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `POST /api/v1/orgs` | 创建组织（受 `maxOrgsPerUser` 限制，超出 409/400） |
 | `GET /api/v1/orgs/{orgId}/members` | 成员列表及其组织内角色（**组织成员即可访问**，不限 admin） |
 | `DELETE /api/v1/orgs/{orgId}/members/{userId}` | 移除成员（v0.6.0，`member.manage`）：同一事务内撤销该用户在本组织的活跃 compat 会话；admin 不能移除 owner、不能移除自己、不能移除最后一个 owner |
-| `PATCH /api/v1/orgs/{orgId}/members/{userId}` | 按字段更新会籍（v0.8.0，`MemberUpdateRequest`）：`role_id` 授予内置 admin/member 或自定义角色（**仅 owner**，`org.admin`），不能授予 owner；任何丢失既有权限的变更（降级或收窄）在同一事务撤销该用户在本组织的 compat 会话，提升不撤销；不能改自己或 owner。`disabled` 字段在会籍停用任务交付时启用 |
+| `PATCH /api/v1/orgs/{orgId}/members/{userId}` | 按字段更新会籍（v0.8.0，`MemberUpdateRequest`）：`role_id` 授予内置 admin/member 或自定义角色（**仅 owner**，`org.admin`），不能授予 owner；任何丢失既有权限的变更（降级或收窄）在同一事务撤销该用户在本组织的 compat 会话，提升不撤销；不能改自己或 owner。`disabled`（`member.manage`）停用或恢复会籍：停用在同一事务撤销该用户在本组织的活跃 compat 会话并写 `organization.member.disable` 审计，恢复写 `organization.member.enable`；不能停用自己或末位 owner，admin 不能停用 owner。重复设置同一状态为 200 no-op，不产生重复审计。两个字段可同时出现，各自校验权限 |
 | `POST /api/v1/orgs/{orgId}/invitations` | 邀请（admin 生成邀请令牌，邮件下发） |
 | `POST /api/v1/invitations/accept` | 接受邀请并加入组织 |
 | `GET /api/v1/permissions` | 权限目录（v0.8.0，任何已认证用户）：`code`、`description`、`delegable` |
@@ -226,8 +226,8 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 - **绑定代数**：每次绑定变更（首次认领、管理员改绑）使 `binding_generation` +1；登录会话快照当时的代数，`heartbeat`/`sysinfo` 校验会话代数与设备当前代数一致——**旧代数会话的活动被丢弃**（不落库、不推进 `last_seen_at`）。绑定的所有权语义因此不依赖 uuid 的保密性
 - uuid 非秘密且登录时不校验归属——这正是心跳必须按 `(uuid, device_id)` 双条件解析会话的原因
 - `id` ≤ 64 字符、`uuid` ≤ 128 字符，超长直接 400（防止「绑定成功但会话建不出来」的死锁状态）
-- **成员失去组织访问时**（v0.6.0 已接线：`DELETE .../members/{userId}` 与 admin→member 降级）在**同一事务**内调用 `compatapi.RevokeOrgSessions` 撤销该用户在该组织的全部活跃 compat 会话（#39）；撤销失败整体回滚、请求 500，绝不返回成功。撤销后该用户的 compat 请求 401、免凭据心跳不再生效。
-- **会话有效 ≠ 会籍有效（v0.7.1 起）**：所有 compat 消费者在会话有效后**复核当前 membership**——`requireSession`（Bearer 端点）与免凭据 heartbeat/sysinfo 的 `activeSessionByUUID` 都要求 `(user_id, organization_id)` 仍存在。这样即使登录与成员移除并发、会话在撤销之后才落库，后续请求也会 401，免凭据心跳也不会再刷新设备。membership 查询失败按“非成员”处理（fail closed）。
+- **成员失去组织访问时**（v0.6.0 已接线：`DELETE .../members/{userId}` 与 admin→member 降级；v0.8.0 起也包括会籍停用）在**同一事务**内调用 `compatapi.RevokeOrgSessions` 撤销该用户在该组织的全部活跃 compat 会话（#39）；撤销失败整体回滚、请求 500，绝不返回成功。撤销后该用户的 compat 请求 401、免凭据心跳不再生效。停用的会籍对 compat 登录不可见：该组织不参与 `email#orgID` 选择，单会籍用户登录返回 403（提示会籍已停用）。
+- **会话有效 ≠ 会籍有效（v0.7.1 起）**：所有 compat 消费者在会话有效后**复核当前 membership**——`requireSession`（Bearer 端点）与免凭据 heartbeat/sysinfo 的 `activeSessionByUUID` 都要求 `(user_id, organization_id)` 仍存在且未停用（v0.8.0 增加 `disabled=false` 条件）。这样即使登录与成员移除/停用并发、会话在撤销之后才落库，后续请求也会 401，免凭据心跳也不会再刷新设备。membership 查询失败按“非成员”处理（fail closed）。
 
 ### 4.2 心跳与系统信息（无凭据）
 

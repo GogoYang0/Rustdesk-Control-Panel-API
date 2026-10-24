@@ -33,7 +33,7 @@ var errActorNoLongerAuthorized = errors.New("actor is no longer authorized")
 // acquire locks in the same order (no deadlock) and a lost actor is detected
 // before any write or session revocation. Owner rows are identified by the role
 // kind, never by the legacy role string.
-func lockActor(tx *gorm.DB, orgID, actorID uint, lockOwners bool, perm string) ([]model.Membership, error) {
+func lockActor(tx *gorm.DB, orgID, actorID uint, lockOwners bool, required ...string) ([]model.Membership, error) {
 	var rows []model.Membership
 	// No JOIN here: the tenant plugin injects an unqualified organization_id
 	// condition, which becomes ambiguous once two scoped tables are joined.
@@ -55,10 +55,10 @@ func lockActor(tx *gorm.DB, orgID, actorID uint, lockOwners bool, perm string) (
 		return nil, err
 	}
 	kinds := make(map[uint]string, len(roles))
-	perms := make(map[uint][]string, len(roles))
+	rolePerms := make(map[uint][]string, len(roles))
 	for _, r := range roles {
 		kinds[r.ID] = r.Kind
-		perms[r.ID] = r.PermissionList()
+		rolePerms[r.ID] = r.PermissionList()
 	}
 
 	var actor *model.Membership
@@ -67,12 +67,20 @@ func lockActor(tx *gorm.DB, orgID, actorID uint, lockOwners bool, perm string) (
 		if rows[i].UserID == actorID {
 			actor = &rows[i]
 		}
-		if kinds[rows[i].RoleID] == model.RoleKindOwner {
+		// Only active owners count: disabling every active owner would leave the
+		// organization unadministrable, and removing a disabled one is harmless
+		// while another active owner remains.
+		if kinds[rows[i].RoleID] == model.RoleKindOwner && !rows[i].Disabled {
 			owners = append(owners, rows[i])
 		}
 	}
-	if actor == nil || !authz.Has(perms[actor.RoleID], perm) {
+	if actor == nil {
 		return nil, errActorNoLongerAuthorized
+	}
+	for _, perm := range required {
+		if !authz.Has(rolePerms[actor.RoleID], perm) {
+			return nil, errActorNoLongerAuthorized
+		}
 	}
 	return owners, nil
 }
@@ -192,11 +200,14 @@ func (a *AdminAPI) RemoveMember(c *gin.Context, orgId int64, userId int64) {
 }
 
 // UpdateMemberRole updates a membership by field. role_id grants a builtin
-// admin/member role or a custom role; only an owner holds org.admin. Ownership
-// transfer is out of scope, so the owner role can never be granted here. A
-// change that removes a permission the target had (a narrowing) revokes the
-// user's compat sessions in the same transaction — an offboarded capability
-// must not keep a 720h token that still authorizes the old role.
+// admin/member role or a custom role (owner-only, org.admin); disabled stops or
+// restores the membership (member.manage). Both may be sent together and each
+// needs its own permission. Ownership transfer is out of scope, so the owner
+// role can never be granted here, and the last owner can never be disabled.
+//
+// A change that takes permissions away — a narrowing role change or a disable —
+// revokes the user's compat sessions in the same transaction: a capability that
+// was withdrawn must not keep a 720h token that still authorizes it.
 func (a *AdminAPI) UpdateMemberRole(c *gin.Context, orgId int64, userId int64) {
 	uid, ok := requireUserID(c)
 	if !ok {
@@ -219,15 +230,13 @@ func (a *AdminAPI) UpdateMemberRole(c *gin.Context, orgId int64, userId int64) {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "at least one of role_id or disabled is required")
 		return
 	}
-	if req.Disabled != nil {
-		// Membership disable lands in Task 3. Rejecting explicitly keeps the
-		// contract honest instead of silently ignoring the field.
-		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "disabled updates are not supported yet")
+	perms, _ := authz.OrgPermissions(c)
+	if req.RoleId != nil && !authz.Has(perms, authz.PermOrgAdmin) {
+		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "only an owner can change roles")
 		return
 	}
-	perms, _ := authz.OrgPermissions(c)
-	if !authz.Has(perms, authz.PermOrgAdmin) {
-		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "only an owner can change roles")
+	if req.Disabled != nil && !authz.Has(perms, authz.PermMemberManage) {
+		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "insufficient permissions")
 		return
 	}
 
@@ -243,50 +252,107 @@ func (a *AdminAPI) UpdateMemberRole(c *gin.Context, orgId int64, userId int64) {
 		return
 	}
 	targetKind := roleKindOf(roleIdx, target.RoleID)
-	if target.UserID == uid {
-		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "cannot change your own role")
-		return
-	}
-	if targetKind == model.RoleKindOwner {
-		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "owner role changes are not supported")
-		return
+
+	// Resolve the role change, if any.
+	var newRole *model.Role
+	if req.RoleId != nil {
+		if target.UserID == uid {
+			abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "cannot change your own role")
+			return
+		}
+		if targetKind == model.RoleKindOwner {
+			abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "owner role changes are not supported")
+			return
+		}
+		role, err := a.deps.Roles.RoleByID(uint(orgId), uint(*req.RoleId))
+		if err != nil {
+			a.writeRoleError(c, err, "load target role failed")
+			return
+		}
+		if role.Kind == model.RoleKindOwner {
+			abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "owner role cannot be granted")
+			return
+		}
+		if target.RoleID != role.ID {
+			newRole = role
+		}
 	}
 
-	newRole, err := a.deps.Roles.RoleByID(uint(orgId), uint(*req.RoleId))
-	if err != nil {
-		a.writeRoleError(c, err, "load target role failed")
-		return
+	// Resolve the disable change, if any. Repeating the current state is a
+	// successful no-op instead of a second audit row.
+	var disableTo *bool
+	if req.Disabled != nil {
+		if *req.Disabled && target.UserID == uid {
+			abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "cannot disable yourself")
+			return
+		}
+		if targetKind == model.RoleKindOwner && !authz.Has(perms, authz.PermOrgAdmin) {
+			abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "only an owner can change an owner's membership")
+			return
+		}
+		if target.Disabled != *req.Disabled {
+			disableTo = req.Disabled
+		}
 	}
-	if newRole.Kind == model.RoleKindOwner {
-		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "owner role cannot be granted")
-		return
-	}
-	if target.RoleID == newRole.ID {
+
+	if newRole == nil && disableTo == nil {
 		a.respondMember(c, target)
 		return
 	}
+
 	oldRole, oldKnown := roleIdx[target.RoleID]
-	if !oldKnown {
+	if newRole != nil && !oldKnown {
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "membership role unavailable")
 		return
 	}
 	narrowed := false
-	for _, p := range oldRole.PermissionList() {
-		if !authz.Has(newRole.PermissionList(), p) {
-			narrowed = true
-			break
+	if newRole != nil {
+		for _, p := range oldRole.PermissionList() {
+			if !authz.Has(newRole.PermissionList(), p) {
+				narrowed = true
+				break
+			}
 		}
 	}
+	revoke := narrowed || (disableTo != nil && *disableTo)
 
 	var revoked int64
 	domainRecorded := false
 	err = a.deps.DB.Transaction(func(tx *gorm.DB) error {
-		if _, err := lockActor(tx, uint(orgId), uid, false, authz.PermOrgAdmin); err != nil {
+		var required []string
+		if newRole != nil {
+			required = append(required, authz.PermOrgAdmin)
+		}
+		if disableTo != nil {
+			required = append(required, authz.PermMemberManage)
+		}
+		owners, err := lockActor(tx, uint(orgId), uid, disableTo != nil && *disableTo && targetKind == model.RoleKindOwner, required...)
+		if err != nil {
 			return err
+		}
+		if disableTo != nil && *disableTo && targetKind == model.RoleKindOwner && len(owners) <= 1 {
+			return errLastOwner
+		}
+
+		updates := map[string]any{}
+		if newRole != nil {
+			updates["role_id"] = newRole.ID
+			updates["role"] = newRole.Name
+		}
+		if disableTo != nil {
+			updates["disabled"] = *disableTo
+			if *disableTo {
+				now := a.deps.Now()
+				updates["disabled_at"] = now
+				updates["disabled_by"] = uid
+			} else {
+				updates["disabled_at"] = nil
+				updates["disabled_by"] = uint(0)
+			}
 		}
 		res := store.ScopedByOrg(tx, uint(orgId)).Model(&model.Membership{}).
 			Where("user_id = ? AND role_id = ?", target.UserID, target.RoleID).
-			Updates(map[string]any{"role_id": newRole.ID, "role": newRole.Name})
+			Updates(updates)
 		if res.Error != nil {
 			return res.Error
 		}
@@ -294,7 +360,7 @@ func (a *AdminAPI) UpdateMemberRole(c *gin.Context, orgId int64, userId int64) {
 			return gorm.ErrRecordNotFound
 		}
 
-		if narrowed {
+		if revoke {
 			n, err := compatapi.RevokeOrgSessions(c.Request.Context(), tx, uint(orgId), target.UserID, a.deps.Now())
 			if err != nil {
 				return fmt.Errorf("revoke compat sessions: %w", err)
@@ -302,7 +368,11 @@ func (a *AdminAPI) UpdateMemberRole(c *gin.Context, orgId int64, userId int64) {
 			revoked = n
 		}
 
-		if tr, ok := a.deps.Auditor.(audit.TxRecorder); ok {
+		tr, ok := a.deps.Auditor.(audit.TxRecorder)
+		if !ok {
+			return nil
+		}
+		if newRole != nil {
 			if err := tr.RecordTx(tx, audit.Entry{
 				OrganizationID: uint(orgId),
 				ActorUserID:    uid,
@@ -313,20 +383,39 @@ func (a *AdminAPI) UpdateMemberRole(c *gin.Context, orgId int64, userId int64) {
 			}); err != nil {
 				return err
 			}
-			domainRecorded = true
 		}
+		if disableTo != nil {
+			action := "organization.member.enable"
+			if *disableTo {
+				action = "organization.member.disable"
+			}
+			if err := tr.RecordTx(tx, audit.Entry{
+				OrganizationID: uint(orgId),
+				ActorUserID:    uid,
+				Action:         action,
+				TargetType:     "user",
+				TargetID:       fmt.Sprint(target.UserID),
+				Detail:         map[string]any{"revoked_sessions": revoked},
+			}); err != nil {
+				return err
+			}
+		}
+		domainRecorded = true
 		return nil
 	})
 	switch {
 	case errors.Is(err, errActorNoLongerAuthorized):
 		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "insufficient permissions")
 		return
+	case errors.Is(err, errLastOwner):
+		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "organization must keep at least one owner")
+		return
 	case errors.Is(err, gorm.ErrRecordNotFound):
 		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "member not found")
 		return
 	case err != nil:
-		a.deps.Logger.Error("update member role failed")
-		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not update member role")
+		a.deps.Logger.Error("update member failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not update member")
 		return
 	}
 
@@ -335,8 +424,13 @@ func (a *AdminAPI) UpdateMemberRole(c *gin.Context, orgId int64, userId int64) {
 	} else {
 		c.Set(contextOrgID, uint(orgId))
 	}
-	target.RoleID = newRole.ID
-	target.Role = newRole.Name
+	if newRole != nil {
+		target.RoleID = newRole.ID
+		target.Role = newRole.Name
+	}
+	if disableTo != nil {
+		target.Disabled = *disableTo
+	}
 	a.respondMember(c, target)
 }
 
@@ -429,7 +523,7 @@ func (a *AdminAPI) respondMember(c *gin.Context, m *model.Membership) {
 			Role:      name,
 			RoleId:    int64(m.RoleID),
 			RoleName:  name,
-			Disabled:  false,
+			Disabled:  m.Disabled,
 			CreatedAt: m.CreatedAt,
 		},
 	})

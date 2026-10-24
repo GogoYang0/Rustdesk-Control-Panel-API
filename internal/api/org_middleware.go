@@ -30,6 +30,12 @@ func (a *AdminAPI) membershipFor(c *gin.Context, userID, orgID uint) (*model.Mem
 		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "not a member of this organization")
 		return nil, false
 	}
+	if m.Disabled {
+		// A disabled membership keeps its row (history stays attributable) but
+		// grants nothing: every management path fails closed here.
+		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "membership is disabled")
+		return nil, false
+	}
 	role, err := a.deps.Roles.Resolve(orgID, m)
 	if err != nil {
 		// A membership without a resolvable role cannot be authorized; fail

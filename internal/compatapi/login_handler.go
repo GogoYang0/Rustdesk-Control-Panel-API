@@ -287,12 +287,12 @@ func (s *Server) claimDeviceTx(tx *gorm.DB, orgID uint, rustdeskID, uuid string)
 }
 
 // resolveOrg applies the C16 disambiguation: no selector requires exactly
-// one membership; a selector must name a membership of this user. The
-// message guides multi-org users to the management panel.
+// one active membership; a selector must name an active membership of this
+// user. A disabled membership is invisible to both paths.
 func (s *Server) resolveOrg(userID uint, selector string, hasSelector bool) (uint, int, string, bool) {
 	var memberships []model.Membership
 	if err := store.WithoutTenantScope(s.deps.DB).
-		Where("user_id = ?", userID).
+		Where("user_id = ? AND disabled = ?", userID, false).
 		Order("organization_id").
 		Find(&memberships).Error; err != nil {
 		return 0, http.StatusInternalServerError, "login failed", false
@@ -313,6 +313,18 @@ func (s *Server) resolveOrg(userID uint, selector string, hasSelector bool) (uin
 	case 1:
 		return memberships[0].OrganizationID, 0, "", true
 	case 0:
+		// Distinguish "never joined" from "disabled": the client's next step
+		// differs (ask for an invitation vs ask an administrator to re-enable).
+		var total int64
+		if err := store.WithoutTenantScope(s.deps.DB).
+			Model(&model.Membership{}).
+			Where("user_id = ?", userID).
+			Count(&total).Error; err != nil {
+			return 0, http.StatusInternalServerError, "login failed", false
+		}
+		if total > 0 {
+			return 0, http.StatusForbidden, "membership is disabled; ask your administrator to re-enable it", false
+		}
 		return 0, http.StatusForbidden, "no organization membership; ask your administrator for an invitation", false
 	default:
 		return 0, http.StatusForbidden,
