@@ -629,6 +629,49 @@ func TestSetEnabled_NoopIsSilent(t *testing.T) {
 	require.Empty(t, f.orch.Removed, "a repeated disable must not remove containers twice")
 }
 
+func TestSetEnabled_AlreadyDisabledCleansLateDeployment(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "late-deployment")
+
+	_, _, err := f.svc.SetEnabled(context.Background(), org.ID, 1, false)
+	require.NoError(t, err)
+	f.recorder.reset()
+
+	// A deploy that started before the switch was flipped persisted its row
+	// after the flag was already true. The switch must take it down instead of
+	// reporting a no-op forever.
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Create(&model.ServerGroup{
+		OrganizationID: org.ID,
+		HbbsPort:       testPortStart,
+		HbbrPort:       testPortStart + 3,
+		State:          model.ServerGroupDeployed,
+	}).Error)
+
+	var notified []uint
+	f.svc.OnDeprovisioned(func(orgID uint) { notified = append(notified, orgID) })
+
+	state, changed, err := f.svc.SetEnabled(context.Background(), org.ID, 2, false)
+	require.NoError(t, err)
+	require.True(t, changed, "removing a late deployment is a real change")
+	require.Equal(t, provision.StatusDisabled, state.Status)
+	require.Contains(t, f.orch.Removed, fmt.Sprintf("panel-org-%d", org.ID))
+	require.Equal(t, []uint{org.ID}, notified)
+
+	var count int64
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Model(&model.ServerGroup{}).Count(&count).Error)
+	require.Zero(t, count)
+
+	entries := f.recorder.snapshot()
+	require.Len(t, entries, 1)
+	require.Equal(t, true, entries[0].Detail["removed_deployment"])
+
+	// Once the row is gone the switch is a true no-op again.
+	_, changed, err = f.svc.SetEnabled(context.Background(), org.ID, 3, false)
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Empty(t, f.recorder.actions()[1:])
+}
+
 func TestSetEnabled_NoRecorderFailsClosed(t *testing.T) {
 	f := newFixtureWithRecorder(t, nil)
 	org := f.org(t, "no-recorder")

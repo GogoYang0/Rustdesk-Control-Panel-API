@@ -170,6 +170,15 @@ func (s *Service) SetEnabled(ctx context.Context, orgID, actorID uint, enabled b
 		return State{}, false, err
 	}
 	if current.Enabled == enabled {
+		// A repeated disable is not a pure no-op: a deployment that was
+		// persisted concurrently with the first disable can still be running
+		// while the flag already says disabled. Taking it down here is what makes
+		// the switch self-healing instead of a permanently stuck no-op.
+		if !enabled {
+			if cleaned, cerr := s.cleanupLateDeployment(ctx, orgID, actorID); cerr != nil || cleaned {
+				return State{Enabled: false, Status: StatusDisabled}, cleaned, cerr
+			}
+		}
 		return current, false, nil
 	}
 
@@ -232,6 +241,46 @@ func (s *Service) recordTx(tx *gorm.DB, entry audit.Entry) error {
 		return errors.New("provision: no audit recorder configured")
 	}
 	return s.recorder.RecordTx(tx, entry)
+}
+
+// cleanupLateDeployment removes a row that a concurrent deploy persisted after
+// the organization was already disabled. It writes its own audit entry because
+// the deployment removal is a real state change, not a no-op.
+func (s *Service) cleanupLateDeployment(ctx context.Context, orgID, actorID uint) (bool, error) {
+	row, err := s.removeDeployment(ctx, orgID)
+	if err != nil {
+		return false, err
+	}
+	if row == nil {
+		return false, nil
+	}
+
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		if err := store.ScopedByOrg(tx, orgID).Delete(&model.ServerGroup{}, row.ID).Error; err != nil {
+			return err
+		}
+		return s.recordTx(tx, audit.Entry{
+			OrganizationID: orgID,
+			ActorUserID:    actorID,
+			Action:         "organization.provisioning.update",
+			TargetType:     "organization",
+			TargetID:       fmt.Sprint(orgID),
+			Detail: map[string]any{
+				"enabled":            false,
+				"removed_deployment": true,
+				"hbbs_port":          row.HbbsPort,
+				"hbbr_port":          row.HbbrPort,
+			},
+		})
+	})
+	if err != nil {
+		s.markFailed(row, err)
+		return false, err
+	}
+	s.notifyDeprovisioned(orgID)
+	s.logger.Warn("removed a deployment that raced with the provisioning switch",
+		zap.Uint("org_id", orgID))
+	return true, nil
 }
 
 // ProvisionForOrg provisions an organization on behalf of an explicit request.
@@ -333,25 +382,40 @@ func (s *Service) provision(ctx context.Context, orgID uint) (*model.ServerGroup
 		return nil, fmt.Errorf("snapshot config: %w", err)
 	}
 
-	res := store.ScopedByOrg(s.db, orgID).Model(&model.ServerGroup{}).
-		Where("id = ?", row.ID).
-		Updates(map[string]any{
-			"pub_key":         keys.PublicKey,
-			"fingerprint":     keys.Fingerprint,
-			"config_snapshot": string(snap),
-			"state":           model.ServerGroupDeployed,
-			"last_error":      "",
-		})
-	if res.Error != nil {
-		s.failAndCleanup(ctx, row, spec, res.Error)
-		return nil, fmt.Errorf("persist server group: %w", res.Error)
-	}
-	if res.RowsAffected == 0 {
-		// The row was deleted while the deploy was running: an operator
-		// disabled the organization. The fresh containers must not outlive
-		// their row.
-		s.failAndCleanup(ctx, row, spec, ErrProvisioningDisabled)
-		return nil, fmt.Errorf("persist server group: %w", ErrProvisioningDisabled)
+	// Persisting the deployment and re-reading the switch in one transaction
+	// closes the ordering where a disable commits while the containers start:
+	// the row update only lands if the flag is still false at that instant.
+	persistErr := s.db.Transaction(func(tx *gorm.DB) error {
+		var org model.Organization
+		if err := tx.Select("id", "provisioning_disabled").First(&org, orgID).Error; err != nil {
+			return fmt.Errorf("load organization: %w", err)
+		}
+		if org.ProvisioningDisabled {
+			return ErrProvisioningDisabled
+		}
+		res := store.ScopedByOrg(tx, orgID).Model(&model.ServerGroup{}).
+			Where("id = ?", row.ID).
+			Updates(map[string]any{
+				"pub_key":         keys.PublicKey,
+				"fingerprint":     keys.Fingerprint,
+				"config_snapshot": string(snap),
+				"state":           model.ServerGroupDeployed,
+				"last_error":      "",
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			// The row was deleted while the deploy was running.
+			return ErrProvisioningDisabled
+		}
+		return nil
+	})
+	if persistErr != nil {
+		// A failed or vanished row means the fresh containers must not outlive
+		// their record; the flag was disabled or the database is inconsistent.
+		s.failAndCleanup(ctx, row, spec, persistErr)
+		return nil, fmt.Errorf("persist server group: %w", persistErr)
 	}
 
 	s.logger.Info("provisioned hbbs/hbbr",

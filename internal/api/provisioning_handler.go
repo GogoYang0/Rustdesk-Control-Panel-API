@@ -33,12 +33,12 @@ func getProvisioningState(status string) (gen.ProvisioningStatusState, bool) {
 }
 
 // respondProvisioning writes the standard envelope for a provisioning state.
-func (a *AdminAPI) respondProvisioning(c *gin.Context, status int, state provision.State) bool {
+func (a *AdminAPI) respondProvisioning(c *gin.Context, status int, state provision.State) {
 	enum, ok := getProvisioningState(state.Status)
 	if !ok {
 		a.deps.Logger.Error("unknown provisioning state", zap.String("state", state.Status))
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not read provisioning state")
-		return false
+		return
 	}
 	c.JSON(status, gen.ProvisioningResponse{
 		Code:    gen.ErrorCodeOk,
@@ -48,7 +48,6 @@ func (a *AdminAPI) respondProvisioning(c *gin.Context, status int, state provisi
 			State:   enum,
 		},
 	})
-	return true
 }
 
 // GetProvisioning reports the organization's provisioning switch and
@@ -130,6 +129,10 @@ func (a *AdminAPI) UpdateProvisioning(c *gin.Context, orgId int64) {
 			a.deps.Logger.Warn("provisioning enqueue failed; the reconciler will retry",
 				zap.Uint("org_id", uint(orgId)), zap.Error(qerr))
 		}
+	}
+	if changed && state.Enabled && state.Status == model.ServerGroupFailed {
+		a.deps.Logger.Warn("provisioning enabled but the deployment is failed; manual recovery is required",
+			zap.Uint("org_id", uint(orgId)))
 	}
 
 	a.respondProvisioning(c, http.StatusOK, state)

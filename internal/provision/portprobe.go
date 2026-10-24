@@ -75,7 +75,9 @@ type portSpan struct {
 // never reserves anything.
 func (s *Service) ProbePortRange(ctx context.Context) ([]PortConflict, error) {
 	start, end := s.cfg.PortStart, s.cfg.PortEnd
-	if start == 0 || end < start+PortBlockSize-1 {
+	// Compare in uint32: start+PortBlockSize-1 overflows uint16 at the top of
+	// the range and would let an impossible range pass validation.
+	if start == 0 || uint32(end) < uint32(start)+PortBlockSize-1 {
 		return nil, fmt.Errorf("invalid port range %d-%d", start, end)
 	}
 
