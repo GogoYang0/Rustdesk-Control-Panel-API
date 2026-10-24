@@ -116,14 +116,14 @@ func TestAuditRetention_LatestUsesTheAuditor(t *testing.T) {
 }
 
 func TestAuditRetention_ArchiveFailureKeepsRows(t *testing.T) {
-	svc, st, rec, org, dir := newRetentionFixture(t)
+	_, st, rec, org, dir := newRetentionFixture(t)
 	ctx := context.Background()
 	seedRetentionRow(t, st, org.ID, 1, time.Now().UTC().AddDate(0, 0, -40))
 
 	// Replace the archive dir with a regular file so creating org-<id> fails.
 	blocker := filepath.Join(dir, "blocked")
 	require.NoError(t, os.WriteFile(blocker, []byte("x"), 0o600))
-	svc = audit.NewRetentionService(st.DB, blocker, rec, nil)
+	svc := audit.NewRetentionService(st.DB, blocker, rec, nil)
 	require.NoError(t, svc.SetDays(ctx, org.ID, 30))
 
 	archived, purged, err := svc.RunOnce(ctx)

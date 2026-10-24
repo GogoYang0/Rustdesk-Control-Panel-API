@@ -472,17 +472,6 @@ func roleNameOf(idx map[uint]model.Role, roleID uint) string {
 	return ""
 }
 
-// roleByName returns a copy of the role with that name, or nil.
-func roleByName(idx map[uint]model.Role, name string) *model.Role {
-	for _, r := range idx {
-		if r.Name == name {
-			role := r
-			return &role
-		}
-	}
-	return nil
-}
-
 // loadMembership reads a membership by (org, user) cross-tenant, because the
 // caller may address a user in an organization the lookup itself must scope.
 func (a *AdminAPI) loadMembership(orgID, userID uint) (*model.Membership, error) {

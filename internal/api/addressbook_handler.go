@@ -104,12 +104,11 @@ func (a *AdminAPI) CreateAddressBook(c *gin.Context, orgId int64) {
 		return
 	}
 
-	perms := []string{}
 	if req.Scope == gen.AddressBookCreateRequestScopeShared {
 		if _, member := a.membershipFor(c, uid, uint(orgId)); !member {
 			return
 		}
-		perms, _ = authz.OrgPermissions(c)
+		perms, _ := authz.OrgPermissions(c)
 		if !canWriteShared(perms) {
 			abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "insufficient permissions")
 			return
