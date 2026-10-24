@@ -18,7 +18,7 @@
 | 变更成员角色 | `PATCH /api/v1/orgs/{orgId}/members/{userId}`（v0.6.0；仅 admin↔member，仅 owner 可调） | owner |
 | 查看设备 | `GET /api/v1/orgs/{orgId}/devices`（v0.5.0；分页、`q` 搜索、`bound` 过滤） | member |
 | 重置设备绑定（换机/重装） | `POST /api/v1/orgs/{orgId}/devices/{deviceId}/rebind`（v0.5.0；`reason` 必填） | owner/admin |
-| 查看/切换供应开关 | `GET/PUT /api/v1/orgs/{orgId}/provisioning`（v0.7.0；关闭同步下线、开启异步入队；`cleanup_pending` 表示清理未完成） | owner |
+| 查看/切换供应开关 | `GET/PUT /api/v1/orgs/{orgId}/provisioning`（v0.7.0；关闭同步下线；开启仅在无部署行即 `pending` 时异步入队，`deployed`/`failed` 不入队、`failed` 需人工恢复；`cleanup_pending` 表示清理未完成） | owner |
 | 查询日志事件 | `GET /api/v1/orgs/{orgId}/log-events` | member |
 
 **设备解绑**是 compat 层最高频的管理操作：客户端重装/换机后 uuid 变化，登录报 403「设备已绑定」→ 管理员在设备列表找到该设备（同名多组织时先确认组织）→ 调 `rebind` 填理由 → 客户端重新登录即重新认领。`rebind` 会清绑定并让代数 +1，旧客户端随后的心跳/系统信息被丢弃；重复调用安全。
