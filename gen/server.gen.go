@@ -472,6 +472,41 @@ func (e GetHealthz200JSONResponseBodyStatus) Valid() bool {
 	}
 }
 
+// APIToken defines model for APIToken.
+type APIToken struct {
+	CreatedAt      time.Time  `json:"created_at"`
+	ExpiresAt      time.Time  `json:"expires_at"`
+	Id             int64      `json:"id"`
+	LastUsedAt     *time.Time `json:"last_used_at,omitempty"`
+	Name           string     `json:"name"`
+	OrganizationId int64      `json:"organization_id"`
+
+	// Permissions 申请时的权限子集；有效权限还要与该用户当前角色取交集
+	Permissions []string   `json:"permissions"`
+	RevokedAt   *time.Time `json:"revoked_at,omitempty"`
+
+	// TokenPrefix 令牌前 8 个字符，用于列表辨识（不足以重放）
+	TokenPrefix string `json:"token_prefix"`
+}
+
+// APITokenListResponse defines model for APITokenListResponse.
+type APITokenListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode  `json:"code"`
+	Data    []APIToken `json:"data"`
+	Message string     `json:"message"`
+}
+
 // AddressBook defines model for AddressBook.
 type AddressBook struct {
 	CreatedAt time.Time `json:"created_at"`
@@ -1061,6 +1096,31 @@ type InvitationResponse struct {
 	Code    ErrorCode  `json:"code"`
 	Data    Invitation `json:"data"`
 	Message string     `json:"message"`
+}
+
+// IssuedAPIToken defines model for IssuedAPIToken.
+type IssuedAPIToken struct {
+	// Plaintext 明文令牌，只在本响应出现一次，服务端不保存
+	Plaintext string   `json:"plaintext"`
+	Token     APIToken `json:"token"`
+}
+
+// IssuedAPITokenResponse defines model for IssuedAPITokenResponse.
+type IssuedAPITokenResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode      `json:"code"`
+	Data    IssuedAPIToken `json:"data"`
+	Message string         `json:"message"`
 }
 
 // IssuedTicket defines model for IssuedTicket.
@@ -1897,6 +1957,20 @@ type TicketResponse struct {
 	Message string    `json:"message"`
 }
 
+// TokenCreateRequest defines model for TokenCreateRequest.
+type TokenCreateRequest struct {
+	ExpiresInDays *int `json:"expires_in_days,omitempty"`
+
+	// Name 用户可读标签
+	Name string `json:"name"`
+
+	// OrganizationId 令牌绑定的组织；请求必须来自该组织的有效会籍
+	OrganizationId int64 `json:"organization_id"`
+
+	// Permissions 省略时取当前角色的全部权限；给出时必须是当前角色权限的子集
+	Permissions *[]string `json:"permissions,omitempty"`
+}
+
 // TokenPair defines model for TokenPair.
 type TokenPair struct {
 	AccessToken string `json:"access_token"`
@@ -1944,6 +2018,11 @@ type TooManyRequests = ErrorResponse
 
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = ErrorResponse
+
+// ListTokensParams defines parameters for ListTokens.
+type ListTokensParams struct {
+	OrganizationId int64 `form:"organizationId" json:"organizationId"`
+}
 
 // ListAlertsParams defines parameters for ListAlerts.
 type ListAlertsParams struct {
@@ -2039,6 +2118,9 @@ type RefreshTokensJSONRequestBody = RefreshRequest
 // ResendVerificationJSONRequestBody defines body for ResendVerification for application/json ContentType.
 type ResendVerificationJSONRequestBody = ResendVerificationRequest
 
+// CreateTokenJSONRequestBody defines body for CreateToken for application/json ContentType.
+type CreateTokenJSONRequestBody = TokenCreateRequest
+
 // VerifyEmailJSONRequestBody defines body for VerifyEmail for application/json ContentType.
 type VerifyEmailJSONRequestBody = EmailVerificationRequest
 
@@ -2116,6 +2198,15 @@ type ServerInterface interface {
 	// ResendVerification 重发验证邮件
 	// (POST /api/v1/auth/resend-verification)
 	ResendVerification(c *gin.Context)
+	// ListTokens 列出个人访问令牌
+	// (GET /api/v1/auth/tokens)
+	ListTokens(c *gin.Context, params ListTokensParams)
+	// CreateToken 创建个人访问令牌
+	// (POST /api/v1/auth/tokens)
+	CreateToken(c *gin.Context)
+	// RevokeToken 撤销个人访问令牌
+	// (DELETE /api/v1/auth/tokens/{tokenId})
+	RevokeToken(c *gin.Context, tokenId int64)
 	// VerifyEmail 邮箱验证
 	// (POST /api/v1/auth/verify-email)
 	VerifyEmail(c *gin.Context)
@@ -2323,6 +2414,71 @@ func (siw *ServerInterfaceWrapper) ResendVerification(c *gin.Context) {
 	}
 
 	siw.Handler.ResendVerification(c)
+}
+
+// ListTokens operation middleware
+func (siw *ServerInterfaceWrapper) ListTokens(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListTokensParams
+
+	// ------------- Required query parameter "organizationId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "organizationId", c.Request.URL.Query(), &params.OrganizationId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter organizationId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListTokens(c, params)
+}
+
+// CreateToken operation middleware
+func (siw *ServerInterfaceWrapper) CreateToken(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateToken(c)
+}
+
+// RevokeToken operation middleware
+func (siw *ServerInterfaceWrapper) RevokeToken(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "tokenId" -------------
+	var tokenId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "tokenId", c.Param("tokenId"), &tokenId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter tokenId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RevokeToken(c, tokenId)
 }
 
 // VerifyEmail operation middleware
@@ -4212,6 +4368,9 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/healthz", wrapper.GetHealthz)
 	router.POST(options.BaseURL+"/api/v1/auth/login", wrapper.Login)
 	router.POST(options.BaseURL+"/api/v1/auth/refresh", wrapper.RefreshTokens)
+	router.GET(options.BaseURL+"/api/v1/auth/tokens", wrapper.ListTokens)
+	router.POST(options.BaseURL+"/api/v1/auth/tokens", wrapper.CreateToken)
+	router.DELETE(options.BaseURL+"/api/v1/auth/tokens/:tokenId", wrapper.RevokeToken)
 	router.GET(options.BaseURL+"/api/v1/orgs", wrapper.ListOrgs)
 	router.POST(options.BaseURL+"/api/v1/orgs", wrapper.CreateOrg)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/members", wrapper.ListMembers)

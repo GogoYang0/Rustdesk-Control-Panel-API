@@ -57,6 +57,10 @@ type Deps struct {
 	// Roles resolves and seeds organization roles. NewAdminAPI derives it from
 	// DB when nil.
 	Roles *authz.RoleService
+
+	// Tokens mints and validates personal API tokens. NewRouter derives it from
+	// DB when nil so tests and the entrypoint share the same wiring.
+	Tokens *auth.TokenService
 }
 
 // Provisioner schedules asynchronous server provisioning.

@@ -66,6 +66,7 @@ func main() {
 	if err := st.DB.AutoMigrate(
 		&model.User{}, &model.RefreshToken{},
 		&model.Organization{}, &model.Membership{}, &model.Role{}, &model.Invitation{},
+		&model.APIToken{},
 		&model.AuditLog{},
 		&model.Device{}, &model.DeviceHeartbeat{}, &model.ServerGroup{},
 		&model.AddressBook{}, &model.AddressBookPeer{},

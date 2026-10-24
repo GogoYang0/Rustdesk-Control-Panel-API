@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/gen"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
@@ -45,7 +46,13 @@ func (a *AdminAPI) membershipFor(c *gin.Context, userID, orgID uint) (*model.Mem
 	}
 	c.Set(contextOrgID, orgID)
 	authz.SetOrgRole(c, role.Name)
-	authz.SetOrgPermissions(c, role.PermissionList())
+	perms := role.PermissionList()
+	if tokenPerms, tokenAuth := auth.TokenPermissions(c); tokenAuth {
+		// A personal token can never exceed the user's live role, and it cannot
+		// regain permissions the role lost: re-intersect on every request.
+		perms = auth.IntersectPermissions(perms, tokenPerms)
+	}
+	authz.SetOrgPermissions(c, perms)
 	authz.SetOrgAuditScope(c, role.AuditScope)
 	return &m, true
 }

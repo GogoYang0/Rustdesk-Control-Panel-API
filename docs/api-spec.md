@@ -85,6 +85,14 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `POST /api/v1/auth/refresh` | 刷新令牌轮换：旧 refresh 即刻撤销，重放旧令牌会**整族撤销**（重放检测） |
 | `POST /api/v1/auth/verify-email` | 邮箱验证（一次性令牌，邮件下发） |
 | `POST /api/v1/auth/resend-verification` | 重发验证邮件（结果不明时令牌保留，可重试） |
+| `GET /api/v1/auth/tokens` | 列出本人在某组织的个人令牌（v0.8.0，`organizationId` 查询参数必填；不返回明文） |
+| `POST /api/v1/auth/tokens` | 创建个人令牌（v0.8.0，绑定单个组织；明文只出现一次；权限不得超过当前角色） |
+| `DELETE /api/v1/auth/tokens/{tokenId}` | 撤销本人的令牌（v0.8.0，幂等；他人令牌 404） |
+
+> **v0.8.0 个人访问令牌**：明文格式 `rdt_<32B base64url>`，服务端只存 SHA-256，列表只回 `token_prefix`（前 8 字符）。
+> 令牌只在**组织路径**上生效（路径 `orgId` 必须等于签发组织）；`/auth/tokens` 自身、`/orgs`、`/permissions` 等非组织端点仍只接受 JWT。
+> **有效权限 = 令牌申请集 ∩ 用户当前角色权限集**，每个请求实时重算：角色降级或会籍停用会立即收窄/失效，令牌不会绕过这些变更。
+> 每人每组织最多 20 个活跃令牌，有效期 1..365 天（默认 90）。令牌与 refresh/JWT 是不同凭证族，互不替代。
 
 ### 3.2 组织与成员
 

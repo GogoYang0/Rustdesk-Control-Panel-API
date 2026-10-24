@@ -33,6 +33,9 @@ func NewRouter(d Deps) *gin.Engine {
 	if d.Logger == nil {
 		d.Logger = zap.NewNop()
 	}
+	if d.Tokens == nil {
+		d.Tokens = auth.NewTokenService(d.DB, d.Now)
+	}
 
 	r := gin.New()
 	// No reverse proxy is assumed; trusting all proxies would let clients spoof
@@ -41,9 +44,10 @@ func NewRouter(d Deps) *gin.Engine {
 	r.Use(gin.Recovery())
 	r.Use(newAuditMiddleware(d.Auditor, d.Logger))
 
-	// Management API: admin access tokens, JWT on every non-public path.
+	// Management API: access JWTs, with personal tokens accepted on
+	// organization-scoped paths only.
 	mgmt := r.Group("")
-	mgmt.Use(requireJWTUnlessPublic(d.Issuer))
+	mgmt.Use(requireAuthUnlessPublic(d.Issuer, d.Tokens))
 	gen.RegisterHandlers(mgmt, NewAdminAPI(d))
 
 	// RustDesk compatibility endpoints beside the management API with their
@@ -60,15 +64,16 @@ func NewRouter(d Deps) *gin.Engine {
 	return r
 }
 
-// requireJWTUnlessPublic validates the bearer token for every non-public path.
-func requireJWTUnlessPublic(issuer *auth.Issuer) gin.HandlerFunc {
-	jwt := auth.RequireJWT(issuer)
+// requireAuthUnlessPublic validates the bearer credential for every non-public
+// path: an access JWT, or a personal token on organization-scoped paths.
+func requireAuthUnlessPublic(issuer *auth.Issuer, tokens *auth.TokenService) gin.HandlerFunc {
+	credential := auth.RequireJWTOrToken(issuer, tokens)
 	return func(c *gin.Context) {
 		if publicPaths[c.FullPath()] {
 			c.Next()
 			return
 		}
-		jwt(c)
+		credential(c)
 	}
 }
 

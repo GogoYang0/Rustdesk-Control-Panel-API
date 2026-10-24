@@ -154,6 +154,99 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
+  /api/v1/auth/tokens:
+    get:
+      operationId: listTokens
+      summary: 列出个人访问令牌
+      description: |
+        返回当前用户在某组织内的个人令牌（v0.8.0，不返回明文）。需要 JWT 身份
+        （个人令牌本身不能管理令牌）。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: organizationId
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 令牌列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APITokenListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      operationId: createToken
+      summary: 创建个人访问令牌
+      description: |
+        签发一个绑定到单个组织的个人令牌（v0.8.0）。明文只在创建响应中出现一次；
+        服务端只存 SHA-256。`permissions` 省略时取当前角色的全部权限，给出时必须是
+        当前角色权限的子集（不能借令牌提权）。每人每组织最多 20 个活跃令牌。
+        有效期 `expires_in_days` 1..365，默认 90。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TokenCreateRequest"
+      responses:
+        "201":
+          description: 已创建（含一次性明文）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuedAPITokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/auth/tokens/{tokenId}:
+    delete:
+      operationId: revokeToken
+      summary: 撤销个人访问令牌
+      description: 撤销当前用户名下的一个个人令牌（v0.8.0）；重复撤销幂等，他人令牌返回 404。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tokenId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已撤销
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/v1/orgs:
     get:
       operationId: listOrgs
@@ -2632,6 +2725,118 @@ components:
           type: string
         data:
           $ref: "#/components/schemas/TokenPair"
+
+    APIToken:
+      type: object
+      required:
+        - id
+        - organization_id
+        - name
+        - token_prefix
+        - permissions
+        - expires_at
+        - created_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        organization_id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        token_prefix:
+          type: string
+          description: 令牌前 8 个字符，用于列表辨识（不足以重放）
+        permissions:
+          type: array
+          items:
+            type: string
+          description: 申请时的权限子集；有效权限还要与该用户当前角色取交集
+        expires_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        revoked_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    IssuedAPIToken:
+      type: object
+      required:
+        - token
+        - plaintext
+      properties:
+        token:
+          $ref: "#/components/schemas/APIToken"
+        plaintext:
+          type: string
+          description: 明文令牌，只在本响应出现一次，服务端不保存
+
+    APITokenListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/APIToken"
+
+    IssuedAPITokenResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/IssuedAPIToken"
+
+    TokenCreateRequest:
+      type: object
+      required:
+        - name
+        - organization_id
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: 用户可读标签
+        organization_id:
+          type: integer
+          format: int64
+          description: 令牌绑定的组织；请求必须来自该组织的有效会籍
+        permissions:
+          type: array
+          items:
+            type: string
+          description: 省略时取当前角色的全部权限；给出时必须是当前角色权限的子集
+        expires_in_days:
+          type: integer
+          minimum: 1
+          maximum: 365
+          default: 90
 
     Org:
       type: object
