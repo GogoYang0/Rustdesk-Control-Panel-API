@@ -11,7 +11,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"time"
 
 	"gorm.io/gorm"
@@ -196,8 +195,8 @@ func (s *RetentionService) runOrg(ctx context.Context, org model.Organization) (
 // atomically renames both the data and checksum files into place.
 func (s *RetentionService) writeArchive(orgID uint, rows []model.AuditLog) (path, sum string, err error) {
 	dir := filepath.Join(s.dir, fmt.Sprintf("org-%d", orgID))
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return "", "", fmt.Errorf("create audit archive directory: %w", err)
+	if err := ensureArchiveDir(dir); err != nil {
+		return "", "", err
 	}
 	stamp := s.now().UTC().Format("20060102T150405.000000000Z")
 	// The id range keeps consecutive batches of one run apart even when the
@@ -250,26 +249,58 @@ func (s *RetentionService) writeArchive(orgID uint, rows []model.AuditLog) (path
 		_ = os.Remove(shaTmp)
 		return "", "", fmt.Errorf("sync audit archive checksum: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := renameDurable(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		_ = os.Remove(shaTmp)
 		return "", "", fmt.Errorf("publish audit archive: %w", err)
 	}
-	if err := os.Rename(shaTmp, path+".sha256"); err != nil {
+	if err := renameDurable(shaTmp, path+".sha256"); err != nil {
 		_ = os.Remove(path)
 		_ = os.Remove(shaTmp)
 		return "", "", fmt.Errorf("publish audit archive checksum: %w", err)
 	}
-	// The directory entry itself must be durable before the database rows are
-	// deleted: otherwise a crash can leave a committed deletion whose archive is
-	// only present as an unreachable inode (or not at all). Directories cannot
-	// be synced on Windows, where the rename is flushed with the file handles.
+	// The published names must be durable before the database rows are deleted:
+	// otherwise a crash can leave a committed deletion whose archive is only
+	// present as an unreachable inode. Windows renames are write-through and the
+	// directory flush below covers the entry as well.
 	if err := syncDir(dir); err != nil {
 		_ = os.Remove(path)
 		_ = os.Remove(path + ".sha256")
 		return "", "", fmt.Errorf("sync audit archive directory: %w", err)
 	}
 	return path, sum, nil
+}
+
+// ensureArchiveDir creates the per-organization archive directory and makes the
+// newly created directory entries durable. Syncing only the leaf directory
+// would leave its own entry in the parent at the mercy of a crash, so every
+// level created by this call and its parent is flushed before any row is
+// deleted. A sync failure aborts the batch (fail closed).
+func ensureArchiveDir(dir string) error {
+	var created []string
+	for p := dir; ; {
+		if _, err := os.Stat(p); err == nil {
+			break
+		}
+		created = append(created, p)
+		parent := filepath.Dir(p)
+		if parent == p {
+			break
+		}
+		p = parent
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("create audit archive directory: %w", err)
+	}
+	for _, c := range created {
+		if err := syncDir(c); err != nil {
+			return fmt.Errorf("sync audit archive directory: %w", err)
+		}
+		if err := syncDir(filepath.Dir(c)); err != nil {
+			return fmt.Errorf("sync audit archive parent directory: %w", err)
+		}
+	}
+	return nil
 }
 
 // syncFile flushes one file's contents to stable storage. The handle is opened
@@ -281,20 +312,6 @@ func syncFile(path string) error {
 	}
 	defer func() { _ = f.Close() }()
 	return f.Sync()
-}
-
-// syncDir flushes directory entries so a rename survives a crash. Windows has
-// no directory fsync; NTFS journals the rename with the file flush instead.
-func syncDir(dir string) error {
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = d.Close() }()
-	return d.Sync()
 }
 
 // verifyArchive re-reads the archive and confirms both its line count and its
