@@ -36,13 +36,13 @@
 { "code": "invalid_request", "message": "human readable", "data": null }
 ```
 
-`code` 取值（契约枚举）：`ok` `invalid_request` `unauthorized` `not_found` `conflict` `forbidden` `email_not_verified` `rate_limited` `internal` `approval_required`。`unauthorized` 映射 **401**（登录/刷新的凭据拒绝路径）；`internal` 映射 **500**（未预期的服务端错误，不向客户端泄露细节）。
+`code` 取值（契约枚举）：`ok` `invalid_request` `unauthorized` `not_found` `conflict` `forbidden` `email_not_verified` `rate_limited` `internal` `approval_required` `two_factor_required`。`unauthorized` 映射 **401**（登录/刷新的凭据拒绝路径）；`internal` 映射 **500**（未预期的服务端错误，不向客户端泄露细节）。
 
-`approval_required` 是唯一**必须携带 `data` 对象**的错误码（`data.approval_id` 指向待审批请求），其余错误码的 `data` 为 `null`。
+`approval_required` 必须携带 `data.approval_id`（指向待审批请求），`two_factor_required` 必须携带 `data.challenge_token`（登录第二步挑战令牌，5 分钟有效）；其余错误码的 `data` 为 `null`。
 
 ### 2.2 租户隔离（管理 API）
 
-管理 API 的一切组织内资源都带 `{orgId}` 路径参数；服务端通过 `ScopedByOrg` 强制租户过滤，**组织内**跨租户资源访问返回 `404 not_found`（不泄露存在性）；**调用者不属于该组织**时返回 `403 forbidden`（"不是本组织成员"本身不构成信息泄露，且便于前端区分"没权限"与"资源没了"）。compat 层不带 `{orgId}`：**已认证请求**使用已验证 token 的 `org` claim 作为组织上下文；**无凭据的 heartbeat/sysinfo** 从持久化会话取得 `OrganizationID` 后执行组织范围查询（见 §4）。
+管理 API 的一切组织内资源都带 `{orgId}` 路径参数；**例外**是个人令牌端点 `/auth/tokens`（列表用必填 `organizationId` 查询参数，创建用请求体 `organization_id`）——令牌属于用户而非组织路径资源，但签发后只在对应组织的路径上生效。服务端通过 `ScopedByOrg` 强制租户过滤，**组织内**跨租户资源访问返回 `404 not_found`（不泄露存在性）；**调用者不属于该组织**时返回 `403 forbidden`（"不是本组织成员"本身不构成信息泄露，且便于前端区分"没权限"与"资源没了"）。compat 层不带 `{orgId}`：**已认证请求**使用已验证 token 的 `org` claim 作为组织上下文；**无凭据的 heartbeat/sysinfo** 从持久化会话取得 `OrganizationID` 后执行组织范围查询（见 §4）。
 
 fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件注册为准）：
 
@@ -61,6 +61,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `conflict` | 409 | 管理 API 资源冲突；compat 地址簿的 hash 冲突使用 compat 专用错误 `ab_conflict`（见 §4.3），不走此包络 |
 | `approval_required` | 409 | 票据签发被策略的事前审批要求阻断（`data.approval_id` 指向待审批请求，见 §3.6） |
 | `unauthorized` | 401 | 登录/刷新的凭据拒绝 |
+| `two_factor_required` | 401 | 已启用 2FA 的账号密码正确但需第二步（`data.challenge_token` 指向 `/auth/2fa/verify`） |
 | `rate_limited` | 429 | 登录锁定（LoginGuard） |
 | `internal` | 500 | 未预期的服务端错误（不向客户端泄露细节） |
 
@@ -272,7 +273,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `GET .../audit-retention` | `org.admin`（owner） | 返回 `audit_retention_days` 与最近一次成功归档摘要（`at`/`rows`/`path`） |
 | `PUT .../audit-retention` | `org.admin`（owner） | 设置保留天数：`days` 必填（缺失 400），0 = 永久，1..3650；写 `organization.audit_retention.set` 审计 |
 
-- **先归档、后删除（fail closed）**：每小时后台任务对每个保留期 > 0 的组织，把早于阈值的审计行写成 JSONL，附同名 `.sha256`，**重新读取校验行数与摘要一致后才删除**；归档或校验失败则该组织本轮不删除任何行。按批处理（每批 ≤1000 行，逐批归档/校验/删除，直到剩余不足一批），积压不会一次性载入或撞占位符上限。
+- **先归档、后删除（fail closed）**：每小时后台任务对每个保留期 > 0 的组织，把早于阈值的审计行写成 JSONL，附同名 `.sha256`，**重新读取校验行数与摘要一致后才删除**；某批归档或校验失败时**该批不删除任何行**，已成功的批次不回滚，下个周期从剩余行继续。按批处理（每批 ≤1000 行，逐批归档/校验/删除，直到剩余不足一批），积压不会一次性载入或撞占位符上限。
 - **归档路径**：`<audit.archiveDir>/org-<orgId>/audit-<UTC时间戳>-<minId>-<maxId>.jsonl`；临时文件原子改名落盘，id 区间避免同轮多批重名。归档文件不经 API 暴露，运维备份见运维指南。
 - **系统动作也审计**：归档与清理分别写 `audit.retention.archive`（含行数、路径、摘要、阈值）与 `audit.retention.purge`；actor 为 0（系统）。
 - **删除与归档同事务**：两条系统审计与按 id 精确删除在同一事务提交；无事务审计器时整轮拒绝删除。
