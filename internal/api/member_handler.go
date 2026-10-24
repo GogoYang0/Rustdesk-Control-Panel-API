@@ -156,24 +156,27 @@ func (a *AdminAPI) RemoveMember(c *gin.Context, orgId int64, userId int64) {
 		}
 		revoked = n
 
-		if tr, ok := a.deps.Auditor.(audit.TxRecorder); ok {
-			if err := tr.RecordTx(tx, audit.Entry{
-				OrganizationID: uint(orgId),
-				ActorUserID:    uid,
-				Action:         "organization.member.remove",
-				TargetType:     "user",
-				TargetID:       fmt.Sprint(target.UserID),
-				Detail:         map[string]any{"role": roleNameOf(roleIdx, target.RoleID), "revoked_sessions": n},
-			}); err != nil {
-				return err
-			}
-			domainRecorded = true
+		if tr, ok := a.deps.Auditor.(audit.TxRecorder); !ok {
+			return errAuditUnavailable
+		} else if err := tr.RecordTx(tx, audit.Entry{
+			OrganizationID: uint(orgId),
+			ActorUserID:    uid,
+			Action:         "organization.member.remove",
+			TargetType:     "user",
+			TargetID:       fmt.Sprint(target.UserID),
+			Detail:         map[string]any{"role": roleNameOf(roleIdx, target.RoleID), "revoked_sessions": n},
+		}); err != nil {
+			return err
 		}
+		domainRecorded = true
 		return nil
 	})
 	switch {
 	case errors.Is(err, errActorNoLongerAuthorized):
 		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "insufficient permissions")
+		return
+	case errors.Is(err, errAuditUnavailable):
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "audit unavailable")
 		return
 	case errors.Is(err, errLastOwner):
 		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "organization must keep at least one owner")
@@ -337,7 +340,9 @@ func (a *AdminAPI) UpdateMemberRole(c *gin.Context, orgId int64, userId int64) {
 		updates := map[string]any{}
 		if newRole != nil {
 			updates["role_id"] = newRole.ID
-			updates["role"] = newRole.Name
+			// The legacy string column is no longer read (staged migration) and is
+			// bounded to 16 bytes: store the kind, not a custom display name.
+			updates["role"] = newRole.Kind
 		}
 		if disableTo != nil {
 			updates["disabled"] = *disableTo
@@ -370,7 +375,7 @@ func (a *AdminAPI) UpdateMemberRole(c *gin.Context, orgId int64, userId int64) {
 
 		tr, ok := a.deps.Auditor.(audit.TxRecorder)
 		if !ok {
-			return nil
+			return errAuditUnavailable
 		}
 		if newRole != nil {
 			if err := tr.RecordTx(tx, audit.Entry{
@@ -406,6 +411,9 @@ func (a *AdminAPI) UpdateMemberRole(c *gin.Context, orgId int64, userId int64) {
 	switch {
 	case errors.Is(err, errActorNoLongerAuthorized):
 		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "insufficient permissions")
+		return
+	case errors.Is(err, errAuditUnavailable):
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "audit unavailable")
 		return
 	case errors.Is(err, errLastOwner):
 		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "organization must keep at least one owner")

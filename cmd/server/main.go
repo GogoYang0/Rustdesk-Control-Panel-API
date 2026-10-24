@@ -71,7 +71,7 @@ func main() {
 		&model.AuditLog{},
 		&model.Device{}, &model.DeviceHeartbeat{}, &model.ServerGroup{},
 		&model.AddressBook{}, &model.AddressBookPeer{},
-		&model.AddressBookTag{}, &model.SyncCursor{},
+		&model.AddressBookTag{}, &model.AddressBookGrant{}, &model.SyncCursor{},
 		&model.VerificationToken{},
 		&model.MigrationMark{},
 		&model.CompatSession{},

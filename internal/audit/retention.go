@@ -67,16 +67,15 @@ func (s *RetentionService) SetDaysTx(tx *gorm.DB, orgID uint, days int) error {
 	if days < 0 || days > MaxRetentionDays {
 		return ErrInvalidRetention
 	}
-	res := tx.Model(&model.Organization{}).
+	// Confirm the organization first: a MySQL update to the same value reports
+	// zero affected rows, which must not be mistaken for "not found".
+	var org model.Organization
+	if err := tx.Select("id").First(&org, orgID).Error; err != nil {
+		return err
+	}
+	return tx.Model(&model.Organization{}).
 		Where("id = ?", orgID).
-		Update("audit_retention_days", days)
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 0 {
-		return gorm.ErrRecordNotFound
-	}
-	return nil
+		Update("audit_retention_days", days).Error
 }
 
 // RunOnce archives and purges expired audit rows for every organization with a

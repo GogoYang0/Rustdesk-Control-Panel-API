@@ -106,7 +106,7 @@ func (a *AdminAPI) ListDevices(c *gin.Context, orgId int64, params gen.ListDevic
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid organization id")
 		return
 	}
-	if _, ok := a.membershipFor(c, uid, uint(orgId)); !ok {
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermDeviceRead) {
 		return
 	}
 

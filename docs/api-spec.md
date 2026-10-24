@@ -100,9 +100,9 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 > **有效权限 = 令牌申请集 ∩ 用户当前角色权限集**，每个请求实时重算：角色降级或会籍停用会立即收窄/失效，令牌不会绕过这些变更。
 > 每人每组织最多 20 个活跃令牌，有效期 1..365 天（默认 90）。令牌与 refresh/JWT 是不同凭证族，互不替代。
 
-> **v0.8.0 管理面 2FA（TOTP）**：启用后 `/auth/login` 密码正确也**不直接发令牌**，而是返回 `401 + code=two_factor_required`，`data.challenge_token` 为 5 分钟一次性挑战令牌；客户端用它调用公开的 `/auth/2fa/verify`（TOTP 码或一次性恢复码）换取令牌对。
+> **v0.8.0 管理面 2FA（TOTP）**：启用后 `/auth/login` 密码正确也**不直接发令牌**，而是返回 `401 + code=two_factor_required`，`data.challenge_token` 为 5 分钟有效的挑战令牌；客户端用它调用公开的 `/auth/2fa/verify`（TOTP 码或一次性恢复码）换取令牌对。挑战令牌本身可重复提交（不是一次性凭据），一次性体现在凭据层面——每个 TOTP 码仅在其时间步内可用且不可重放，每个恢复码只能成功使用一次；该端点与登录共用两轨限流（IP 桶 + 账户/IP 失败计数，超限 429）。
 > TOTP 秘密以 AES-256-GCM 加密存储（密钥由 `auth.secret` 经 HKDF-SHA256 派生）；验证窗口 ±1 步，`last_step` 保证同一码不可重放；恢复码 10 个、Argon2id 存储、成功后即作废。
-> 管理员 `member.manage` 可重置成员 2FA（丢失设备场景），重置动作写审计 `user.2fa.reset`；该审计失败则整体失败（fail closed）。
+> 管理员 `member.manage` 可重置成员 2FA（丢失设备场景），重置动作写审计 `user.2fa.reset`；该审计失败则整体失败（fail closed）。管理员**不能重置自己**（409）——自服务移除走 `/auth/2fa/disable`（需当前密码 + TOTP/恢复码），否则该端点就成了第二因素的旁路。
 
 ### 3.2 组织与成员
 

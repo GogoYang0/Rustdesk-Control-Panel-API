@@ -59,7 +59,6 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 	// The quota is checked inside the transaction with the user row locked.
 	// Reading the count outside would let two concurrent requests both pass the
 	// check and create an organization each (CWE-770, TOCTOU).
-	domainRecorded := false
 	err := a.deps.DB.Transaction(func(tx *gorm.DB) error {
 		if a.deps.OrgsPerUser > 0 {
 			if err := a.lockUserRow(tx, uid); err != nil {
@@ -97,24 +96,30 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 		}
 		// Record the audit entry on the same transaction (issue #19): the
 		// organization and its audit trail commit or roll back together.
-		if tr, ok := a.deps.Auditor.(audit.TxRecorder); ok {
-			if err := tr.RecordTx(tx, audit.Entry{
-				OrganizationID: org.ID,
-				ActorUserID:    uid,
-				Action:         "organization.create",
-				TargetType:     "organization",
-				TargetID:       fmt.Sprint(org.ID),
-				Detail:         map[string]any{"name": org.Name},
-			}); err != nil {
-				return err
-			}
-			domainRecorded = true
+		// Tenant creation is a security-relevant event: without a transactional
+		// auditor the organization must not be created at all (fail closed).
+		tr, ok := a.deps.Auditor.(audit.TxRecorder)
+		if !ok {
+			return errAuditUnavailable
+		}
+		if err := tr.RecordTx(tx, audit.Entry{
+			OrganizationID: org.ID,
+			ActorUserID:    uid,
+			Action:         "organization.create",
+			TargetType:     "organization",
+			TargetID:       fmt.Sprint(org.ID),
+			Detail:         map[string]any{"name": org.Name},
+		}); err != nil {
+			return err
 		}
 		return nil
 	})
 	switch {
 	case errors.Is(err, errOrgQuotaReached):
 		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "organization quota reached")
+		return
+	case errors.Is(err, errAuditUnavailable):
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "audit unavailable")
 		return
 	case err != nil:
 		a.deps.Logger.Error("create org failed")
@@ -124,13 +129,7 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 
 	// The domain audit record committed with the transaction; skip the
 	// middleware fallback for this request (issue #19).
-	if domainRecorded {
-		c.Set(contextAuditRecorded, true)
-	} else {
-		// Tenant creation is a security-relevant event and must appear in
-		// the trail through the middleware fallback.
-		c.Set(contextOrgID, org.ID)
-	}
+	c.Set(contextAuditRecorded, true)
 
 	// Provisioning is slow (container start), so it runs on a bounded worker
 	// queue after the response. Enqueue failures are recoverable: the
@@ -372,7 +371,6 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 	var member model.Membership
 	var joined model.User
 	needVerify := false
-	domainRecorded := false
 	err = a.deps.DB.Transaction(func(tx *gorm.DB) error {
 		var user model.User
 		err := tx.Where("email = ?", inv.Email).First(&user).Error
@@ -419,18 +417,21 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 
 		// Record the audit entry on the same transaction (issue #19): the
 		// membership and its audit trail commit or roll back together.
-		if tr, ok := a.deps.Auditor.(audit.TxRecorder); ok {
-			if err := tr.RecordTx(tx, audit.Entry{
-				OrganizationID: inv.OrganizationID,
-				ActorUserID:    user.ID,
-				Action:         "invitation.accept",
-				TargetType:     "membership",
-				TargetID:       fmt.Sprint(member.ID),
-				Detail:         map[string]any{"role": inv.Role, "invitation_id": inv.ID},
-			}); err != nil {
-				return err
-			}
-			domainRecorded = true
+		// Joining a tenant grants a role, so an unrecorded join must not commit
+		// (fail closed when the auditor is not transactional).
+		tr, ok := a.deps.Auditor.(audit.TxRecorder)
+		if !ok {
+			return errAuditUnavailable
+		}
+		if err := tr.RecordTx(tx, audit.Entry{
+			OrganizationID: inv.OrganizationID,
+			ActorUserID:    user.ID,
+			Action:         "invitation.accept",
+			TargetType:     "membership",
+			TargetID:       fmt.Sprint(member.ID),
+			Detail:         map[string]any{"role": inv.Role, "invitation_id": inv.ID},
+		}); err != nil {
+			return err
 		}
 
 		now := a.deps.Now()
@@ -442,6 +443,10 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 	if errors.Is(err, errInvitationCredentials) {
 		a.guard.RecordFailure(inv.Email, ip)
 		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "invalid credentials for this email")
+		return
+	}
+	if errors.Is(err, errAuditUnavailable) {
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "audit unavailable")
 		return
 	}
 	if err != nil {
@@ -461,14 +466,7 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 
 	// The domain audit record committed with the transaction; skip the
 	// middleware fallback for this request (issue #19).
-	if domainRecorded {
-		c.Set(contextAuditRecorded, true)
-	} else {
-		// Record the org and the accepted user in the audit trail: joining a
-		// tenant grants a role and must be traceable to both sides.
-		c.Set(contextOrgID, inv.OrganizationID)
-		c.Set(auth.ContextUserID, member.UserID)
-	}
+	c.Set(contextAuditRecorded, true)
 
 	c.JSON(http.StatusOK, gen.MemberResponse{
 		Code:    gen.ErrorCodeOk,

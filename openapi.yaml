@@ -357,7 +357,11 @@ paths:
       summary: 登录第二步校验
       description: |
         使用登录返回的短期 `challenge_token` 与 TOTP 码（或一次性恢复码）完成登录
-        （v0.8.0）。成功返回与 `/auth/login` 相同的令牌对；挑战令牌一次性、5 分钟有效。
+        （v0.8.0）。成功返回与 `/auth/login` 相同的令牌对。
+
+        挑战令牌本身不是一次性凭据：它在签发后 5 分钟内有效，期间可重复提交校验。
+        一次性的是凭据——每个 TOTP 码仅在对应时间步内可用（同一时间步不可重放），
+        每个恢复码只能成功使用一次。
       tags:
         - auth
       security: []
@@ -378,6 +382,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
 
   /api/v1/orgs:
     get:
@@ -1950,7 +1956,9 @@ paths:
     post:
       operationId: deviceHeartbeat
       summary: 设备心跳
-      description: 上报设备在线心跳，刷新 last_seen_at。需要 device.write 权限。
+      description: |
+        上报设备在线心跳，刷新 last_seen_at。需要 device.write 权限。
+        设备已停用时返回 409（停用设备的活跃提示不再可信，也不会刷新时间）。
       tags:
         - devices
       security:
@@ -1981,6 +1989,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
 
   /api/v1/orgs/{orgId}/devices/{deviceId}/rebind:
     post:

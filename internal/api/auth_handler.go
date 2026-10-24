@@ -371,15 +371,32 @@ func (a *AdminAPI) VerifyTOTP(c *gin.Context) {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "challenge_token and code are required")
 		return
 	}
+	// The challenge token carries the account but proves nothing about the
+	// second factor, so this endpoint is a credential oracle like /auth/login
+	// and shares the same two-track guard (CWE-307).
+	ip := c.ClientIP()
+	if !a.totpGuard.AllowIP(ip) {
+		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "too many attempts")
+		return
+	}
 	uid, err := a.deps.Issuer.ParseChallenge(req.ChallengeToken)
 	if err != nil {
 		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "invalid or expired challenge")
 		return
 	}
+	account := fmt.Sprint(uid)
+	if a.totpGuard.Locked(account, ip) {
+		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "account temporarily locked")
+		return
+	}
 	if err := a.totp.VerifyLogin(uid, req.Code); err != nil {
+		if errors.Is(err, auth.ErrInvalidTOTP) || errors.Is(err, auth.ErrInvalidPassword) {
+			a.totpGuard.RecordFailure(account, ip)
+		}
 		a.writeTOTPError(c, err, "2fa verify failed")
 		return
 	}
+	a.totpGuard.Reset(account, ip)
 	access, refresh, err := a.deps.Auth.IssueTokens(uid)
 	if err != nil {
 		a.deps.Logger.Error("issue tokens after 2fa failed")
@@ -411,11 +428,18 @@ func (a *AdminAPI) ResetMemberTOTP(c *gin.Context, orgId int64, userId int64) {
 	if !a.requirePerm(c, uid, uint(orgId), authz.PermMemberManage) {
 		return
 	}
+	// Resetting your own factor would turn the admin endpoint into a bypass of
+	// the second factor itself (no password or TOTP proof is required here).
+	// Self-service removal goes through /auth/2fa/disable, which verifies the
+	// current code.
+	if uint(userId) == uid {
+		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "cannot reset your own two-factor configuration")
+		return
+	}
 	if _, err := a.loadMembership(uint(orgId), uint(userId)); err != nil {
 		a.writeMemberError(c, err, "could not load membership")
 		return
 	}
-	domainRecorded := false
 	err := a.deps.DB.Transaction(func(tx *gorm.DB) error {
 		res := tx.Where("user_id = ?", userId).Delete(&model.UserTOTP{})
 		if res.Error != nil {
@@ -425,18 +449,14 @@ func (a *AdminAPI) ResetMemberTOTP(c *gin.Context, orgId int64, userId int64) {
 		if !ok {
 			return errAuditUnavailable
 		}
-		if err := tr.RecordTx(tx, audit.Entry{
+		return tr.RecordTx(tx, audit.Entry{
 			OrganizationID: uint(orgId),
 			ActorUserID:    uid,
 			Action:         "user.2fa.reset",
 			TargetType:     "user",
 			TargetID:       fmt.Sprint(userId),
 			Detail:         map[string]any{"had_configuration": res.RowsAffected > 0},
-		}); err != nil {
-			return err
-		}
-		domainRecorded = true
-		return nil
+		})
 	})
 	if err != nil {
 		if errors.Is(err, errAuditUnavailable) {
@@ -448,9 +468,7 @@ func (a *AdminAPI) ResetMemberTOTP(c *gin.Context, orgId int64, userId int64) {
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not reset two-factor")
 		return
 	}
-	if domainRecorded {
-		c.Set(contextAuditRecorded, true)
-	}
+	c.Set(contextAuditRecorded, true)
 	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
 }
 

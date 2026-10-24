@@ -92,6 +92,7 @@ type AdminAPI struct {
 	deps      Deps
 	guard     *loginGuard
 	resend    *loginGuard
+	totpGuard *loginGuard
 	books     *addressbook.Service
 	tickets   *session.Service
 	totp      *auth.TOTPService
@@ -152,6 +153,7 @@ func NewAdminAPI(d Deps) *AdminAPI {
 		deps:      d,
 		guard:     newLoginGuard(),
 		resend:    newLoginGuard(),
+		totpGuard: newLoginGuard(),
 		books:     addressbook.NewService(d.DB),
 		tickets:   tickets,
 		totp:      d.TOTP,
