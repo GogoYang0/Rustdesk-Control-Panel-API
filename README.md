@@ -21,7 +21,7 @@ Go 1.27 · Gin · GORM（SQLite / MySQL / PostgreSQL）· Viper · zap · Testif
 - **多租户**：组织 / 成员 / 角色；租户条件由 GORM 插件统一注入，缺上下文时 fail-closed（`WHERE 1 = 0`）。
 - **认证**：邮箱验证闭环（未验证不可登录）、邀请与邀请码、刷新令牌轮换、登录限流与锁定。
 - **设备**：登记（RustDesk ID 指纹 upsert）、分页列表与改绑（`rebind`，绑定代数 +1 并审计）、客户端心跳、在线判定窗口。
-- **供应**：以 `docker` CLI 编排每组织的 hbbs/hbbr 容器（端口池、异步队列、补偿扫描）；支持按组织开关（`GET/PUT /orgs/{orgId}/provisioning`）、启动端口探测与部署前预检。
+- **供应**：以 `docker` CLI 编排每组织的 hbbs/hbbr 容器（端口池、异步队列、补偿扫描）；支持按组织开关（`GET/PUT /api/v1/orgs/{orgId}/provisioning`）、启动端口探测与部署前预检。
 - **会话治理**：连接票据（面板发起）、连接策略（并发/时长/时段/事前审批）、panel+native 会话记录、审批中心与违规告警（M3/v0.4.0）。
 - **审计**：领域事件与调用方事务同事务写入（`audit.TxRecorder`），中间件兜底。
 - **RustDesk 客户端兼容层**：`/api/*` 方言（登录 / 会话 / 心跳 / 设备列表 / 地址簿），让原生客户端把本面板当作 API 服务器。
