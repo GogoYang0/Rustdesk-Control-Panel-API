@@ -37,6 +37,13 @@ func (s *Server) requireSession() gin.HandlerFunc {
 			abortUnauthorized(c, "session revoked or expired")
 			return
 		}
+		// Session validity is not membership validity: a login that overlapped
+		// a member removal can persist a session after the revocation pass. Re-check
+		// the current membership so offboarding closes every consumer path.
+		if !s.membershipActive(session.UserID, session.OrganizationID) {
+			abortUnauthorized(c, "membership revoked")
+			return
+		}
 		c.Set(ContextUserID, uid)
 		c.Set(ContextOrgID, orgID)
 		c.Set(ContextJTI, jti)
@@ -85,5 +92,20 @@ func (s *Server) activeSessionByUUID(uuid, deviceID string) (*model.CompatSessio
 	if !session.Active(s.deps.Now()) {
 		return nil, false
 	}
+	if !s.membershipActive(session.UserID, session.OrganizationID) {
+		return nil, false
+	}
 	return &session, true
+}
+
+// membershipActive reports whether the session owner still belongs to the
+// organization. A lookup failure is treated as inactive: a revoked membership
+// must never be masked by an unavailable database.
+func (s *Server) membershipActive(userID, orgID uint) bool {
+	var membership model.Membership
+	err := store.WithoutTenantScope(s.deps.DB).
+		Select("id").
+		Where("organization_id = ? AND user_id = ?", orgID, userID).
+		First(&membership).Error
+	return err == nil
 }
