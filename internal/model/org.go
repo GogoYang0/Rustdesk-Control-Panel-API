@@ -23,10 +23,15 @@ const (
 )
 
 // Membership links a user to an organization with an in-org role.
+//
+// RoleID is the authorization source: it points at a Role row of the same
+// organization (builtin or custom). Role is the legacy string kept for a staged
+// migration only — after MigrateRoles runs it is no longer read.
 type Membership struct {
 	ID             uint      `gorm:"primaryKey" json:"id"`
 	OrganizationID uint      `gorm:"uniqueIndex:idx_membership_org_user;not null" json:"organization_id"`
 	UserID         uint      `gorm:"uniqueIndex:idx_membership_org_user;not null" json:"user_id"`
+	RoleID         uint      `gorm:"not null;default:0;index" json:"role_id"`
 	Role           string    `gorm:"size:16;not null" json:"role"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`

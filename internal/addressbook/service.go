@@ -126,12 +126,12 @@ func (s *Service) getBook(userID, orgID, bookID uint) (*model.AddressBook, error
 }
 
 // canWrite reports whether the user may modify the book: personal — owner
-// only; shared — roles holding the addressbook write permission.
-func canWrite(book *model.AddressBook, userID uint, role string) bool {
+// only; shared — callers holding the addressbook write permission.
+func canWrite(book *model.AddressBook, userID uint, perms []string) bool {
 	if book.Scope == model.AddressBookScopePersonal {
 		return book.OwnerID != nil && *book.OwnerID == userID
 	}
-	return authz.Can(role, authz.PermAddressBook)
+	return authz.Has(perms, authz.PermAddressBook)
 }
 
 // Get returns the book together with its peers and tags.
@@ -160,12 +160,12 @@ func (s *Service) Get(userID, orgID, bookID uint) (*model.AddressBook, []model.A
 // concurrent Create could insert the target name between the check and the
 // write and produce two same-named shared books (NULL owner is not
 // deduplicated by the unique index).
-func (s *Service) Update(userID uint, role string, orgID, bookID uint, name string) (*model.AddressBook, error) {
+func (s *Service) Update(userID uint, perms []string, orgID, bookID uint, name string) (*model.AddressBook, error) {
 	book, err := s.getBook(userID, orgID, bookID)
 	if err != nil {
 		return nil, err
 	}
-	if !canWrite(book, userID, role) {
+	if !canWrite(book, userID, perms) {
 		return nil, ErrForbidden
 	}
 	err = s.db.Transaction(func(tx *gorm.DB) error {
@@ -265,12 +265,12 @@ func bumpRevision(tx *gorm.DB, orgID, bookID uint) error {
 // Delete removes the book together with its peers and tags. The book row is
 // locked first so a concurrent replace cannot re-insert children after the
 // cascading deletes.
-func (s *Service) Delete(userID uint, role string, orgID, bookID uint) (*model.AddressBook, error) {
+func (s *Service) Delete(userID uint, perms []string, orgID, bookID uint) (*model.AddressBook, error) {
 	book, err := s.getBook(userID, orgID, bookID)
 	if err != nil {
 		return nil, err
 	}
-	if !canWrite(book, userID, role) {
+	if !canWrite(book, userID, perms) {
 		return nil, ErrForbidden
 	}
 	err = s.db.Transaction(func(tx *gorm.DB) error {
@@ -297,12 +297,12 @@ func (s *Service) Delete(userID uint, role string, orgID, bookID uint) (*model.A
 // book revision. The book row is locked for the whole transaction so two
 // concurrent replaces serialise instead of merging their lists, and the
 // refreshed row is read before commit (no post-commit reload race).
-func (s *Service) ReplacePeers(userID uint, role string, orgID, bookID uint, peers []PeerInput) (*model.AddressBook, error) {
+func (s *Service) ReplacePeers(userID uint, perms []string, orgID, bookID uint, peers []PeerInput) (*model.AddressBook, error) {
 	book, err := s.getBook(userID, orgID, bookID)
 	if err != nil {
 		return nil, err
 	}
-	if !canWrite(book, userID, role) {
+	if !canWrite(book, userID, perms) {
 		return nil, ErrForbidden
 	}
 
@@ -360,12 +360,12 @@ func (s *Service) ReplacePeers(userID uint, role string, orgID, bookID uint, pee
 
 // ReplaceTags swaps the full tag list inside a transaction and bumps the
 // book revision, under the same row lock as ReplacePeers.
-func (s *Service) ReplaceTags(userID uint, role string, orgID, bookID uint, tags []TagInput) (*model.AddressBook, error) {
+func (s *Service) ReplaceTags(userID uint, perms []string, orgID, bookID uint, tags []TagInput) (*model.AddressBook, error) {
 	book, err := s.getBook(userID, orgID, bookID)
 	if err != nil {
 		return nil, err
 	}
-	if !canWrite(book, userID, role) {
+	if !canWrite(book, userID, perms) {
 		return nil, ErrForbidden
 	}
 

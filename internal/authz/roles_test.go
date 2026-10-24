@@ -37,12 +37,12 @@ func TestRoleMatrix(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			require.Equal(t, c.allowed, authz.Can(c.role, c.perm))
+			require.Equal(t, c.allowed, authz.Has(authz.BuiltinPermissions(c.role), c.perm))
 		})
 	}
 }
 
 func TestRequire_ReturnsErrorWhenForbidden(t *testing.T) {
-	require.NoError(t, authz.Require("owner", authz.PermOrgAdmin))
-	require.Error(t, authz.Require("member", authz.PermMemberManage))
+	require.NoError(t, authz.Require(authz.BuiltinPermissions("owner"), authz.PermOrgAdmin))
+	require.Error(t, authz.Require(authz.BuiltinPermissions("member"), authz.PermMemberManage))
 }

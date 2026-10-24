@@ -14,7 +14,9 @@ import (
 // contextOrgID is the gin key holding the org id resolved from the path.
 const contextOrgID = "api.orgID"
 
-// membershipFor loads the caller's membership for the org in the path.
+// membershipFor loads the caller's membership for the org in the path and
+// resolves its effective role. A missing membership or an unresolvable role
+// fails closed with 403.
 //
 // The lookup itself is cross-tenant (a user may belong to several orgs), so it
 // goes through store.WithoutTenantScope; every later query uses the tenant
@@ -28,18 +30,26 @@ func (a *AdminAPI) membershipFor(c *gin.Context, userID, orgID uint) (*model.Mem
 		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "not a member of this organization")
 		return nil, false
 	}
+	role, err := a.deps.Roles.Resolve(orgID, m)
+	if err != nil {
+		// A membership without a resolvable role cannot be authorized; fail
+		// closed instead of guessing a role from the legacy string.
+		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "membership role unavailable")
+		return nil, false
+	}
 	c.Set(contextOrgID, orgID)
-	authz.SetOrgRole(c, m.Role)
+	authz.SetOrgRole(c, role.Name)
+	authz.SetOrgPermissions(c, role.PermissionList())
 	return &m, true
 }
 
 // requirePerm resolves the membership and checks the permission.
 func (a *AdminAPI) requirePerm(c *gin.Context, userID, orgID uint, perm string) bool {
-	m, ok := a.membershipFor(c, userID, orgID)
-	if !ok {
+	if _, ok := a.membershipFor(c, userID, orgID); !ok {
 		return false
 	}
-	if !authz.Can(m.Role, perm) {
+	perms, ok := authz.OrgPermissions(c)
+	if !ok || !authz.Has(perms, perm) {
 		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "insufficient permissions")
 		return false
 	}

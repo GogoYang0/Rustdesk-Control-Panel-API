@@ -1,6 +1,6 @@
 # 后端 API 规范（Backend API Specification）
 
-> 适用版本：v0.7.0（按组织 provisioning 开关 + 宿主端口探测；已发布基线 v0.4.0）。本文档是对 `openapi.yaml`（契约 v0.7.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
+> 适用版本：v0.8.0（M4 角色模型与 Server Pro 对齐；已发布基线 v0.4.0）。本文档是对 `openapi.yaml`（契约 v0.8.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
 > 本文档随版本演进持续更新——契约变更的 PR 必须同步更新 §3/§4。
 > 配套文档：[部署指南](deployment.md) · [运维指南](operations.md)
 
@@ -274,7 +274,7 @@ compat 地址簿**只服务个人地址簿**（`EnsurePersonalBook`），共享�
 
 ## 6. 版本与变更管理
 
-- 契约版本随 release 演进：v0.1.0（M0）→ v0.2.0（M1）→ v0.3.0（M2）→ v0.4.0（M3，会话治理域）→ v0.5.0（设备管理增量）→ v0.6.0（成员离场）→ **v0.7.0（按组织 provisioning 开关）**
+- 契约版本随 release 演进：v0.1.0（M0）→ v0.2.0（M1）→ v0.3.0（M2）→ v0.4.0（M3，会话治理域）→ v0.5.0（设备管理增量）→ v0.6.0（成员离场）→ v0.7.0（按组织 provisioning 开关）→ **v0.8.0（M4：角色模型、审计查询/导出、停用、地址簿授权与回收站、令牌、2FA）**
 - v0.6.0 为**加性变更**：新增 `DELETE/PATCH /orgs/{orgId}/members/{userId}`（#39 撤销接线）。v0.5.0 的新增设备列表与 rebind 保持不变；仍不提供 `DELETE` 设备
 - v0.7.0 为**加性变更**：新增 `GET/PUT /orgs/{orgId}/provisioning` 与 `ProvisioningStatus.cleanup_pending`；既有端点请求/响应形状与字段不变
 - v0.4.0 的既有端点请求/响应形状与字段零变更，但 **`ErrorCode` 新增了 `approval_required`**（所有响应共用的 `code` 类型）——对穷尽式 `switch` 或严格枚举解码的客户端属于 **breaking**，重新生成类型后必须处理该分支（0.x 阶段按 C10 以 minor 承载，见 §3.6）

@@ -19,6 +19,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/api"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
@@ -60,7 +61,7 @@ func newHarnessWith(t *testing.T, tune func(*api.Deps)) *harness {
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.DB.AutoMigrate(
 		&model.User{}, &model.RefreshToken{},
-		&model.Organization{}, &model.Membership{}, &model.Invitation{},
+		&model.Organization{}, &model.Membership{}, &model.Role{}, &model.Invitation{},
 		&model.AuditLog{}, &model.Device{}, &model.DeviceHeartbeat{},
 		&model.AddressBook{}, &model.AddressBookPeer{},
 		&model.AddressBookTag{}, &model.SyncCursor{}, &model.VerificationToken{},
@@ -319,6 +320,18 @@ func itoa(v int64) string {
 func sanitize(name string) string {
 	r := strings.NewReplacer("/", "_", " ", "_", "-", "_")
 	return r.Replace(name)
+}
+
+// roleID seeds the builtin roles of an organization and returns one role id.
+// Test fixtures insert memberships directly, so they must carry a role_id —
+// authorization never falls back to the legacy role string.
+func (h *harness) roleID(t *testing.T, orgID uint, name string) uint {
+	t.Helper()
+	svc := authz.NewRoleService(h.db.DB)
+	require.NoError(t, svc.EnsureBuiltins(orgID))
+	role, err := authz.RoleByNameTx(h.db.DB, orgID, name)
+	require.NoError(t, err)
+	return role.ID
 }
 
 // inviteSeq keeps each test invitation token unique: the token_hash column

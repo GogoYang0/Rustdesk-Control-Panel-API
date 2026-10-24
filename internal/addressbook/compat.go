@@ -647,7 +647,7 @@ func (s *Service) ReplaceBookContent(userID uint, orgID, bookID uint, expectedHa
 	if err != nil {
 		return nil, err
 	}
-	if !canWrite(book, userID, "") {
+	if !canWrite(book, userID, nil) {
 		return nil, ErrForbidden
 	}
 	// Client pushes are untrusted input: apply the same column bounds and
@@ -777,7 +777,7 @@ func (s *Service) mutateBook(userID, orgID, bookID uint, fn func(tx *gorm.DB, bo
 	if err != nil {
 		return err
 	}
-	if !canWrite(book, userID, "") {
+	if !canWrite(book, userID, nil) {
 		return ErrForbidden
 	}
 	return s.db.Transaction(func(tx *gorm.DB) error {

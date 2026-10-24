@@ -9,6 +9,7 @@ import (
 // tenant plugin would silently skip the organization condition.
 func registerDefaultScopedModels() {
 	RegisterScopedModel(&model.Membership{})
+	RegisterScopedModel(&model.Role{})
 	RegisterScopedModel(&model.Invitation{})
 	RegisterScopedModel(&model.AuditLog{})
 	RegisterScopedModel(&model.Device{})

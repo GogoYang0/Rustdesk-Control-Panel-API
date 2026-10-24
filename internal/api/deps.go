@@ -12,6 +12,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/addressbook"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/provision"
@@ -52,6 +53,10 @@ type Deps struct {
 	// Tickets issues and redeems connection tickets. NewAdminAPI builds one
 	// from DB/Auditor/Now when it is nil, so tests can leave it out.
 	Tickets *session.Service
+
+	// Roles resolves and seeds organization roles. NewAdminAPI derives it from
+	// DB when nil.
+	Roles *authz.RoleService
 }
 
 // Provisioner schedules asynchronous server provisioning.
@@ -100,6 +105,9 @@ func NewAdminAPI(d Deps) *AdminAPI {
 		// main.go always injects a real mailer; the discard default keeps
 		// dependency wiring optional in tests that do not exercise mail.
 		d.Mailer = mail.NewDev(io.Discard)
+	}
+	if d.Roles == nil {
+		d.Roles = authz.NewRoleService(d.DB)
 	}
 	tickets := d.Tickets
 	if tickets == nil {

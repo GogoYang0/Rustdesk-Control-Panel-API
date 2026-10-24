@@ -67,7 +67,7 @@ func TestReplacePeers_PreservesOpaqueFields(t *testing.T) {
 	// the second peer entirely.
 	beforeBook, _, _, err := svc.Get(uid, orgID, book.ID)
 	require.NoError(t, err)
-	fresh, err := svc.ReplacePeers(uid, "", orgID, book.ID, []PeerInput{
+	fresh, err := svc.ReplacePeers(uid, nil, orgID, book.ID, []PeerInput{
 		{PeerID: "111111111", Alias: "alpha-renamed"},
 	})
 	require.NoError(t, err)

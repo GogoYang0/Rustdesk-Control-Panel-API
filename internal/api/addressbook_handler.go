@@ -13,6 +13,7 @@ import (
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/gen"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/addressbook"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 )
 
@@ -103,14 +104,13 @@ func (a *AdminAPI) CreateAddressBook(c *gin.Context, orgId int64) {
 		return
 	}
 
-	role := ""
+	perms := []string{}
 	if req.Scope == gen.AddressBookCreateRequestScopeShared {
-		m, member := a.membershipFor(c, uid, uint(orgId))
-		if !member {
+		if _, member := a.membershipFor(c, uid, uint(orgId)); !member {
 			return
 		}
-		role = m.Role
-		if !canWriteShared(role) {
+		perms, _ = authz.OrgPermissions(c)
+		if !canWriteShared(perms) {
 			abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "insufficient permissions")
 			return
 		}
@@ -398,22 +398,22 @@ func (a *AdminAPI) loadBook(c *gin.Context, uid uint, orgId, bookId int64) (*mod
 	return book, peers, tags, nil
 }
 
-// roleForBook resolves the caller's role after checking membership; it does
-// not load the book (the service enforces personal-book rules).
-func (a *AdminAPI) roleForBook(c *gin.Context, uid uint, orgId, bookId int64) (string, bool) {
+// roleForBook resolves the caller's permission set after checking membership;
+// it does not load the book (the service enforces personal-book rules).
+func (a *AdminAPI) roleForBook(c *gin.Context, uid uint, orgId, bookId int64) ([]string, bool) {
 	if orgId <= 0 || bookId <= 0 {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid id")
-		return "", false
+		return nil, false
 	}
-	m, member := a.membershipFor(c, uid, uint(orgId))
-	if !member {
-		return "", false
+	if _, member := a.membershipFor(c, uid, uint(orgId)); !member {
+		return nil, false
 	}
-	return m.Role, true
+	perms, _ := authz.OrgPermissions(c)
+	return perms, true
 }
 
-func canWriteShared(role string) bool {
-	return role == model.RoleOwner || role == model.RoleAdmin
+func canWriteShared(perms []string) bool {
+	return authz.Has(perms, authz.PermAddressBook)
 }
 
 // errStop marks "response already written" inside the load helpers.

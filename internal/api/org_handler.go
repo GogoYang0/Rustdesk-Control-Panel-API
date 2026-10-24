@@ -68,7 +68,8 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 			var owned int64
 			if err := store.WithoutTenantScope(tx).
 				Model(&model.Membership{}).
-				Where("user_id = ? AND role = ?", uid, model.RoleOwner).
+				Joins("JOIN roles ON roles.id = memberships.role_id AND roles.organization_id = memberships.organization_id").
+				Where("memberships.user_id = ? AND roles.kind = ?", uid, model.RoleKindOwner).
 				Count(&owned).Error; err != nil {
 				return err
 			}
@@ -79,10 +80,18 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 		if err := tx.Create(&org).Error; err != nil {
 			return err
 		}
+		if err := a.deps.Roles.EnsureBuiltinsTx(tx, org.ID); err != nil {
+			return err
+		}
+		ownerRole, err := authz.RoleByKindTx(tx, org.ID, model.RoleKindOwner)
+		if err != nil {
+			return err
+		}
 		if err := store.ScopedByOrg(tx, org.ID).Create(&model.Membership{
 			OrganizationID: org.ID,
 			UserID:         uid,
-			Role:           model.RoleOwner,
+			RoleID:         ownerRole.ID,
+			Role:           ownerRole.Name,
 		}).Error; err != nil {
 			return err
 		}
@@ -217,13 +226,22 @@ func (a *AdminAPI) ListMembers(c *gin.Context, orgId int64) {
 		}
 	}
 
+	roleIdx, err := a.roleIndex(uint(orgId))
+	if err != nil {
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not list members")
+		return
+	}
 	out := make([]gen.Member, 0, len(memberships))
 	for _, m := range memberships {
+		name := roleNameOf(roleIdx, m.RoleID)
+		if name == "" {
+			name = m.Role
+		}
 		out = append(out, gen.Member{
 			Id:        int64(m.ID),
 			UserId:    int64(m.UserID),
 			Email:     openapi_types.Email(emails[m.UserID]),
-			Role:      gen.MemberRole(m.Role),
+			Role:      gen.MemberRole(name),
 			CreatedAt: m.CreatedAt,
 		})
 	}
@@ -382,7 +400,16 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 		// Remember the account for the post-commit mail step.
 		joined = user
 
-		member = model.Membership{OrganizationID: inv.OrganizationID, UserID: user.ID, Role: inv.Role}
+		joinerRole, rerr := authz.RoleByNameTx(tx, inv.OrganizationID, inv.Role)
+		if rerr != nil {
+			return rerr
+		}
+		member = model.Membership{
+			OrganizationID: inv.OrganizationID,
+			UserID:         user.ID,
+			RoleID:         joinerRole.ID,
+			Role:           joinerRole.Name,
+		}
 		if err := store.ScopedByOrg(tx, inv.OrganizationID).Create(&member).Error; err != nil {
 			return err
 		}

@@ -22,6 +22,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/api"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logcollect"
@@ -63,7 +64,7 @@ func main() {
 
 	if err := st.DB.AutoMigrate(
 		&model.User{}, &model.RefreshToken{},
-		&model.Organization{}, &model.Membership{}, &model.Invitation{},
+		&model.Organization{}, &model.Membership{}, &model.Role{}, &model.Invitation{},
 		&model.AuditLog{},
 		&model.Device{}, &model.DeviceHeartbeat{}, &model.ServerGroup{},
 		&model.AddressBook{}, &model.AddressBookPeer{},
@@ -77,6 +78,14 @@ func main() {
 		&model.Approval{}, &model.Alert{},
 	); err != nil {
 		lg.Fatal("migrate database", zap.Error(err))
+	}
+
+	// Roles are the authorization source from v0.8.0: every organization gets
+	// its three builtin rows and every legacy membership string is mapped onto
+	// role_id. The marker inside MigrateRoles makes this retry-safe; an unknown
+	// role string aborts startup rather than silently demoting a member.
+	if err := authz.MigrateRoles(st.DB); err != nil {
+		lg.Fatal("migrate roles", zap.Error(err))
 	}
 
 	// One-time backfill, guarded by a persistent marker instead of the
