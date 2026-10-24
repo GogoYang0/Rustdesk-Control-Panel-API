@@ -276,7 +276,9 @@ fi
 
 section "8. 结果汇总"
 if [ ! -e "$WORKDIR/step5-m3-result.md" ]; then
-  cp repo/docs/reference/step5-m3-report-template.md "$WORKDIR/step5-m3-result.md"
+  # The template is a convenience, never a reason to abort before the summary.
+  cp repo/docs/reference/step5-m3-report-template.md "$WORKDIR/step5-m3-result.md" \
+    || echo "WARN: 报告模板缺失，未生成 step5-m3-result.md（证据目录仍完整）"
 fi
 echo "PASS=$PASS FAIL=$FAIL"
 echo "证据目录：$EV"

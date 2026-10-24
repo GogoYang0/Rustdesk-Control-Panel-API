@@ -199,7 +199,8 @@ bash docs/reference/step5-collision-probe.sh "100 1000 5000 20000"
 ```bash
 # 需要一份真实 hbbs 日志（含 update_pk 行），例如从容器导出：
 docker logs -t panel-org-1-hbbs > hbbs.log
-go run ./tools/regression/m3native -db "file:/tmp/m3native.db" -logfile ./hbbs.log -out /tmp/m3native-evidence -phase all
+# 一次性库没有任何 server_group 行，工具必须 -force-state 才能写入 deployed 行（见下条）
+go run ./tools/regression/m3native -db "file:/tmp/m3native.db" -logfile ./hbbs.log -out /tmp/m3native-evidence -phase all -force-state
 ```
 
 - **必须用一次性数据库**：它会在 `server_groups` 里写入/翻转该组织为 `deployed`（为了触发真实 `Service.Start` 的 tail 条件）。**运行前先停掉使用同一数据库的 panel**；指向在用的面板库会让该组织后续 provision 报「已供应」，端口块被占。若组织行已存在且非 `deployed`，工具会拒绝执行并提示；**组织没有 `server_group` 行时同样会拒绝**（创建一条假的 `deployed` 行会让 reconciler 跳过该组织）；两种「拒绝」都可用 `-force-state` 明确覆盖。

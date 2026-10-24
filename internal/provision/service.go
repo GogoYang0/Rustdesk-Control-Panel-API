@@ -426,8 +426,11 @@ func (s *Service) allocateChecked(orgID uint) (*model.ServerGroup, []string, err
 		}
 		if conflict := s.checkBlock(row.HbbsPort); conflict != nil {
 			if rerr := s.releasePending(row); rerr != nil {
-				// The row still occupies the block; without this error the next
-				// allocate call would report a misleading port conflict.
+				// The row still occupies the block. Leaving it in "provisioning"
+				// would make every later attempt report "provisioning in progress"
+				// with no deployment behind it, so park it in the documented
+				// manual-recovery state before surfacing the error.
+				s.markFailed(row, rerr)
 				return nil, occupied, fmt.Errorf("provision: release skipped block %d: %w", row.HbbsPort, rerr)
 			}
 			skip[row.HbbsPort] = true

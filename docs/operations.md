@@ -135,7 +135,7 @@
 - **回滚归属校验**：失败部署在删除容器前会核对当前 `ServerGroup` 行的 id；若组织已被关闭并重新开启、已存在更新的部署行，旧尝试**不会**删除同名容器（容器名按组织复用，无法凭名字区分代际）
 - 供应队列：`provision.workers` 并发。部署失败后会执行清理：**清理成功 → 删除 `ServerGroup` 行并释放端口；清理失败 → 行保留为 `failed` 状态**。保留的行会被 `PendingOrgIDs` 排除，对账 reconciler（2 分钟周期）**不会**重新入队——清理失败的部署必须人工处理（残留容器、行、端口）
 - **启动端口探测**：启动日志 `provision port range is free` 表示范围内（已预留块除外）没有外部占用；`provision port range has externally occupied ports` 会列出 `端口/协议`，表示面板外进程占用了可分配端口——调整 `provision.portStart/portEnd` 或停止占用进程。探测绑定本机 IPv4 通配地址、只告警不阻断启动；**IPv6-only 监听不在探测范围**；`DOCKER_HOST` 指向远端时本机探测不适用
-- **部署前预检**：每次 provision 在 `docker run` 前检查本块 5 个 TCP 端口 + 主端口 UDP；冲突时**释放该块并在本次尝试中跳过**，继续尝试后续可用块（默认端口池有 200 块）。全部候选块均冲突时返回 `host port already in use: <port>/<协议>`，不产生失败行；启动告警给出根因
+- **部署前预检**：每次 provision 在 `docker run` 前检查本块 5 个 TCP 端口 + 主端口 UDP；冲突时**释放该块并在本次尝试中跳过**，继续尝试后续可用块（默认端口池有 200 块）。全部候选块均冲突时返回 `host port already in use: <port>/<协议>`，不产生失败行；启动告警给出根因。若**释放**冲突块本身失败（数据库故障），该行会保留为 `failed` 并同样返回错误——这是人工恢复状态，需按上条清理后再重试
 - ⚠️ **端口规划前提**：`PortPool` 只按 DB `server_groups` 判重，不感知面板外占用；预检只是提前诊断，探测与 `docker run` 之间仍有竞态。规划端口池时确保范围独占；相关可观测/控制缺口跟踪于 [#46](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/46)
 - 下线：`Deprovision` 删除容器 → 删行 → `Unwatch` 采集器；失败时行保留（failed 状态），端口继续被占用，且不会由 reconciler 自动重试
 - `provision.dataDir/org-<orgId>/` 含容器运行时数据（`dataDir` 可配置，默认根目录为 `./data/servergroups`）：**备份范围必须包含它**。服务端密钥对由 panel 每次部署时生成并覆盖，恢复后客户端需按 `ServerGroup.pub_key` 重新配对
