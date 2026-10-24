@@ -1836,6 +1836,16 @@ type ListAuditLogsParams struct {
 	PageSize *int       `form:"pageSize,omitempty" json:"pageSize,omitempty"`
 }
 
+// ExportAuditLogsParams defines parameters for ExportAuditLogs.
+type ExportAuditLogsParams struct {
+	Action      *string    `form:"action,omitempty" json:"action,omitempty"`
+	ActorUserId *int64     `form:"actorUserId,omitempty" json:"actorUserId,omitempty"`
+	TargetType  *string    `form:"targetType,omitempty" json:"targetType,omitempty"`
+	TargetId    *string    `form:"targetId,omitempty" json:"targetId,omitempty"`
+	From        *time.Time `form:"from,omitempty" json:"from,omitempty"`
+	To          *time.Time `form:"to,omitempty" json:"to,omitempty"`
+}
+
 // ListDevicesParams defines parameters for ListDevices.
 type ListDevicesParams struct {
 	// Q 按名称或 rustdesk_id 大小写不敏感子串匹配
@@ -2010,6 +2020,9 @@ type ServerInterface interface {
 	// ListAuditLogs 查询审计日志
 	// (GET /api/v1/orgs/{orgId}/audit-logs)
 	ListAuditLogs(c *gin.Context, orgId int64, params ListAuditLogsParams)
+	// ExportAuditLogs 导出审计日志 CSV
+	// (GET /api/v1/orgs/{orgId}/audit-logs/export)
+	ExportAuditLogs(c *gin.Context, orgId int64, params ExportAuditLogsParams)
 	// ListDevices 列出组织设备
 	// (GET /api/v1/orgs/{orgId}/devices)
 	ListDevices(c *gin.Context, orgId int64, params ListDevicesParams)
@@ -2727,6 +2740,82 @@ func (siw *ServerInterfaceWrapper) ListAuditLogs(c *gin.Context) {
 	}
 
 	siw.Handler.ListAuditLogs(c, orgId, params)
+}
+
+// ExportAuditLogs operation middleware
+func (siw *ServerInterfaceWrapper) ExportAuditLogs(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ExportAuditLogsParams
+
+	// ------------- Optional query parameter "action" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "action", c.Request.URL.Query(), &params.Action, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter action: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "actorUserId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "actorUserId", c.Request.URL.Query(), &params.ActorUserId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter actorUserId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "targetType" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "targetType", c.Request.URL.Query(), &params.TargetType, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter targetType: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "targetId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "targetId", c.Request.URL.Query(), &params.TargetId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter targetId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "from" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "from", c.Request.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter from: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "to" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "to", c.Request.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter to: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ExportAuditLogs(c, orgId, params)
 }
 
 // ListDevices operation middleware
@@ -3693,6 +3782,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/roles/:roleId", wrapper.GetRole)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/roles/:roleId", wrapper.UpdateRole)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-logs", wrapper.ListAuditLogs)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-logs/export", wrapper.ExportAuditLogs)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/provisioning", wrapper.GetProvisioning)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/provisioning", wrapper.UpdateProvisioning)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/invitations", wrapper.CreateInvitation)

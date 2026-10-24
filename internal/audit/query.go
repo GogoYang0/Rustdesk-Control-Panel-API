@@ -77,6 +77,32 @@ func Query(ctx context.Context, db *gorm.DB, orgID uint, f Filter, viewer Viewer
 	}
 	page, pageSize = NormalizePagination(page, pageSize)
 
+	query := scopedQuery(ctx, db, orgID, f, viewer)
+	if query == nil {
+		return nil, 0, nil
+	}
+
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("count audit logs: %w", err)
+	}
+
+	var rows []model.AuditLog
+	if err := query.
+		Order("created_at DESC").
+		Order("id DESC").
+		Offset((page - 1) * pageSize).
+		Limit(pageSize).
+		Find(&rows).Error; err != nil {
+		return nil, 0, fmt.Errorf("list audit logs: %w", err)
+	}
+	return rows, total, nil
+}
+
+// scopedQuery applies the tenant scope, the filters and the viewer's visibility
+// predicate. A nil result means the viewer may see nothing (a zero user id in
+// individual scope must not degrade into a global read).
+func scopedQuery(ctx context.Context, db *gorm.DB, orgID uint, f Filter, viewer Viewer) *gorm.DB {
 	query := store.ScopedByOrg(db.WithContext(ctx), orgID).Model(&model.AuditLog{})
 	if f.Action != "" {
 		query = query.Where("action = ?", f.Action)
@@ -98,29 +124,14 @@ func Query(ctx context.Context, db *gorm.DB, orgID uint, f Filter, viewer Viewer
 	}
 	if viewer.Scope != model.AuditScopeGlobal {
 		if viewer.UserID == 0 {
-			return nil, 0, nil
+			return nil
 		}
 		query = query.Where(
 			"(actor_user_id = ? OR (target_type = ? AND target_id = ?))",
 			viewer.UserID, "user", userTargetID(viewer.UserID),
 		)
 	}
-
-	var total int64
-	if err := query.Count(&total).Error; err != nil {
-		return nil, 0, fmt.Errorf("count audit logs: %w", err)
-	}
-
-	var rows []model.AuditLog
-	if err := query.
-		Order("created_at DESC").
-		Order("id DESC").
-		Offset((page - 1) * pageSize).
-		Limit(pageSize).
-		Find(&rows).Error; err != nil {
-		return nil, 0, fmt.Errorf("list audit logs: %w", err)
-	}
-	return rows, total, nil
+	return query
 }
 
 // userTargetID renders the user id the way user-targeted audit rows store it

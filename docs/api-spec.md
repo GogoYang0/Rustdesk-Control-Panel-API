@@ -221,6 +221,17 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 - `detail` 为解析后的 JSON 对象；历史行若不是合法 JSON 则原样返回字符串，不丢数据。
 - 审计记录只读：查询不修改任何审计内容，也不提供删除端点。
 
+### 3.8 审计导出（v0.8.0）
+
+| 端点 | 权限 | 说明 |
+|---|---|---|
+| `GET .../audit-logs/export` | `audit.read` | 与查询相同的过滤条件，返回 `text/csv`（`created_at, actor_user_id, actor_email, action, target_type, target_id, detail`） |
+
+- **单次上限 1000 行**：超出返回 `400`，要求收窄过滤；不做静默截断（截断的导出会让人误以为"就这些"）。
+- **公式注入防护**：单元格以 `= + - @` 开头时加 `'` 前缀，避免在电子表格中被当作公式执行。这包括 `action`、`target_id` 与 `detail` 原始文本。
+- **可见范围与查询一致**：`individual` 角色只能导出自己的条目；导出内容不会越过角色 scope。
+- **导出动作写审计 `audit.export`**：`Detail` 含行数与生效的过滤条件；审计写入失败则拒绝返回文件（fail closed）。响应带 `Content-Disposition: attachment` 与 `Cache-Control: no-store`。
+
 ---
 
 ## 4. compat 层（RustDesk 原生客户端）

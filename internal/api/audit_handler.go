@@ -1,8 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
+	"time"
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
@@ -76,35 +80,152 @@ func (a *AdminAPI) ListAuditLogs(c *gin.Context, orgId int64, params gen.ListAud
 // domain filter. Lengths are checked here because the generated binder does not
 // enforce schema maxLength on query strings.
 func auditFilterFromParams(params gen.ListAuditLogsParams) (audit.Filter, error) {
+	return auditFilterFromValues(params.Action, params.ActorUserId, params.TargetType, params.TargetId, params.From, params.To)
+}
+
+// auditFilterFromValues is the shared filter validation for the list and the
+// export endpoints, whose generated param structs differ only in shape.
+func auditFilterFromValues(action *string, actorUserID *int64, targetType, targetID *string, from, to *time.Time) (audit.Filter, error) {
 	var f audit.Filter
-	if params.Action != nil {
-		if utf8.RuneCountInString(*params.Action) > maxAuditActionLen {
+	if action != nil {
+		if utf8.RuneCountInString(*action) > maxAuditActionLen {
 			return f, errString("action is too long")
 		}
-		f.Action = *params.Action
+		f.Action = *action
 	}
-	if params.ActorUserId != nil {
-		if *params.ActorUserId < 0 {
+	if actorUserID != nil {
+		if *actorUserID < 0 {
 			return f, errString("actorUserId must not be negative")
 		}
-		id := uint(*params.ActorUserId)
+		id := uint(*actorUserID)
 		f.ActorUserID = &id
 	}
-	if params.TargetType != nil {
-		if utf8.RuneCountInString(*params.TargetType) > maxAuditTargetTypeLen {
+	if targetType != nil {
+		if utf8.RuneCountInString(*targetType) > maxAuditTargetTypeLen {
 			return f, errString("targetType is too long")
 		}
-		f.TargetType = *params.TargetType
+		f.TargetType = *targetType
 	}
-	if params.TargetId != nil {
-		if utf8.RuneCountInString(*params.TargetId) > maxAuditTargetIDLen {
+	if targetID != nil {
+		if utf8.RuneCountInString(*targetID) > maxAuditTargetIDLen {
 			return f, errString("targetId is too long")
 		}
-		f.TargetID = *params.TargetId
+		f.TargetID = *targetID
 	}
-	f.From = params.From
-	f.To = params.To
+	f.From = from
+	f.To = to
 	return f, nil
+}
+
+// ExportAuditLogs streams the filtered audit rows as CSV. The export is capped
+// at audit.CSVLimit rows; a larger result must be narrowed instead of silently
+// truncated. The action itself is audited once (not per poll, unlike the list).
+func (a *AdminAPI) ExportAuditLogs(c *gin.Context, orgId int64, params gen.ExportAuditLogsParams) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid organization id")
+		return
+	}
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermAuditRead) {
+		return
+	}
+
+	filter, err := auditFilterFromValues(params.Action, params.ActorUserId, params.TargetType, params.TargetId, params.From, params.To)
+	if err != nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
+		return
+	}
+
+	scope, _ := authz.OrgAuditScope(c)
+	rows, err := audit.QueryAll(c.Request.Context(), a.deps.DB, uint(orgId), filter, audit.Viewer{
+		Scope:  scope,
+		UserID: uid,
+	}, audit.CSVLimit)
+	switch {
+	case errors.Is(err, audit.ErrExportTooLarge):
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
+		return
+	case err != nil:
+		a.deps.Logger.Error("export audit logs failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not export audit logs")
+		return
+	}
+
+	var buf bytes.Buffer
+	if err := audit.WriteCSV(&buf, rows, a.actorEmails(rows)); err != nil {
+		a.deps.Logger.Error("write audit csv failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not export audit logs")
+		return
+	}
+
+	detail := map[string]any{"rows": len(rows), "format": "csv"}
+	if filter.Action != "" {
+		detail["action"] = filter.Action
+	}
+	if filter.ActorUserID != nil {
+		detail["actor_user_id"] = *filter.ActorUserID
+	}
+	if filter.TargetType != "" {
+		detail["target_type"] = filter.TargetType
+	}
+	if filter.TargetID != "" {
+		detail["target_id"] = filter.TargetID
+	}
+	if filter.From != nil {
+		detail["from"] = filter.From.UTC()
+	}
+	if filter.To != nil {
+		detail["to"] = filter.To.UTC()
+	}
+	if err := a.deps.Auditor.Record(c.Request.Context(), audit.Entry{
+		OrganizationID: uint(orgId),
+		ActorUserID:    uid,
+		Action:         "audit.export",
+		TargetType:     "audit_log",
+		Detail:         detail,
+	}); err != nil {
+		// An export is data leaving the system; one that cannot be traced must
+		// not be served (fail closed).
+		a.deps.Logger.Error("audit export record failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not record the export")
+		return
+	}
+
+	c.Header("Cache-Control", "no-store")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"audit-org-%d-%s.csv\"",
+		orgId, a.deps.Now().UTC().Format("20060102T150405Z")))
+	c.Set(contextAuditRecorded, true)
+	c.Data(http.StatusOK, "text/csv; charset=utf-8", buf.Bytes())
+}
+
+// actorEmails resolves the actor ids of the exported rows for the actor_email
+// column. A lookup failure is not fatal to the export: the column degrades to
+// empty rather than withholding the trail the caller is authorized to read.
+func (a *AdminAPI) actorEmails(rows []model.AuditLog) map[uint]string {
+	ids := make([]uint, 0, len(rows))
+	seen := map[uint]bool{}
+	for _, row := range rows {
+		if row.ActorUserID != 0 && !seen[row.ActorUserID] {
+			seen[row.ActorUserID] = true
+			ids = append(ids, row.ActorUserID)
+		}
+	}
+	out := make(map[uint]string, len(ids))
+	if len(ids) == 0 {
+		return out
+	}
+	var users []model.User
+	if err := a.deps.DB.Where("id IN ?", ids).Find(&users).Error; err != nil {
+		a.deps.Logger.Warn("load actor emails failed")
+		return out
+	}
+	for _, u := range users {
+		out[u.ID] = u.Email
+	}
+	return out
 }
 
 // auditLogToAPI maps a stored row onto the wire shape, decoding detail into a

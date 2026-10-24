@@ -619,6 +619,81 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
 
+  /api/v1/orgs/{orgId}/audit-logs/export:
+    get:
+      operationId: exportAuditLogs
+      summary: 导出审计日志 CSV
+      description: |
+        按与查询相同的过滤条件导出 CSV（v0.8.0，`audit.read`），单次最多 1000 行，
+        超出返回 400 并提示收窄过滤。可见范围与查询一致。CSV 列：
+        `created_at, actor_user_id, actor_email, action, target_type, target_id, detail`；
+        以 `= + - @` 开头的单元格会加 `'` 前缀防止公式注入。导出动作写审计
+        `audit.export`（含过滤条件与行数）。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: action
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 128
+        - name: actorUserId
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: targetType
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: targetId
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: CSV 文件
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+          content:
+            text/csv:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
   /api/v1/orgs/{orgId}/provisioning:
     get:
       operationId: getProvisioning
