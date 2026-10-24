@@ -18,8 +18,9 @@
 > **provisioning 开关与端口探测**：不需要 RustDesk 服务端的组织，由 owner 调用
 > `PUT /api/v1/orgs/{orgId}/provisioning`（`enabled=false`）关闭并下线，避免占用端口与容器。
 > panel 启动时探测 `provision.portStart..portEnd`（跳过已有 `ServerGroup` 预留块），把面板外
-> 占用写入告警日志；部署前还会对本块端口做预检，冲突错误包含具体端口。探测绑定**本机**端口，
-> 默认部署假定 panel 与 Docker 同宿主；`DOCKER_HOST` 指向远端时探测结果不适用，需以端口规划为准。
+> 占用写入告警日志；部署前还会对本块端口做预检，冲突错误包含具体端口。探测绑定**本机 IPv4**
+> 端口（IPv6-only 监听不在探测范围），默认部署假定 panel 与 Docker 同宿主；`DOCKER_HOST`
+> 指向远端时探测结果不适用，需以端口规划为准。
 
 ---
 
