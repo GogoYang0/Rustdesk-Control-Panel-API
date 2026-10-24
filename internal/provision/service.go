@@ -31,6 +31,12 @@ const orgLockStripes = 64
 // row cannot have containers that are still being created by this process.
 const staleProvisioningGrace = 10 * time.Minute
 
+// deployTimeout bounds one container start. The queue already bounds the whole
+// job, but explicit ProvisionForOrg calls may arrive with a deadline-free
+// context; without this bound a stuck deploy would outlive the grace period the
+// disable path relies on.
+var deployTimeout = jobTimeout
+
 // Config carries deployment settings.
 type Config struct {
 	Image     string
@@ -452,9 +458,12 @@ func (s *Service) provision(ctx context.Context, orgID uint) (*model.ServerGroup
 		DataDir:    filepath.Join(s.cfg.DataDir, fmt.Sprintf("org-%d", orgID)),
 	}
 
-	if err := s.orch.Deploy(ctx, spec); err != nil {
-		s.rollbackFailedDeploy(ctx, row, spec, err)
-		return nil, fmt.Errorf("deploy hbbs/hbbr: %w", err)
+	deployCtx, cancelDeploy := context.WithTimeout(ctx, deployTimeout)
+	deployErr := s.orch.Deploy(deployCtx, spec)
+	cancelDeploy()
+	if deployErr != nil {
+		s.rollbackFailedDeploy(ctx, row, spec, deployErr)
+		return nil, fmt.Errorf("deploy hbbs/hbbr: %w", deployErr)
 	}
 
 	snap, err := json.Marshal(snapshot{
