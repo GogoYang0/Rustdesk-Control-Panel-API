@@ -46,6 +46,7 @@ func (a *AdminAPI) membershipFor(c *gin.Context, userID, orgID uint) (*model.Mem
 	c.Set(contextOrgID, orgID)
 	authz.SetOrgRole(c, role.Name)
 	authz.SetOrgPermissions(c, role.PermissionList())
+	authz.SetOrgAuditScope(c, role.AuditScope)
 	return &m, true
 }
 

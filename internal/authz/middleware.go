@@ -13,6 +13,10 @@ const ContextOrgRole = "authz.orgRole"
 // ContextOrgPerms is the gin context key holding the caller's permission set.
 const ContextOrgPerms = "authz.orgPerms"
 
+// ContextOrgAuditScope is the gin context key holding the caller's role audit
+// visibility scope (global or individual).
+const ContextOrgAuditScope = "authz.orgAuditScope"
+
 // SetOrgRole stores the caller's membership role name for display.
 func SetOrgRole(c *gin.Context, role string) {
 	c.Set(ContextOrgRole, role)
@@ -21,6 +25,22 @@ func SetOrgRole(c *gin.Context, role string) {
 // SetOrgPermissions stores the caller's effective permission codes.
 func SetOrgPermissions(c *gin.Context, perms []string) {
 	c.Set(ContextOrgPerms, perms)
+}
+
+// SetOrgAuditScope stores the caller's audit visibility scope.
+func SetOrgAuditScope(c *gin.Context, scope string) {
+	c.Set(ContextOrgAuditScope, scope)
+}
+
+// OrgAuditScope returns the stored audit scope. A missing value fails closed:
+// handlers must treat the empty scope as individual, never as global.
+func OrgAuditScope(c *gin.Context) (string, bool) {
+	v, ok := c.Get(ContextOrgAuditScope)
+	if !ok {
+		return "", false
+	}
+	scope, ok := v.(string)
+	return scope, ok
 }
 
 // OrgRole returns the stored role name, if any.

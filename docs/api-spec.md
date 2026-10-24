@@ -210,6 +210,19 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 
 ---
 
+### 3.7 审计（v0.8.0）
+
+| 端点 | 权限 | 说明 |
+|---|---|---|
+| `GET .../audit-logs` | `audit.read` | 审计查询：`action`、`actorUserId`、`targetType`、`targetId`、`from`（含）/`to`（不含，UTC）过滤 + `page`/`pageSize`（默认 50，上限 200）；按 `created_at desc, id desc` |
+
+- **可见范围由角色 `audit_scope` 决定**：`global` 可查全组织；`individual` 只返回**自己是操作者**（`actor_user_id`）或**用户类目标是本人**（`target_type="user"` 且 `target_id` 为本人 id 的十进制字符串）的条目。这个过滤在 SQL 层完成，不是先查全量再裁剪；缺失/未知 scope 按 `individual` 处理（fail closed）。
+- **列表轮询不写审计**：查询审计这个动作本身不产生新审计行，否则每次刷新都会污染数据；导出等有副作用的一次性动作才写审计（见 §3.8）。
+- `detail` 为解析后的 JSON 对象；历史行若不是合法 JSON 则原样返回字符串，不丢数据。
+- 审计记录只读：查询不修改任何审计内容，也不提供删除端点。
+
+---
+
 ## 4. compat 层（RustDesk 原生客户端）
 
 挂载于 `/api`，**协议形状冻结自官方客户端源码**（rustdesk flutter/sciter）——字段名不遵循管理 API 包络，迁移契约前不得擅改。
