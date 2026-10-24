@@ -672,6 +672,89 @@ func TestSetEnabled_AlreadyDisabledCleansLateDeployment(t *testing.T) {
 	require.Empty(t, f.recorder.actions()[1:])
 }
 
+func TestSetEnabled_DisableDuringProvisioningDefersCleanup(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "in-flight-disable")
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Create(&model.ServerGroup{
+		OrganizationID: org.ID,
+		HbbsPort:       testPortStart,
+		HbbrPort:       testPortStart + 3,
+		State:          model.ServerGroupProvisioning,
+	}).Error)
+
+	state, changed, err := f.svc.SetEnabled(context.Background(), org.ID, 4, false)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, provision.StatusDisabled, state.Status)
+	require.Empty(t, f.orch.Removed,
+		"an in-flight deploy still owns the containers and cleans them up itself")
+
+	var count int64
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Model(&model.ServerGroup{}).Count(&count).Error)
+	require.EqualValues(t, 1, count, "the row is the cleanup pointer and must survive")
+
+	entries := f.recorder.snapshot()
+	require.Len(t, entries, 1)
+	require.Equal(t, false, entries[0].Detail["removed_deployment"])
+	require.Equal(t, true, entries[0].Detail["deferred_cleanup"])
+	require.Equal(t, model.ServerGroupProvisioning, entries[0].Detail["state"])
+}
+
+func TestSetEnabled_DisableCleansStaleProvisioning(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "stale-provisioning")
+	row := model.ServerGroup{
+		OrganizationID: org.ID,
+		HbbsPort:       testPortStart,
+		HbbrPort:       testPortStart + 3,
+		State:          model.ServerGroupProvisioning,
+	}
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Create(&row).Error)
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Model(&model.ServerGroup{}).
+		Where("id = ?", row.ID).
+		UpdateColumn("updated_at", time.Now().Add(-11*time.Minute)).Error)
+
+	state, changed, err := f.svc.SetEnabled(context.Background(), org.ID, 5, false)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, provision.StatusDisabled, state.Status)
+	require.Contains(t, f.orch.Removed, fmt.Sprintf("panel-org-%d", org.ID),
+		"a provisioning row older than the deploy deadline is safe to clean")
+
+	var count int64
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Model(&model.ServerGroup{}).Count(&count).Error)
+	require.Zero(t, count)
+
+	entries := f.recorder.snapshot()
+	require.Len(t, entries, 1)
+	require.Equal(t, true, entries[0].Detail["removed_deployment"])
+}
+
+func TestSetEnabled_AlreadyDisabledKeepsFreshProvisioning(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "repeat-in-flight")
+	_, _, err := f.svc.SetEnabled(context.Background(), org.ID, 1, false)
+	require.NoError(t, err)
+	f.recorder.reset()
+
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Create(&model.ServerGroup{
+		OrganizationID: org.ID,
+		HbbsPort:       testPortStart,
+		HbbrPort:       testPortStart + 3,
+		State:          model.ServerGroupProvisioning,
+	}).Error)
+
+	_, changed, err := f.svc.SetEnabled(context.Background(), org.ID, 2, false)
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Empty(t, f.orch.Removed)
+	require.Empty(t, f.recorder.actions())
+
+	var count int64
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Model(&model.ServerGroup{}).Count(&count).Error)
+	require.EqualValues(t, 1, count)
+}
+
 func TestSetEnabled_NoRecorderFailsClosed(t *testing.T) {
 	f := newFixtureWithRecorder(t, nil)
 	org := f.org(t, "no-recorder")
@@ -904,6 +987,67 @@ func TestProvision_FailedAttemptDoesNotRemoveNewerDeployment(t *testing.T) {
 	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).First(&row).Error)
 	require.Equal(t, orch.newRowID, row.ID)
 	require.Equal(t, model.ServerGroupDeployed, row.State)
+}
+
+// disableThenFailCleanupOrchestrator disables the organization mid-deploy and
+// makes the rollback removal fail, leaving the failed row as the only cleanup
+// pointer to the containers.
+type disableThenFailCleanupOrchestrator struct {
+	provision.MockOrchestrator
+	svc   *provision.Service
+	orgID uint
+}
+
+func (o *disableThenFailCleanupOrchestrator) Deploy(ctx context.Context, _ provision.InstanceSpec) error {
+	if _, _, err := o.svc.SetEnabled(ctx, o.orgID, 9, false); err != nil {
+		return err
+	}
+	o.RemoveErr = errors.New("docker remove failed")
+	return nil
+}
+
+func TestProvision_RollbackFailureAfterDisableKeepsRow(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "rollback-failure")
+	orch := &disableThenFailCleanupOrchestrator{orgID: org.ID}
+	svc := provision.NewService(f.st.DB, f.pool, orch, f.recorder, zap.NewNop(), provision.Config{
+		Image:     "rustdesk/rustdesk-server:test",
+		RelayHost: "relay.test",
+		DataDir:   t.TempDir(),
+		PortStart: testPortStart,
+		PortEnd:   testPortEnd,
+	})
+	orch.svc = svc
+	svc.SetPortChecker(func(uint16, string) error { return nil })
+
+	_, err := svc.ProvisionQueued(context.Background(), org.ID)
+	require.ErrorIs(t, err, provision.ErrProvisioningDisabled)
+
+	// The removal failure must leave the row behind: without it a repeated
+	// disable has no way to find the containers.
+	var stored model.ServerGroup
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).First(&stored).Error)
+	require.Equal(t, model.ServerGroupFailed, stored.State)
+
+	var orgRow model.Organization
+	require.NoError(t, f.st.DB.First(&orgRow, org.ID).Error)
+	require.True(t, orgRow.ProvisioningDisabled)
+
+	// A repeated disable retries the cleanup and finally frees the row.
+	orch.RemoveErr = nil
+	state, changed, err := svc.SetEnabled(context.Background(), org.ID, 10, false)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, provision.StatusDisabled, state.Status)
+
+	var count int64
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Model(&model.ServerGroup{}).Count(&count).Error)
+	require.Zero(t, count)
+
+	entries := f.recorder.snapshot()
+	require.Len(t, entries, 2)
+	require.Equal(t, false, entries[0].Detail["removed_deployment"])
+	require.Equal(t, true, entries[1].Detail["removed_deployment"])
 }
 
 func TestProvision_DisabledDuringDeploy_CleansUpContainer(t *testing.T) {

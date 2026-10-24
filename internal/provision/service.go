@@ -26,6 +26,11 @@ const cleanupTimeout = 30 * time.Second
 // unrelated organizations wait for one container removal.
 const orgLockStripes = 64
 
+// staleProvisioningGrace bounds how long a provisioning row may still belong to
+// a live deploy job. The queue job times out after five minutes, so an older
+// row cannot have containers that are still being created by this process.
+const staleProvisioningGrace = 10 * time.Minute
+
 // Config carries deployment settings.
 type Config struct {
 	Image     string
@@ -200,7 +205,7 @@ func (s *Service) SetEnabled(ctx context.Context, orgID, actorID uint, enabled b
 		// while the flag already says disabled. Taking it down here is what makes
 		// the switch self-healing instead of a permanently stuck no-op.
 		if !enabled {
-			if cleaned, cerr := s.cleanupLateDeployment(ctx, orgID, actorID); cerr != nil || cleaned {
+			if cleaned, cerr := s.cleanupLateDeploymentLocked(ctx, orgID, actorID); cerr != nil || cleaned {
 				return State{Enabled: false, Status: StatusDisabled}, cleaned, cerr
 			}
 		}
@@ -209,11 +214,26 @@ func (s *Service) SetEnabled(ctx context.Context, orgID, actorID uint, enabled b
 
 	// Container removal cannot join the database transaction, so it runs
 	// first: a failed removal leaves the flag untouched (fail closed).
-	var removed *model.ServerGroup
+	var row, removed *model.ServerGroup
+	deferred := false
 	if !enabled {
-		removed, err = s.removeDeployment(ctx, orgID)
+		row, err = s.loadDeployment(orgID)
 		if err != nil {
 			return State{}, false, err
+		}
+		switch {
+		case row == nil:
+		case deferProvisioningCleanup(row):
+			// An in-flight deploy still owns the containers. Deleting its row
+			// would erase the only durable cleanup pointer if the rollback later
+			// fails or the process stops; keep it and let the attempt fence
+			// itself at persist, or a later disable clean it once it is stale.
+			deferred = true
+		default:
+			if rerr := s.removeRow(ctx, row); rerr != nil {
+				return State{}, false, rerr
+			}
+			removed = row
 		}
 	}
 
@@ -225,6 +245,12 @@ func (s *Service) SetEnabled(ctx context.Context, orgID, actorID uint, enabled b
 			}
 			detail["hbbs_port"] = removed.HbbsPort
 			detail["hbbr_port"] = removed.HbbrPort
+		}
+		if deferred && row != nil {
+			detail["state"] = row.State
+			detail["deferred_cleanup"] = true
+			detail["hbbs_port"] = row.HbbsPort
+			detail["hbbr_port"] = row.HbbrPort
 		}
 		if err := tx.Model(&model.Organization{}).
 			Where("id = ?", orgID).
@@ -252,6 +278,15 @@ func (s *Service) SetEnabled(ctx context.Context, orgID, actorID uint, enabled b
 		s.notifyDeprovisioned(orgID)
 	}
 
+	// A deploy that persisted between the pre-check and the flag commit may have
+	// handed the containers to a deployed row; take that one down now. Fresh
+	// provisioning rows are left to their in-flight attempt.
+	if !enabled {
+		if _, cerr := s.cleanupLateDeploymentLocked(ctx, orgID, actorID); cerr != nil {
+			return State{}, true, cerr
+		}
+	}
+
 	state, err := s.State(ctx, orgID)
 	if err != nil {
 		return State{}, true, err
@@ -268,16 +303,25 @@ func (s *Service) recordTx(tx *gorm.DB, entry audit.Entry) error {
 	return s.recorder.RecordTx(tx, entry)
 }
 
-// cleanupLateDeployment removes a row that a concurrent deploy persisted after
-// the organization was already disabled. It writes its own audit entry because
-// the deployment removal is a real state change, not a no-op.
-func (s *Service) cleanupLateDeployment(ctx context.Context, orgID, actorID uint) (bool, error) {
-	row, err := s.removeDeployment(ctx, orgID)
+// cleanupLateDeploymentLocked removes a row that a concurrent deploy persisted
+// after the organization was already disabled. It writes its own audit entry
+// because the deployment removal is a real state change, not a no-op. Callers
+// must hold the organization lock.
+func (s *Service) cleanupLateDeploymentLocked(ctx context.Context, orgID, actorID uint) (bool, error) {
+	row, err := s.loadDeployment(orgID)
 	if err != nil {
 		return false, err
 	}
 	if row == nil {
 		return false, nil
+	}
+	if deferProvisioningCleanup(row) {
+		// The in-flight deploy still owns the containers and will clean them up
+		// when it fences itself at persist.
+		return false, nil
+	}
+	if err := s.removeRow(ctx, row); err != nil {
+		return false, err
 	}
 
 	err = s.db.Transaction(func(tx *gorm.DB) error {
@@ -530,10 +574,8 @@ func (s *Service) PendingOrgIDs(ctx context.Context, afterID uint, limit int) ([
 	return missing, all[len(all)-1], nil
 }
 
-// removeDeployment stops the organization's containers. A nil row with a nil
-// error means nothing was deployed. A failed removal keeps the row in the
-// failed state (the ports stay reserved) and returns the error.
-func (s *Service) removeDeployment(ctx context.Context, orgID uint) (*model.ServerGroup, error) {
+// loadDeployment returns the organization's server group row, if any.
+func (s *Service) loadDeployment(orgID uint) (*model.ServerGroup, error) {
 	var row model.ServerGroup
 	err := store.ScopedByOrg(s.db, orgID).First(&row).Error
 	switch {
@@ -542,13 +584,41 @@ func (s *Service) removeDeployment(ctx context.Context, orgID uint) (*model.Serv
 	case err != nil:
 		return nil, fmt.Errorf("load server group: %w", err)
 	}
-
-	name := fmt.Sprintf("panel-org-%d", orgID)
-	if err := s.orch.Remove(cleanupContext(ctx), name); err != nil {
-		s.markFailed(&row, fmt.Errorf("remove deployment: %w", err))
-		return nil, fmt.Errorf("remove deployment: %w", err)
-	}
 	return &row, nil
+}
+
+// removeRow stops a loaded deployment's containers without touching the
+// database. A failed removal marks the row failed and keeps it, so the ports
+// stay reserved and a later retry still has a cleanup pointer.
+func (s *Service) removeRow(ctx context.Context, row *model.ServerGroup) error {
+	name := fmt.Sprintf("panel-org-%d", row.OrganizationID)
+	if err := s.orch.Remove(cleanupContext(ctx), name); err != nil {
+		s.markFailed(row, fmt.Errorf("remove deployment: %w", err))
+		return fmt.Errorf("remove deployment: %w", err)
+	}
+	return nil
+}
+
+// deferProvisioningCleanup reports whether the row still belongs to a deploy
+// that may be creating containers right now. Deleting such a row would erase
+// the only durable pointer to those containers.
+func deferProvisioningCleanup(row *model.ServerGroup) bool {
+	return row != nil && row.State == model.ServerGroupProvisioning &&
+		time.Since(row.UpdatedAt) < staleProvisioningGrace
+}
+
+// removeDeployment stops the organization's containers. A nil row with a nil
+// error means nothing was deployed. A failed removal keeps the row in the
+// failed state (the ports stay reserved) and returns the error.
+func (s *Service) removeDeployment(ctx context.Context, orgID uint) (*model.ServerGroup, error) {
+	row, err := s.loadDeployment(orgID)
+	if err != nil || row == nil {
+		return nil, err
+	}
+	if err := s.removeRow(ctx, row); err != nil {
+		return nil, err
+	}
+	return row, nil
 }
 
 // Deprovision removes the deployment and frees the ports.
