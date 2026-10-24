@@ -125,11 +125,14 @@ func main() {
 		st.DB,
 		provision.NewPortPool(st.DB, cfg.Provision.PortStart, cfg.Provision.PortEnd),
 		orch,
+		auditor,
 		lg,
 		provision.Config{
 			Image:     cfg.Provision.Image,
 			RelayHost: cfg.Provision.RelayHost,
 			DataDir:   cfg.Provision.DataDir,
+			PortStart: cfg.Provision.PortStart,
+			PortEnd:   cfg.Provision.PortEnd,
 		},
 	)
 	provQueue := provision.NewQueue(provSvc, cfg.Provision.Workers, 0, lg)
@@ -201,6 +204,25 @@ func main() {
 		// A deprovisioned organization no longer has containers to follow.
 		provSvc.OnDeprovisioned(collector.Unwatch)
 		lg.Info("log collector enabled", zap.Int("rules", parser.Rules()))
+	}
+
+	// The port pool only knows the panel's own allocations: report ports held by
+	// other processes before the first deploy, so an operator can fix the range
+	// instead of watching provisioning fail. The probe is advisory and never
+	// blocks startup.
+	if conflicts, perr := provSvc.ProbePortRange(rootCtx); perr != nil {
+		lg.Warn("provision port range probe failed", zap.Error(perr))
+	} else if len(conflicts) > 0 {
+		ports := make([]string, 0, len(conflicts))
+		for _, c := range conflicts {
+			ports = append(ports, c.String())
+		}
+		lg.Warn("provision port range has externally occupied ports",
+			zap.Int("count", len(conflicts)), zap.Strings("ports", ports))
+	} else {
+		lg.Info("provision port range is free",
+			zap.Uint16("start", cfg.Provision.PortStart),
+			zap.Uint16("end", cfg.Provision.PortEnd))
 	}
 
 	provQueue.Start(rootCtx)
@@ -326,6 +348,7 @@ func main() {
 			Auth:           authSvc,
 			Devices:        deviceSvc,
 			ProvisionQueue: provQueue,
+			Provisioning:   provSvc,
 			OrgsPerUser:    cfg.Provision.MaxOrgsPerUser,
 			Issuer:         issuer,
 			Auditor:        auditor,

@@ -11,9 +11,16 @@
 |---|---|---|
 | 操作系统 | Linux（推荐）或 Windows | panel 本身是单一 Go 二进制 |
 | Go | 1.27+ | 仅构建时需要；发布产物为静态二进制 |
-| Docker | 20.10+；**生产使用 rootless Docker 或受限的 Docker socket proxy**（见 §8） | 使用 provisioning 功能时需要（provisioning 无独立开关，始终启用）：panel 经 Docker CLI 操作容器，实际地址用 `DOCKER_HOST` 环境变量或 Docker CLI context 指定，**不要默认依赖 rootful 原始 socket** |
+| Docker | 20.10+；**生产使用 rootless Docker 或受限的 Docker socket proxy**（见 §8） | 使用 provisioning 功能时需要（默认每组织自动供应，可用 `PUT /api/v1/orgs/{orgId}/provisioning` 按组织关闭）：panel 经 Docker CLI 操作容器，实际地址用 `DOCKER_HOST` 环境变量或 Docker CLI context 指定，**不要默认依赖 rootful 原始 socket** |
 | 数据库 | SQLite（默认）/ PostgreSQL / MySQL | 生产建议 PostgreSQL |
 | 端口 | `:8080`（panel API）、`21116–22115`（hbbs/hbbr，可配；逐端口协议分布见 §7——仅每组织的 `HbbsPort+1` 同时用 TCP+UDP，其余 TCP） | 反代后面只需暴露 panel 的 443 |
+
+> **provisioning 开关与端口探测**：不需要 RustDesk 服务端的组织，由 owner 调用
+> `PUT /api/v1/orgs/{orgId}/provisioning`（`enabled=false`）关闭并下线，避免占用端口与容器。
+> panel 启动时探测 `provision.portStart..portEnd`（跳过已有 `ServerGroup` 预留块），把面板外
+> 占用写入告警日志；部署前还会对本块端口做预检，冲突错误包含具体端口。探测绑定**本机 IPv4**
+> 端口（IPv6-only 监听不在探测范围），默认部署假定 panel 与 Docker 同宿主；`DOCKER_HOST`
+> 指向远端时探测结果不适用，需以端口规划为准。
 
 ---
 

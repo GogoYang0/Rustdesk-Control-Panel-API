@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Rustdesk-Control-Panel API
-  version: 0.6.0
+  version: 0.7.0
   contact:
     name: Rustdesk-Control-Panel
     url: https://github.com/GogoYang0/Rustdesk-Control-Panel-API
@@ -35,6 +35,12 @@ info:
     0.6.0 新增**成员离场**：`DELETE /orgs/{orgId}/members/{userId}` 与
     `PATCH /orgs/{orgId}/members/{userId}`（仅 admin↔member）。两者在变更会籍的
     同一事务内撤销该用户在本组织的活跃 compat 会话（#39）；撤销失败整体回滚。
+
+    0.7.0 新增**按组织 provisioning 开关**：`GET/PUT /orgs/{orgId}/provisioning`
+    （仅 owner）。关闭会同步下线容器、释放端口并在同一事务写审计；开启只清除
+    标记，部署由供应队列异步执行。状态取值为
+    `disabled|pending|provisioning|deployed|failed`；`cleanup_pending` 区分
+    “关闭意图已记录”与“容器清理已完成”。
 servers:
   - url: http://localhost:8080
     description: 本地开发
@@ -306,6 +312,79 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/provisioning:
+    get:
+      operationId: getProvisioning
+      summary: 查询组织 provisioning 状态
+      description: |
+        返回供应开关与部署状态。仅 owner（org.admin）可读。
+        `state` 为 `disabled|pending|provisioning|deployed|failed`。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 当前状态
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProvisioningResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/Internal"
+    put:
+      operationId: updateProvisioning
+      summary: 启用或禁用组织 provisioning
+      description: |
+        仅 owner。`enabled=false` 会同步下线已有容器、删除 `ServerGroup` 行，并在
+        同一事务内置标记与写审计；`enabled=true` 只清除标记，部署由供应队列异步
+        执行（队列满时由 reconciler 兜底）。状态未变化时为幂等 no-op。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProvisioningUpdateRequest"
+      responses:
+        "200":
+          description: 更新后的状态
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProvisioningResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/Internal"
 
   /api/v1/orgs/{orgId}/invitations:
     post:
@@ -1981,6 +2060,53 @@ components:
           type: string
         data:
           $ref: "#/components/schemas/MemberMutation"
+
+    ProvisioningUpdateRequest:
+      type: object
+      required:
+        - enabled
+      properties:
+        enabled:
+          type: boolean
+          description: true 允许供应（异步部署），false 关闭并下线
+
+    ProvisioningStatus:
+      type: object
+      required:
+        - enabled
+        - state
+        - cleanup_pending
+      properties:
+        enabled:
+          type: boolean
+        state:
+          type: string
+          enum:
+            - disabled
+            - pending
+            - provisioning
+            - deployed
+            - failed
+        cleanup_pending:
+          type: boolean
+          description: |
+            `enabled=false` 时是否仍有待清理的部署行（teardown 未确认）。
+            true 表示开关已关但容器清理仍待完成（在途部署回滚或重复关闭重试）；
+            false 表示没有遗留部署行。其他状态下恒为 false。
+
+    ProvisioningResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/ProvisioningStatus"
 
     InvitationCreateRequest:
       type: object
