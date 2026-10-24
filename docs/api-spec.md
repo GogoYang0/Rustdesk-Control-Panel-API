@@ -1,6 +1,6 @@
 # 后端 API 规范（Backend API Specification）
 
-> 适用版本：v0.6.0（成员离场：移除成员 + 角色变更；已发布版本为 v0.4.0）。本文档是对 `openapi.yaml`（契约 v0.6.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
+> 适用版本：v0.7.0（按组织 provisioning 开关 + 宿主端口探测；已发布版本为 v0.4.0）。本文档是对 `openapi.yaml`（契约 v0.7.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
 > 本文档随版本演进持续更新——契约变更的 PR 必须同步更新 §3/§4。
 > 配套文档：[部署指南](deployment.md) · [运维指南](operations.md)
 
@@ -96,8 +96,14 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `PATCH /api/v1/orgs/{orgId}/members/{userId}` | 变更角色（v0.6.0，**仅 owner**）：只接受 `admin`/`member`；降级（admin→member）在同一事务撤销该用户的 compat 会话，提升不撤销；不能改自己或 owner |
 | `POST /api/v1/orgs/{orgId}/invitations` | 邀请（admin 生成邀请令牌，邮件下发） |
 | `POST /api/v1/invitations/accept` | 接受邀请并加入组织 |
+| `GET /api/v1/orgs/{orgId}/provisioning` | 查询供应开关与部署状态（v0.7.0，**仅 owner**）：`enabled` + `state`（`disabled`/`pending`/`provisioning`/`deployed`/`failed`） |
+| `PUT /api/v1/orgs/{orgId}/provisioning` | 启用/禁用供应（v0.7.0，**仅 owner**，幂等）：`enabled=false` 同步下线容器、删 `ServerGroup` 行、置标记并在同一事务写 `organization.provisioning.update` 审计；`enabled=true` 只清标记，由供应队列异步部署 |
 
 角色矩阵：`owner` > `admin` > `member`。共享地址簿写操作需要 `addressbook` 权限（owner/admin）；**列表地址簿只需组织成员身份**。
+
+> **v0.7.0 provisioning 开关语义**：关闭是"下线"而不是"暂停"——已有容器会被同步删除、端口释放；再次开启不会复活旧容器，而是重新排队部署（`provision.dataDir/org-<orgId>/` 中的密钥与数据保留，容器重建时复用）。
+> 容器删除失败时请求 500、`ServerGroup` 行标 `failed`、开关不变（fail closed）；`failed` 行不会因开启而自动重试（既有语义：清理失败的部署需人工处理）。
+> 供给队列满时开启仍返回 200，reconciler（2 分钟）会补入队。宿主端口探测与预检属于服务内部行为，不在契约内，语义见 [运维指南](operations.md) §6。
 
 ### 3.3 设备
 
