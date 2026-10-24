@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/gen"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
@@ -66,6 +68,30 @@ func (a *AdminAPI) Login(c *gin.Context) {
 	// confirmed before any login path issues tokens.
 	if err := auth.RequireVerifiedUser(user); err != nil {
 		abortError(c, http.StatusForbidden, gen.ErrorCodeEmailNotVerified, "email is not verified")
+		return
+	}
+
+	// Second factor: an enabled TOTP account receives a short challenge instead
+	// of tokens. The password check above is not enough on its own.
+	enabled, err := a.totp.Enabled(user.ID)
+	if err != nil {
+		a.deps.Logger.Error("load totp state failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "login failed")
+		return
+	}
+	if enabled {
+		challenge, err := a.deps.Issuer.IssueChallenge(user.ID, auth.ChallengeTTL)
+		if err != nil {
+			a.deps.Logger.Error("issue 2fa challenge failed")
+			abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "login failed")
+			return
+		}
+		data := map[string]any{"challenge_token": challenge}
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gen.ErrorResponse{
+			Code:    gen.ErrorCodeTwoFactorRequired,
+			Message: "two-factor authentication required",
+			Data:    &data,
+		})
 		return
 	}
 
@@ -243,6 +269,202 @@ func (a *AdminAPI) RevokeToken(c *gin.Context, tokenId int64) {
 		return
 	}
 	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
+}
+
+// SetupTOTP starts enrollment: it returns a pending secret and otpauth URI.
+func (a *AdminAPI) SetupTOTP(c *gin.Context) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	secret, uri, err := a.totp.Setup(uid)
+	switch {
+	case errors.Is(err, auth.ErrTOTPAlreadyEnabled):
+		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, err.Error())
+		return
+	case err != nil:
+		a.deps.Logger.Error("totp setup failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not start two-factor setup")
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gen.TOTPSetupResponse{
+		Code:    gen.ErrorCodeOk,
+		Message: "ok",
+		Data:    gen.TOTPSetup{Secret: secret, OtpauthUri: uri},
+	})
+}
+
+// EnableTOTP verifies the first code and activates two-factor.
+func (a *AdminAPI) EnableTOTP(c *gin.Context) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	var req gen.TOTPCodeRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.Code == "" {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "code is required")
+		return
+	}
+	err := a.totp.Enable(uid, req.Code)
+	switch {
+	case errors.Is(err, auth.ErrTOTPAlreadyEnabled), errors.Is(err, auth.ErrTOTPNotSetup):
+		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, err.Error())
+		return
+	case errors.Is(err, auth.ErrInvalidTOTP):
+		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, err.Error())
+		return
+	case err != nil:
+		a.deps.Logger.Error("totp enable failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not enable two-factor")
+		return
+	}
+	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
+}
+
+// DisableTOTP turns two-factor off after password and code verification.
+func (a *AdminAPI) DisableTOTP(c *gin.Context) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	var req gen.TOTPDisableRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.Password == "" || req.Code == "" {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "password and code are required")
+		return
+	}
+	if err := a.totp.Disable(uid, req.Password, req.Code); err != nil {
+		a.writeTOTPError(c, err, "disable two-factor failed")
+		return
+	}
+	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
+}
+
+// RegenerateRecoveryCodes replaces the one-time recovery codes.
+func (a *AdminAPI) RegenerateRecoveryCodes(c *gin.Context) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	var req gen.TOTPDisableRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.Password == "" || req.Code == "" {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "password and code are required")
+		return
+	}
+	codes, err := a.totp.RegenerateRecovery(uid, req.Password, req.Code)
+	if err != nil {
+		a.writeTOTPError(c, err, "regenerate recovery codes failed")
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gen.TOTPRecoveryCodesResponse{
+		Code:    gen.ErrorCodeOk,
+		Message: "ok",
+		Data:    gen.TOTPRecoveryCodes{Codes: codes},
+	})
+}
+
+// VerifyTOTP completes a challenge login with a TOTP or recovery code.
+func (a *AdminAPI) VerifyTOTP(c *gin.Context) {
+	var req gen.TOTPVerifyRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.ChallengeToken == "" || req.Code == "" {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "challenge_token and code are required")
+		return
+	}
+	uid, err := a.deps.Issuer.ParseChallenge(req.ChallengeToken)
+	if err != nil {
+		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "invalid or expired challenge")
+		return
+	}
+	if err := a.totp.VerifyLogin(uid, req.Code); err != nil {
+		a.writeTOTPError(c, err, "2fa verify failed")
+		return
+	}
+	access, refresh, err := a.deps.Auth.IssueTokens(uid)
+	if err != nil {
+		a.deps.Logger.Error("issue tokens after 2fa failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "login failed")
+		return
+	}
+	c.JSON(http.StatusOK, gen.TokenResponse{
+		Code:    gen.ErrorCodeOk,
+		Message: "ok",
+		Data: gen.TokenPair{
+			AccessToken:  access,
+			RefreshToken: refresh,
+			ExpiresIn:    int64(a.deps.AccessTTL.Seconds()),
+		},
+	})
+}
+
+// ResetMemberTOTP clears another member's two-factor configuration and records
+// the administrator action in the same transaction.
+func (a *AdminAPI) ResetMemberTOTP(c *gin.Context, orgId int64, userId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 || userId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid id")
+		return
+	}
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermMemberManage) {
+		return
+	}
+	if _, err := a.loadMembership(uint(orgId), uint(userId)); err != nil {
+		a.writeMemberError(c, err, "could not load membership")
+		return
+	}
+	domainRecorded := false
+	err := a.deps.DB.Transaction(func(tx *gorm.DB) error {
+		res := tx.Where("user_id = ?", userId).Delete(&model.UserTOTP{})
+		if res.Error != nil {
+			return res.Error
+		}
+		tr, ok := a.deps.Auditor.(audit.TxRecorder)
+		if !ok {
+			return errAuditUnavailable
+		}
+		if err := tr.RecordTx(tx, audit.Entry{
+			OrganizationID: uint(orgId),
+			ActorUserID:    uid,
+			Action:         "user.2fa.reset",
+			TargetType:     "user",
+			TargetID:       fmt.Sprint(userId),
+			Detail:         map[string]any{"had_configuration": res.RowsAffected > 0},
+		}); err != nil {
+			return err
+		}
+		domainRecorded = true
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, errAuditUnavailable) {
+			a.deps.Logger.Error("reset 2fa failed: transactional auditor unavailable")
+			abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "audit unavailable")
+			return
+		}
+		a.deps.Logger.Error("reset 2fa failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not reset two-factor")
+		return
+	}
+	if domainRecorded {
+		c.Set(contextAuditRecorded, true)
+	}
+	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
+}
+
+// writeTOTPError maps second-factor failures onto 401/409 responses.
+func (a *AdminAPI) writeTOTPError(c *gin.Context, err error, logMsg string) {
+	switch {
+	case errors.Is(err, auth.ErrInvalidTOTP), errors.Is(err, auth.ErrInvalidPassword):
+		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, err.Error())
+	case errors.Is(err, auth.ErrTOTPNotSetup), errors.Is(err, auth.ErrTOTPAlreadyEnabled):
+		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, err.Error())
+	default:
+		a.deps.Logger.Error(logMsg)
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "two-factor operation failed")
+	}
 }
 
 // activeMembership loads the caller's membership and fails closed when it is

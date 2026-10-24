@@ -65,6 +65,7 @@ func main() {
 
 	if err := st.DB.AutoMigrate(
 		&model.User{}, &model.RefreshToken{},
+		&model.UserTOTP{},
 		&model.Organization{}, &model.Membership{}, &model.Role{}, &model.Invitation{},
 		&model.APIToken{},
 		&model.AuditLog{},
@@ -385,6 +386,7 @@ func main() {
 			InvitationTTL:  7 * 24 * time.Hour,
 			WebBaseURL:     cfg.Web.BaseURL,
 			CompatTTL:      cfg.Compat.AccessTTL,
+			AuthSecret:     cfg.Auth.Secret,
 		}),
 	}
 

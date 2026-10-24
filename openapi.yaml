@@ -247,6 +247,138 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v1/auth/2fa/setup:
+    post:
+      operationId: setupTOTP
+      summary: 初始化 TOTP 两步验证
+      description: |
+        生成新的 TOTP 秘密并返回 `otpauth://` URI（v0.8.0）。秘密在用户完成
+        `/auth/2fa/enable` 之前不生效；已启用时再次调用返回 409。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 秘密与 provisioning URI
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TOTPSetupResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/auth/2fa/enable:
+    post:
+      operationId: enableTOTP
+      summary: 启用 TOTP 两步验证
+      description: 校验首个 TOTP 码后启用（v0.8.0）。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TOTPCodeRequest"
+      responses:
+        "200":
+          description: 已启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/auth/2fa/disable:
+    post:
+      operationId: disableTOTP
+      summary: 关闭 TOTP 两步验证
+      description: 需要当前密码 + 一个有效的 TOTP 码或恢复码（v0.8.0）。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TOTPDisableRequest"
+      responses:
+        "200":
+          description: 已关闭
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/auth/2fa/recovery-codes:
+    post:
+      operationId: regenerateRecoveryCodes
+      summary: 重新生成恢复码
+      description: 需要当前密码 + 有效 TOTP 码或恢复码；返回 10 个一次性恢复码（只出现一次，v0.8.0）。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TOTPDisableRequest"
+      responses:
+        "200":
+          description: 新的恢复码
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TOTPRecoveryCodesResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/auth/2fa/verify:
+    post:
+      operationId: verifyTOTP
+      summary: 登录第二步校验
+      description: |
+        使用登录返回的短期 `challenge_token` 与 TOTP 码（或一次性恢复码）完成登录
+        （v0.8.0）。成功返回与 `/auth/login` 相同的令牌对；挑战令牌一次性、5 分钟有效。
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TOTPVerifyRequest"
+      responses:
+        "200":
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
   /api/v1/orgs:
     get:
       operationId: listOrgs
@@ -414,6 +546,46 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/members/{userId}/2fa/reset:
+    post:
+      operationId: resetMemberTOTP
+      summary: 重置成员的 2FA
+      description: |
+        管理员重置成员的 TOTP 配置（v0.8.0，`member.manage`），使该用户下次登录
+        不再要求第二步，并写审计 `user.2fa.reset`。用于用户丢失设备与恢复码的场景。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已重置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /api/v1/permissions:
     get:
@@ -2652,6 +2824,7 @@ components:
         - internal
         - email_not_verified
         - approval_required
+        - two_factor_required
 
     ErrorResponse:
       type: object
@@ -2671,6 +2844,8 @@ components:
           description: |
             错误上下文；多数错误为 null。`code=approval_required` 时带
             `approval_id`（int64，待审批请求 id），客户端据此跳转审批中心。
+            `code=two_factor_required` 时带 `challenge_token`（短期挑战令牌），
+            客户端用它调用 `POST /auth/2fa/verify` 完成第二步登录。
 
     LoginRequest:
       type: object
@@ -2837,6 +3012,93 @@ components:
           minimum: 1
           maximum: 365
           default: 90
+
+    TOTPSetup:
+      type: object
+      required:
+        - secret
+        - otpauth_uri
+      properties:
+        secret:
+          type: string
+          description: Base32 编码的 TOTP 秘密（尚未启用）
+        otpauth_uri:
+          type: string
+          description: 供验证器 App 扫码/导入的 `otpauth://totp/...` URI
+
+    TOTPSetupResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/TOTPSetup"
+
+    TOTPCodeRequest:
+      type: object
+      required:
+        - code
+      properties:
+        code:
+          type: string
+          minLength: 6
+          maxLength: 10
+          description: 6 位 TOTP 码或恢复码
+
+    TOTPDisableRequest:
+      type: object
+      required:
+        - password
+        - code
+      properties:
+        password:
+          type: string
+        code:
+          type: string
+          description: TOTP 码或一次性恢复码
+
+    TOTPRecoveryCodes:
+      type: object
+      required:
+        - codes
+      properties:
+        codes:
+          type: array
+          items:
+            type: string
+          description: 10 个一次性恢复码，只在本响应出现一次
+
+    TOTPRecoveryCodesResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/TOTPRecoveryCodes"
+
+    TOTPVerifyRequest:
+      type: object
+      required:
+        - challenge_token
+        - code
+      properties:
+        challenge_token:
+          type: string
+        code:
+          type: string
+          description: TOTP 码或一次性恢复码
 
     Org:
       type: object

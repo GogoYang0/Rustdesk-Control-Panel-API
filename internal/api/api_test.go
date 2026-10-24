@@ -61,6 +61,7 @@ func newHarnessWith(t *testing.T, tune func(*api.Deps)) *harness {
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.DB.AutoMigrate(
 		&model.User{}, &model.RefreshToken{},
+		&model.UserTOTP{},
 		&model.Organization{}, &model.Membership{}, &model.Role{}, &model.Invitation{},
 		&model.APIToken{},
 		&model.AuditLog{}, &model.Device{}, &model.DeviceHeartbeat{},

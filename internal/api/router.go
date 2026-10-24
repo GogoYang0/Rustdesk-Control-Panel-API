@@ -17,6 +17,7 @@ var publicPaths = map[string]bool{
 	"/healthz":                         true,
 	"/api/v1/auth/login":               true,
 	"/api/v1/auth/refresh":             true,
+	"/api/v1/auth/2fa/verify":          true,
 	"/api/v1/auth/verify-email":        true,
 	"/api/v1/auth/resend-verification": true,
 	"/api/v1/invitations/accept":       true,
@@ -35,6 +36,9 @@ func NewRouter(d Deps) *gin.Engine {
 	}
 	if d.Tokens == nil {
 		d.Tokens = auth.NewTokenService(d.DB, d.Now)
+	}
+	if d.TOTP == nil {
+		d.TOTP = auth.NewTOTPService(d.DB, d.AuthSecret, d.Now)
 	}
 
 	r := gin.New()

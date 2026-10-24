@@ -88,11 +88,21 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `GET /api/v1/auth/tokens` | 列出本人在某组织的个人令牌（v0.8.0，`organizationId` 查询参数必填；不返回明文） |
 | `POST /api/v1/auth/tokens` | 创建个人令牌（v0.8.0，绑定单个组织；明文只出现一次；权限不得超过当前角色） |
 | `DELETE /api/v1/auth/tokens/{tokenId}` | 撤销本人的令牌（v0.8.0，幂等；他人令牌 404） |
+| `POST /api/v1/auth/2fa/setup` | 初始化 TOTP（v0.8.0）：返回待启用的 `secret` 与 `otpauth://` URI；已启用时 409 |
+| `POST /api/v1/auth/2fa/enable` | 校验首个 TOTP 码后启用（v0.8.0） |
+| `POST /api/v1/auth/2fa/disable` | 关闭 2FA（v0.8.0，需当前密码 + TOTP/恢复码） |
+| `POST /api/v1/auth/2fa/recovery-codes` | 重新生成 10 个一次性恢复码（v0.8.0，需当前密码 + TOTP/恢复码） |
+| `POST /api/v1/auth/2fa/verify` | 登录第二步（v0.8.0，公开）：`{challenge_token, code}` → 令牌对 |
+| `POST /api/v1/orgs/{orgId}/members/{userId}/2fa/reset` | 管理员重置成员 2FA（v0.8.0，`member.manage`，写 `user.2fa.reset` 审计） |
 
 > **v0.8.0 个人访问令牌**：明文格式 `rdt_<32B base64url>`，服务端只存 SHA-256，列表只回 `token_prefix`（前 8 字符）。
 > 令牌只在**组织路径**上生效（路径 `orgId` 必须等于签发组织）；`/auth/tokens` 自身、`/orgs`、`/permissions` 等非组织端点仍只接受 JWT。
 > **有效权限 = 令牌申请集 ∩ 用户当前角色权限集**，每个请求实时重算：角色降级或会籍停用会立即收窄/失效，令牌不会绕过这些变更。
 > 每人每组织最多 20 个活跃令牌，有效期 1..365 天（默认 90）。令牌与 refresh/JWT 是不同凭证族，互不替代。
+
+> **v0.8.0 管理面 2FA（TOTP）**：启用后 `/auth/login` 密码正确也**不直接发令牌**，而是返回 `401 + code=two_factor_required`，`data.challenge_token` 为 5 分钟一次性挑战令牌；客户端用它调用公开的 `/auth/2fa/verify`（TOTP 码或一次性恢复码）换取令牌对。
+> TOTP 秘密以 AES-256-GCM 加密存储（密钥由 `auth.secret` 经 HKDF-SHA256 派生）；验证窗口 ±1 步，`last_step` 保证同一码不可重放；恢复码 10 个、Argon2id 存储、成功后即作废。
+> 管理员 `member.manage` 可重置成员 2FA（丢失设备场景），重置动作写审计 `user.2fa.reset`；该审计失败则整体失败（fail closed）。
 
 ### 3.2 组织与成员
 

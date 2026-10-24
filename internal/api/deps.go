@@ -61,6 +61,13 @@ type Deps struct {
 	// Tokens mints and validates personal API tokens. NewRouter derives it from
 	// DB when nil so tests and the entrypoint share the same wiring.
 	Tokens *auth.TokenService
+
+	// TOTP owns management-login two-factor state. NewRouter derives it from DB
+	// and AuthSecret when nil.
+	TOTP *auth.TOTPService
+	// AuthSecret seeds the TOTP secret-encryption key (HKDF). The entrypoint
+	// passes the configured auth secret; tests may leave it empty.
+	AuthSecret string
 }
 
 // Provisioner schedules asynchronous server provisioning.
@@ -83,6 +90,7 @@ type AdminAPI struct {
 	resend  *loginGuard
 	books   *addressbook.Service
 	tickets *session.Service
+	totp    *auth.TOTPService
 }
 
 // NewAdminAPI builds the handler set.
@@ -113,6 +121,9 @@ func NewAdminAPI(d Deps) *AdminAPI {
 	if d.Roles == nil {
 		d.Roles = authz.NewRoleService(d.DB)
 	}
+	if d.TOTP == nil {
+		d.TOTP = auth.NewTOTPService(d.DB, d.AuthSecret, d.Now)
+	}
 	tickets := d.Tickets
 	if tickets == nil {
 		// The service fails closed without a recorder, and governance
@@ -134,5 +145,6 @@ func NewAdminAPI(d Deps) *AdminAPI {
 		resend:  newLoginGuard(),
 		books:   addressbook.NewService(d.DB),
 		tickets: tickets,
+		totp:    d.TOTP,
 	}
 }

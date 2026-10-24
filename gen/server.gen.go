@@ -189,16 +189,17 @@ func (e DeviceStatus) Valid() bool {
 
 // Defines values for ErrorCode.
 const (
-	ErrorCodeApprovalRequired ErrorCode = "approval_required"
-	ErrorCodeConflict         ErrorCode = "conflict"
-	ErrorCodeEmailNotVerified ErrorCode = "email_not_verified"
-	ErrorCodeForbidden        ErrorCode = "forbidden"
-	ErrorCodeInternal         ErrorCode = "internal"
-	ErrorCodeInvalidRequest   ErrorCode = "invalid_request"
-	ErrorCodeNotFound         ErrorCode = "not_found"
-	ErrorCodeOk               ErrorCode = "ok"
-	ErrorCodeRateLimited      ErrorCode = "rate_limited"
-	ErrorCodeUnauthorized     ErrorCode = "unauthorized"
+	ErrorCodeApprovalRequired  ErrorCode = "approval_required"
+	ErrorCodeConflict          ErrorCode = "conflict"
+	ErrorCodeEmailNotVerified  ErrorCode = "email_not_verified"
+	ErrorCodeForbidden         ErrorCode = "forbidden"
+	ErrorCodeInternal          ErrorCode = "internal"
+	ErrorCodeInvalidRequest    ErrorCode = "invalid_request"
+	ErrorCodeNotFound          ErrorCode = "not_found"
+	ErrorCodeOk                ErrorCode = "ok"
+	ErrorCodeRateLimited       ErrorCode = "rate_limited"
+	ErrorCodeTwoFactorRequired ErrorCode = "two_factor_required"
+	ErrorCodeUnauthorized      ErrorCode = "unauthorized"
 )
 
 // Valid indicates whether the value is a known member of the ErrorCode enum.
@@ -221,6 +222,8 @@ func (e ErrorCode) Valid() bool {
 	case ErrorCodeOk:
 		return true
 	case ErrorCodeRateLimited:
+		return true
+	case ErrorCodeTwoFactorRequired:
 		return true
 	case ErrorCodeUnauthorized:
 		return true
@@ -1050,6 +1053,8 @@ type ErrorResponse struct {
 
 	// Data 错误上下文；多数错误为 null。`code=approval_required` 时带
 	// `approval_id`（int64，待审批请求 id），客户端据此跳转审批中心。
+	// `code=two_factor_required` 时带 `challenge_token`（短期挑战令牌），
+	// 客户端用它调用 `POST /auth/2fa/verify` 完成第二步登录。
 	Data    *map[string]interface{} `json:"data,omitempty"`
 	Message string                  `json:"message"`
 }
@@ -1902,6 +1907,78 @@ type SessionResponse struct {
 // - denied：签发阶段被策略拒绝（仅 panel 来源，用于留痕）
 type SessionStatus string
 
+// TOTPCodeRequest defines model for TOTPCodeRequest.
+type TOTPCodeRequest struct {
+	// Code 6 位 TOTP 码或恢复码
+	Code string `json:"code"`
+}
+
+// TOTPDisableRequest defines model for TOTPDisableRequest.
+type TOTPDisableRequest struct {
+	// Code TOTP 码或一次性恢复码
+	Code     string `json:"code"`
+	Password string `json:"password"`
+}
+
+// TOTPRecoveryCodes defines model for TOTPRecoveryCodes.
+type TOTPRecoveryCodes struct {
+	// Codes 10 个一次性恢复码，只在本响应出现一次
+	Codes []string `json:"codes"`
+}
+
+// TOTPRecoveryCodesResponse defines model for TOTPRecoveryCodesResponse.
+type TOTPRecoveryCodesResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode         `json:"code"`
+	Data    TOTPRecoveryCodes `json:"data"`
+	Message string            `json:"message"`
+}
+
+// TOTPSetup defines model for TOTPSetup.
+type TOTPSetup struct {
+	// OtpauthUri 供验证器 App 扫码/导入的 `otpauth://totp/...` URI
+	OtpauthUri string `json:"otpauth_uri"`
+
+	// Secret Base32 编码的 TOTP 秘密（尚未启用）
+	Secret string `json:"secret"`
+}
+
+// TOTPSetupResponse defines model for TOTPSetupResponse.
+type TOTPSetupResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode `json:"code"`
+	Data    TOTPSetup `json:"data"`
+	Message string    `json:"message"`
+}
+
+// TOTPVerifyRequest defines model for TOTPVerifyRequest.
+type TOTPVerifyRequest struct {
+	ChallengeToken string `json:"challenge_token"`
+
+	// Code TOTP 码或一次性恢复码
+	Code string `json:"code"`
+}
+
 // Ticket defines model for Ticket.
 type Ticket struct {
 	ActorUserId *int64 `json:"actor_user_id,omitempty"`
@@ -2109,6 +2186,18 @@ type ListSessionsParams struct {
 // GetHealthz200JSONResponseBodyStatus defines parameters for GetHealthz.
 type GetHealthz200JSONResponseBodyStatus string
 
+// DisableTOTPJSONRequestBody defines body for DisableTOTP for application/json ContentType.
+type DisableTOTPJSONRequestBody = TOTPDisableRequest
+
+// EnableTOTPJSONRequestBody defines body for EnableTOTP for application/json ContentType.
+type EnableTOTPJSONRequestBody = TOTPCodeRequest
+
+// RegenerateRecoveryCodesJSONRequestBody defines body for RegenerateRecoveryCodes for application/json ContentType.
+type RegenerateRecoveryCodesJSONRequestBody = TOTPDisableRequest
+
+// VerifyTOTPJSONRequestBody defines body for VerifyTOTP for application/json ContentType.
+type VerifyTOTPJSONRequestBody = TOTPVerifyRequest
+
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
 
@@ -2189,6 +2278,21 @@ type RedeemTicketJSONRequestBody = TicketRedeemRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// DisableTOTP 关闭 TOTP 两步验证
+	// (POST /api/v1/auth/2fa/disable)
+	DisableTOTP(c *gin.Context)
+	// EnableTOTP 启用 TOTP 两步验证
+	// (POST /api/v1/auth/2fa/enable)
+	EnableTOTP(c *gin.Context)
+	// RegenerateRecoveryCodes 重新生成恢复码
+	// (POST /api/v1/auth/2fa/recovery-codes)
+	RegenerateRecoveryCodes(c *gin.Context)
+	// SetupTOTP 初始化 TOTP 两步验证
+	// (POST /api/v1/auth/2fa/setup)
+	SetupTOTP(c *gin.Context)
+	// VerifyTOTP 登录第二步校验
+	// (POST /api/v1/auth/2fa/verify)
+	VerifyTOTP(c *gin.Context)
 	// Login 邮箱密码登录
 	// (POST /api/v1/auth/login)
 	Login(c *gin.Context)
@@ -2312,6 +2416,9 @@ type ServerInterface interface {
 	// UpdateMemberRole 更新成员角色或停用状态
 	// (PATCH /api/v1/orgs/{orgId}/members/{userId})
 	UpdateMemberRole(c *gin.Context, orgId int64, userId int64)
+	// ResetMemberTOTP 重置成员的 2FA
+	// (POST /api/v1/orgs/{orgId}/members/{userId}/2fa/reset)
+	ResetMemberTOTP(c *gin.Context, orgId int64, userId int64)
 	// ListPolicies 连接策略列表
 	// (GET /api/v1/orgs/{orgId}/policies)
 	ListPolicies(c *gin.Context, orgId int64)
@@ -2376,6 +2483,71 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(c *gin.Context)
+
+// DisableTOTP operation middleware
+func (siw *ServerInterfaceWrapper) DisableTOTP(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DisableTOTP(c)
+}
+
+// EnableTOTP operation middleware
+func (siw *ServerInterfaceWrapper) EnableTOTP(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.EnableTOTP(c)
+}
+
+// RegenerateRecoveryCodes operation middleware
+func (siw *ServerInterfaceWrapper) RegenerateRecoveryCodes(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RegenerateRecoveryCodes(c)
+}
+
+// SetupTOTP operation middleware
+func (siw *ServerInterfaceWrapper) SetupTOTP(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.SetupTOTP(c)
+}
+
+// VerifyTOTP operation middleware
+func (siw *ServerInterfaceWrapper) VerifyTOTP(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.VerifyTOTP(c)
+}
 
 // Login operation middleware
 func (siw *ServerInterfaceWrapper) Login(c *gin.Context) {
@@ -3781,6 +3953,40 @@ func (siw *ServerInterfaceWrapper) UpdateMemberRole(c *gin.Context) {
 	siw.Handler.UpdateMemberRole(c, orgId, userId)
 }
 
+// ResetMemberTOTP operation middleware
+func (siw *ServerInterfaceWrapper) ResetMemberTOTP(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "userId" -------------
+	var userId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", c.Param("userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter userId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ResetMemberTOTP(c, orgId, userId)
+}
+
 // ListPolicies operation middleware
 func (siw *ServerInterfaceWrapper) ListPolicies(c *gin.Context) {
 
@@ -4371,11 +4577,17 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/v1/auth/tokens", wrapper.ListTokens)
 	router.POST(options.BaseURL+"/api/v1/auth/tokens", wrapper.CreateToken)
 	router.DELETE(options.BaseURL+"/api/v1/auth/tokens/:tokenId", wrapper.RevokeToken)
+	router.POST(options.BaseURL+"/api/v1/auth/2fa/setup", wrapper.SetupTOTP)
+	router.POST(options.BaseURL+"/api/v1/auth/2fa/enable", wrapper.EnableTOTP)
+	router.POST(options.BaseURL+"/api/v1/auth/2fa/disable", wrapper.DisableTOTP)
+	router.POST(options.BaseURL+"/api/v1/auth/2fa/recovery-codes", wrapper.RegenerateRecoveryCodes)
+	router.POST(options.BaseURL+"/api/v1/auth/2fa/verify", wrapper.VerifyTOTP)
 	router.GET(options.BaseURL+"/api/v1/orgs", wrapper.ListOrgs)
 	router.POST(options.BaseURL+"/api/v1/orgs", wrapper.CreateOrg)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/members", wrapper.ListMembers)
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId", wrapper.RemoveMember)
 	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId", wrapper.UpdateMemberRole)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId/2fa/reset", wrapper.ResetMemberTOTP)
 	router.GET(options.BaseURL+"/api/v1/permissions", wrapper.ListPermissions)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/roles", wrapper.ListRoles)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/roles", wrapper.CreateRole)
