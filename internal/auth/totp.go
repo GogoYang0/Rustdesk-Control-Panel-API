@@ -173,6 +173,11 @@ func (s *TOTPService) Setup(userID uint) (secret, uri string, err error) {
 	return secret, uri, nil
 }
 
+// enableAfterReadHook lets tests pause Enable between its read and its
+// conditional update so the enrollment interleavings can be reproduced
+// deterministically. It is nil in production.
+var enableAfterReadHook func()
+
 // Enable verifies the first code against the pending secret and activates it.
 func (s *TOTPService) Enable(userID uint, code string) error {
 	var row model.UserTOTP
@@ -192,6 +197,9 @@ func (s *TOTPService) Enable(userID uint, code string) error {
 	step, ok := matchStep(secret, code, s.now())
 	if !ok {
 		return ErrInvalidTOTP
+	}
+	if enableAfterReadHook != nil {
+		enableAfterReadHook()
 	}
 	now := s.now().UTC()
 	// The update is bound to the exact secret that was verified: a concurrent

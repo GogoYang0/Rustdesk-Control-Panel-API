@@ -263,12 +263,24 @@ func (s *RetentionService) writeArchive(orgID uint, rows []model.AuditLog) (path
 	// otherwise a crash can leave a committed deletion whose archive is only
 	// present as an unreachable inode. Windows renames are write-through and the
 	// directory flush below covers the entry as well.
-	if err := syncDir(dir); err != nil {
+	if err := syncDirectory(dir); err != nil {
 		_ = os.Remove(path)
 		_ = os.Remove(path + ".sha256")
 		return "", "", fmt.Errorf("sync audit archive directory: %w", err)
 	}
 	return path, sum, nil
+}
+
+// syncDirHook lets tests inject a directory-sync failure; nil means the
+// platform implementation. A failure must abort the batch so the database rows
+// stay in place.
+var syncDirHook func(string) error
+
+func syncDirectory(dir string) error {
+	if syncDirHook != nil {
+		return syncDirHook(dir)
+	}
+	return syncDir(dir)
 }
 
 // ensureArchiveDir creates the per-organization archive directory and makes the
@@ -293,10 +305,10 @@ func ensureArchiveDir(dir string) error {
 		return fmt.Errorf("create audit archive directory: %w", err)
 	}
 	for _, c := range created {
-		if err := syncDir(c); err != nil {
+		if err := syncDirectory(c); err != nil {
 			return fmt.Errorf("sync audit archive directory: %w", err)
 		}
-		if err := syncDir(filepath.Dir(c)); err != nil {
+		if err := syncDirectory(filepath.Dir(c)); err != nil {
 			return fmt.Errorf("sync audit archive parent directory: %w", err)
 		}
 	}
