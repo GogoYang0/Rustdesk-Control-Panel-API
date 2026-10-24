@@ -416,9 +416,13 @@ func (s *Service) allocateChecked(orgID uint) (*model.ServerGroup, []string, err
 	for {
 		row, err := s.pool.allocate(orgID, func(base uint16) bool { return skip[base] })
 		if err != nil {
-			// Only a fully exhausted pool means the preflight walked every
-			// remaining block; a database error must surface unchanged.
-			if len(occupied) > 0 && errors.Is(err, ErrPortPoolExhausted) {
+			// Exhaustion means the preflight walked every remaining block. It is
+			// a host-port conflict only when every block in the range was skipped
+			// after the checker rejected it: if any block was also held by a
+			// database allocation, freeing host ports alone could not make the
+			// attempt succeed, so the pool error is the honest one.
+			if len(occupied) > 0 && len(occupied) == s.pool.blockCount() &&
+				errors.Is(err, ErrPortPoolExhausted) {
 				return nil, occupied, fmt.Errorf("provision: %w: %s (%v)",
 					ErrPortConflict, strings.Join(occupied, ", "), err)
 			}

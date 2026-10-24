@@ -485,6 +485,14 @@ func (h *harness) runFlows() int {
 // startup sweep and the teardown delete exactly these names, never the
 // "harness-" prefix: the organization is shared infrastructure, not this
 // tool's namespace, and a prefix match could delete an operator's policy.
+//
+// The names are reserved for this tool: neither sweep can tell who created a
+// same-named policy, so two instances running against the same organization
+// would delete each other's policies, and an operator policy bearing one of
+// these names would be swept. Per-run names are not used because a run that
+// crashes before teardown must still leave a policy the next run can find by
+// name; the runbook therefore forbids concurrent runs and same-named operator
+// policies instead.
 var harnessPolicyNames = map[string]struct{}{
 	"harness-concurrency": {},
 	"harness-approval":    {},

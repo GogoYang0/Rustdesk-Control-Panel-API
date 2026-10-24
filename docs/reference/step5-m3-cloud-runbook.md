@@ -68,6 +68,8 @@ PUBLIC_HOST=<同上> ./docs/reference/step5-m3-run.sh /root/step5m3-work --probe
 
 > 关键易错点（测试失败时先看这几条）：**并发闸门在兑换不在签发**；**策略 PUT 是全量替换且 `enabled`/`require_approval` 必填**；时段是 **UTC 当日分钟**、`start==end` 返回 400（全天用 null）；事前审批阻断**不产生告警**（正常受控流程）。
 
+> **策略名保留（归属约束）**：`m3harness` 用固定名 `harness-concurrency` / `harness-approval` 创建策略（检查 5/6/8），启动清扫与收尾清理都按这两个**精确名**删除（绝不按 `harness-` 前缀，避免误删运维策略）。因此这两个名字为工具保留，且工具**无法区分同名策略的创建者**：不要对同一数据库/组织**并发**运行多个 `m3harness` 实例，运维也不要创建同名策略——否则会互相清理。
+
 ---
 
 ## 3. 前置数据为什么直写库

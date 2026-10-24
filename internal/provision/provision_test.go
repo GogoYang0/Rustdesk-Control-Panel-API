@@ -920,6 +920,41 @@ func TestProvision_AllBlocksOccupiedReportsConflict(t *testing.T) {
 	require.Zero(t, count, "every skipped block is released again")
 }
 
+// Mixed exhaustion: one block is host-conflicted, the rest of the range is
+// already allocated in the database. Freeing host ports alone could not make
+// the attempt succeed, so the error must stay the pool exhaustion instead of
+// blaming the host ports.
+func TestProvision_MixedExhaustionKeepsPoolError(t *testing.T) {
+	f := newFixture(t)
+	svc := provision.NewService(f.st.DB,
+		provision.NewPortPool(f.st.DB, testPortStart, testPortStart+2*provision.PortBlockSize-1),
+		f.orch, f.recorder, zap.NewNop(), provision.Config{
+			Image:     "rustdesk/rustdesk-server:test",
+			RelayHost: "relay.test",
+			DataDir:   t.TempDir(),
+			PortStart: testPortStart,
+			PortEnd:   testPortStart + 2*provision.PortBlockSize - 1,
+		})
+	checker := newRecordingChecker()
+	checker.noRepeat = true
+	checker.occupy(testPortStart, "tcp")
+	svc.SetPortChecker(checker.check)
+
+	holder := f.org(t, "block-holder")
+	require.NoError(t, store.ScopedByOrg(f.st.DB, holder.ID).Create(&model.ServerGroup{
+		OrganizationID: holder.ID,
+		HbbsPort:       testPortStart + provision.PortBlockSize,
+		HbbrPort:       testPortStart + provision.PortBlockSize + 3,
+		State:          model.ServerGroupDeployed,
+	}).Error)
+
+	org := f.org(t, "mixed-exhaustion")
+	_, err := svc.ProvisionForOrg(context.Background(), org.ID)
+	require.ErrorIs(t, err, provision.ErrPortPoolExhausted)
+	require.NotErrorIs(t, err, provision.ErrPortConflict,
+		"one database-held block also caused the exhaustion, so the host ports are not the only reason")
+}
+
 func TestProvision_UDPConflictSkipsBlock(t *testing.T) {
 	f := newFixture(t)
 	checker := newRecordingChecker()
