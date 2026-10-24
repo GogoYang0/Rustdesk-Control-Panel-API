@@ -504,6 +504,123 @@ func grantToGen(g *model.AddressBookGrant) gen.AddressBookGrant {
 	return out
 }
 
+// DeleteAddressBookPeer moves one peer to the recycle bin.
+func (a *AdminAPI) DeleteAddressBookPeer(c *gin.Context, orgId int64, bookId int64, peerId string) {
+	uid, perms, ok := a.peerBookContext(c, orgId, bookId, peerId)
+	if !ok {
+		return
+	}
+	if err := a.books.DeletePeer(uid, perms, uint(orgId), uint(bookId), peerId); err != nil {
+		a.writePeerError(c, err, "delete address book peer failed")
+		return
+	}
+	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
+}
+
+// ListAddressBookRecycleBin lists the soft-deleted peers of a book.
+func (a *AdminAPI) ListAddressBookRecycleBin(c *gin.Context, orgId int64, bookId int64) {
+	uid, perms, ok := a.peerBookContext(c, orgId, bookId, "")
+	if !ok {
+		return
+	}
+	rows, err := a.books.ListRecycleBin(uid, perms, uint(orgId), uint(bookId))
+	if err != nil {
+		a.writePeerError(c, err, "list recycle bin failed")
+		return
+	}
+	out := make([]gen.AddressBookRecycleBinItem, 0, len(rows))
+	for i := range rows {
+		row := &rows[i]
+		item := gen.AddressBookRecycleBinItem{
+			PeerId:    row.PeerID,
+			DeletedAt: *row.DeletedAt,
+			DeletedBy: int64(row.DeletedBy),
+		}
+		if row.Alias != "" {
+			v := row.Alias
+			item.Alias = &v
+		}
+		if row.Username != "" {
+			v := row.Username
+			item.Username = &v
+		}
+		if row.Hostname != "" {
+			v := row.Hostname
+			item.Hostname = &v
+		}
+		if row.Platform != "" {
+			v := row.Platform
+			item.Platform = &v
+		}
+		if tags, derr := addressbook.DecodeTagsJSON(row.TagsJSON); derr == nil && len(tags) > 0 {
+			item.Tags = &tags
+		}
+		out = append(out, item)
+	}
+	c.JSON(http.StatusOK, gen.AddressBookRecycleBinResponse{Code: gen.ErrorCodeOk, Message: "ok", Data: out})
+}
+
+// RestoreAddressBookPeer returns one recycled peer to the live list.
+func (a *AdminAPI) RestoreAddressBookPeer(c *gin.Context, orgId int64, bookId int64, peerId string) {
+	uid, perms, ok := a.peerBookContext(c, orgId, bookId, peerId)
+	if !ok {
+		return
+	}
+	if err := a.books.RestorePeer(uid, perms, uint(orgId), uint(bookId), peerId); err != nil {
+		a.writePeerError(c, err, "restore address book peer failed")
+		return
+	}
+	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
+}
+
+// PurgeAddressBookPeer permanently deletes one recycled peer.
+func (a *AdminAPI) PurgeAddressBookPeer(c *gin.Context, orgId int64, bookId int64, peerId string) {
+	uid, perms, ok := a.peerBookContext(c, orgId, bookId, peerId)
+	if !ok {
+		return
+	}
+	if err := a.books.PurgePeer(uid, perms, uint(orgId), uint(bookId), peerId); err != nil {
+		a.writePeerError(c, err, "purge address book peer failed")
+		return
+	}
+	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
+}
+
+// peerBookContext validates ids, checks membership and returns the caller's
+// permission set. A non-empty peerId is validated against the contract bound.
+func (a *AdminAPI) peerBookContext(c *gin.Context, orgId, bookId int64, peerId string) (uint, []string, bool) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return 0, nil, false
+	}
+	if orgId <= 0 || bookId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid id")
+		return 0, nil, false
+	}
+	if peerId != "" && tooManyRunes(peerId, 64) {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "peer id is too long")
+		return 0, nil, false
+	}
+	perms, ok := a.roleForBook(c, uid, orgId, bookId)
+	if !ok {
+		return 0, nil, false
+	}
+	return uid, perms, true
+}
+
+// writePeerError maps recycle-bin errors onto the standard envelope.
+func (a *AdminAPI) writePeerError(c *gin.Context, err error, logMsg string) {
+	if errors.Is(err, addressbook.ErrPeerNotFound) {
+		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "address book peer not found")
+		return
+	}
+	if mapBookError(c, err) {
+		return
+	}
+	a.deps.Logger.Error(logMsg)
+	abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not update address book")
+}
+
 // loadBook resolves the caller's role and fetches the book with peers/tags,
 // mapping service errors onto the standard envelope.
 func (a *AdminAPI) loadBook(c *gin.Context, uid uint, orgId, bookId int64) (*model.AddressBook, []model.AddressBookPeer, []model.AddressBookTag, error) {

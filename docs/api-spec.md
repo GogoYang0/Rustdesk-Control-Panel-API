@@ -142,6 +142,10 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `PUT .../address-books/{bookId}/tags` | 全量替换 tags（上限 256；color 0..4294967295） |
 | `GET/POST .../address-books/{bookId}/grants` | 共享簿授权列表 / 新增或更新授权（v0.8.0，需 `full`：`addressbook.write` 或该簿 `full` 授权） |
 | `DELETE .../address-books/{bookId}/grants/{grantId}` | 撤销授权（v0.8.0，需 `full`） |
+| `DELETE .../address-books/{bookId}/peers/{peerId}` | 删除条目（v0.8.0，`write`+）：**软删除进回收站**，不硬删除 |
+| `GET .../address-books/{bookId}/recycle-bin` | 回收站列表（v0.8.0，`write`+），按删除时间倒序 |
+| `POST .../address-books/{bookId}/recycle-bin/{peerId}/restore` | 恢复条目（v0.8.0，`write`+），bump revision |
+| `DELETE .../address-books/{bookId}/recycle-bin/{peerId}` | 永久删除（v0.8.0，`full`），不可恢复 |
 
 语义要点：
 
@@ -154,6 +158,10 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 > 共享簿默认**所有成员可读**（保持 M2 行为），授权只升不降：`everyone` 授权可把全体成员升到 write/full；**显式 user 授权优先于 everyone**，因此可用 user=`read` 把某成员重新收紧。
 > `addressbook.write` 权限（owner/admin 与持有该码的自定义角色）始终是 full。`write` 可替换 peers/tags；`full` 还可改名、删除簿、管理授权。个人簿没有授权概念（400）。
 > 同一主体重复 POST 为更新（200），首次创建为 201。
+
+> **v0.8.0 回收站（D9）**：**所有删除入口都是软删除**——管理面 `DELETE .../peers/{peerId}`，以及客户端整本同步（`PUT .../peers`、legacy `/api/ab` 推送）中缺失的条目。软删除行保留 `(book_id, peer_id)` 身份与 opaque `hash`/`note`，因此再次添加同 id 会**原地恢复**并覆盖字段，而不是新建行。
+> 回收站保留 30 天，由后台清扫每小时永久删除过期行（系统动作，`deleted_by=0`）；`full` 访问可手动永久删除。恢复会 bump `revision`（内容变化），永久删除不改变 live 内容、不动 `revision`。
+> 管理面与 compat 共用同一回收站；客户端看不到回收站条目（快照只含未删除行）。
 
 ### 3.5 日志事件
 

@@ -19,6 +19,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/addressbook"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/api"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
@@ -301,6 +302,20 @@ func main() {
 		},
 	}); err != nil {
 		lg.Fatal("register duration session sweep", zap.Error(err))
+	}
+
+	// Address book peers are soft-deleted into a recycle bin; the hourly
+	// sweep purges entries older than the retention window.
+	bookSvc := addressbook.NewService(st.DB)
+	if err := sched.Register(worker.Task{
+		Name:       "addressbook-recycle-sweep",
+		Interval:   time.Hour,
+		RunOnStart: true,
+		Run: func(ctx context.Context) (int64, error) {
+			return bookSvc.SweepRecycleBin(ctx)
+		},
+	}); err != nil {
+		lg.Fatal("register address book recycle sweep", zap.Error(err))
 	}
 
 	if cfg.Logcollect.RetentionSweepInterval > 0 {

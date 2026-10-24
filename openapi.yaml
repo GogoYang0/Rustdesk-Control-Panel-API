@@ -1292,6 +1292,167 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v1/orgs/{orgId}/address-books/{bookId}/peers/{peerId}:
+    delete:
+      operationId: deleteAddressBookPeer
+      summary: 删除地址簿条目（进回收站）
+      description: |
+        软删除一个 peer（v0.8.0，需 `write` 及以上：`addressbook.write` 或该簿 write/full
+        授权）。条目进入回收站保留 30 天，可恢复；不会硬删除。
+      tags:
+        - addressbooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: bookId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: peerId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 已进入回收站
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/address-books/{bookId}/recycle-bin:
+    get:
+      operationId: listAddressBookRecycleBin
+      summary: 回收站列表
+      description: 返回该簿已软删除的 peer（v0.8.0，需 `write` 及以上），按删除时间倒序。
+      tags:
+        - addressbooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: bookId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 回收站条目
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddressBookRecycleBinResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/address-books/{bookId}/recycle-bin/{peerId}/restore:
+    post:
+      operationId: restoreAddressBookPeer
+      summary: 从回收站恢复条目
+      description: 恢复一个软删除的 peer（v0.8.0，需 `write` 及以上），并 bump revision。
+      tags:
+        - addressbooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: bookId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: peerId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 已恢复
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/address-books/{bookId}/recycle-bin/{peerId}:
+    delete:
+      operationId: purgeAddressBookPeer
+      summary: 永久删除回收站条目
+      description: 永久删除一个软删除的 peer（v0.8.0，需 `full` 访问）。不可恢复。
+      tags:
+        - addressbooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: bookId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: peerId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 已永久删除
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/v1/orgs/{orgId}/address-books/{bookId}/tags:
     put:
       operationId: replaceAddressBookTags
@@ -3197,6 +3358,52 @@ components:
           minimum: 0
           maximum: 4294967295
           description: RGB 颜色值（同 RustDesk 客户端 tag_colors 语义）
+
+    AddressBookRecycleBinItem:
+      type: object
+      required:
+        - peer_id
+        - deleted_at
+        - deleted_by
+      properties:
+        peer_id:
+          type: string
+        alias:
+          type: string
+        username:
+          type: string
+        hostname:
+          type: string
+        platform:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        deleted_at:
+          type: string
+          format: date-time
+          description: 删除时间；30 天后由后台清扫永久删除
+        deleted_by:
+          type: integer
+          format: int64
+          description: 删除人；0 表示系统清扫
+
+    AddressBookRecycleBinResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AddressBookRecycleBinItem"
 
     AddressBookGrantKind:
       type: string

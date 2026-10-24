@@ -607,6 +607,40 @@ type AddressBookPeersReplaceRequest struct {
 	Peers []AddressBookPeer `json:"peers"`
 }
 
+// AddressBookRecycleBinItem defines model for AddressBookRecycleBinItem.
+type AddressBookRecycleBinItem struct {
+	Alias *string `json:"alias,omitempty"`
+
+	// DeletedAt 删除时间；30 天后由后台清扫永久删除
+	DeletedAt time.Time `json:"deleted_at"`
+
+	// DeletedBy 删除人；0 表示系统清扫
+	DeletedBy int64     `json:"deleted_by"`
+	Hostname  *string   `json:"hostname,omitempty"`
+	PeerId    string    `json:"peer_id"`
+	Platform  *string   `json:"platform,omitempty"`
+	Tags      *[]string `json:"tags,omitempty"`
+	Username  *string   `json:"username,omitempty"`
+}
+
+// AddressBookRecycleBinResponse defines model for AddressBookRecycleBinResponse.
+type AddressBookRecycleBinResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode                   `json:"code"`
+	Data    []AddressBookRecycleBinItem `json:"data"`
+	Message string                      `json:"message"`
+}
+
 // AddressBookResponse defines model for AddressBookResponse.
 type AddressBookResponse struct {
 	// Code 机器可读错误码：
@@ -2121,6 +2155,18 @@ type ServerInterface interface {
 	// ReplaceAddressBookPeers 全量替换地址簿 peers
 	// (PUT /api/v1/orgs/{orgId}/address-books/{bookId}/peers)
 	ReplaceAddressBookPeers(c *gin.Context, orgId int64, bookId int64)
+	// DeleteAddressBookPeer 删除地址簿条目（进回收站）
+	// (DELETE /api/v1/orgs/{orgId}/address-books/{bookId}/peers/{peerId})
+	DeleteAddressBookPeer(c *gin.Context, orgId int64, bookId int64, peerId string)
+	// ListAddressBookRecycleBin 回收站列表
+	// (GET /api/v1/orgs/{orgId}/address-books/{bookId}/recycle-bin)
+	ListAddressBookRecycleBin(c *gin.Context, orgId int64, bookId int64)
+	// PurgeAddressBookPeer 永久删除回收站条目
+	// (DELETE /api/v1/orgs/{orgId}/address-books/{bookId}/recycle-bin/{peerId})
+	PurgeAddressBookPeer(c *gin.Context, orgId int64, bookId int64, peerId string)
+	// RestoreAddressBookPeer 从回收站恢复条目
+	// (POST /api/v1/orgs/{orgId}/address-books/{bookId}/recycle-bin/{peerId}/restore)
+	RestoreAddressBookPeer(c *gin.Context, orgId int64, bookId int64, peerId string)
 	// ReplaceAddressBookTags 全量替换地址簿标签
 	// (PUT /api/v1/orgs/{orgId}/address-books/{bookId}/tags)
 	ReplaceAddressBookTags(c *gin.Context, orgId int64, bookId int64)
@@ -2626,6 +2672,169 @@ func (siw *ServerInterfaceWrapper) ReplaceAddressBookPeers(c *gin.Context) {
 	}
 
 	siw.Handler.ReplaceAddressBookPeers(c, orgId, bookId)
+}
+
+// DeleteAddressBookPeer operation middleware
+func (siw *ServerInterfaceWrapper) DeleteAddressBookPeer(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "bookId" -------------
+	var bookId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "bookId", c.Param("bookId"), &bookId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter bookId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "peerId" -------------
+	var peerId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "peerId", c.Param("peerId"), &peerId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter peerId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteAddressBookPeer(c, orgId, bookId, peerId)
+}
+
+// ListAddressBookRecycleBin operation middleware
+func (siw *ServerInterfaceWrapper) ListAddressBookRecycleBin(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "bookId" -------------
+	var bookId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "bookId", c.Param("bookId"), &bookId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter bookId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListAddressBookRecycleBin(c, orgId, bookId)
+}
+
+// PurgeAddressBookPeer operation middleware
+func (siw *ServerInterfaceWrapper) PurgeAddressBookPeer(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "bookId" -------------
+	var bookId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "bookId", c.Param("bookId"), &bookId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter bookId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "peerId" -------------
+	var peerId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "peerId", c.Param("peerId"), &peerId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter peerId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.PurgeAddressBookPeer(c, orgId, bookId, peerId)
+}
+
+// RestoreAddressBookPeer operation middleware
+func (siw *ServerInterfaceWrapper) RestoreAddressBookPeer(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "bookId" -------------
+	var bookId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "bookId", c.Param("bookId"), &bookId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter bookId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "peerId" -------------
+	var peerId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "peerId", c.Param("peerId"), &peerId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter peerId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RestoreAddressBookPeer(c, orgId, bookId, peerId)
 }
 
 // ReplaceAddressBookTags operation middleware
@@ -4031,6 +4240,10 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId/grants", wrapper.ListAddressBookGrants)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId/grants", wrapper.CreateAddressBookGrant)
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId/grants/:grantId", wrapper.DeleteAddressBookGrant)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId/peers/:peerId", wrapper.DeleteAddressBookPeer)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId/recycle-bin", wrapper.ListAddressBookRecycleBin)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId/recycle-bin/:peerId/restore", wrapper.RestoreAddressBookPeer)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId/recycle-bin/:peerId", wrapper.PurgeAddressBookPeer)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId/tags", wrapper.ReplaceAddressBookTags)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/log-events", wrapper.ListLogEvents)
 	router.POST(options.BaseURL+"/api/v1/auth/verify-email", wrapper.VerifyEmail)
