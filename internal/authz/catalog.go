@@ -1,6 +1,9 @@
 package authz
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // Permission identifiers used across handlers.
 const (
@@ -95,6 +98,52 @@ func Has(perms []string, perm string) bool {
 		}
 	}
 	return false
+}
+
+// Normalize error sentinels for role building. Handlers map them onto 400/403.
+var (
+	ErrUnknownPermission      = errors.New("unknown permission code")
+	ErrPermissionNotDelegable = errors.New("permission is not delegable")
+)
+
+// NormalizePermissions validates every requested code against the catalog and
+// returns the set in catalog order without duplicates. Unknown codes fail
+// closed instead of being stored and silently granting nothing.
+func NormalizePermissions(codes []string) ([]string, error) {
+	wanted := make(map[string]bool, len(codes))
+	for _, code := range codes {
+		known := false
+		for _, p := range catalog {
+			if p.Code == code {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return nil, fmt.Errorf("%w: %s", ErrUnknownPermission, code)
+		}
+		wanted[code] = true
+	}
+	out := make([]string, 0, len(wanted))
+	for _, p := range catalog {
+		if wanted[p.Code] {
+			out = append(out, p.Code)
+		}
+	}
+	return out, nil
+}
+
+// ValidateDelegable rejects codes a custom role may not include. Only
+// owner-only capabilities (org.admin, role.manage) are non-delegable.
+func ValidateDelegable(codes []string) error {
+	for _, code := range codes {
+		for _, p := range catalog {
+			if p.Code == code && !p.Delegable {
+				return fmt.Errorf("%w: %s", ErrPermissionNotDelegable, code)
+			}
+		}
+	}
+	return nil
 }
 
 // Require returns an error when the permission set does not include the code.

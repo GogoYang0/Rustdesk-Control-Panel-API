@@ -241,7 +241,10 @@ func (a *AdminAPI) ListMembers(c *gin.Context, orgId int64) {
 			Id:        int64(m.ID),
 			UserId:    int64(m.UserID),
 			Email:     openapi_types.Email(emails[m.UserID]),
-			Role:      gen.MemberRole(name),
+			Role:      name,
+			RoleId:    int64(m.RoleID),
+			RoleName:  name,
+			Disabled:  false,
 			CreatedAt: m.CreatedAt,
 		})
 	}
@@ -474,7 +477,10 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 			Id:        int64(member.ID),
 			UserId:    int64(member.UserID),
 			Email:     openapi_types.Email(inv.Email),
-			Role:      gen.MemberRole(member.Role),
+			Role:      member.Role,
+			RoleId:    int64(member.RoleID),
+			RoleName:  member.Role,
+			Disabled:  false,
 			CreatedAt: member.CreatedAt,
 		},
 	})

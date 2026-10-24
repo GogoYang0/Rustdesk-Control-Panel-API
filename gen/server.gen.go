@@ -289,45 +289,6 @@ func (e LogEventSource) Valid() bool {
 	}
 }
 
-// Defines values for MemberRole.
-const (
-	MemberRoleAdmin  MemberRole = "admin"
-	MemberRoleMember MemberRole = "member"
-	MemberRoleOwner  MemberRole = "owner"
-)
-
-// Valid indicates whether the value is a known member of the MemberRole enum.
-func (e MemberRole) Valid() bool {
-	switch e {
-	case MemberRoleAdmin:
-		return true
-	case MemberRoleMember:
-		return true
-	case MemberRoleOwner:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for MemberRoleRequestRole.
-const (
-	MemberRoleRequestRoleAdmin  MemberRoleRequestRole = "admin"
-	MemberRoleRequestRoleMember MemberRoleRequestRole = "member"
-)
-
-// Valid indicates whether the value is a known member of the MemberRoleRequestRole enum.
-func (e MemberRoleRequestRole) Valid() bool {
-	switch e {
-	case MemberRoleRequestRoleAdmin:
-		return true
-	case MemberRoleRequestRoleMember:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for ProvisioningStatusState.
 const (
 	ProvisioningStatusStateDeployed     ProvisioningStatusState = "deployed"
@@ -349,6 +310,48 @@ func (e ProvisioningStatusState) Valid() bool {
 	case ProvisioningStatusStatePending:
 		return true
 	case ProvisioningStatusStateProvisioning:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RoleAuditScope.
+const (
+	Global     RoleAuditScope = "global"
+	Individual RoleAuditScope = "individual"
+)
+
+// Valid indicates whether the value is a known member of the RoleAuditScope enum.
+func (e RoleAuditScope) Valid() bool {
+	switch e {
+	case Global:
+		return true
+	case Individual:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RoleKind.
+const (
+	RoleKindAdmin  RoleKind = "admin"
+	RoleKindCustom RoleKind = "custom"
+	RoleKindMember RoleKind = "member"
+	RoleKindOwner  RoleKind = "owner"
+)
+
+// Valid indicates whether the value is a known member of the RoleKind enum.
+func (e RoleKind) Valid() bool {
+	switch e {
+	case RoleKindAdmin:
+		return true
+	case RoleKindCustom:
+		return true
+	case RoleKindMember:
+		return true
+	case RoleKindOwner:
 		return true
 	default:
 		return false
@@ -936,15 +939,23 @@ type LoginRequest struct {
 
 // Member defines model for Member.
 type Member struct {
-	CreatedAt time.Time           `json:"created_at"`
-	Email     openapi_types.Email `json:"email"`
-	Id        int64               `json:"id"`
-	Role      MemberRole          `json:"role"`
-	UserId    int64               `json:"user_id"`
-}
+	CreatedAt time.Time `json:"created_at"`
 
-// MemberRole defines model for Member.Role.
-type MemberRole string
+	// Disabled 会籍是否已停用；停用后不能登录或访问该组织
+	Disabled bool                `json:"disabled"`
+	Email    openapi_types.Email `json:"email"`
+	Id       int64               `json:"id"`
+
+	// Role 兼容字段，等同于 `role_name`；自定义角色名不限于内置三种
+	Role string `json:"role"`
+
+	// RoleId 会籍引用的角色 id（`memberships.role_id`）
+	RoleId int64 `json:"role_id"`
+
+	// RoleName 角色展示名（内置 owner/admin/member 或自定义名称）
+	RoleName string `json:"role_name"`
+	UserId   int64  `json:"user_id"`
+}
 
 // MemberListResponse defines model for MemberListResponse.
 type MemberListResponse struct {
@@ -1006,14 +1017,18 @@ type MemberResponse struct {
 	Message string    `json:"message"`
 }
 
-// MemberRoleRequest defines model for MemberRoleRequest.
-type MemberRoleRequest struct {
-	// Role 只接受 admin 或 member；所有权转移不在本端点范围
-	Role MemberRoleRequestRole `json:"role"`
-}
+// MemberUpdateRequest 按字段更新会籍，至少给出 `role_id` 或 `disabled` 之一。
+//   - `role_id`：授予本组织内的内置 admin/member 或自定义角色（不能授予 owner）；
+//     需要 `org.admin`（仅 owner）。
+//   - `disabled`：停用或恢复会籍；需要 `member.manage`。不能停用自己或末位 owner；
+//     停用会在同一事务内撤销该用户在本组织的活跃 compat 会话。
+type MemberUpdateRequest struct {
+	// Disabled true 停用，false 恢复
+	Disabled *bool `json:"disabled,omitempty"`
 
-// MemberRoleRequestRole 只接受 admin 或 member；所有权转移不在本端点范围
-type MemberRoleRequestRole string
+	// RoleId 目标角色 id；owner 角色不可通过本端点授予
+	RoleId *int64 `json:"role_id,omitempty"`
+}
 
 // OkResponse defines model for OkResponse.
 type OkResponse struct {
@@ -1078,6 +1093,34 @@ type OrgResponse struct {
 	Code    ErrorCode `json:"code"`
 	Data    Org       `json:"data"`
 	Message string    `json:"message"`
+}
+
+// Permission defines model for Permission.
+type Permission struct {
+	// Code 权限码，如 `member.manage`
+	Code string `json:"code"`
+
+	// Delegable 自定义角色是否可以包含该权限码；false 为 owner 专属
+	Delegable   bool   `json:"delegable"`
+	Description string `json:"description"`
+}
+
+// PermissionListResponse defines model for PermissionListResponse.
+type PermissionListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode    `json:"code"`
+	Data    []Permission `json:"data"`
+	Message string       `json:"message"`
 }
 
 // Policy defines model for Policy.
@@ -1212,6 +1255,92 @@ type RefreshRequest struct {
 // ResendVerificationRequest defines model for ResendVerificationRequest.
 type ResendVerificationRequest struct {
 	Email openapi_types.Email `json:"email"`
+}
+
+// Role defines model for Role.
+type Role struct {
+	// AuditScope 审计可见范围：`global` 可查全组织审计；`individual` 只查自己作为操作者
+	// 或目标（用户类目标）的条目。仅对持有 `audit.read` 的角色有意义。
+	AuditScope RoleAuditScope `json:"audit_scope"`
+
+	// Builtin true 表示内置角色（不可编辑/删除/授予 owner）
+	Builtin   bool      `json:"builtin"`
+	CreatedAt time.Time `json:"created_at"`
+	Id        int64     `json:"id"`
+
+	// Kind - owner/admin/member：内置角色，权限集固定，不可修改或删除
+	// - custom：组织自建角色，权限只能是目录中 `delegable=true` 的子集
+	Kind RoleKind `json:"kind"`
+	Name string   `json:"name"`
+
+	// Permissions 角色持有的权限码集合
+	Permissions []string  `json:"permissions"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// RoleAuditScope 审计可见范围：`global` 可查全组织审计；`individual` 只查自己作为操作者
+// 或目标（用户类目标）的条目。仅对持有 `audit.read` 的角色有意义。
+type RoleAuditScope string
+
+// RoleCreateRequest defines model for RoleCreateRequest.
+type RoleCreateRequest struct {
+	// AuditScope 省略时默认 `individual`
+	AuditScope *RoleAuditScope `json:"audit_scope,omitempty"`
+
+	// Name 自定义角色名；不能与内置角色或已有角色重名
+	Name string `json:"name"`
+
+	// Permissions 权限码子集；必须全部来自权限目录且 `delegable=true`
+	Permissions []string `json:"permissions"`
+}
+
+// RoleKind - owner/admin/member：内置角色，权限集固定，不可修改或删除
+// - custom：组织自建角色，权限只能是目录中 `delegable=true` 的子集
+type RoleKind string
+
+// RoleListResponse defines model for RoleListResponse.
+type RoleListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode `json:"code"`
+	Data    []Role    `json:"data"`
+	Message string    `json:"message"`
+}
+
+// RoleResponse defines model for RoleResponse.
+type RoleResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode `json:"code"`
+	Data    Role      `json:"data"`
+	Message string    `json:"message"`
+}
+
+// RoleUpdateRequest defines model for RoleUpdateRequest.
+type RoleUpdateRequest struct {
+	// AuditScope 审计可见范围：`global` 可查全组织审计；`individual` 只查自己作为操作者
+	// 或目标（用户类目标）的条目。仅对持有 `audit.read` 的角色有意义。
+	AuditScope  *RoleAuditScope `json:"audit_scope,omitempty"`
+	Name        string          `json:"name"`
+	Permissions []string        `json:"permissions"`
 }
 
 // Session 会话生命周期（契约语义；实现见 M3 T4/T5/T7）：
@@ -1723,7 +1852,7 @@ type ResetDeviceBindingJSONRequestBody = DeviceRebindRequest
 type CreateInvitationJSONRequestBody = InvitationCreateRequest
 
 // UpdateMemberRoleJSONRequestBody defines body for UpdateMemberRole for application/json ContentType.
-type UpdateMemberRoleJSONRequestBody = MemberRoleRequest
+type UpdateMemberRoleJSONRequestBody = MemberUpdateRequest
 
 // CreatePolicyJSONRequestBody defines body for CreatePolicy for application/json ContentType.
 type CreatePolicyJSONRequestBody = PolicyRequest
@@ -1733,6 +1862,12 @@ type UpdatePolicyJSONRequestBody = PolicyRequest
 
 // UpdateProvisioningJSONRequestBody defines body for UpdateProvisioning for application/json ContentType.
 type UpdateProvisioningJSONRequestBody = ProvisioningUpdateRequest
+
+// CreateRoleJSONRequestBody defines body for CreateRole for application/json ContentType.
+type CreateRoleJSONRequestBody = RoleCreateRequest
+
+// UpdateRoleJSONRequestBody defines body for UpdateRole for application/json ContentType.
+type UpdateRoleJSONRequestBody = RoleUpdateRequest
 
 // IssueTicketJSONRequestBody defines body for IssueTicket for application/json ContentType.
 type IssueTicketJSONRequestBody = TicketCreateRequest
@@ -1823,7 +1958,7 @@ type ServerInterface interface {
 	// RemoveMember 移除组织成员
 	// (DELETE /api/v1/orgs/{orgId}/members/{userId})
 	RemoveMember(c *gin.Context, orgId int64, userId int64)
-	// UpdateMemberRole 变更成员角色
+	// UpdateMemberRole 更新成员角色或停用状态
 	// (PATCH /api/v1/orgs/{orgId}/members/{userId})
 	UpdateMemberRole(c *gin.Context, orgId int64, userId int64)
 	// ListPolicies 连接策略列表
@@ -1844,6 +1979,21 @@ type ServerInterface interface {
 	// UpdateProvisioning 启用或禁用组织 provisioning
 	// (PUT /api/v1/orgs/{orgId}/provisioning)
 	UpdateProvisioning(c *gin.Context, orgId int64)
+	// ListRoles 列出组织角色
+	// (GET /api/v1/orgs/{orgId}/roles)
+	ListRoles(c *gin.Context, orgId int64)
+	// CreateRole 创建自定义角色
+	// (POST /api/v1/orgs/{orgId}/roles)
+	CreateRole(c *gin.Context, orgId int64)
+	// DeleteRole 删除自定义角色
+	// (DELETE /api/v1/orgs/{orgId}/roles/{roleId})
+	DeleteRole(c *gin.Context, orgId int64, roleId int64)
+	// GetRole 查询角色详情
+	// (GET /api/v1/orgs/{orgId}/roles/{roleId})
+	GetRole(c *gin.Context, orgId int64, roleId int64)
+	// UpdateRole 更新自定义角色
+	// (PUT /api/v1/orgs/{orgId}/roles/{roleId})
+	UpdateRole(c *gin.Context, orgId int64, roleId int64)
 	// ListSessions 会话记录列表
 	// (GET /api/v1/orgs/{orgId}/sessions)
 	ListSessions(c *gin.Context, orgId int64, params ListSessionsParams)
@@ -1859,6 +2009,9 @@ type ServerInterface interface {
 	// RedeemTicket 兑换连接票据（创建面板会话）
 	// (POST /api/v1/orgs/{orgId}/tickets/{ticketId}/redeem)
 	RedeemTicket(c *gin.Context, orgId int64, ticketId int64)
+	// ListPermissions 列出权限目录
+	// (GET /api/v1/permissions)
+	ListPermissions(c *gin.Context)
 	// GetHealthz 存活探针
 	// (GET /healthz)
 	GetHealthz(c *gin.Context)
@@ -2904,6 +3057,158 @@ func (siw *ServerInterfaceWrapper) UpdateProvisioning(c *gin.Context) {
 	siw.Handler.UpdateProvisioning(c, orgId)
 }
 
+// ListRoles operation middleware
+func (siw *ServerInterfaceWrapper) ListRoles(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListRoles(c, orgId)
+}
+
+// CreateRole operation middleware
+func (siw *ServerInterfaceWrapper) CreateRole(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateRole(c, orgId)
+}
+
+// DeleteRole operation middleware
+func (siw *ServerInterfaceWrapper) DeleteRole(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "roleId" -------------
+	var roleId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "roleId", c.Param("roleId"), &roleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter roleId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteRole(c, orgId, roleId)
+}
+
+// GetRole operation middleware
+func (siw *ServerInterfaceWrapper) GetRole(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "roleId" -------------
+	var roleId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "roleId", c.Param("roleId"), &roleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter roleId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetRole(c, orgId, roleId)
+}
+
+// UpdateRole operation middleware
+func (siw *ServerInterfaceWrapper) UpdateRole(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "roleId" -------------
+	var roleId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "roleId", c.Param("roleId"), &roleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter roleId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UpdateRole(c, orgId, roleId)
+}
+
 // ListSessions operation middleware
 func (siw *ServerInterfaceWrapper) ListSessions(c *gin.Context) {
 
@@ -3115,6 +3420,19 @@ func (siw *ServerInterfaceWrapper) RedeemTicket(c *gin.Context) {
 	siw.Handler.RedeemTicket(c, orgId, ticketId)
 }
 
+// ListPermissions operation middleware
+func (siw *ServerInterfaceWrapper) ListPermissions(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListPermissions(c)
+}
+
 // GetHealthz operation middleware
 func (siw *ServerInterfaceWrapper) GetHealthz(c *gin.Context) {
 
@@ -3163,6 +3481,12 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/members", wrapper.ListMembers)
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId", wrapper.RemoveMember)
 	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId", wrapper.UpdateMemberRole)
+	router.GET(options.BaseURL+"/api/v1/permissions", wrapper.ListPermissions)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/roles", wrapper.ListRoles)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/roles", wrapper.CreateRole)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/roles/:roleId", wrapper.DeleteRole)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/roles/:roleId", wrapper.GetRole)
+	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/roles/:roleId", wrapper.UpdateRole)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/provisioning", wrapper.GetProvisioning)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/provisioning", wrapper.UpdateProvisioning)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/invitations", wrapper.CreateInvitation)

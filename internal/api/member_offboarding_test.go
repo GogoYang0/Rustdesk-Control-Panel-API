@@ -129,9 +129,12 @@ func TestUpdateMemberRole(t *testing.T) {
 	path := func(uid uint) string {
 		return "/api/v1/orgs/" + itoa(orgID) + "/members/" + itoa(int64(uid))
 	}
+	adminRoleID := int64(h.roleID(t, uint(orgID), model.RoleAdmin))
+	memberRoleID := int64(h.roleID(t, uint(orgID), model.RoleMember))
+	ownerRoleID := int64(h.roleID(t, uint(orgID), model.RoleOwner))
 
 	// Promote: no session revocation.
-	w := h.do(t, http.MethodPatch, path(member.ID), map[string]string{"role": "admin"}, ownerToken)
+	w := h.do(t, http.MethodPatch, path(member.ID), map[string]any{"role_id": adminRoleID}, ownerToken)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	var promoted struct {
 		Data struct {
@@ -146,28 +149,28 @@ func TestUpdateMemberRole(t *testing.T) {
 
 	// Demote: revokes the target's compat sessions.
 	session := seedCompatSession(t, h, orgID, member.ID, "jti-role-demote")
-	w = h.do(t, http.MethodPatch, path(member.ID), map[string]string{"role": "member"}, ownerToken)
+	w = h.do(t, http.MethodPatch, path(member.ID), map[string]any{"role_id": memberRoleID}, ownerToken)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	require.True(t, sessionRevoked(t, h, session), "a demotion must revoke compat sessions")
 
-	// Admin, member, self, owner target, invalid role.
-	w = h.do(t, http.MethodPatch, path(member.ID), map[string]string{"role": "member"}, adminToken)
+	// Admin, member, self, owner target, non-grantable role, unknown role.
+	w = h.do(t, http.MethodPatch, path(member.ID), map[string]any{"role_id": memberRoleID}, adminToken)
 	require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
-	w = h.do(t, http.MethodPatch, path(member.ID), map[string]string{"role": "member"}, memberToken)
+	w = h.do(t, http.MethodPatch, path(member.ID), map[string]any{"role_id": memberRoleID}, memberToken)
 	require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
-	w = h.do(t, http.MethodPatch, path(admin.ID), map[string]string{"role": "member"}, ownerToken)
+	w = h.do(t, http.MethodPatch, path(admin.ID), map[string]any{"role_id": memberRoleID}, ownerToken)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	w = h.do(t, http.MethodPatch, path(admin.ID), map[string]string{"role": "member"}, adminToken)
+	w = h.do(t, http.MethodPatch, path(admin.ID), map[string]any{"role_id": memberRoleID}, adminToken)
 	require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
-	w = h.do(t, http.MethodPatch, path(creator.ID), map[string]string{"role": "member"}, ownerToken)
+	w = h.do(t, http.MethodPatch, path(creator.ID), map[string]any{"role_id": memberRoleID}, ownerToken)
 	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
-	w = h.do(t, http.MethodPatch, path(owner2.ID), map[string]string{"role": "admin"}, ownerToken)
+	w = h.do(t, http.MethodPatch, path(owner2.ID), map[string]any{"role_id": adminRoleID}, ownerToken)
 	require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
-	w = h.do(t, http.MethodPatch, path(member.ID), map[string]string{"role": "owner"}, ownerToken)
-	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
-	w = h.do(t, http.MethodPatch, path(member.ID), map[string]string{"role": "nonsense"}, ownerToken)
-	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
-	w = h.do(t, http.MethodPatch, path(999999), map[string]string{"role": "member"}, ownerToken)
+	w = h.do(t, http.MethodPatch, path(member.ID), map[string]any{"role_id": ownerRoleID}, ownerToken)
+	require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+	w = h.do(t, http.MethodPatch, path(member.ID), map[string]any{"role_id": 999999}, ownerToken)
+	require.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
+	w = h.do(t, http.MethodPatch, path(999999), map[string]any{"role_id": memberRoleID}, ownerToken)
 	require.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
 
 	require.NotZero(t, countAudit(t, h, "action = ?", "organization.member.role"))

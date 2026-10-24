@@ -93,13 +93,18 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `POST /api/v1/orgs` | 创建组织（受 `maxOrgsPerUser` 限制，超出 409/400） |
 | `GET /api/v1/orgs/{orgId}/members` | 成员列表及其组织内角色（**组织成员即可访问**，不限 admin） |
 | `DELETE /api/v1/orgs/{orgId}/members/{userId}` | 移除成员（v0.6.0，`member.manage`）：同一事务内撤销该用户在本组织的活跃 compat 会话；admin 不能移除 owner、不能移除自己、不能移除最后一个 owner |
-| `PATCH /api/v1/orgs/{orgId}/members/{userId}` | 变更角色（v0.6.0，**仅 owner**）：只接受 `admin`/`member`；降级（admin→member）在同一事务撤销该用户的 compat 会话，提升不撤销；不能改自己或 owner |
+| `PATCH /api/v1/orgs/{orgId}/members/{userId}` | 按字段更新会籍（v0.8.0，`MemberUpdateRequest`）：`role_id` 授予内置 admin/member 或自定义角色（**仅 owner**，`org.admin`），不能授予 owner；任何丢失既有权限的变更（降级或收窄）在同一事务撤销该用户在本组织的 compat 会话，提升不撤销；不能改自己或 owner。`disabled` 字段在会籍停用任务交付时启用 |
 | `POST /api/v1/orgs/{orgId}/invitations` | 邀请（admin 生成邀请令牌，邮件下发） |
 | `POST /api/v1/invitations/accept` | 接受邀请并加入组织 |
+| `GET /api/v1/permissions` | 权限目录（v0.8.0，任何已认证用户）：`code`、`description`、`delegable` |
+| `GET/POST /api/v1/orgs/{orgId}/roles` | 角色列表（成员可读，内置在前）/ 创建自定义角色（v0.8.0，`role.manage` 仅 owner） |
+| `GET/PUT/DELETE /api/v1/orgs/{orgId}/roles/{roleId}` | 角色详情（成员可读）/ 全量更新 / 删除（v0.8.0，`role.manage` 仅 owner） |
 | `GET /api/v1/orgs/{orgId}/provisioning` | 查询供应开关与部署状态（v0.7.0，**仅 owner**）：`enabled` + `state`（`disabled`/`pending`/`provisioning`/`deployed`/`failed`） |
 | `PUT /api/v1/orgs/{orgId}/provisioning` | 启用/禁用供应（v0.7.0，**仅 owner**，幂等）：`enabled=false` 同步下线容器、删 `ServerGroup` 行、置标记并在同一事务写 `organization.provisioning.update` 审计；`enabled=true` 只清标记，由供应队列异步部署 |
 
 角色矩阵：`owner` > `admin` > `member`。共享地址簿写操作需要 `addressbook` 权限（owner/admin）；**列表地址簿只需组织成员身份**。
+
+> **v0.8.0 角色模型（模型 A）**：授权唯一来源是 `memberships.role_id → roles.permissions`，旧 `memberships.role` 字符串仅保留给迁移、不再读写。owner/admin/member 是每个组织自动种子的**内置角色行**（`kind` 分别为三者），权限集固定、不可编辑或删除，owner 行不可授予他人（所有权转移不在本版范围）。自定义角色 `kind=custom`，权限只能是权限目录中 `delegable=true` 的码；`org.admin`、`role.manage` 不可委派。角色名在同一组织内唯一，内置名保留；被会籍引用的自定义角色删除返回 409（先改派）。`Member.role` 为兼容字段，与 `role_name` 相同，自定义角色名会出现在这里。
 
 > **v0.7.0 provisioning 开关语义**：关闭是"下线"而不是"暂停"——已有容器会被同步删除、端口释放；再次开启不会复活旧容器，而是重新排队部署（`provision.dataDir/org-<orgId>/` 中的数据保留，但**每次部署都会重新生成服务端密钥对**，客户端需重新配对）。
 > 容器删除失败时请求 500、`ServerGroup` 行标 `failed`、开关不变（fail closed）；`failed` 行不会因开启而自动重试（既有语义：清理失败的部署需人工处理）。

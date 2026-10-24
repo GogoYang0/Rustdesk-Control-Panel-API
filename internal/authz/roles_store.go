@@ -3,6 +3,7 @@ package authz
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -12,8 +13,25 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
 
-// ErrRoleNotFound reports a role id/name that does not exist in the tenant.
-var ErrRoleNotFound = errors.New("role not found")
+// Role error sentinels. Handlers map them onto 400/404/409 responses.
+var (
+	// ErrRoleNotFound reports a role id/name that does not exist in the tenant.
+	ErrRoleNotFound = errors.New("role not found")
+	// ErrRoleBuiltin reports an attempt to edit or delete a seeded role.
+	ErrRoleBuiltin = errors.New("builtin role cannot be modified")
+	// ErrRoleNameTaken reports a name reserved by a builtin or used by another
+	// role of the same organization.
+	ErrRoleNameTaken = errors.New("role name is reserved or already in use")
+	// ErrRoleInUse reports a custom role still referenced by memberships.
+	ErrRoleInUse = errors.New("role is still assigned to members")
+	// ErrInvalidRoleName reports an empty or overlong display name.
+	ErrInvalidRoleName = errors.New("invalid role name")
+	// ErrInvalidAuditScope reports an audit scope outside global/individual.
+	ErrInvalidAuditScope = errors.New("invalid audit scope")
+)
+
+// maxRoleNameLen matches the size:64 column of model.Role.
+const maxRoleNameLen = 64
 
 // RoleService owns the organization-scoped role rows: seeding the builtin
 // roles, resolving a membership's effective role, and the one-time backfill of
@@ -175,3 +193,169 @@ func MigrateRoles(db *gorm.DB) error {
 // ErrUnknownLegacyRole reports a membership whose legacy role string matches no
 // builtin role.
 var ErrUnknownLegacyRole = errors.New("unknown legacy role")
+
+// RoleByIDTx returns a role of the tenant on the caller's transaction.
+func RoleByIDTx(tx *gorm.DB, orgID, roleID uint) (*model.Role, error) {
+	var role model.Role
+	if err := store.ScopedByOrg(tx, orgID).First(&role, roleID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrRoleNotFound
+		}
+		return nil, err
+	}
+	return &role, nil
+}
+
+// List returns every role of the organization, builtins first (seed order) and
+// custom roles after.
+func (s *RoleService) List(orgID uint) ([]model.Role, error) {
+	var roles []model.Role
+	if err := store.ScopedByOrg(s.db, orgID).Order("id").Find(&roles).Error; err != nil {
+		return nil, err
+	}
+	return roles, nil
+}
+
+// CreateCustomTx validates and inserts a custom role on the caller's
+// transaction. The caller records the audit entry in the same transaction.
+func (s *RoleService) CreateCustomTx(tx *gorm.DB, orgID uint, name string, permissions []string, auditScope string) (*model.Role, error) {
+	name, err := cleanRoleName(name)
+	if err != nil {
+		return nil, err
+	}
+	perms, err := NormalizePermissions(permissions)
+	if err != nil {
+		return nil, err
+	}
+	if err := ValidateDelegable(perms); err != nil {
+		return nil, err
+	}
+	scope, err := cleanAuditScope(auditScope)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := RoleByNameTx(tx, orgID, name); err == nil {
+		return nil, ErrRoleNameTaken
+	} else if !errors.Is(err, ErrRoleNotFound) {
+		return nil, err
+	}
+
+	role := model.Role{
+		OrganizationID: orgID,
+		Name:           name,
+		Kind:           model.RoleKindCustom,
+		AuditScope:     scope,
+	}
+	if err := role.SetPermissions(perms); err != nil {
+		return nil, err
+	}
+	if err := store.ScopedByOrg(tx, orgID).Create(&role).Error; err != nil {
+		return nil, err
+	}
+	return &role, nil
+}
+
+// UpdateCustomTx replaces a custom role's name, permission set and audit scope.
+func (s *RoleService) UpdateCustomTx(tx *gorm.DB, orgID, roleID uint, name string, permissions []string, auditScope string) (*model.Role, error) {
+	role, err := RoleByIDTx(tx, orgID, roleID)
+	if err != nil {
+		return nil, err
+	}
+	if role.Builtin() {
+		return nil, ErrRoleBuiltin
+	}
+	name, err = cleanRoleName(name)
+	if err != nil {
+		return nil, err
+	}
+	perms, err := NormalizePermissions(permissions)
+	if err != nil {
+		return nil, err
+	}
+	if err := ValidateDelegable(perms); err != nil {
+		return nil, err
+	}
+	scope, err := cleanAuditScope(auditScope)
+	if err != nil {
+		return nil, err
+	}
+	if other, err := RoleByNameTx(tx, orgID, name); err == nil && other.ID != role.ID {
+		return nil, ErrRoleNameTaken
+	} else if err != nil && !errors.Is(err, ErrRoleNotFound) {
+		return nil, err
+	}
+
+	raw := *role
+	raw.Name = name
+	raw.AuditScope = scope
+	if err := raw.SetPermissions(perms); err != nil {
+		return nil, err
+	}
+	res := store.ScopedByOrg(tx, orgID).Model(&model.Role{}).
+		Where("id = ? AND kind = ?", role.ID, model.RoleKindCustom).
+		Updates(map[string]any{
+			"name":        raw.Name,
+			"permissions": raw.Permissions,
+			"audit_scope": raw.AuditScope,
+		})
+	if res.Error != nil {
+		return nil, res.Error
+	}
+	// RowsAffected may be 0 on MySQL when the update is a no-op; the role row
+	// was read above, so the re-read below decides whether it still exists.
+	updated, err := RoleByIDTx(tx, orgID, role.ID)
+	if err != nil {
+		return nil, err
+	}
+	return updated, nil
+}
+
+// DeleteCustomTx deletes an unreferenced custom role. Builtin roles and roles
+// still assigned to a membership are refused.
+func (s *RoleService) DeleteCustomTx(tx *gorm.DB, orgID, roleID uint) error {
+	role, err := RoleByIDTx(tx, orgID, roleID)
+	if err != nil {
+		return err
+	}
+	if role.Builtin() {
+		return ErrRoleBuiltin
+	}
+	var inUse int64
+	if err := store.ScopedByOrg(tx, orgID).Model(&model.Membership{}).
+		Where("role_id = ?", role.ID).Count(&inUse).Error; err != nil {
+		return err
+	}
+	if inUse > 0 {
+		return ErrRoleInUse
+	}
+	res := store.ScopedByOrg(tx, orgID).Delete(&model.Role{}, role.ID)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrRoleNotFound
+	}
+	return nil
+}
+
+// cleanRoleName trims and bounds a role display name.
+func cleanRoleName(name string) (string, error) {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" || len([]rune(trimmed)) > maxRoleNameLen {
+		return "", ErrInvalidRoleName
+	}
+	return trimmed, nil
+}
+
+// cleanAuditScope defaults an omitted scope to individual and rejects values
+// outside the two contract values.
+func cleanAuditScope(scope string) (string, error) {
+	switch scope {
+	case "":
+		return model.AuditScopeIndividual, nil
+	case model.AuditScopeGlobal, model.AuditScopeIndividual:
+		return scope, nil
+	default:
+		return "", ErrInvalidAuditScope
+	}
+}

@@ -191,10 +191,12 @@ func (a *AdminAPI) RemoveMember(c *gin.Context, orgId int64, userId int64) {
 	})
 }
 
-// UpdateMemberRole changes a membership between admin and member. Only an
-// owner may do this; ownership transfer is out of scope. A demotion revokes the
-// user's compat sessions in the same transaction — the member lost the role
-// that justified those sessions, and #39 treats that as an offboarding event.
+// UpdateMemberRole updates a membership by field. role_id grants a builtin
+// admin/member role or a custom role; only an owner holds org.admin. Ownership
+// transfer is out of scope, so the owner role can never be granted here. A
+// change that removes a permission the target had (a narrowing) revokes the
+// user's compat sessions in the same transaction — an offboarded capability
+// must not keep a 720h token that still authorizes the old role.
 func (a *AdminAPI) UpdateMemberRole(c *gin.Context, orgId int64, userId int64) {
 	uid, ok := requireUserID(c)
 	if !ok {
@@ -207,19 +209,25 @@ func (a *AdminAPI) UpdateMemberRole(c *gin.Context, orgId int64, userId int64) {
 	if _, ok := a.membershipFor(c, uid, uint(orgId)); !ok {
 		return
 	}
-	if perms, _ := authz.OrgPermissions(c); !authz.Has(perms, authz.PermOrgAdmin) {
-		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "only an owner can change roles")
-		return
-	}
 
-	var req gen.MemberRoleRequest
+	var req gen.MemberUpdateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "role must be admin or member")
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid member update")
 		return
 	}
-	roleName := string(req.Role)
-	if roleName != model.RoleAdmin && roleName != model.RoleMember {
-		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "role must be admin or member")
+	if req.RoleId == nil && req.Disabled == nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "at least one of role_id or disabled is required")
+		return
+	}
+	if req.Disabled != nil {
+		// Membership disable lands in Task 3. Rejecting explicitly keeps the
+		// contract honest instead of silently ignoring the field.
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "disabled updates are not supported yet")
+		return
+	}
+	perms, _ := authz.OrgPermissions(c)
+	if !authz.Has(perms, authz.PermOrgAdmin) {
+		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "only an owner can change roles")
 		return
 	}
 
@@ -243,14 +251,31 @@ func (a *AdminAPI) UpdateMemberRole(c *gin.Context, orgId int64, userId int64) {
 		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "owner role changes are not supported")
 		return
 	}
-	newRole := roleByName(roleIdx, roleName)
-	if newRole == nil {
-		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "role not seeded")
+
+	newRole, err := a.deps.Roles.RoleByID(uint(orgId), uint(*req.RoleId))
+	if err != nil {
+		a.writeRoleError(c, err, "load target role failed")
+		return
+	}
+	if newRole.Kind == model.RoleKindOwner {
+		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "owner role cannot be granted")
 		return
 	}
 	if target.RoleID == newRole.ID {
 		a.respondMember(c, target)
 		return
+	}
+	oldRole, oldKnown := roleIdx[target.RoleID]
+	if !oldKnown {
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "membership role unavailable")
+		return
+	}
+	narrowed := false
+	for _, p := range oldRole.PermissionList() {
+		if !authz.Has(newRole.PermissionList(), p) {
+			narrowed = true
+			break
+		}
 	}
 
 	var revoked int64
@@ -269,7 +294,7 @@ func (a *AdminAPI) UpdateMemberRole(c *gin.Context, orgId int64, userId int64) {
 			return gorm.ErrRecordNotFound
 		}
 
-		if targetKind == model.RoleKindAdmin && newRole.Kind == model.RoleKindMember {
+		if narrowed {
 			n, err := compatapi.RevokeOrgSessions(c.Request.Context(), tx, uint(orgId), target.UserID, a.deps.Now())
 			if err != nil {
 				return fmt.Errorf("revoke compat sessions: %w", err)
@@ -284,7 +309,7 @@ func (a *AdminAPI) UpdateMemberRole(c *gin.Context, orgId int64, userId int64) {
 				Action:         "organization.member.role",
 				TargetType:     "user",
 				TargetID:       fmt.Sprint(target.UserID),
-				Detail:         map[string]any{"from": roleNameOf(roleIdx, target.RoleID), "to": newRole.Name, "revoked_sessions": revoked},
+				Detail:         map[string]any{"from": oldRole.Name, "to": newRole.Name, "revoked_sessions": revoked},
 			}); err != nil {
 				return err
 			}
@@ -401,7 +426,10 @@ func (a *AdminAPI) respondMember(c *gin.Context, m *model.Membership) {
 			Id:        int64(m.ID),
 			UserId:    int64(m.UserID),
 			Email:     types.Email(user.Email),
-			Role:      gen.MemberRole(name),
+			Role:      name,
+			RoleId:    int64(m.RoleID),
+			RoleName:  name,
+			Disabled:  false,
 			CreatedAt: m.CreatedAt,
 		},
 	})
