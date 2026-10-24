@@ -320,6 +320,21 @@ func main() {
 		lg.Fatal("register address book recycle sweep", zap.Error(err))
 	}
 
+	// Audit retention archives expired rows to local JSONL files and deletes
+	// them only after the archive verifies; the hourly sweep is a system action.
+	retentionSvc := audit.NewRetentionService(st.DB, cfg.Audit.ArchiveDir, auditor, nil)
+	if err := sched.Register(worker.Task{
+		Name:       "audit-retention",
+		Interval:   time.Hour,
+		RunOnStart: true,
+		Run: func(ctx context.Context) (int64, error) {
+			_, purged, err := retentionSvc.RunOnce(ctx)
+			return purged, err
+		},
+	}); err != nil {
+		lg.Fatal("register audit retention sweep", zap.Error(err))
+	}
+
 	if cfg.Logcollect.RetentionSweepInterval > 0 {
 		if err := sched.Register(worker.Task{
 			Name:     "logcollect-retention",
@@ -387,6 +402,7 @@ func main() {
 			WebBaseURL:     cfg.Web.BaseURL,
 			CompatTTL:      cfg.Compat.AccessTTL,
 			AuthSecret:     cfg.Auth.Secret,
+			Retention:      retentionSvc,
 		}),
 	}
 

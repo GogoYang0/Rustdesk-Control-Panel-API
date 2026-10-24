@@ -68,6 +68,10 @@ type Deps struct {
 	// AuthSecret seeds the TOTP secret-encryption key (HKDF). The entrypoint
 	// passes the configured auth secret; tests may leave it empty.
 	AuthSecret string
+
+	// Retention archives and purges audit rows. NewRouter derives it from DB,
+	// Auditor and Now when nil.
+	Retention *audit.RetentionService
 }
 
 // Provisioner schedules asynchronous server provisioning.
@@ -85,12 +89,13 @@ type ProvisioningManager interface {
 
 // AdminAPI implements the generated gen.ServerInterface.
 type AdminAPI struct {
-	deps    Deps
-	guard   *loginGuard
-	resend  *loginGuard
-	books   *addressbook.Service
-	tickets *session.Service
-	totp    *auth.TOTPService
+	deps      Deps
+	guard     *loginGuard
+	resend    *loginGuard
+	books     *addressbook.Service
+	tickets   *session.Service
+	totp      *auth.TOTPService
+	retention *audit.RetentionService
 }
 
 // NewAdminAPI builds the handler set.
@@ -124,6 +129,10 @@ func NewAdminAPI(d Deps) *AdminAPI {
 	if d.TOTP == nil {
 		d.TOTP = auth.NewTOTPService(d.DB, d.AuthSecret, d.Now)
 	}
+	if d.Retention == nil {
+		recorder, _ := d.Auditor.(audit.TxRecorder)
+		d.Retention = audit.NewRetentionService(d.DB, "./data/audit-archive", recorder, d.Now)
+	}
 	tickets := d.Tickets
 	if tickets == nil {
 		// The service fails closed without a recorder, and governance
@@ -140,11 +149,12 @@ func NewAdminAPI(d Deps) *AdminAPI {
 	}
 
 	return &AdminAPI{
-		deps:    d,
-		guard:   newLoginGuard(),
-		resend:  newLoginGuard(),
-		books:   addressbook.NewService(d.DB),
-		tickets: tickets,
-		totp:    d.TOTP,
+		deps:      d,
+		guard:     newLoginGuard(),
+		resend:    newLoginGuard(),
+		books:     addressbook.NewService(d.DB),
+		tickets:   tickets,
+		totp:      d.TOTP,
+		retention: d.Retention,
 	}
 }

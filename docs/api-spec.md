@@ -265,6 +265,18 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 - **可见范围与查询一致**：`individual` 角色只能导出自己的条目；导出内容不会越过角色 scope。
 - **导出动作写审计 `audit.export`**：`Detail` 含行数与生效的过滤条件；审计写入失败则拒绝返回文件（fail closed）。响应带 `Content-Disposition: attachment` 与 `Cache-Control: no-store`。
 
+### 3.9 审计保留期与本地归档（v0.8.0）
+
+| 端点 | 权限 | 说明 |
+|---|---|---|
+| `GET .../audit-retention` | `org.admin`（owner） | 返回 `audit_retention_days` 与最近一次成功归档摘要（`at`/`rows`/`path`） |
+| `PUT .../audit-retention` | `org.admin`（owner） | 设置保留天数：0 = 永久，1..3650；写 `organization.audit_retention.set` 审计 |
+
+- **先归档、后删除（fail closed）**：每小时后台任务对每个保留期 > 0 的组织，把早于阈值的审计行写成 JSONL，附同名 `.sha256`，**重新读取校验行数与摘要一致后才删除**；归档或校验失败则该组织本轮不删除任何行。
+- **归档路径**：`<audit.archiveDir>/org-<orgId>/audit-<UTC时间戳>.jsonl`；临时文件原子改名落盘。归档文件不经 API 暴露，运维备份见运维指南。
+- **系统动作也审计**：归档与清理分别写 `audit.retention.archive`（含行数、路径、摘要、阈值）与 `audit.retention.purge`；actor 为 0（系统）。
+- **删除与归档同事务**：两条系统审计与按 id 精确删除在同一事务提交；无事务审计器时整轮拒绝删除。
+
 ---
 
 ## 4. compat 层（RustDesk 原生客户端）

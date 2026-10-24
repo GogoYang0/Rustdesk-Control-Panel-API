@@ -959,6 +959,77 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
 
+  /api/v1/orgs/{orgId}/audit-retention:
+    get:
+      operationId: getAuditRetention
+      summary: 查询审计保留期
+      description: |
+        返回组织的审计保留天数（v0.8.0，仅 owner `org.admin`）。0 = 永久保留。
+        响应含最近一次归档的状态。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 保留期
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditRetentionResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      operationId: setAuditRetention
+      summary: 设置审计保留期
+      description: |
+        设置组织的审计保留天数（v0.8.0，仅 owner `org.admin`）；0 = 永久保留，
+        1..3650 为正的保留窗口。到期记录由后台任务先归档到本地文件校验后再删除；
+        归档失败则该组织本轮不删除。设置动作写审计 `organization.audit_retention.set`。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuditRetentionRequest"
+      responses:
+        "200":
+          description: 更新后的保留期
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditRetentionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/v1/orgs/{orgId}/provisioning:
     get:
       operationId: getProvisioning
@@ -3492,6 +3563,46 @@ components:
           type: string
         data:
           $ref: "#/components/schemas/AuditLogPage"
+
+    AuditRetention:
+      type: object
+      required:
+        - audit_retention_days
+      properties:
+        audit_retention_days:
+          type: integer
+          description: 0 = 永久保留；正值为保留天数
+        last_archive:
+          description: |
+            最近一次成功归档的摘要（`at`、`rows`、`path`）；从未归档时为 null。
+          type:
+            - object
+            - "null"
+          additionalProperties: true
+
+    AuditRetentionResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/AuditRetention"
+
+    AuditRetentionRequest:
+      type: object
+      required:
+        - days
+      properties:
+        days:
+          type: integer
+          minimum: 0
+          maximum: 3650
 
     ProvisioningUpdateRequest:
       type: object

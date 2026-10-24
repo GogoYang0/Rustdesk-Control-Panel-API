@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/gen"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
@@ -241,6 +242,121 @@ func auditLogToAPI(row *model.AuditLog) gen.AuditLog {
 		Detail:      parseAuditDetail(row.Detail),
 		CreatedAt:   row.CreatedAt,
 	}
+}
+
+// GetAuditRetention returns the organization's retention window and the latest
+// archive summary. Reading is owner-only and polled, so it is not audited.
+func (a *AdminAPI) GetAuditRetention(c *gin.Context, orgId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid organization id")
+		return
+	}
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermOrgAdmin) {
+		return
+	}
+	days, err := a.retention.Get(c.Request.Context(), uint(orgId))
+	if err != nil {
+		a.writeRetentionError(c, err, "load audit retention failed")
+		return
+	}
+	latest, err := a.retention.Latest(c.Request.Context(), uint(orgId))
+	if err != nil {
+		a.writeRetentionError(c, err, "load audit archive status failed")
+		return
+	}
+	data := gen.AuditRetention{AuditRetentionDays: days}
+	if latest.Found {
+		summary := map[string]any{"at": latest.At, "rows": latest.Rows, "path": latest.Path}
+		data.LastArchive = &summary
+	}
+	c.Set(contextAuditRecorded, true)
+	c.JSON(http.StatusOK, gen.AuditRetentionResponse{Code: gen.ErrorCodeOk, Message: "ok", Data: data})
+}
+
+// SetAuditRetention updates the retention window; the update and its audit entry
+// commit together.
+func (a *AdminAPI) SetAuditRetention(c *gin.Context, orgId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid organization id")
+		return
+	}
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermOrgAdmin) {
+		return
+	}
+	var req gen.AuditRetentionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "days is required")
+		return
+	}
+
+	err := a.deps.DB.Transaction(func(tx *gorm.DB) error {
+		if err := a.retention.SetDaysTx(tx, uint(orgId), req.Days); err != nil {
+			return err
+		}
+		tr, ok := a.deps.Auditor.(audit.TxRecorder)
+		if !ok {
+			return errAuditUnavailable
+		}
+		return tr.RecordTx(tx, audit.Entry{
+			OrganizationID: uint(orgId),
+			ActorUserID:    uid,
+			Action:         "organization.audit_retention.set",
+			TargetType:     "organization",
+			TargetID:       fmt.Sprint(orgId),
+			Detail:         map[string]any{"days": req.Days},
+		})
+	})
+	switch {
+	case errors.Is(err, audit.ErrInvalidRetention):
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
+		return
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "organization not found")
+		return
+	case errors.Is(err, errAuditUnavailable):
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "audit unavailable")
+		return
+	case err != nil:
+		a.deps.Logger.Error("set audit retention failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not update audit retention")
+		return
+	}
+
+	days, err := a.retention.Get(c.Request.Context(), uint(orgId))
+	if err != nil {
+		a.writeRetentionError(c, err, "reload audit retention failed")
+		return
+	}
+	latest, err := a.retention.Latest(c.Request.Context(), uint(orgId))
+	if err != nil {
+		a.writeRetentionError(c, err, "reload audit archive status failed")
+		return
+	}
+	data := gen.AuditRetention{AuditRetentionDays: days}
+	if latest.Found {
+		summary := map[string]any{"at": latest.At, "rows": latest.Rows, "path": latest.Path}
+		data.LastArchive = &summary
+	}
+	c.Set(contextAuditRecorded, true)
+	c.JSON(http.StatusOK, gen.AuditRetentionResponse{Code: gen.ErrorCodeOk, Message: "ok", Data: data})
+}
+
+// writeRetentionError maps retention failures; unknown failures stay opaque.
+func (a *AdminAPI) writeRetentionError(c *gin.Context, err error, logMsg string) {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "organization not found")
+		return
+	}
+	a.deps.Logger.Error(logMsg)
+	abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "audit retention operation failed")
 }
 
 // parseAuditDetail returns nil for an empty detail, a decoded JSON value when

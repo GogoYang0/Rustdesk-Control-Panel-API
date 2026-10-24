@@ -13,6 +13,11 @@ type Organization struct {
 	// reconciler would see an organization without a server group and deploy
 	// hbbs/hbbr again right after the operator removed them.
 	ProvisioningDisabled bool `gorm:"not null;default:false" json:"provisioning_disabled"`
+
+	// AuditRetentionDays bounds how long audit rows are kept. Zero keeps them
+	// forever; any positive value archives older rows to local files and then
+	// purges them (see audit.RetentionService).
+	AuditRetentionDays int `gorm:"not null;default:0" json:"audit_retention_days"`
 }
 
 // Role values inside an organization.

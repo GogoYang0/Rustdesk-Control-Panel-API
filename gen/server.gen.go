@@ -939,6 +939,38 @@ type AuditLogPage struct {
 	Total    int64      `json:"total"`
 }
 
+// AuditRetention defines model for AuditRetention.
+type AuditRetention struct {
+	// AuditRetentionDays 0 = 永久保留；正值为保留天数
+	AuditRetentionDays int `json:"audit_retention_days"`
+
+	// LastArchive 最近一次成功归档的摘要（`at`、`rows`、`path`）；从未归档时为 null。
+	LastArchive *map[string]interface{} `json:"last_archive,omitempty"`
+}
+
+// AuditRetentionRequest defines model for AuditRetentionRequest.
+type AuditRetentionRequest struct {
+	Days int `json:"days"`
+}
+
+// AuditRetentionResponse defines model for AuditRetentionResponse.
+type AuditRetentionResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode      `json:"code"`
+	Data    AuditRetention `json:"data"`
+	Message string         `json:"message"`
+}
+
 // Device defines model for Device.
 type Device struct {
 	// Bound 是否已绑定某个客户端实例（重置绑定后为 false）
@@ -2240,6 +2272,9 @@ type CreateApprovalJSONRequestBody = ApprovalCreateRequest
 // DecideApprovalJSONRequestBody defines body for DecideApproval for application/json ContentType.
 type DecideApprovalJSONRequestBody = ApprovalDecisionRequest
 
+// SetAuditRetentionJSONRequestBody defines body for SetAuditRetention for application/json ContentType.
+type SetAuditRetentionJSONRequestBody = AuditRetentionRequest
+
 // CreateDeviceJSONRequestBody defines body for CreateDevice for application/json ContentType.
 type CreateDeviceJSONRequestBody = DeviceCreateRequest
 
@@ -2386,6 +2421,12 @@ type ServerInterface interface {
 	// ExportAuditLogs 导出审计日志 CSV
 	// (GET /api/v1/orgs/{orgId}/audit-logs/export)
 	ExportAuditLogs(c *gin.Context, orgId int64, params ExportAuditLogsParams)
+	// GetAuditRetention 查询审计保留期
+	// (GET /api/v1/orgs/{orgId}/audit-retention)
+	GetAuditRetention(c *gin.Context, orgId int64)
+	// SetAuditRetention 设置审计保留期
+	// (PUT /api/v1/orgs/{orgId}/audit-retention)
+	SetAuditRetention(c *gin.Context, orgId int64)
 	// ListDevices 列出组织设备
 	// (GET /api/v1/orgs/{orgId}/devices)
 	ListDevices(c *gin.Context, orgId int64, params ListDevicesParams)
@@ -3588,6 +3629,56 @@ func (siw *ServerInterfaceWrapper) ExportAuditLogs(c *gin.Context) {
 	siw.Handler.ExportAuditLogs(c, orgId, params)
 }
 
+// GetAuditRetention operation middleware
+func (siw *ServerInterfaceWrapper) GetAuditRetention(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetAuditRetention(c, orgId)
+}
+
+// SetAuditRetention operation middleware
+func (siw *ServerInterfaceWrapper) SetAuditRetention(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.SetAuditRetention(c, orgId)
+}
+
 // ListDevices operation middleware
 func (siw *ServerInterfaceWrapper) ListDevices(c *gin.Context) {
 
@@ -4596,6 +4687,8 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/roles/:roleId", wrapper.UpdateRole)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-logs", wrapper.ListAuditLogs)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-logs/export", wrapper.ExportAuditLogs)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-retention", wrapper.GetAuditRetention)
+	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/audit-retention", wrapper.SetAuditRetention)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/provisioning", wrapper.GetProvisioning)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/provisioning", wrapper.UpdateProvisioning)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/invitations", wrapper.CreateInvitation)

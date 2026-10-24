@@ -40,6 +40,10 @@ func NewRouter(d Deps) *gin.Engine {
 	if d.TOTP == nil {
 		d.TOTP = auth.NewTOTPService(d.DB, d.AuthSecret, d.Now)
 	}
+	if d.Retention == nil {
+		recorder, _ := d.Auditor.(audit.TxRecorder)
+		d.Retention = audit.NewRetentionService(d.DB, "./data/audit-archive", recorder, d.Now)
+	}
 
 	r := gin.New()
 	// No reverse proxy is assumed; trusting all proxies would let clients spoof
