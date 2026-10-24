@@ -244,7 +244,7 @@ func (a *AdminAPI) ListMembers(c *gin.Context, orgId int64) {
 			Role:      name,
 			RoleId:    int64(m.RoleID),
 			RoleName:  name,
-			Disabled:  false,
+			Disabled:  m.Disabled,
 			CreatedAt: m.CreatedAt,
 		})
 	}
