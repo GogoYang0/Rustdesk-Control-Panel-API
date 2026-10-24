@@ -76,8 +76,9 @@ func countAuditAction(t *testing.T, h *harness, action string) int64 {
 }
 
 type provisioningView struct {
-	Enabled bool   `json:"enabled"`
-	State   string `json:"state"`
+	Enabled        bool   `json:"enabled"`
+	State          string `json:"state"`
+	CleanupPending bool   `json:"cleanup_pending"`
 }
 
 // newProvisioningHarness wires the real service the way main.go does, so the
@@ -125,6 +126,7 @@ func TestGetProvisioning_OwnerOnly(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	require.True(t, resp.Data.Enabled)
 	require.Equal(t, provision.StatusPending, resp.Data.State)
+	require.False(t, resp.Data.CleanupPending)
 
 	require.Equal(t, http.StatusForbidden, h.do(t, http.MethodGet, path, nil, adminToken).Code)
 	require.Equal(t, http.StatusForbidden, h.do(t, http.MethodGet, path, nil, memberToken).Code)
@@ -133,6 +135,29 @@ func TestGetProvisioning_OwnerOnly(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, h.do(t, http.MethodGet, path, nil, "").Code)
 	require.Equal(t, http.StatusBadRequest,
 		h.do(t, http.MethodGet, "/api/v1/orgs/0/provisioning", nil, ownerToken).Code)
+}
+
+func TestGetProvisioning_ReportsCleanupPending(t *testing.T) {
+	mgr := &fakeProvisioningManager{state: provision.State{
+		Enabled:        false,
+		Status:         provision.StatusDisabled,
+		CleanupPending: true,
+	}}
+	h := newHarnessWith(t, func(d *api.Deps) { d.Provisioning = mgr })
+	owner := h.seedUser(t, "owner@example.com", "password123")
+	token := h.login(t, owner.Email, "password123")
+	orgID := createOrg(t, h, token, "acme")
+
+	w := h.do(t, http.MethodGet, "/api/v1/orgs/"+itoa(orgID)+"/provisioning", nil, token)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var resp struct {
+		Data provisioningView `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.False(t, resp.Data.Enabled)
+	require.Equal(t, provision.StatusDisabled, resp.Data.State)
+	require.True(t, resp.Data.CleanupPending,
+		"disabled intent must be distinguishable from confirmed teardown")
 }
 
 func TestUpdateProvisioning_DisableWritesAudit(t *testing.T) {

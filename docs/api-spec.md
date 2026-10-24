@@ -105,6 +105,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 > 容器删除失败时请求 500、`ServerGroup` 行标 `failed`、开关不变（fail closed）；`failed` 行不会因开启而自动重试（既有语义：清理失败的部署需人工处理）。
 > 重复关闭不是纯 no-op：若并发部署在开关置位后才落库，重复关闭会下线该遗留部署并写一条审计（自愈）。
 > 若关闭时部署仍在进行（行状态 `provisioning` 且未超过 10 分钟宽限），`ServerGroup` 行会保留为容器清理锚点，审计 `Detail` 含 `deferred_cleanup=true` 与 `state=provisioning`；在途部署在持久化时自行收尾。回滚删除失败时行标 `failed`，重复关闭会立即重试清理；进程在部署中途中断时行保持 `provisioning`，重复关闭需等待宽限期后再清理。响应仍为 `disabled`。
+> 响应字段 `cleanup_pending` 区分“关闭意图已记录”与“容器清理已完成”：`disabled` 且 `cleanup_pending=true` 表示仍有待清理的部署行（在途部署回滚或重复关闭重试），`false` 表示清理已完成。
 > 供给队列满时开启仍返回 200，reconciler（2 分钟）会补入队。宿主端口探测与预检属于服务内部行为，不在契约内，语义见 [运维指南](operations.md) §6。
 
 ### 3.3 设备

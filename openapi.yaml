@@ -39,7 +39,8 @@ info:
     0.7.0 新增**按组织 provisioning 开关**：`GET/PUT /orgs/{orgId}/provisioning`
     （仅 owner）。关闭会同步下线容器、释放端口并在同一事务写审计；开启只清除
     标记，部署由供应队列异步执行。状态取值为
-    `disabled|pending|provisioning|deployed|failed`。
+    `disabled|pending|provisioning|deployed|failed`；`cleanup_pending` 区分
+    “关闭意图已记录”与“容器清理已完成”。
 servers:
   - url: http://localhost:8080
     description: 本地开发
@@ -2074,6 +2075,7 @@ components:
       required:
         - enabled
         - state
+        - cleanup_pending
       properties:
         enabled:
           type: boolean
@@ -2085,6 +2087,12 @@ components:
             - provisioning
             - deployed
             - failed
+        cleanup_pending:
+          type: boolean
+          description: |
+            `enabled=false` 时是否仍有待清理的部署行（teardown 未确认）。
+            true 表示开关已关但容器清理仍待完成（在途部署回滚或重复关闭重试）；
+            false 表示没有遗留部署行。其他状态下恒为 false。
 
     ProvisioningResponse:
       type: object

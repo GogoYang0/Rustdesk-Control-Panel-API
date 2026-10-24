@@ -1187,8 +1187,12 @@ type ProvisioningResponse struct {
 
 // ProvisioningStatus defines model for ProvisioningStatus.
 type ProvisioningStatus struct {
-	Enabled bool                    `json:"enabled"`
-	State   ProvisioningStatusState `json:"state"`
+	// CleanupPending `enabled=false` 时是否仍有待清理的部署行（teardown 未确认）。
+	// true 表示开关已关但容器清理仍待完成（在途部署回滚或重复关闭重试）；
+	// false 表示没有遗留部署行。其他状态下恒为 false。
+	CleanupPending bool                    `json:"cleanup_pending"`
+	Enabled        bool                    `json:"enabled"`
+	State          ProvisioningStatusState `json:"state"`
 }
 
 // ProvisioningStatusState defines model for ProvisioningStatus.State.

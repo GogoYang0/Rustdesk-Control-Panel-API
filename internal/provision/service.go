@@ -141,10 +141,12 @@ var ErrProvisioningDisabled = errors.New("provisioning disabled for this organiz
 
 // State is the provisioning switch plus the deployment it permits. Status is
 // disabled when the operator turned provisioning off, otherwise it is pending
-// (no deployment row yet) or the ServerGroup state.
+// (no deployment row yet) or the ServerGroup state. CleanupPending reports that
+// a disabled organization still owns a row whose teardown is not confirmed.
 type State struct {
-	Enabled bool
-	Status  string
+	Enabled        bool
+	Status         string
+	CleanupPending bool
 }
 
 // Switch-derived status values. Deployment statuses reuse the ServerGroup
@@ -168,7 +170,11 @@ func (s *Service) State(ctx context.Context, orgID uint) (State, error) {
 		return State{}, fmt.Errorf("load organization: %w", err)
 	}
 	if org.ProvisioningDisabled {
-		return State{Enabled: false, Status: StatusDisabled}, nil
+		row, err := s.loadDeployment(orgID)
+		if err != nil {
+			return State{}, err
+		}
+		return State{Enabled: false, Status: StatusDisabled, CleanupPending: row != nil}, nil
 	}
 
 	var row model.ServerGroup

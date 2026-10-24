@@ -505,6 +505,7 @@ func TestState_DerivesFromFlagAndRow(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, st.Enabled)
 	require.Equal(t, provision.StatusDisabled, st.Status)
+	require.True(t, st.CleanupPending, "the deployed row still needs teardown")
 }
 
 func TestSetEnabled_DisableWithoutDeployment(t *testing.T) {
@@ -516,6 +517,7 @@ func TestSetEnabled_DisableWithoutDeployment(t *testing.T) {
 	require.True(t, changed)
 	require.False(t, st.Enabled)
 	require.Equal(t, provision.StatusDisabled, st.Status)
+	require.False(t, st.CleanupPending)
 
 	var stored model.Organization
 	require.NoError(t, f.st.DB.First(&stored, org.ID).Error)
@@ -545,6 +547,7 @@ func TestSetEnabled_DisableRemovesDeployment(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, changed)
 	require.Equal(t, provision.StatusDisabled, st.Status)
+	require.False(t, st.CleanupPending)
 	require.Contains(t, f.orch.Removed, fmt.Sprintf("panel-org-%d", org.ID))
 	require.Equal(t, []uint{org.ID}, notified)
 
@@ -654,6 +657,7 @@ func TestSetEnabled_AlreadyDisabledCleansLateDeployment(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, changed, "removing a late deployment is a real change")
 	require.Equal(t, provision.StatusDisabled, state.Status)
+	require.False(t, state.CleanupPending)
 	require.Contains(t, f.orch.Removed, fmt.Sprintf("panel-org-%d", org.ID))
 	require.Equal(t, []uint{org.ID}, notified)
 
@@ -686,6 +690,7 @@ func TestSetEnabled_DisableDuringProvisioningDefersCleanup(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, changed)
 	require.Equal(t, provision.StatusDisabled, state.Status)
+	require.True(t, state.CleanupPending, "the in-flight row is still the cleanup anchor")
 	require.Empty(t, f.orch.Removed,
 		"an in-flight deploy still owns the containers and cleans them up itself")
 
@@ -1033,12 +1038,18 @@ func TestProvision_RollbackFailureAfterDisableKeepsRow(t *testing.T) {
 	require.NoError(t, f.st.DB.First(&orgRow, org.ID).Error)
 	require.True(t, orgRow.ProvisioningDisabled)
 
+	failedState, err := svc.State(context.Background(), org.ID)
+	require.NoError(t, err)
+	require.True(t, failedState.CleanupPending,
+		"the failed row is still the cleanup pointer")
+
 	// A repeated disable retries the cleanup and finally frees the row.
 	orch.RemoveErr = nil
 	state, changed, err := svc.SetEnabled(context.Background(), org.ID, 10, false)
 	require.NoError(t, err)
 	require.True(t, changed)
 	require.Equal(t, provision.StatusDisabled, state.Status)
+	require.False(t, state.CleanupPending)
 
 	var count int64
 	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Model(&model.ServerGroup{}).Count(&count).Error)

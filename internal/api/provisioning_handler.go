@@ -44,8 +44,9 @@ func (a *AdminAPI) respondProvisioning(c *gin.Context, status int, state provisi
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
 		Data: gen.ProvisioningStatus{
-			Enabled: state.Enabled,
-			State:   enum,
+			Enabled:        state.Enabled,
+			State:          enum,
+			CleanupPending: state.CleanupPending,
 		},
 	})
 }
