@@ -46,8 +46,10 @@ func sha256Hex(t *testing.T, path string) string {
 }
 
 // A directory-sync failure must abort the batch before the deleting
-// transaction: the expired rows stay in place for the next cycle.
-func TestRetention_SyncFailureKeepsRows(t *testing.T) {
+// transaction. The retry must not trust directories created by the failed
+// attempt: it re-syncs the whole existing chain, and when the sync still fails
+// the rows stay in place again.
+func TestRetention_SyncFailureKeepsRowsAndRetryResyncs(t *testing.T) {
 	dsn := fmt.Sprintf("file:retention_sync_%d?mode=memory&cache=shared", time.Now().UnixNano())
 	st, err := store.Open(config.DatabaseConfig{Driver: "sqlite", DSN: dsn})
 	require.NoError(t, err)
@@ -62,11 +64,20 @@ func TestRetention_SyncFailureKeepsRows(t *testing.T) {
 		CreatedAt: time.Now().UTC().AddDate(0, 0, -40),
 	}).Error)
 
-	svc := NewRetentionService(st.DB, t.TempDir(), NewGormAuditor(st.DB), nil)
+	// Multi-level archive root that does not exist yet.
+	root := filepath.Join(t.TempDir(), "a", "b", "c")
+	svc := NewRetentionService(st.DB, root, NewGormAuditor(st.DB), nil)
 	ctx := context.Background()
 	require.NoError(t, svc.SetDays(ctx, org.ID, 30))
 
-	syncDirHook = func(string) error { return errors.New("sync down") }
+	// Fail on the parent of the leaf (the archive root) so the created chain
+	// exists when the second attempt starts.
+	syncDirHook = func(dir string) error {
+		if dir == root {
+			return errors.New("parent sync down")
+		}
+		return nil
+	}
 	t.Cleanup(func() { syncDirHook = nil })
 
 	archived, purged, err := svc.RunOnce(ctx)
@@ -78,4 +89,29 @@ func TestRetention_SyncFailureKeepsRows(t *testing.T) {
 	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).
 		Model(&model.AuditLog{}).Count(&remaining).Error)
 	require.EqualValues(t, 1, remaining, "rows survive an unverifiable archive")
+
+	// The directories now exist; the retry must sync them again instead of
+	// assuming they are durable.
+	archived, purged, err = svc.RunOnce(ctx)
+	require.Error(t, err, "a still failing parent sync must keep the rows")
+	require.Zero(t, archived)
+	require.Zero(t, purged)
+	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).
+		Model(&model.AuditLog{}).Count(&remaining).Error)
+	require.EqualValues(t, 1, remaining)
+
+	// Once the sync succeeds the retry re-syncs the chain, publishes the
+	// archive and only then deletes the row.
+	syncDirHook = nil
+	archived, purged, err = svc.RunOnce(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, archived)
+	require.EqualValues(t, 1, purged)
+	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).
+		Model(&model.AuditLog{}).Count(&remaining).Error)
+	require.EqualValues(t, 2, remaining, "only the archive/purge audit rows remain")
+
+	files, err := filepath.Glob(filepath.Join(root, fmt.Sprintf("org-%d", org.ID), "audit-*.jsonl"))
+	require.NoError(t, err)
+	require.Len(t, files, 1)
 }

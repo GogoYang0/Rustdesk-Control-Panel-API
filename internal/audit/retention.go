@@ -283,34 +283,29 @@ func syncDirectory(dir string) error {
 	return syncDir(dir)
 }
 
-// ensureArchiveDir creates the per-organization archive directory and makes the
-// newly created directory entries durable. Syncing only the leaf directory
-// would leave its own entry in the parent at the mercy of a crash, so every
-// level created by this call and its parent is flushed before any row is
-// deleted. A sync failure aborts the batch (fail closed).
+// ensureArchiveDir creates the per-organization archive directory and makes its
+// whole parent chain durable. Every level is flushed unconditionally instead of
+// only the directories created by this call: a previous attempt may have
+// created them and then failed during the sync, so their entries are not known
+// to be durable and must be flushed again on retry. The volume root is skipped
+// (its children normally predate the archive), and any sync failure aborts the
+// batch (fail closed).
 func ensureArchiveDir(dir string) error {
-	var created []string
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("create audit archive directory: %w", err)
+	}
+	volumeRoot := filepath.VolumeName(dir) + string(os.PathSeparator)
 	for p := dir; ; {
-		if _, err := os.Stat(p); err == nil {
-			break
+		if p != volumeRoot && p != string(os.PathSeparator) {
+			if err := syncDirectory(p); err != nil {
+				return fmt.Errorf("sync audit archive directory: %w", err)
+			}
 		}
-		created = append(created, p)
 		parent := filepath.Dir(p)
 		if parent == p {
 			break
 		}
 		p = parent
-	}
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return fmt.Errorf("create audit archive directory: %w", err)
-	}
-	for _, c := range created {
-		if err := syncDirectory(c); err != nil {
-			return fmt.Errorf("sync audit archive directory: %w", err)
-		}
-		if err := syncDirectory(filepath.Dir(c)); err != nil {
-			return fmt.Errorf("sync audit archive parent directory: %w", err)
-		}
 	}
 	return nil
 }
