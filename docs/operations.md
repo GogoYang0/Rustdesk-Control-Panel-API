@@ -48,7 +48,7 @@
 
 - **免凭据心跳 = 不可信的活跃提示**。`/api/heartbeat`、`/api/sysinfo` 无凭据，任何知道 `(rustdesk id, uuid)` 组合的调用者都可提交活动。设备活跃数据**不得作为安全决策依据**：授权判断一律基于管理令牌或 compat 会话（签名令牌 + 活跃 JTI）。写放大已由 30s 窗口收敛；全局请求限流为后续硬化项；日志保留期的周期化清扫见 [#41](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/41)。
 - **offboarding 即时撤销（v0.6.0 已接线）**。移除成员（`DELETE .../members/{userId}`）与 admin→member 降级在**同一事务**内调用 `compatapi.RevokeOrgSessions` 撤销该用户在本组织的全部活跃 compat 会话；撤销失败整体回滚并返回 500，不会出现「已删除」半状态。被撤销的 compat 令牌立即失效（管理请求 401、免凭据心跳不再生效），无需等待 720h 过期。
-- **并发登录竞态（v0.7.1 起关闭）**。登录在事务外解析会籍、随后才落会话；若与成员移除重叠，旧实现可能留下“撤销后才创建”的活跃会话。现在所有 compat 消费者（Bearer 中间件与免凭据 heartbeat/sysinfo 的会话解析）都会复核当前 membership，缺少会籍即 401/忽略；membership 查询失败按非成员处理（fail closed）。
+- **并发登录竞态（v0.8.0 起关闭）**。登录在事务外解析会籍、随后才落会话；若与成员移除重叠，旧实现可能留下“撤销后才创建”的活跃会话。现在所有 compat 消费者（Bearer 中间件与免凭据 heartbeat/sysinfo 的会话解析）都会复核当前 membership，缺少会籍即 401/忽略；membership 查询失败按非成员处理（fail closed）。v0.8.0 起该复核同时要求会籍未停用（`disabled=false`）。
 - **设备认领的竞态已关闭（v0.4.0）**。认领与会话落库在同一事务，落败方不留会话行；设备带**绑定代数**（每次绑定变更 +1，v0.5.0 起由 `rebind` 端点承担重置），会话快照登录时的代数，旧代数会话的心跳/系统信息被丢弃——绑定的所有权语义不依赖 uuid 保密性。免凭据心跳仍是**不可信活跃提示**（无凭据的本质不变），但落败/过期会话不再能驱动设备活动。
 - **审批中心轮询是静默读**：`GET .../approvals`、`GET .../alerts` 不写审计（请求级审计回退被抑制），详情读（单个 approval）会记录——与票据/会话详情同规则。
 
@@ -80,6 +80,16 @@
 - 无租户请求（login、healthz）不产生持久审计行（`GormAuditor` 对 org 0 直接丢弃，有意 fail-closed）
 - 遗留：compat 写路径的**事务级**审计（与业务写同事务）尚未实现，当前为请求级归因
 - **M3 新增的领域审计动作**（`TxRecorder` 在实体事务内记录）：`session.ticket.issue`（票据签发）、`session.ticket.redeem`（票据兑换）、`session.ticket.denied`（策略拒绝）、`session.approval.request`（新建审批请求；复用不重复记）、`session.approval.decide`（approve/deny 决策）、**`device.binding.reset`（v0.5.0 重置设备绑定；含 actor、`rustdesk_id`、reason、had_binding）**、`organization.member.remove` / `organization.member.role`（v0.6.0 成员离场；含目标用户、角色变化与撤销会话数）。会话治理与设备列表的**轮询读不产生审计**（读静默），单个详情读会记录；provision 供应与保留期清扫等基础设施动作的审计见 provision 相关节（#46）
+
+### 3.1 审计保留期与本地归档（v0.8.0）
+
+- **按组织配置**：`GET/PUT /api/v1/orgs/{orgId}/audit-retention`（仅 owner）。`audit_retention_days=0` 永久保留；`1..3650` 为正的保留窗口。设置动作写 `organization.audit_retention.set` 审计。
+- **先归档、校验、后删除**：每小时后台任务对每个保留期 > 0 的组织，把 `created_at` 早于阈值的行写成 JSONL（每行一条），附同名 `.sha256`；**重新读取校验行数与摘要一致后**才按 id 精确删除。归档或校验失败则该组织本轮不删除任何行（fail closed），下个周期重试。
+- **归档位置**：`<audit.archiveDir>/org-<orgId>/audit-<UTC时间戳>.jsonl`（先写 `.tmp` 再原子改名）。归档文件不经 API 暴露；**运维备份必须覆盖该目录**，否则删除后的历史只存在于备份之外。
+- **系统动作也审计**：归档写 `audit.retention.archive`（`Detail` 含 rows/path/sha256/threshold）、清理写 `audit.retention.purge`；actor 为 0（系统）。两条审计与删除在同一事务提交；无事务审计器时整轮拒绝删除。
+- **回收站（地址簿 v0.8.0）**：删除的 peer 软删除保留 30 天，每小时清扫永久删除过期行；恢复会 bump revision，永久删除不动 revision 与 live 内容。
+- **个人令牌（v0.8.0）**：只在组织路径生效；有效权限 = 申请集 ∩ 当前角色权限集，每请求实时重算。列表只显示 `token_prefix`，明文只在创建响应出现一次；遗失令牌请直接撤销后重建。
+- **管理面 2FA（v0.8.0）**：启用后用户登录需要第二步（`/auth/2fa/verify`）。用户丢失设备与恢复码时，由 owner/admin 用 `POST /orgs/{orgId}/members/{userId}/2fa/reset` 重置（写 `user.2fa.reset` 审计）。TOTP 密钥以 `auth.secret` 派生的密钥加密存储，**轮换 `auth.secret` 会让既有 2FA 配置无法解密**，须先重置相关用户 2FA 再轮换。
 
 ---
 
@@ -149,6 +159,7 @@
 |---|---|---|
 | 关系数据（用户/组织/设备/审计/日志事件/供应状态） | `panel.db` 或外部 DB | 每日；审计行是安全证据，保留期越长越好 |
 | 各组织 hbbs/hbbr 密钥与数据 | `provision.dataDir`（默认 `./data/servergroups`，组织子目录为 `org-<orgId>/`） | 每日（与 DB 同步点） |
+| 审计归档文件（已清理行的唯一副本） | `audit.archiveDir`（默认 `./data/audit-archive`，组织子目录为 `org-<orgId>/`） | 每日（与 DB 同步点；保留期清理会删除 DB 行） |
 
 恢复：恢复 DB + 数据目录 → **恢复对应的 Docker 容器状态**（reconciler 会跳过已有 `ServerGroup` 行的组织，不会重建缺失的容器）——容器状态不可恢复时，须对每个已恢复的组织执行并验证容器重建 → 启动 panel → AutoMigrate 幂等。
 
