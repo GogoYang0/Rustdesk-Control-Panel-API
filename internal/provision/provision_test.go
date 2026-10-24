@@ -115,20 +115,24 @@ func newFixtureWithRecorder(t *testing.T, recorder *fakeRecorder) *fixture {
 	if recorder != nil {
 		rec = recorder
 	}
+	svc := provision.NewService(st.DB, pool, orch, rec, zap.New(core), provision.Config{
+		Image:     "rustdesk/rustdesk-server:test",
+		RelayHost: "relay.test",
+		DataDir:   dataDir,
+		PortStart: testPortStart,
+		PortEnd:   testPortEnd,
+	})
+	// Tests must not depend on the host's port state; conflict cases replace
+	// this checker explicitly.
+	svc.SetPortChecker(func(uint16, string) error { return nil })
 	return &fixture{
 		st:       *st,
 		pool:     pool,
 		orch:     orch,
 		dataDir:  dataDir,
 		recorder: recorder,
-		svc: provision.NewService(st.DB, pool, orch, rec, zap.New(core), provision.Config{
-			Image:     "rustdesk/rustdesk-server:test",
-			RelayHost: "relay.test",
-			DataDir:   dataDir,
-			PortStart: testPortStart,
-			PortEnd:   testPortEnd,
-		}),
-		logs: buf,
+		svc:      svc,
+		logs:     buf,
 	}
 }
 
@@ -668,4 +672,160 @@ func TestSetEnabled_AuditFailureRollsBackFlag(t *testing.T) {
 	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).First(&row).Error)
 	require.Equal(t, model.ServerGroupFailed, row.State,
 		"the containers are gone, so the row must not keep claiming deployed")
+}
+
+// recordingChecker records every (port, network) pair the service probes and
+// fails the ones the test marked as occupied.
+type recordingChecker struct {
+	mu       sync.Mutex
+	calls    []string
+	failures map[string]error
+}
+
+func newRecordingChecker() *recordingChecker {
+	return &recordingChecker{failures: map[string]error{}}
+}
+
+func (r *recordingChecker) occupy(port uint16, network string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.failures[fmt.Sprintf("%d/%s", port, network)] = errors.New("bind: address already in use")
+}
+
+func (r *recordingChecker) check(port uint16, network string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := fmt.Sprintf("%d/%s", port, network)
+	r.calls = append(r.calls, key)
+	return r.failures[key]
+}
+
+func (r *recordingChecker) called(port uint16, network string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := fmt.Sprintf("%d/%s", port, network)
+	for _, call := range r.calls {
+		if call == key {
+			return true
+		}
+	}
+	return false
+}
+
+func TestProvision_PortConflictReleasesRow(t *testing.T) {
+	f := newFixture(t)
+	checker := newRecordingChecker()
+	checker.occupy(testPortStart, "tcp")
+	f.svc.SetPortChecker(checker.check)
+	org := f.org(t, "port-conflict")
+
+	_, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.ErrorIs(t, err, provision.ErrPortConflict)
+	require.Contains(t, err.Error(), fmt.Sprintf("%d/tcp", testPortStart))
+	require.Empty(t, f.orch.Deployed, "the deploy must not run into the conflict")
+
+	var count int64
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Model(&model.ServerGroup{}).Count(&count).Error)
+	require.Zero(t, count, "the failed preflight releases the ports instead of reserving them")
+}
+
+func TestProvision_UDPConflictOnMainPort(t *testing.T) {
+	f := newFixture(t)
+	checker := newRecordingChecker()
+	checker.occupy(testPortStart+1, "udp")
+	f.svc.SetPortChecker(checker.check)
+	org := f.org(t, "udp-conflict")
+
+	_, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.ErrorIs(t, err, provision.ErrPortConflict)
+	require.Contains(t, err.Error(), fmt.Sprintf("%d/udp", testPortStart+1))
+	require.Empty(t, f.orch.Deployed)
+}
+
+func TestProbePortRange_SkipsReservedBlocks(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "reserved")
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Create(&model.ServerGroup{
+		OrganizationID: org.ID,
+		HbbsPort:       testPortStart,
+		HbbrPort:       testPortStart + 3,
+		State:          model.ServerGroupDeployed,
+	}).Error)
+
+	checker := newRecordingChecker()
+	f.svc.SetPortChecker(checker.check)
+	conflicts, err := f.svc.ProbePortRange(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, conflicts)
+
+	for _, call := range []string{"21116/tcp", "21117/tcp", "21117/udp", "21118/tcp", "21119/tcp", "21120/tcp"} {
+		require.NotContains(t, checker.calls, call, "a reserved block must not be probed")
+	}
+	require.True(t, checker.called(testPortStart+5, "tcp"), "the next free block must be probed")
+	require.True(t, checker.called(testPortStart+6, "udp"))
+}
+
+func TestProbePortRange_ReportsExternalConflicts(t *testing.T) {
+	f := newFixture(t)
+	checker := newRecordingChecker()
+	checker.occupy(testPortStart+10, "tcp")
+	f.svc.SetPortChecker(checker.check)
+
+	conflicts, err := f.svc.ProbePortRange(context.Background())
+	require.NoError(t, err)
+	require.Len(t, conflicts, 1)
+	require.EqualValues(t, testPortStart+10, conflicts[0].Port)
+	require.Equal(t, "tcp", conflicts[0].Network)
+	require.Contains(t, conflicts[0].String(), fmt.Sprintf("%d/tcp", testPortStart+10))
+}
+
+func TestProbePortRange_InvalidRange(t *testing.T) {
+	f := newFixture(t)
+	svc := provision.NewService(f.st.DB, f.pool, f.orch, f.recorder, zap.NewNop(), provision.Config{
+		PortStart: testPortStart,
+		PortEnd:   testPortStart + provision.PortBlockSize - 2,
+	})
+	svc.SetPortChecker(func(uint16, string) error { return nil })
+	_, err := svc.ProbePortRange(context.Background())
+	require.Error(t, err)
+}
+
+// disablingOrchestrator simulates an operator disabling the organization while
+// the deploy is still running.
+type disablingOrchestrator struct {
+	provision.MockOrchestrator
+	db    *gorm.DB
+	orgID uint
+}
+
+func (o *disablingOrchestrator) Deploy(_ context.Context, _ provision.InstanceSpec) error {
+	if err := o.db.Model(&model.Organization{}).Where("id = ?", o.orgID).
+		Update("provisioning_disabled", true).Error; err != nil {
+		return err
+	}
+	return store.ScopedByOrg(o.db, o.orgID).Where("organization_id = ?", o.orgID).
+		Delete(&model.ServerGroup{}).Error
+}
+
+func TestProvision_DisabledDuringDeploy_CleansUpContainer(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "disabled-mid-deploy")
+	orch := &disablingOrchestrator{db: f.st.DB, orgID: org.ID}
+	svc := provision.NewService(f.st.DB, f.pool, orch, f.recorder, zap.NewNop(), provision.Config{
+		Image:     "rustdesk/rustdesk-server:test",
+		RelayHost: "relay.test",
+		DataDir:   t.TempDir(),
+		PortStart: testPortStart,
+		PortEnd:   testPortEnd,
+	})
+	svc.SetPortChecker(func(uint16, string) error { return nil })
+
+	_, err := svc.ProvisionQueued(context.Background(), org.ID)
+	require.ErrorIs(t, err, provision.ErrProvisioningDisabled)
+	require.Contains(t, orch.Removed, fmt.Sprintf("panel-org-%d", org.ID),
+		"a deploy that lost its row to a concurrent disable must remove its container")
+
+	var count int64
+	require.NoError(t, store.WithoutTenantScope(f.st.DB).Model(&model.ServerGroup{}).Count(&count).Error)
+	require.Zero(t, count)
 }

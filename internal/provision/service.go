@@ -287,6 +287,15 @@ func (s *Service) provision(ctx context.Context, orgID uint) (*model.ServerGroup
 		return nil, err
 	}
 
+	// Ports are a host resource shared with everything else on the machine.
+	// Failing here keeps the rollback path out of the picture (no container
+	// exists yet) and names the occupied port instead of leaving an opaque
+	// docker run error; the released block is retried by the reconciler.
+	if conflict := s.checkBlock(row.HbbsPort); conflict != nil {
+		s.release(row)
+		return nil, fmt.Errorf("provision: %w: %s", ErrPortConflict, conflict.String())
+	}
+
 	keys, err := GenerateKeyPair()
 	if err != nil {
 		s.releaseWithCleanup(row)
@@ -324,7 +333,7 @@ func (s *Service) provision(ctx context.Context, orgID uint) (*model.ServerGroup
 		return nil, fmt.Errorf("snapshot config: %w", err)
 	}
 
-	err = store.ScopedByOrg(s.db, orgID).Model(&model.ServerGroup{}).
+	res := store.ScopedByOrg(s.db, orgID).Model(&model.ServerGroup{}).
 		Where("id = ?", row.ID).
 		Updates(map[string]any{
 			"pub_key":         keys.PublicKey,
@@ -332,10 +341,17 @@ func (s *Service) provision(ctx context.Context, orgID uint) (*model.ServerGroup
 			"config_snapshot": string(snap),
 			"state":           model.ServerGroupDeployed,
 			"last_error":      "",
-		}).Error
-	if err != nil {
-		s.failAndCleanup(ctx, row, spec, err)
-		return nil, fmt.Errorf("persist server group: %w", err)
+		})
+	if res.Error != nil {
+		s.failAndCleanup(ctx, row, spec, res.Error)
+		return nil, fmt.Errorf("persist server group: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		// The row was deleted while the deploy was running: an operator
+		// disabled the organization. The fresh containers must not outlive
+		// their row.
+		s.failAndCleanup(ctx, row, spec, ErrProvisioningDisabled)
+		return nil, fmt.Errorf("persist server group: %w", ErrProvisioningDisabled)
 	}
 
 	s.logger.Info("provisioned hbbs/hbbr",

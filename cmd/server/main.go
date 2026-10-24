@@ -206,6 +206,25 @@ func main() {
 		lg.Info("log collector enabled", zap.Int("rules", parser.Rules()))
 	}
 
+	// The port pool only knows the panel's own allocations: report ports held by
+	// other processes before the first deploy, so an operator can fix the range
+	// instead of watching provisioning fail. The probe is advisory and never
+	// blocks startup.
+	if conflicts, perr := provSvc.ProbePortRange(rootCtx); perr != nil {
+		lg.Warn("provision port range probe failed", zap.Error(perr))
+	} else if len(conflicts) > 0 {
+		ports := make([]string, 0, len(conflicts))
+		for _, c := range conflicts {
+			ports = append(ports, c.String())
+		}
+		lg.Warn("provision port range has externally occupied ports",
+			zap.Int("count", len(conflicts)), zap.Strings("ports", ports))
+	} else {
+		lg.Info("provision port range is free",
+			zap.Uint16("start", cfg.Provision.PortStart),
+			zap.Uint16("end", cfg.Provision.PortEnd))
+	}
+
 	provQueue.Start(rootCtx)
 
 	// Background workers: the retention sweep must run regardless of whether
