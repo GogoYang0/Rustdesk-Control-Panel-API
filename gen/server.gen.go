@@ -328,6 +328,33 @@ func (e MemberRoleRequestRole) Valid() bool {
 	}
 }
 
+// Defines values for ProvisioningStatusState.
+const (
+	ProvisioningStatusStateDeployed     ProvisioningStatusState = "deployed"
+	ProvisioningStatusStateDisabled     ProvisioningStatusState = "disabled"
+	ProvisioningStatusStateFailed       ProvisioningStatusState = "failed"
+	ProvisioningStatusStatePending      ProvisioningStatusState = "pending"
+	ProvisioningStatusStateProvisioning ProvisioningStatusState = "provisioning"
+)
+
+// Valid indicates whether the value is a known member of the ProvisioningStatusState enum.
+func (e ProvisioningStatusState) Valid() bool {
+	switch e {
+	case ProvisioningStatusStateDeployed:
+		return true
+	case ProvisioningStatusStateDisabled:
+		return true
+	case ProvisioningStatusStateFailed:
+		return true
+	case ProvisioningStatusStatePending:
+		return true
+	case ProvisioningStatusStateProvisioning:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SessionOrigin.
 const (
 	Native SessionOrigin = "native"
@@ -1140,6 +1167,39 @@ type PolicyResponse struct {
 	Message string    `json:"message"`
 }
 
+// ProvisioningResponse defines model for ProvisioningResponse.
+type ProvisioningResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode          `json:"code"`
+	Data    ProvisioningStatus `json:"data"`
+	Message string             `json:"message"`
+}
+
+// ProvisioningStatus defines model for ProvisioningStatus.
+type ProvisioningStatus struct {
+	Enabled bool                    `json:"enabled"`
+	State   ProvisioningStatusState `json:"state"`
+}
+
+// ProvisioningStatusState defines model for ProvisioningStatus.State.
+type ProvisioningStatusState string
+
+// ProvisioningUpdateRequest defines model for ProvisioningUpdateRequest.
+type ProvisioningUpdateRequest struct {
+	// Enabled true 允许供应（异步部署），false 关闭并下线
+	Enabled bool `json:"enabled"`
+}
+
 // RefreshRequest defines model for RefreshRequest.
 type RefreshRequest struct {
 	RefreshToken string `json:"refresh_token"`
@@ -1667,6 +1727,9 @@ type CreatePolicyJSONRequestBody = PolicyRequest
 // UpdatePolicyJSONRequestBody defines body for UpdatePolicy for application/json ContentType.
 type UpdatePolicyJSONRequestBody = PolicyRequest
 
+// UpdateProvisioningJSONRequestBody defines body for UpdateProvisioning for application/json ContentType.
+type UpdateProvisioningJSONRequestBody = ProvisioningUpdateRequest
+
 // IssueTicketJSONRequestBody defines body for IssueTicket for application/json ContentType.
 type IssueTicketJSONRequestBody = TicketCreateRequest
 
@@ -1771,6 +1834,12 @@ type ServerInterface interface {
 	// UpdatePolicy 更新连接策略
 	// (PUT /api/v1/orgs/{orgId}/policies/{policyId})
 	UpdatePolicy(c *gin.Context, orgId int64, policyId int64)
+	// GetProvisioning 查询组织 provisioning 状态
+	// (GET /api/v1/orgs/{orgId}/provisioning)
+	GetProvisioning(c *gin.Context, orgId int64)
+	// UpdateProvisioning 启用或禁用组织 provisioning
+	// (PUT /api/v1/orgs/{orgId}/provisioning)
+	UpdateProvisioning(c *gin.Context, orgId int64)
 	// ListSessions 会话记录列表
 	// (GET /api/v1/orgs/{orgId}/sessions)
 	ListSessions(c *gin.Context, orgId int64, params ListSessionsParams)
@@ -2781,6 +2850,56 @@ func (siw *ServerInterfaceWrapper) UpdatePolicy(c *gin.Context) {
 	siw.Handler.UpdatePolicy(c, orgId, policyId)
 }
 
+// GetProvisioning operation middleware
+func (siw *ServerInterfaceWrapper) GetProvisioning(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetProvisioning(c, orgId)
+}
+
+// UpdateProvisioning operation middleware
+func (siw *ServerInterfaceWrapper) UpdateProvisioning(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UpdateProvisioning(c, orgId)
+}
+
 // ListSessions operation middleware
 func (siw *ServerInterfaceWrapper) ListSessions(c *gin.Context) {
 
@@ -3040,6 +3159,8 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/members", wrapper.ListMembers)
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId", wrapper.RemoveMember)
 	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId", wrapper.UpdateMemberRole)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/provisioning", wrapper.GetProvisioning)
+	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/provisioning", wrapper.UpdateProvisioning)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/invitations", wrapper.CreateInvitation)
 	router.POST(options.BaseURL+"/api/v1/invitations/accept", wrapper.AcceptInvitation)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/devices", wrapper.ListDevices)

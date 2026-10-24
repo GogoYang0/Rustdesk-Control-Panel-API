@@ -348,6 +348,7 @@ func main() {
 			Auth:           authSvc,
 			Devices:        deviceSvc,
 			ProvisionQueue: provQueue,
+			Provisioning:   provSvc,
 			OrgsPerUser:    cfg.Provision.MaxOrgsPerUser,
 			Issuer:         issuer,
 			Auditor:        auditor,
