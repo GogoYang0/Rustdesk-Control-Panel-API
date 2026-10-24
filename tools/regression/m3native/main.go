@@ -694,6 +694,12 @@ func (h *harness) ensureDeployedServerGroup() (model.ServerGroup, bool, error) {
 		Where("organization_id = ?", h.orgID).First(&sg).Error
 	switch {
 	case errors.Is(err, gorm.ErrRecordNotFound):
+		if !h.forceState {
+			return sg, false, fmt.Errorf(
+				"organization %d has no server group; creating a deployed row would break provisioning — "+
+					"point -db at a dedicated database, or pass -force-state if you accept that",
+				h.orgID)
+		}
 		hbbsPort, perr := h.allocatePorts()
 		if perr != nil {
 			return sg, false, perr

@@ -131,12 +131,12 @@
 
 - **单实例前提**：供应队列、reconciler 与组织级切换锁都是**进程内**组件，同一数据库只应由一个 panel 实例执行 provisioning；多实例会重复对账并绕过切换锁（数据库侧的开关复核与 `RowsAffected` 守卫仍会清理越权持久化的行，但容器操作无法跨进程互斥）
 - 每组织一对容器：`panel-org-<orgId>-hbbs` / `-hbbr`，端口从 `provision.portStart..portEnd` 池分配并持久化在 `ServerGroup` 行
-- **开关 API（v0.7.0，仅 owner）**：`GET/PUT /api/v1/orgs/{orgId}/provisioning`。关闭（`enabled=false`）会同步删除容器、删除 `ServerGroup` 行、置 `provisioning_disabled`，并在同一事务写 `organization.provisioning.update` 审计（`Detail` 含 `removed_deployment` 与端口）；容器删除失败则请求 500、行标 `failed`、开关不变。开启只清除标记并把组织交给队列（队列满由 reconciler 兜底）；**下次部署会重新生成服务端密钥对**（`dataDir/org-<orgId>/` 中的数据保留，但密钥文件被覆盖，客户端需重新配对）。重复关闭会清理并发失序遗留的部署行（自愈）
+- **开关 API（v0.7.0，仅 owner）**：`GET/PUT /api/v1/orgs/{orgId}/provisioning`。关闭（`enabled=false`）会同步删除容器、删除 `ServerGroup` 行、置 `provisioning_disabled`，并在同一事务写 `organization.provisioning.update` 审计（`Detail` 含 `removed_deployment` 与端口）；容器删除失败则请求 500、行标 `failed`、开关不变。开启只清除标记；**仅在无部署行（`pending`）时异步入队**，已有 `deployed` 不入队、`failed` 需人工恢复；队列满由 reconciler 兜底。**下次部署会重新生成服务端密钥对**（`dataDir/org-<orgId>/` 中的数据保留，但密钥文件被覆盖，客户端需重新配对）。重复关闭会清理并发失序遗留的部署行（自愈）
 - **在途部署的关闭（deferred cleanup）**：若关闭时行状态为 `provisioning` 且未超过 10 分钟宽限，接口**不删除该行**（审计 `Detail.deferred_cleanup=true`、`state=provisioning`），保留为容器清理锚点；在途部署在持久化时发现开关已关会自行回滚。若回滚删除失败，行会保留为 `failed`，重复关闭会**立即**重试清理；若进程在部署中途中断，行保持 `provisioning`，重复关闭需在该行超过 10 分钟宽限后才会清理。这样不会出现“容器仍在运行但数据库无行可追踪”的状态
 - **回滚归属校验**：失败部署在删除容器前会核对当前 `ServerGroup` 行的 id；若组织已被关闭并重新开启、已存在更新的部署行，旧尝试**不会**删除同名容器（容器名按组织复用，无法凭名字区分代际）
 - 供应队列：`provision.workers` 并发。部署失败后会执行清理：**清理成功 → 删除 `ServerGroup` 行并释放端口；清理失败 → 行保留为 `failed` 状态**。保留的行会被 `PendingOrgIDs` 排除，对账 reconciler（2 分钟周期）**不会**重新入队——清理失败的部署必须人工处理（残留容器、行、端口）
 - **启动端口探测**：启动日志 `provision port range is free` 表示范围内（已预留块除外）没有外部占用；`provision port range has externally occupied ports` 会列出 `端口/协议`，表示面板外进程占用了可分配端口——调整 `provision.portStart/portEnd` 或停止占用进程。探测绑定本机 IPv4 通配地址、只告警不阻断启动；**IPv6-only 监听不在探测范围**；`DOCKER_HOST` 指向远端时本机探测不适用
-- **部署前预检**：每次 provision 在 `docker run` 前检查本块 5 个 TCP 端口 + 主端口 UDP；冲突时返回 `host port already in use: <port>/<协议>` 并**释放本次分配**（不产生失败行）。reconciler 会周期性重试；**若外占长期存在，每次重试仍可能按端口池顺序选中同一块**——启动告警给出根因，处置方式是调整端口范围或停止占用进程
+- **部署前预检**：每次 provision 在 `docker run` 前检查本块 5 个 TCP 端口 + 主端口 UDP；冲突时**释放该块并在本次尝试中跳过**，继续尝试后续可用块（默认端口池有 200 块）。**只有当范围内每一块都因宿主端口冲突被跳过**时才返回 `host port already in use: <port>/<协议>`（不产生失败行）；若耗尽同时包含数据库已分配的块，则保留 `no free hbbs/hbbr port pair in the configured range`，避免把「端口池用完」误报成宿主占用。启动告警给出根因。若**释放**冲突块本身失败（数据库故障），该行会保留为 `failed` 并同样返回错误——这是人工恢复状态，需按上条清理后再重试
 - ⚠️ **端口规划前提**：`PortPool` 只按 DB `server_groups` 判重，不感知面板外占用；预检只是提前诊断，探测与 `docker run` 之间仍有竞态。规划端口池时确保范围独占；相关可观测/控制缺口跟踪于 [#46](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/46)
 - 下线：`Deprovision` 删除容器 → 删行 → `Unwatch` 采集器；失败时行保留（failed 状态），端口继续被占用，且不会由 reconciler 自动重试
 - `provision.dataDir/org-<orgId>/` 含容器运行时数据（`dataDir` 可配置，默认根目录为 `./data/servergroups`）：**备份范围必须包含它**。服务端密钥对由 panel 每次部署时生成并覆盖，恢复后客户端需按 `ServerGroup.pub_key` 重新配对

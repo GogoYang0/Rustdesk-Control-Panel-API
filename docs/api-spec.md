@@ -1,6 +1,6 @@
 # 后端 API 规范（Backend API Specification）
 
-> 适用版本：v0.7.0（按组织 provisioning 开关 + 宿主端口探测；已发布版本为 v0.4.0）。本文档是对 `openapi.yaml`（契约 v0.7.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
+> 适用版本：v0.7.0（按组织 provisioning 开关 + 宿主端口探测；已发布基线 v0.4.0）。本文档是对 `openapi.yaml`（契约 v0.7.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
 > 本文档随版本演进持续更新——契约变更的 PR 必须同步更新 §3/§4。
 > 配套文档：[部署指南](deployment.md) · [运维指南](operations.md)
 
