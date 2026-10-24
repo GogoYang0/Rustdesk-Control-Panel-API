@@ -434,8 +434,11 @@ func (h *harness) runFlows() int {
 	// Setup (not a numbered check): drop any harness policy left by a previous
 	// run so the flow starts from the contract's "no policy = unrestricted"
 	// state. Without this, a second run would begin with require_approval=true
-	// and every issuance in check 3 would be blocked.
-	h.setupStalePolicies()
+	// and every issuance in check 3 would be blocked. A failure here is a
+	// warning only: the numbered checks report the real outcome.
+	if err := h.setupStalePolicies(); err != nil {
+		fmt.Printf("[setup] warning: stale harness policies not cleared: %v\n", err)
+	}
 
 	h.run(2, "org-device-ready", true, h.checkOrgDevice)
 	h.run(3, "ticket-success-path", true, h.checkTicketSuccess)
@@ -452,7 +455,9 @@ func (h *harness) runFlows() int {
 	// Teardown (not a numbered check): remove the harness policies this run
 	// created, so a shared database returns to the contract's "no enabled
 	// policy = unrestricted" baseline instead of leaking into later tooling.
-	h.setupStalePolicies()
+	// Unlike the startup sweep this failure is reported: a silent failure would
+	// hand the next run a dirty policy baseline.
+	teardownErr := h.setupStalePolicies()
 
 	pass, fail, skip := 0, 0, 0
 	for _, r := range h.results {
@@ -466,40 +471,58 @@ func (h *harness) runFlows() int {
 		}
 	}
 	fmt.Printf("\n=== summary: PASS %d / FAIL %d / SKIP %d ===\n", pass, fail, skip)
+	if teardownErr != nil {
+		fmt.Printf("teardown: harness policies could not be cleared: %v\n", teardownErr)
+		return 1
+	}
 	if fail > 0 {
 		return 1
 	}
 	return 0
 }
 
-// setupStalePolicies deletes any harness policy left over from a previous run,
-// so the flow always starts from the contract's "no enabled policy =
-// unrestricted" baseline. It is setup, not a numbered check: a leftover
-// require_approval policy would otherwise block every issuance in check 3.
-func (h *harness) setupStalePolicies() {
+// harnessPolicyNames are the only policy names this harness manages. Both the
+// startup sweep and the teardown delete exactly these names, never the
+// "harness-" prefix: the organization is shared infrastructure, not this
+// tool's namespace, and a prefix match could delete an operator's policy.
+var harnessPolicyNames = map[string]struct{}{
+	"harness-concurrency": {},
+	"harness-approval":    {},
+}
+
+// setupStalePolicies deletes the policies a previous run left behind, so the
+// flow starts (and ends) at the contract's "no enabled policy = unrestricted"
+// baseline. It is setup, not a numbered check: a leftover require_approval
+// policy would otherwise block every issuance in check 3. Failures are
+// returned so the teardown can refuse to hide a dirty state.
+func (h *harness) setupStalePolicies() error {
 	if h.token == "" {
-		return
+		return nil
 	}
 	r := h.do(&evidence{}, "list-policies-setup", http.MethodGet,
 		fmt.Sprintf("/api/v1/orgs/%d/policies", h.orgID), nil)
 	if r.Status != 200 {
-		return
+		return fmt.Errorf("list policies: status %d", r.Status)
 	}
 	var policies []struct {
 		Id   int64  `json:"id"`
 		Name string `json:"name"`
 	}
 	if err := json.Unmarshal(r.Data, &policies); err != nil {
-		return
+		return fmt.Errorf("parse policies: %w", err)
 	}
 	for _, p := range policies {
-		if !strings.HasPrefix(p.Name, "harness-") {
+		if _, ok := harnessPolicyNames[p.Name]; !ok {
 			continue
 		}
 		del := h.do(&evidence{}, "delete-policy-setup", http.MethodDelete,
 			fmt.Sprintf("/api/v1/orgs/%d/policies/%d", h.orgID, p.Id), nil)
-		fmt.Printf("[setup] deleted stale policy %q (id=%d) -> %d\n", p.Name, p.Id, del.Status)
+		if del.Status >= 400 {
+			return fmt.Errorf("delete policy %q (id=%d): status %d", p.Name, p.Id, del.Status)
+		}
+		fmt.Printf("[setup] deleted harness policy %q (id=%d) -> %d\n", p.Name, p.Id, del.Status)
 	}
+	return nil
 }
 
 // run executes one check, isolating it with recover so a panic or failure can

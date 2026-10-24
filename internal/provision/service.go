@@ -416,14 +416,20 @@ func (s *Service) allocateChecked(orgID uint) (*model.ServerGroup, []string, err
 	for {
 		row, err := s.pool.allocate(orgID, func(base uint16) bool { return skip[base] })
 		if err != nil {
-			if len(occupied) > 0 {
+			// Only a fully exhausted pool means the preflight walked every
+			// remaining block; a database error must surface unchanged.
+			if len(occupied) > 0 && errors.Is(err, ErrPortPoolExhausted) {
 				return nil, occupied, fmt.Errorf("provision: %w: %s (%v)",
 					ErrPortConflict, strings.Join(occupied, ", "), err)
 			}
-			return nil, nil, err
+			return nil, occupied, err
 		}
 		if conflict := s.checkBlock(row.HbbsPort); conflict != nil {
-			s.release(row)
+			if rerr := s.releasePending(row); rerr != nil {
+				// The row still occupies the block; without this error the next
+				// allocate call would report a misleading port conflict.
+				return nil, occupied, fmt.Errorf("provision: release skipped block %d: %w", row.HbbsPort, rerr)
+			}
 			skip[row.HbbsPort] = true
 			occupied = append(occupied, conflict.String())
 			continue
@@ -766,10 +772,16 @@ func (s *Service) markFailed(row *model.ServerGroup, cause error) {
 	}
 }
 
+// releasePending deletes the pending row and returns the delete error, for
+// callers that must not continue when the ports are still reserved.
+func (s *Service) releasePending(row *model.ServerGroup) error {
+	return store.ScopedByOrg(s.db, row.OrganizationID).
+		Delete(&model.ServerGroup{}, row.ID).Error
+}
+
 // release deletes the pending row so the ports become available again.
 func (s *Service) release(row *model.ServerGroup) {
-	if err := store.ScopedByOrg(s.db, row.OrganizationID).
-		Delete(&model.ServerGroup{}, row.ID).Error; err != nil {
+	if err := s.releasePending(row); err != nil {
 		s.logger.Error("release ports failed",
 			zap.Uint("org_id", row.OrganizationID), zap.Error(err))
 	}
