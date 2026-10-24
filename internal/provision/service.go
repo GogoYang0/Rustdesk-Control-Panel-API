@@ -21,6 +21,11 @@ import (
 // deadline: the deploy context may already be cancelled.
 const cleanupTimeout = 30 * time.Second
 
+// orgLockStripes bounds the number of per-organization transition locks. A
+// striped array avoids an unbounded map of mutexes; collisions only make two
+// unrelated organizations wait for one container removal.
+const orgLockStripes = 64
+
 // Config carries deployment settings.
 type Config struct {
 	Image     string
@@ -44,6 +49,21 @@ type Service struct {
 
 	mu              sync.Mutex
 	onDeprovisioned func(orgID uint)
+
+	// orgLocks serialise the state transitions (disable, enable, allocate,
+	// persist) of one organization. The provisioning queue and reconciler are
+	// in-process, so this is the supported deployment shape; the database flag
+	// check and RowsAffected guard stay in place as a backstop for rows written
+	// outside the lock.
+	orgLocks [orgLockStripes]sync.Mutex
+}
+
+// lockOrg serialises provisioning transitions for one organization and returns
+// the unlock function.
+func (s *Service) lockOrg(orgID uint) func() {
+	m := &s.orgLocks[orgID%orgLockStripes]
+	m.Lock()
+	return m.Unlock
 }
 
 // OnDeprovisioned registers a callback invoked after a successful deprovision.
@@ -164,6 +184,11 @@ func (s *Service) SetEnabled(ctx context.Context, orgID, actorID uint, enabled b
 	if s.recorder == nil {
 		return State{}, false, errors.New("provision: no audit recorder configured")
 	}
+	// Hold the organization lock across the read, the container removal and the
+	// transaction: a deploy must not allocate a row between the removal and the
+	// flag commit, because that row's container would escape the removal.
+	unlock := s.lockOrg(orgID)
+	defer unlock()
 
 	current, err := s.State(ctx, orgID)
 	if err != nil {
@@ -290,7 +315,13 @@ func (s *Service) ProvisionForOrg(ctx context.Context, orgID uint) (*model.Serve
 	if err := store.RequireOrgID(orgID); err != nil {
 		return nil, err
 	}
-	if err := s.setProvisioningDisabled(orgID, false); err != nil {
+	// Clearing the flag shares the organization lock with the switch; a disable
+	// that wins afterwards makes provision's allocation check fail instead of
+	// deploying against the operator's intent.
+	unlock := s.lockOrg(orgID)
+	err := s.setProvisioningDisabled(orgID, false)
+	unlock()
+	if err != nil {
 		return nil, err
 	}
 	return s.provision(ctx, orgID)
@@ -331,7 +362,21 @@ func (s *Service) setProvisioningDisabled(orgID uint, disabled bool) error {
 // provision allocates ports, generates keys, deploys and persists the result.
 // Any failure releases the ports and removes the containers.
 func (s *Service) provision(ctx context.Context, orgID uint) (*model.ServerGroup, error) {
+	// Allocation shares the organization lock with the switch: a disable either
+	// sees the row and removes it, or commits first and makes this check fail.
+	unlock := s.lockOrg(orgID)
 	row, err := s.pool.Allocate(orgID)
+	if err == nil {
+		var org model.Organization
+		if lerr := s.db.Select("id", "provisioning_disabled").First(&org, orgID).Error; lerr != nil {
+			s.release(row)
+			err = fmt.Errorf("load organization: %w", lerr)
+		} else if org.ProvisioningDisabled {
+			s.release(row)
+			err = ErrProvisioningDisabled
+		}
+	}
+	unlock()
 	if err != nil {
 		return nil, err
 	}
@@ -385,6 +430,7 @@ func (s *Service) provision(ctx context.Context, orgID uint) (*model.ServerGroup
 	// Persisting the deployment and re-reading the switch in one transaction
 	// closes the ordering where a disable commits while the containers start:
 	// the row update only lands if the flag is still false at that instant.
+	unlock = s.lockOrg(orgID)
 	persistErr := s.db.Transaction(func(tx *gorm.DB) error {
 		var org model.Organization
 		if err := tx.Select("id", "provisioning_disabled").First(&org, orgID).Error; err != nil {
@@ -411,6 +457,7 @@ func (s *Service) provision(ctx context.Context, orgID uint) (*model.ServerGroup
 		}
 		return nil
 	})
+	unlock()
 	if persistErr != nil {
 		// A failed or vanished row means the fresh containers must not outlive
 		// their record; the flag was disabled or the database is inconsistent.
@@ -509,6 +556,10 @@ func (s *Service) Deprovision(ctx context.Context, orgID uint) error {
 	if err := store.RequireOrgID(orgID); err != nil {
 		return err
 	}
+	// The switch and the explicit deprovision must not interleave their
+	// container removal and row deletion.
+	unlock := s.lockOrg(orgID)
+	defer unlock()
 
 	row, err := s.removeDeployment(ctx, orgID)
 	if err != nil {

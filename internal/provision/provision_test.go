@@ -834,26 +834,23 @@ func TestProbePortRange_InvalidRange(t *testing.T) {
 }
 
 // disablingOrchestrator simulates an operator disabling the organization while
-// the deploy is still running.
+// the deploy is still running. Deploy does not hold the organization lock, so
+// the switch can run and the persist step must clean the containers up.
 type disablingOrchestrator struct {
 	provision.MockOrchestrator
-	db    *gorm.DB
+	svc   *provision.Service
 	orgID uint
 }
 
-func (o *disablingOrchestrator) Deploy(_ context.Context, _ provision.InstanceSpec) error {
-	if err := o.db.Model(&model.Organization{}).Where("id = ?", o.orgID).
-		Update("provisioning_disabled", true).Error; err != nil {
-		return err
-	}
-	return store.ScopedByOrg(o.db, o.orgID).Where("organization_id = ?", o.orgID).
-		Delete(&model.ServerGroup{}).Error
+func (o *disablingOrchestrator) Deploy(ctx context.Context, _ provision.InstanceSpec) error {
+	_, _, err := o.svc.SetEnabled(ctx, o.orgID, 9, false)
+	return err
 }
 
 func TestProvision_DisabledDuringDeploy_CleansUpContainer(t *testing.T) {
 	f := newFixture(t)
 	org := f.org(t, "disabled-mid-deploy")
-	orch := &disablingOrchestrator{db: f.st.DB, orgID: org.ID}
+	orch := &disablingOrchestrator{orgID: org.ID}
 	svc := provision.NewService(f.st.DB, f.pool, orch, f.recorder, zap.NewNop(), provision.Config{
 		Image:     "rustdesk/rustdesk-server:test",
 		RelayHost: "relay.test",
@@ -861,6 +858,7 @@ func TestProvision_DisabledDuringDeploy_CleansUpContainer(t *testing.T) {
 		PortStart: testPortStart,
 		PortEnd:   testPortEnd,
 	})
+	orch.svc = svc
 	svc.SetPortChecker(func(uint16, string) error { return nil })
 
 	_, err := svc.ProvisionQueued(context.Background(), org.ID)
