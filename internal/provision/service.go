@@ -409,7 +409,7 @@ func (s *Service) provision(ctx context.Context, orgID uint) (*model.ServerGroup
 	}
 
 	if err := s.orch.Deploy(ctx, spec); err != nil {
-		s.failAndCleanup(ctx, row, spec, err)
+		s.rollbackFailedDeploy(ctx, row, spec, err)
 		return nil, fmt.Errorf("deploy hbbs/hbbr: %w", err)
 	}
 
@@ -423,7 +423,7 @@ func (s *Service) provision(ctx context.Context, orgID uint) (*model.ServerGroup
 		Fingerprint: keys.Fingerprint,
 	})
 	if err != nil {
-		s.failAndCleanup(ctx, row, spec, err)
+		s.rollbackFailedDeploy(ctx, row, spec, err)
 		return nil, fmt.Errorf("snapshot config: %w", err)
 	}
 
@@ -461,7 +461,7 @@ func (s *Service) provision(ctx context.Context, orgID uint) (*model.ServerGroup
 	if persistErr != nil {
 		// A failed or vanished row means the fresh containers must not outlive
 		// their record; the flag was disabled or the database is inconsistent.
-		s.failAndCleanup(ctx, row, spec, persistErr)
+		s.rollbackFailedDeploy(ctx, row, spec, persistErr)
 		return nil, fmt.Errorf("persist server group: %w", persistErr)
 	}
 
@@ -586,6 +586,33 @@ func (s *Service) Deprovision(ctx context.Context, orgID uint) error {
 	}
 	s.notifyDeprovisioned(orgID)
 	return nil
+}
+
+// rollbackFailedDeploy removes the containers of a failed deploy only while
+// the row still identifies that deployment. Container names are per
+// organization, so a disable followed by a re-enable can hand the name to a
+// newer deployment; that deployment must not be torn down by the old attempt.
+func (s *Service) rollbackFailedDeploy(ctx context.Context, row *model.ServerGroup, spec InstanceSpec, cause error) {
+	unlock := s.lockOrg(row.OrganizationID)
+	defer unlock()
+
+	var current model.ServerGroup
+	err := store.ScopedByOrg(s.db, row.OrganizationID).First(&current).Error
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		// Our row is gone and no newer deployment exists yet: the containers
+		// still belong to this attempt.
+	case err != nil:
+		s.logger.Warn("rollback skipped: cannot verify deployment ownership",
+			zap.Uint("org_id", row.OrganizationID), zap.Error(err))
+		return
+	case current.ID != row.ID:
+		s.logger.Info("rollback skipped: a newer deployment owns the containers",
+			zap.Uint("org_id", row.OrganizationID),
+			zap.Uint("old_id", row.ID), zap.Uint("current_id", current.ID))
+		return
+	}
+	s.failAndCleanup(ctx, row, spec, cause)
 }
 
 // failAndCleanup rolls back a failed deployment. When removal fails the row is

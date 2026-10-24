@@ -847,6 +847,65 @@ func (o *disablingOrchestrator) Deploy(ctx context.Context, _ provision.Instance
 	return err
 }
 
+// replacingOrchestrator simulates a failed attempt whose organization was
+// already disabled, re-enabled and redeployed: a newer row owns the shared
+// container name by the time the rollback would run.
+type replacingOrchestrator struct {
+	provision.MockOrchestrator
+	db       *gorm.DB
+	orgID    uint
+	oldRowID uint
+	newRowID uint
+}
+
+func (o *replacingOrchestrator) Deploy(_ context.Context, _ provision.InstanceSpec) error {
+	var old model.ServerGroup
+	if err := store.ScopedByOrg(o.db, o.orgID).First(&old).Error; err != nil {
+		return err
+	}
+	o.oldRowID = old.ID
+	if err := store.ScopedByOrg(o.db, o.orgID).Delete(&model.ServerGroup{}, old.ID).Error; err != nil {
+		return err
+	}
+	replacement := model.ServerGroup{
+		OrganizationID: o.orgID,
+		HbbsPort:       old.HbbsPort,
+		HbbrPort:       old.HbbrPort,
+		State:          model.ServerGroupDeployed,
+	}
+	if err := store.ScopedByOrg(o.db, o.orgID).Create(&replacement).Error; err != nil {
+		return err
+	}
+	o.newRowID = replacement.ID
+	return errors.New("deploy failed")
+}
+
+func TestProvision_FailedAttemptDoesNotRemoveNewerDeployment(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "replaced-org")
+	orch := &replacingOrchestrator{db: f.st.DB, orgID: org.ID}
+	svc := provision.NewService(f.st.DB, f.pool, orch, f.recorder, zap.NewNop(), provision.Config{
+		Image:     "rustdesk/rustdesk-server:test",
+		RelayHost: "relay.test",
+		DataDir:   t.TempDir(),
+		PortStart: testPortStart,
+		PortEnd:   testPortEnd,
+	})
+	svc.SetPortChecker(func(uint16, string) error { return nil })
+
+	_, err := svc.ProvisionForOrg(context.Background(), org.ID)
+	require.Error(t, err)
+	require.NotZero(t, orch.newRowID)
+	require.NotEqual(t, orch.oldRowID, orch.newRowID)
+	require.Empty(t, orch.Removed,
+		"the failed attempt must not remove containers that belong to the newer deployment")
+
+	var row model.ServerGroup
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).First(&row).Error)
+	require.Equal(t, orch.newRowID, row.ID)
+	require.Equal(t, model.ServerGroupDeployed, row.State)
+}
+
 func TestProvision_DisabledDuringDeploy_CleansUpContainer(t *testing.T) {
 	f := newFixture(t)
 	org := f.org(t, "disabled-mid-deploy")
