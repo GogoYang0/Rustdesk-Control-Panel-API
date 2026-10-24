@@ -124,7 +124,7 @@ PUBLIC_HOST=<同上> ./docs/reference/step5-m3-run.sh /root/step5m3-work --probe
 
 > **客户端 `api-server` 端口（云端实测踩过）**：RustDesk 客户端把 `custom-rendezvous-server` 的端口 **减 2** 当作 API 端口（本例 21117−2 = 21115），而该端口在宿主上没有映射到任何 HTTP 服务 → 客户端日志出现 `POST .../api/sysinfo → Connection refused`，随后 TCP proxy fallback 超时，**启动被拖慢约 40 s**。注册（`register_pk`）在此之前已发出，因此不影响本手册的断言。
 >
-> **唯一有效的处置**：把 `api-server` **显式**指向可达的 HTTP 入口——面板的 compat 入口 `http://<panel>:8080`（面板已提供 `POST /api/sysinfo` 与 `/api/heartbeat`，语义为「不可信活跃提示」，见 `compatapi`），或把「id 端口 −2」映射到面板。**留空不会消除延迟**：源码 `get_api_server_()`（`rustdesk/src/common.rs`）在 `api-server` 为空时取 `increase_port(custom_rendezvous_server, -2)`，即仍会推导到 21115。
+> **唯一有效的处置**：把 `api-server` **显式**指向实际可达的 HTTP 入口——脚本生成的配置默认只监听 `127.0.0.1:8080`，远程客户端需经反向代理或端口映射访问面板，并把 `api-server` 设为该可达入口；公网入口应使用 `https://<面板域名>`（同网段直连才用 `http://<panel>:8080`）。面板已提供 `POST /api/sysinfo` 与 `/api/heartbeat`（语义为「不可信活跃提示」，见 `compatapi`）。**留空不会消除延迟**：源码 `get_api_server_()`（`rustdesk/src/common.rs`）在 `api-server` 为空时取 `increase_port(custom_rendezvous_server, -2)`，即仍会推导到 21115。
 
 ---
 

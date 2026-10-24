@@ -233,7 +233,7 @@ print("device registered:", rid)
 PY
   ok "设备已登记到组织 $ORG2（rustdesk_id=$CLIENT_ID）"
   if [ -t 0 ]; then
-    read -r -p "第 2 步：请在客户端断开并重新连接（产生新的注册行），然后按回车…" _ || true
+    read -r -p "第 2 步：请更换客户端密钥对（重装/重置密钥确认）或重启 hbbs 容器使其丢失 peer 记录，确认出现登记后的新 update_pk 日志行，然后按回车…" _ || true
   fi
 fi
 
@@ -275,7 +275,9 @@ else
 fi
 
 section "8. 结果汇总"
-cp -f repo/docs/reference/step5-m3-report-template.md "$WORKDIR/step5-m3-result.md" 2>/dev/null || true
+if [ ! -e "$WORKDIR/step5-m3-result.md" ]; then
+  cp repo/docs/reference/step5-m3-report-template.md "$WORKDIR/step5-m3-result.md"
+fi
 echo "PASS=$PASS FAIL=$FAIL"
 echo "证据目录：$EV"
 echo "panel 日志：$WORKDIR/panel-data/panel.log"

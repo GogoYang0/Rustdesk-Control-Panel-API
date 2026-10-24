@@ -449,6 +449,11 @@ func (h *harness) runFlows() int {
 	h.run(11, "audit-trail", true, h.checkAudit)
 	h.run(12, "session-detail", true, h.checkSessionDetail)
 
+	// Teardown (not a numbered check): remove the harness policies this run
+	// created, so a shared database returns to the contract's "no enabled
+	// policy = unrestricted" baseline instead of leaking into later tooling.
+	h.setupStalePolicies()
+
 	pass, fail, skip := 0, 0, 0
 	for _, r := range h.results {
 		switch r.Verdict {

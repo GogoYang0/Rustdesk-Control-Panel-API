@@ -843,34 +843,67 @@ func (r *recordingChecker) called(port uint16, network string) bool {
 	return false
 }
 
-func TestProvision_PortConflictReleasesRow(t *testing.T) {
+// A block whose host ports are held by an outside process must not strand the
+// organization: the attempt releases that block and lands on the next one.
+func TestProvision_SkipsHostOccupiedBlock(t *testing.T) {
 	f := newFixture(t)
 	checker := newRecordingChecker()
 	checker.occupy(testPortStart, "tcp")
 	f.svc.SetPortChecker(checker.check)
 	org := f.org(t, "port-conflict")
 
-	_, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
-	require.ErrorIs(t, err, provision.ErrPortConflict)
-	require.Contains(t, err.Error(), fmt.Sprintf("%d/tcp", testPortStart))
-	require.Empty(t, f.orch.Deployed, "the deploy must not run into the conflict")
+	row, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.NoError(t, err)
+	require.EqualValues(t, testPortStart+provision.PortBlockSize, row.HbbsPort,
+		"the occupied block is skipped, not retried")
+	require.Equal(t, model.ServerGroupDeployed, row.State)
+	require.Len(t, f.orch.Deployed, 1)
 
 	var count int64
 	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Model(&model.ServerGroup{}).Count(&count).Error)
-	require.Zero(t, count, "the failed preflight releases the ports instead of reserving them")
+	require.EqualValues(t, 1, count, "only the surviving block keeps a row")
 }
 
-func TestProvision_UDPConflictOnMainPort(t *testing.T) {
+// When every block fails the preflight the organization cannot be deployed and
+// the error must name the occupied ports.
+func TestProvision_AllBlocksOccupiedReportsConflict(t *testing.T) {
+	f := newFixture(t)
+	checker := newRecordingChecker()
+	checker.occupy(testPortStart, "tcp")
+	f.svc.SetPortChecker(checker.check)
+	svc := provision.NewService(f.st.DB, provision.NewPortPool(f.st.DB, testPortStart, testPortStart+provision.PortBlockSize-1),
+		f.orch, f.recorder, zap.NewNop(), provision.Config{
+			Image:     "rustdesk/rustdesk-server:test",
+			RelayHost: "relay.test",
+			DataDir:   t.TempDir(),
+			PortStart: testPortStart,
+			PortEnd:   testPortStart + provision.PortBlockSize - 1,
+		})
+	svc.SetPortChecker(checker.check)
+	org := f.org(t, "all-occupied")
+
+	_, err := svc.ProvisionForOrg(context.Background(), org.ID)
+	require.ErrorIs(t, err, provision.ErrPortConflict)
+	require.Contains(t, err.Error(), fmt.Sprintf("%d/tcp", testPortStart))
+	require.Empty(t, f.orch.Deployed)
+
+	var count int64
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Model(&model.ServerGroup{}).Count(&count).Error)
+	require.Zero(t, count, "every skipped block is released again")
+}
+
+func TestProvision_UDPConflictSkipsBlock(t *testing.T) {
 	f := newFixture(t)
 	checker := newRecordingChecker()
 	checker.occupy(testPortStart+1, "udp")
 	f.svc.SetPortChecker(checker.check)
 	org := f.org(t, "udp-conflict")
 
-	_, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
-	require.ErrorIs(t, err, provision.ErrPortConflict)
-	require.Contains(t, err.Error(), fmt.Sprintf("%d/udp", testPortStart+1))
-	require.Empty(t, f.orch.Deployed)
+	row, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.NoError(t, err)
+	require.EqualValues(t, testPortStart+provision.PortBlockSize, row.HbbsPort,
+		"a UDP conflict on the main port disqualifies the whole block")
+	require.Len(t, f.orch.Deployed, 1)
 }
 
 func TestProbePortRange_SkipsReservedBlocks(t *testing.T) {
