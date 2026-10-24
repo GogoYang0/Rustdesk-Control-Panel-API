@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
@@ -25,15 +26,21 @@ type Config struct {
 	Image     string
 	RelayHost string
 	DataDir   string
+	// PortStart and PortEnd describe the host range a deployment may use. They
+	// mirror provision.portStart/portEnd and drive the startup port probe.
+	PortStart uint16
+	PortEnd   uint16
 }
 
 // Service provisions one hbbs/hbbr pair per organization.
 type Service struct {
-	db     *gorm.DB
-	pool   *PortPool
-	orch   Orchestrator
-	logger *zap.Logger
-	cfg    Config
+	db       *gorm.DB
+	pool     *PortPool
+	orch     Orchestrator
+	recorder audit.TxRecorder
+	checker  PortChecker
+	logger   *zap.Logger
+	cfg      Config
 
 	mu              sync.Mutex
 	onDeprovisioned func(orgID uint)
@@ -58,12 +65,31 @@ func (s *Service) notifyDeprovisioned(orgID uint) {
 	}
 }
 
-// NewService builds the provisioning service.
-func NewService(db *gorm.DB, pool *PortPool, orch Orchestrator, logger *zap.Logger, cfg Config) *Service {
+// NewService builds the provisioning service. recorder persists the audit
+// entries of user-initiated switch changes; without it those changes fail
+// closed instead of running unaudited.
+func NewService(db *gorm.DB, pool *PortPool, orch Orchestrator, recorder audit.TxRecorder, logger *zap.Logger, cfg Config) *Service {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	return &Service{db: db, pool: pool, orch: orch, logger: logger, cfg: cfg}
+	return &Service{
+		db:       db,
+		pool:     pool,
+		orch:     orch,
+		recorder: recorder,
+		checker:  hostPortChecker,
+		logger:   logger,
+		cfg:      cfg,
+	}
+}
+
+// SetPortChecker replaces the host port availability check. Tests use it to
+// stay independent of the host's port state; nil restores the default.
+func (s *Service) SetPortChecker(c PortChecker) {
+	if c == nil {
+		c = hostPortChecker
+	}
+	s.checker = c
 }
 
 // snapshot is the subset written to ServerGroup.ConfigSnapshot. It never
@@ -81,6 +107,132 @@ type snapshot struct {
 // ErrProvisioningDisabled is returned when a queued job finds that the
 // organization was deprovisioned after the job was enqueued.
 var ErrProvisioningDisabled = errors.New("provisioning disabled for this organization")
+
+// State is the provisioning switch plus the deployment it permits. Status is
+// disabled when the operator turned provisioning off, otherwise it is pending
+// (no deployment row yet) or the ServerGroup state.
+type State struct {
+	Enabled bool
+	Status  string
+}
+
+// Switch-derived status values. Deployment statuses reuse the ServerGroup
+// state constants so the API and the database never disagree.
+const (
+	StatusDisabled = "disabled"
+	StatusPending  = "pending"
+)
+
+// State reports the provisioning switch and deployment status of an
+// organization.
+func (s *Service) State(ctx context.Context, orgID uint) (State, error) {
+	if err := store.RequireOrgID(orgID); err != nil {
+		return State{}, err
+	}
+
+	var org model.Organization
+	if err := s.db.WithContext(ctx).
+		Select("id", "provisioning_disabled").
+		First(&org, orgID).Error; err != nil {
+		return State{}, fmt.Errorf("load organization: %w", err)
+	}
+	if org.ProvisioningDisabled {
+		return State{Enabled: false, Status: StatusDisabled}, nil
+	}
+
+	var row model.ServerGroup
+	err := store.ScopedByOrg(s.db.WithContext(ctx), orgID).First(&row).Error
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		return State{Enabled: true, Status: StatusPending}, nil
+	case err != nil:
+		return State{}, fmt.Errorf("load server group: %w", err)
+	}
+	return State{Enabled: true, Status: row.State}, nil
+}
+
+// SetEnabled flips the organization's provisioning switch. Disabling removes
+// the deployment first and records the intent in the same transaction as the
+// audit entry; enabling only clears the intent and leaves the actual deploy to
+// the provisioning queue. The second return value reports whether the stored
+// state changed, so callers can skip both the audit fallback and the enqueue on
+// an idempotent request.
+func (s *Service) SetEnabled(ctx context.Context, orgID, actorID uint, enabled bool) (State, bool, error) {
+	if err := store.RequireOrgID(orgID); err != nil {
+		return State{}, false, err
+	}
+	if s.recorder == nil {
+		return State{}, false, errors.New("provision: no audit recorder configured")
+	}
+
+	current, err := s.State(ctx, orgID)
+	if err != nil {
+		return State{}, false, err
+	}
+	if current.Enabled == enabled {
+		return current, false, nil
+	}
+
+	// Container removal cannot join the database transaction, so it runs
+	// first: a failed removal leaves the flag untouched (fail closed).
+	var removed *model.ServerGroup
+	if !enabled {
+		removed, err = s.removeDeployment(ctx, orgID)
+		if err != nil {
+			return State{}, false, err
+		}
+	}
+
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		detail := map[string]any{"enabled": enabled, "removed_deployment": removed != nil}
+		if removed != nil {
+			if err := store.ScopedByOrg(tx, orgID).Delete(&model.ServerGroup{}, removed.ID).Error; err != nil {
+				return err
+			}
+			detail["hbbs_port"] = removed.HbbsPort
+			detail["hbbr_port"] = removed.HbbrPort
+		}
+		if err := tx.Model(&model.Organization{}).
+			Where("id = ?", orgID).
+			Update("provisioning_disabled", !enabled).Error; err != nil {
+			return err
+		}
+		return s.recordTx(tx, audit.Entry{
+			OrganizationID: orgID,
+			ActorUserID:    actorID,
+			Action:         "organization.provisioning.update",
+			TargetType:     "organization",
+			TargetID:       fmt.Sprint(orgID),
+			Detail:         detail,
+		})
+	})
+	if err != nil {
+		if removed != nil {
+			// The containers are gone but the flag did not commit: the row must
+			// not keep claiming a deployment that no longer exists.
+			s.markFailed(removed, err)
+		}
+		return State{}, false, err
+	}
+	if removed != nil {
+		s.notifyDeprovisioned(orgID)
+	}
+
+	state, err := s.State(ctx, orgID)
+	if err != nil {
+		return State{}, true, err
+	}
+	return state, true, nil
+}
+
+// recordTx writes one audit entry inside the caller's transaction; a missing
+// recorder is a wiring error and must abort the mutation.
+func (s *Service) recordTx(tx *gorm.DB, entry audit.Entry) error {
+	if s.recorder == nil {
+		return errors.New("provision: no audit recorder configured")
+	}
+	return s.recorder.RecordTx(tx, entry)
+}
 
 // ProvisionForOrg provisions an organization on behalf of an explicit request.
 // It clears an earlier deprovision, so a deliberate removal can be followed by a
@@ -251,28 +403,41 @@ func (s *Service) PendingOrgIDs(ctx context.Context, afterID uint, limit int) ([
 	return missing, all[len(all)-1], nil
 }
 
+// removeDeployment stops the organization's containers. A nil row with a nil
+// error means nothing was deployed. A failed removal keeps the row in the
+// failed state (the ports stay reserved) and returns the error.
+func (s *Service) removeDeployment(ctx context.Context, orgID uint) (*model.ServerGroup, error) {
+	var row model.ServerGroup
+	err := store.ScopedByOrg(s.db, orgID).First(&row).Error
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		return nil, nil
+	case err != nil:
+		return nil, fmt.Errorf("load server group: %w", err)
+	}
+
+	name := fmt.Sprintf("panel-org-%d", orgID)
+	if err := s.orch.Remove(cleanupContext(ctx), name); err != nil {
+		s.markFailed(&row, fmt.Errorf("remove deployment: %w", err))
+		return nil, fmt.Errorf("remove deployment: %w", err)
+	}
+	return &row, nil
+}
+
 // Deprovision removes the deployment and frees the ports.
 func (s *Service) Deprovision(ctx context.Context, orgID uint) error {
 	if err := store.RequireOrgID(orgID); err != nil {
 		return err
 	}
 
-	var row model.ServerGroup
-	if err := store.ScopedByOrg(s.db, orgID).First(&row).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			// Nothing is deployed yet, but the intent still has to stop the
-			// reconciler from provisioning this organization later.
-			return s.setProvisioningDisabled(orgID, true)
-		}
-		return fmt.Errorf("load server group: %w", err)
+	row, err := s.removeDeployment(ctx, orgID)
+	if err != nil {
+		return err
 	}
-
-	name := fmt.Sprintf("panel-org-%d", orgID)
-	if err := s.orch.Remove(cleanupContext(ctx), name); err != nil {
-		// Keep the row: the containers may still exist, so the ports stay
-		// reserved instead of being handed to another organization.
-		s.markFailed(&row, fmt.Errorf("remove deployment: %w", err))
-		return fmt.Errorf("remove deployment: %w", err)
+	if row == nil {
+		// Nothing is deployed yet, but the intent still has to stop the
+		// reconciler from provisioning this organization later.
+		return s.setProvisioningDisabled(orgID, true)
 	}
 
 	// Persist the deprovision intent together with the row deletion: otherwise

@@ -12,7 +12,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"gorm.io/gorm"
 
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/provision"
@@ -25,15 +27,70 @@ const (
 )
 
 type fixture struct {
-	st      store.Store
-	pool    *provision.PortPool
-	orch    *provision.MockOrchestrator
-	svc     *provision.Service
-	logs    *bytes.Buffer
-	dataDir string
+	st       store.Store
+	pool     *provision.PortPool
+	orch     *provision.MockOrchestrator
+	svc      *provision.Service
+	recorder *fakeRecorder
+	logs     *bytes.Buffer
+	dataDir  string
+}
+
+// fakeRecorder captures the audit entries written inside a transaction and can
+// simulate an audit outage, which must roll the transaction back.
+type fakeRecorder struct {
+	mu      sync.Mutex
+	entries []audit.Entry
+	fail    error
+}
+
+func newFakeRecorder() *fakeRecorder { return &fakeRecorder{} }
+
+func (f *fakeRecorder) RecordTx(_ *gorm.DB, e audit.Entry) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail != nil {
+		return f.fail
+	}
+	f.entries = append(f.entries, e)
+	return nil
+}
+
+func (f *fakeRecorder) snapshot() []audit.Entry {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]audit.Entry, len(f.entries))
+	copy(out, f.entries)
+	return out
+}
+
+func (f *fakeRecorder) actions() []string {
+	entries := f.snapshot()
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, e.Action)
+	}
+	return out
+}
+
+func (f *fakeRecorder) setFail(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fail = err
+}
+
+func (f *fakeRecorder) reset() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.entries = nil
 }
 
 func newFixture(t *testing.T) *fixture {
+	t.Helper()
+	return newFixtureWithRecorder(t, newFakeRecorder())
+}
+
+func newFixtureWithRecorder(t *testing.T, recorder *fakeRecorder) *fixture {
 	t.Helper()
 	dsn := fmt.Sprintf("file:prov_%d?mode=memory&cache=shared", time.Now().UnixNano())
 	st, err := store.Open(config.DatabaseConfig{Driver: "sqlite", DSN: dsn})
@@ -52,15 +109,24 @@ func newFixture(t *testing.T) *fixture {
 	orch := &provision.MockOrchestrator{}
 	pool := provision.NewPortPool(st.DB, testPortStart, testPortEnd)
 	dataDir := t.TempDir()
+	// A typed nil pointer would still satisfy the interface, so only assign the
+	// fake when the test asked for a recorder.
+	var rec audit.TxRecorder
+	if recorder != nil {
+		rec = recorder
+	}
 	return &fixture{
-		st:      *st,
-		pool:    pool,
-		orch:    orch,
-		dataDir: dataDir,
-		svc: provision.NewService(st.DB, pool, orch, zap.New(core), provision.Config{
+		st:       *st,
+		pool:     pool,
+		orch:     orch,
+		dataDir:  dataDir,
+		recorder: recorder,
+		svc: provision.NewService(st.DB, pool, orch, rec, zap.New(core), provision.Config{
 			Image:     "rustdesk/rustdesk-server:test",
 			RelayHost: "relay.test",
 			DataDir:   dataDir,
+			PortStart: testPortStart,
+			PortEnd:   testPortEnd,
 		}),
 		logs: buf,
 	}
@@ -410,4 +476,196 @@ func TestDeprovision_RemovalFailure_DoesNotNotify(t *testing.T) {
 
 	require.Error(t, f.svc.Deprovision(context.Background(), org.ID))
 	require.False(t, called, "a failed removal must not stop the tailers")
+}
+
+func TestState_DerivesFromFlagAndRow(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "state-org")
+
+	st, err := f.svc.State(context.Background(), org.ID)
+	require.NoError(t, err)
+	require.True(t, st.Enabled)
+	require.Equal(t, provision.StatusPending, st.Status)
+
+	_, err = f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.NoError(t, err)
+	st, err = f.svc.State(context.Background(), org.ID)
+	require.NoError(t, err)
+	require.True(t, st.Enabled)
+	require.Equal(t, model.ServerGroupDeployed, st.Status)
+
+	// The flag is the operator's intent and wins over a leftover row.
+	require.NoError(t, f.st.DB.Model(&model.Organization{}).Where("id = ?", org.ID).
+		Update("provisioning_disabled", true).Error)
+	st, err = f.svc.State(context.Background(), org.ID)
+	require.NoError(t, err)
+	require.False(t, st.Enabled)
+	require.Equal(t, provision.StatusDisabled, st.Status)
+}
+
+func TestSetEnabled_DisableWithoutDeployment(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "disable-org")
+
+	st, changed, err := f.svc.SetEnabled(context.Background(), org.ID, 7, false)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.False(t, st.Enabled)
+	require.Equal(t, provision.StatusDisabled, st.Status)
+
+	var stored model.Organization
+	require.NoError(t, f.st.DB.First(&stored, org.ID).Error)
+	require.True(t, stored.ProvisioningDisabled)
+
+	entries := f.recorder.snapshot()
+	require.Len(t, entries, 1)
+	require.Equal(t, "organization.provisioning.update", entries[0].Action)
+	require.EqualValues(t, 7, entries[0].ActorUserID)
+	require.Equal(t, "organization", entries[0].TargetType)
+	require.Equal(t, fmt.Sprint(org.ID), entries[0].TargetID)
+	require.EqualValues(t, org.ID, entries[0].OrganizationID)
+	require.Equal(t, false, entries[0].Detail["enabled"])
+	require.Equal(t, false, entries[0].Detail["removed_deployment"])
+}
+
+func TestSetEnabled_DisableRemovesDeployment(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "disable-deployed")
+	_, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.NoError(t, err)
+
+	var notified []uint
+	f.svc.OnDeprovisioned(func(orgID uint) { notified = append(notified, orgID) })
+
+	st, changed, err := f.svc.SetEnabled(context.Background(), org.ID, 9, false)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, provision.StatusDisabled, st.Status)
+	require.Contains(t, f.orch.Removed, fmt.Sprintf("panel-org-%d", org.ID))
+	require.Equal(t, []uint{org.ID}, notified)
+
+	var count int64
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Model(&model.ServerGroup{}).Count(&count).Error)
+	require.Zero(t, count, "disabling must free the ports")
+
+	entries := f.recorder.snapshot()
+	require.Len(t, entries, 1)
+	require.Equal(t, true, entries[0].Detail["removed_deployment"])
+	require.EqualValues(t, testPortStart, entries[0].Detail["hbbs_port"])
+	require.EqualValues(t, testPortStart+3, entries[0].Detail["hbbr_port"])
+}
+
+func TestSetEnabled_DisableRemovalFailureKeepsRow(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "stuck-disable")
+	_, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.NoError(t, err)
+	f.recorder.reset()
+	f.orch.RemoveErr = errors.New("docker unavailable")
+
+	_, changed, err := f.svc.SetEnabled(context.Background(), org.ID, 3, false)
+	require.Error(t, err)
+	require.False(t, changed)
+	require.Contains(t, err.Error(), "remove deployment")
+
+	var stored model.Organization
+	require.NoError(t, f.st.DB.First(&stored, org.ID).Error)
+	require.False(t, stored.ProvisioningDisabled, "the flag must only change after removal succeeds")
+
+	var row model.ServerGroup
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).First(&row).Error)
+	require.Equal(t, model.ServerGroupFailed, row.State)
+	require.Empty(t, f.recorder.actions())
+}
+
+func TestSetEnabled_EnableClearsFlag(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "enable-org")
+	_, _, err := f.svc.SetEnabled(context.Background(), org.ID, 1, false)
+	require.NoError(t, err)
+	f.recorder.reset()
+
+	st, changed, err := f.svc.SetEnabled(context.Background(), org.ID, 2, true)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.True(t, st.Enabled)
+	require.Equal(t, provision.StatusPending, st.Status)
+
+	var stored model.Organization
+	require.NoError(t, f.st.DB.First(&stored, org.ID).Error)
+	require.False(t, stored.ProvisioningDisabled)
+
+	entries := f.recorder.snapshot()
+	require.Len(t, entries, 1)
+	require.EqualValues(t, 2, entries[0].ActorUserID)
+	require.Equal(t, true, entries[0].Detail["enabled"])
+}
+
+func TestSetEnabled_NoopIsSilent(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "noop-org")
+	_, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.NoError(t, err)
+	f.recorder.reset()
+	f.orch.Removed = nil
+
+	st, changed, err := f.svc.SetEnabled(context.Background(), org.ID, 1, true)
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Equal(t, model.ServerGroupDeployed, st.Status)
+	require.Empty(t, f.recorder.actions())
+	require.Empty(t, f.orch.Removed, "a no-op must not remove the deployment")
+
+	_, _, err = f.svc.SetEnabled(context.Background(), org.ID, 1, false)
+	require.NoError(t, err)
+	f.orch.Removed = nil
+	_, changed, err = f.svc.SetEnabled(context.Background(), org.ID, 1, false)
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Empty(t, f.orch.Removed, "a repeated disable must not remove containers twice")
+}
+
+func TestSetEnabled_NoRecorderFailsClosed(t *testing.T) {
+	f := newFixtureWithRecorder(t, nil)
+	org := f.org(t, "no-recorder")
+
+	_, _, err := f.svc.SetEnabled(context.Background(), org.ID, 1, false)
+	require.ErrorContains(t, err, "no audit recorder configured")
+
+	var stored model.Organization
+	require.NoError(t, f.st.DB.First(&stored, org.ID).Error)
+	require.False(t, stored.ProvisioningDisabled, "without an audit recorder nothing may change")
+
+	require.NoError(t, f.st.DB.Model(&model.Organization{}).Where("id = ?", org.ID).
+		Update("provisioning_disabled", true).Error)
+	_, _, err = f.svc.SetEnabled(context.Background(), org.ID, 1, true)
+	require.ErrorContains(t, err, "no audit recorder configured")
+	require.NoError(t, f.st.DB.First(&stored, org.ID).Error)
+	require.True(t, stored.ProvisioningDisabled)
+}
+
+func TestSetEnabled_AuditFailureRollsBackFlag(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "audit-down")
+	_, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.NoError(t, err)
+
+	called := false
+	f.svc.OnDeprovisioned(func(uint) { called = true })
+	f.recorder.setFail(errors.New("audit down"))
+
+	_, changed, err := f.svc.SetEnabled(context.Background(), org.ID, 5, false)
+	require.ErrorContains(t, err, "audit down")
+	require.False(t, changed)
+	require.False(t, called, "the hook must not fire before the flag commits")
+	require.Contains(t, f.orch.Removed, fmt.Sprintf("panel-org-%d", org.ID))
+
+	var stored model.Organization
+	require.NoError(t, f.st.DB.First(&stored, org.ID).Error)
+	require.False(t, stored.ProvisioningDisabled, "the rolled-back flag must stay false")
+
+	var row model.ServerGroup
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).First(&row).Error)
+	require.Equal(t, model.ServerGroupFailed, row.State,
+		"the containers are gone, so the row must not keep claiming deployed")
 }

@@ -125,11 +125,14 @@ func main() {
 		st.DB,
 		provision.NewPortPool(st.DB, cfg.Provision.PortStart, cfg.Provision.PortEnd),
 		orch,
+		auditor,
 		lg,
 		provision.Config{
 			Image:     cfg.Provision.Image,
 			RelayHost: cfg.Provision.RelayHost,
 			DataDir:   cfg.Provision.DataDir,
+			PortStart: cfg.Provision.PortStart,
+			PortEnd:   cfg.Provision.PortEnd,
 		},
 	)
 	provQueue := provision.NewQueue(provSvc, cfg.Provision.Workers, 0, lg)
