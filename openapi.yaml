@@ -1238,6 +1238,54 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v1/orgs/{orgId}/devices/{deviceId}:
+    patch:
+      operationId: setDeviceDisabled
+      summary: 停用或恢复设备
+      description: |
+        停用设备（v0.8.0，`device.write`）：拒绝该设备的新客户端认领、compat 登录、
+        心跳与系统信息上报，并在同一事务撤销该设备在本组织的活跃 compat 会话；
+        票据兑换被拒绝（409）。恢复后设备重新可被认领与连接。设备历史（心跳、会话、
+        审计）保留。重复设置同一状态为 200 no-op。设备不属于本组织或不存在返回 404。
+      tags:
+        - devices
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: deviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceDisableRequest"
+      responses:
+        "200":
+          description: 更新后的设备
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/v1/orgs/{orgId}/sessions:
     get:
       operationId: listSessions
@@ -2571,6 +2619,7 @@ components:
         - status
         - last_seen_at
         - bound
+        - disabled
       properties:
         id:
           type: integer
@@ -2594,6 +2643,9 @@ components:
         bound:
           type: boolean
           description: 是否已绑定某个客户端实例（重置绑定后为 false）
+        disabled:
+          type: boolean
+          description: 设备是否已被停用（停用期间拒绝认领、心跳与票据兑换）
 
     DeviceCreateRequest:
       type: object
@@ -2634,6 +2686,15 @@ components:
           description: 重置绑定的理由，随审计留存
           minLength: 1
           maxLength: 500
+
+    DeviceDisableRequest:
+      type: object
+      required:
+        - disabled
+      properties:
+        disabled:
+          type: boolean
+          description: true 停用设备，false 恢复
 
     DevicePage:
       type: object

@@ -715,7 +715,10 @@ type ApprovalStatus string
 // Device defines model for Device.
 type Device struct {
 	// Bound 是否已绑定某个客户端实例（重置绑定后为 false）
-	Bound      bool         `json:"bound"`
+	Bound bool `json:"bound"`
+
+	// Disabled 设备是否已被停用（停用期间拒绝认领、心跳与票据兑换）
+	Disabled   bool         `json:"disabled"`
 	Id         int64        `json:"id"`
 	LastSeenAt *time.Time   `json:"last_seen_at"`
 	Name       string       `json:"name"`
@@ -730,6 +733,12 @@ type DeviceStatus string
 type DeviceCreateRequest struct {
 	Name       string `json:"name"`
 	RustdeskId string `json:"rustdesk_id"`
+}
+
+// DeviceDisableRequest defines model for DeviceDisableRequest.
+type DeviceDisableRequest struct {
+	// Disabled true 停用设备，false 恢复
+	Disabled bool `json:"disabled"`
 }
 
 // DeviceListResponse defines model for DeviceListResponse.
@@ -1845,6 +1854,9 @@ type DecideApprovalJSONRequestBody = ApprovalDecisionRequest
 // CreateDeviceJSONRequestBody defines body for CreateDevice for application/json ContentType.
 type CreateDeviceJSONRequestBody = DeviceCreateRequest
 
+// SetDeviceDisabledJSONRequestBody defines body for SetDeviceDisabled for application/json ContentType.
+type SetDeviceDisabledJSONRequestBody = DeviceDisableRequest
+
 // ResetDeviceBindingJSONRequestBody defines body for ResetDeviceBinding for application/json ContentType.
 type ResetDeviceBindingJSONRequestBody = DeviceRebindRequest
 
@@ -1940,6 +1952,9 @@ type ServerInterface interface {
 	// CreateDevice 注册设备
 	// (POST /api/v1/orgs/{orgId}/devices)
 	CreateDevice(c *gin.Context, orgId int64)
+	// SetDeviceDisabled 停用或恢复设备
+	// (PATCH /api/v1/orgs/{orgId}/devices/{deviceId})
+	SetDeviceDisabled(c *gin.Context, orgId int64, deviceId int64)
 	// DeviceHeartbeat 设备心跳
 	// (POST /api/v1/orgs/{orgId}/devices/{deviceId}/heartbeat)
 	DeviceHeartbeat(c *gin.Context, orgId int64, deviceId int64)
@@ -2641,6 +2656,40 @@ func (siw *ServerInterfaceWrapper) CreateDevice(c *gin.Context) {
 	}
 
 	siw.Handler.CreateDevice(c, orgId)
+}
+
+// SetDeviceDisabled operation middleware
+func (siw *ServerInterfaceWrapper) SetDeviceDisabled(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "deviceId" -------------
+	var deviceId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "deviceId", c.Param("deviceId"), &deviceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.SetDeviceDisabled(c, orgId, deviceId)
 }
 
 // DeviceHeartbeat operation middleware
@@ -3505,6 +3554,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/auth/resend-verification", wrapper.ResendVerification)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/heartbeat", wrapper.DeviceHeartbeat)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/rebind", wrapper.ResetDeviceBinding)
+	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId", wrapper.SetDeviceDisabled)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/sessions", wrapper.ListSessions)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/sessions/:sessionId", wrapper.GetSession)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/policies", wrapper.ListPolicies)

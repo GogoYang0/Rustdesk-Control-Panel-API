@@ -47,6 +47,7 @@ type deviceView struct {
 	RustdeskId string `json:"rustdesk_id"`
 	Status     string `json:"status"`
 	Bound      bool   `json:"bound"`
+	Disabled   bool   `json:"disabled"`
 }
 
 func createOrg(t *testing.T, h *harness, token, name string) int64 {

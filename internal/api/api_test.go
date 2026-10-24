@@ -72,13 +72,16 @@ func newHarnessWith(t *testing.T, tune func(*api.Deps)) *harness {
 
 	issuer := auth.NewIssuer("test-secret", time.Minute, time.Hour)
 	svc := auth.NewService(st.DB, issuer, nil)
+	auditor := audit.NewGormAuditor(st.DB)
 
 	deps := api.Deps{
-		DB:            st.DB,
-		Auth:          svc,
-		Devices:       device.NewService(st.DB, nil, nil),
+		DB:   st.DB,
+		Auth: svc,
+		// The device service refuses unaudited mutations, so the harness wires
+		// the same transactional auditor the production entrypoint uses.
+		Devices:       device.NewService(st.DB, auditor, nil),
 		Issuer:        issuer,
-		Auditor:       audit.NewGormAuditor(st.DB),
+		Auditor:       auditor,
 		AccessTTL:     time.Minute,
 		RefreshTTL:    time.Hour,
 		InvitationTTL: time.Hour,

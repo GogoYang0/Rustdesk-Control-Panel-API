@@ -72,11 +72,14 @@ func (a *AdminAPI) DeviceHeartbeat(c *gin.Context, orgId int64, deviceId int64) 
 	}
 
 	dev, err := a.deps.Devices.Heartbeat(c.Request.Context(), uint(orgId), uint(deviceId))
-	if errors.Is(err, device.ErrDeviceNotFound) {
+	switch {
+	case errors.Is(err, device.ErrDeviceNotFound):
 		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "device not found")
 		return
-	}
-	if err != nil {
+	case errors.Is(err, device.ErrDeviceDisabled):
+		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "device is disabled")
+		return
+	case err != nil:
 		a.deps.Logger.Error("device heartbeat failed")
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not record heartbeat")
 		return
@@ -195,6 +198,50 @@ func (a *AdminAPI) ResetDeviceBinding(c *gin.Context, orgId int64, deviceId int6
 	})
 }
 
+// SetDeviceDisabled stops or restores a device. The service revokes the
+// device's active compat sessions and records the audit entry in one
+// transaction, so one call produces exactly one audit row.
+func (a *AdminAPI) SetDeviceDisabled(c *gin.Context, orgId int64, deviceId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 || deviceId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid id")
+		return
+	}
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermDeviceWrite) {
+		return
+	}
+
+	var req gen.DeviceDisableRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "disabled is required")
+		return
+	}
+
+	dev, err := a.deps.Devices.SetDisabled(c.Request.Context(), uint(orgId), uint(deviceId), uid, req.Disabled)
+	switch {
+	case errors.Is(err, device.ErrDeviceNotFound):
+		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "device not found")
+		return
+	case errors.Is(err, device.ErrInvalidInput):
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
+		return
+	case err != nil:
+		a.deps.Logger.Error("set device disabled failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not update device")
+		return
+	}
+
+	c.Set(contextAuditRecorded, true)
+	c.JSON(http.StatusOK, gen.DeviceResponse{
+		Code:    gen.ErrorCodeOk,
+		Message: "ok",
+		Data:    a.deviceToAPI(dev),
+	})
+}
+
 // deviceToAPI maps a stored device to the contract representation.
 func (a *AdminAPI) deviceToAPI(d *model.Device) gen.Device {
 	status := device.Status(d, a.deps.Now())
@@ -205,5 +252,6 @@ func (a *AdminAPI) deviceToAPI(d *model.Device) gen.Device {
 		Status:     gen.DeviceStatus(status),
 		LastSeenAt: d.LastSeenAt,
 		Bound:      d.BoundUUID != "",
+		Disabled:   d.Disabled,
 	}
 }

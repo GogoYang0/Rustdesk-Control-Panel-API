@@ -147,7 +147,7 @@ func (a *AdminAPI) writeTicketError(c *gin.Context, err error) {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
 	case errors.Is(err, session.ErrDeviceNotFound), errors.Is(err, session.ErrTicketNotFound):
 		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, err.Error())
-	case errors.Is(err, session.ErrOutsideWindow), errors.Is(err, session.ErrConflict):
+	case errors.Is(err, session.ErrOutsideWindow), errors.Is(err, session.ErrConflict), errors.Is(err, session.ErrDeviceDisabled):
 		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, err.Error())
 	default:
 		// Unexpected failures stay opaque to the client but not to operators.

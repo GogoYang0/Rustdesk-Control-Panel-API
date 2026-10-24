@@ -171,6 +171,11 @@ func (s *Server) login(c *gin.Context) {
 					"device is already bound to another client; ask your administrator to reset it")
 				return
 			}
+			if errors.Is(err, errDeviceDisabled) {
+				compatError(c, http.StatusForbidden,
+					"device is disabled; ask your administrator to re-enable it")
+				return
+			}
 			compatError(c, http.StatusInternalServerError, "login failed")
 			return
 		}
@@ -203,6 +208,9 @@ func (s *Server) login(c *gin.Context) {
 // claimed by another client instance.
 var errDeviceBound = errors.New("device already bound")
 
+// errDeviceDisabled reports a login against a device an administrator stopped.
+var errDeviceDisabled = errors.New("device is disabled")
+
 // claimDeviceTx binds the logging-in device to the organization on the
 // caller's transaction, and returns the device's binding generation for the
 // session snapshot. The client protocol carries no ownership secret
@@ -234,6 +242,9 @@ func (s *Server) claimDeviceTx(tx *gorm.DB, orgID uint, rustdeskID, uuid string)
 		dev = *created
 	case err != nil:
 		return 0, err
+	}
+	if dev.Disabled {
+		return 0, errDeviceDisabled
 	}
 	if dev.BoundUUID != "" && uuid != "" && dev.BoundUUID != uuid {
 		return 0, errDeviceBound
@@ -282,6 +293,12 @@ func (s *Server) claimDeviceTx(tx *gorm.DB, orgID uint, rustdeskID, uuid string)
 	}
 	if err := finalRead.First(&final, dev.ID).Error; err != nil {
 		return 0, err
+	}
+	// A disable that committed while this login was claiming must win: the
+	// final read takes the row lock on the served dialects, so a login that
+	// raced the administrator is refused instead of persisting a session.
+	if final.Disabled {
+		return 0, errDeviceDisabled
 	}
 	return final.BindingGeneration, nil
 }

@@ -121,11 +121,16 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `POST /api/v1/orgs/{orgId}/devices` | 注册设备（`device.write` 权限） |
 | `POST .../devices/{deviceId}/heartbeat` | 管理端手动心跳（`source=api`，30s 窗口合并） |
 | `POST .../devices/{deviceId}/rebind` | 重置绑定（`device.write`；`reason` 必填 1..500） |
+| `PATCH .../devices/{deviceId}` | 停用/恢复设备（v0.8.0，`device.write`）：`{disabled}`，停用在同一事务撤销该设备的活跃 compat 会话并写 `device.disable` 审计（恢复写 `device.enable`）；重复设置同一状态为 200 no-op。停用期间该设备拒绝客户端认领、compat 登录、心跳与系统信息（后者静默丢弃），票据兑换返回 409 |
 
 > **v0.5.0 起设备换机/重装的恢复流程有管理面入口**：管理员列出设备 → 调 `rebind` 填理由 →
 > 客户端重新登录自动重新认领。**仍不提供 `DELETE` 设备**（硬删除会留下心跳/会话/审计悬空引用；
 > 恢复用 rebind 即可，见增量设计文档）。`Device.bound` 表示当前是否绑定某个客户端实例。
 > compat 侧的认领与绑定语义见 §4。
+>
+> **v0.8.0 设备停用（`disabled`）与 `rebind` 正交**：停用只阻断访问、不解除绑定，恢复后同一客户端
+> （同 uuid）可直接重新登录；要换机仍走 `rebind`。停用不清理历史心跳/会话/审计，这些记录保持
+> 可追溯。停用与恢复是幂等的，重复设置同值不产生审计。
 
 ### 3.4 地址簿
 
@@ -226,6 +231,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 - **绑定代数**：每次绑定变更（首次认领、管理员改绑）使 `binding_generation` +1；登录会话快照当时的代数，`heartbeat`/`sysinfo` 校验会话代数与设备当前代数一致——**旧代数会话的活动被丢弃**（不落库、不推进 `last_seen_at`）。绑定的所有权语义因此不依赖 uuid 的保密性
 - uuid 非秘密且登录时不校验归属——这正是心跳必须按 `(uuid, device_id)` 双条件解析会话的原因
 - `id` ≤ 64 字符、`uuid` ≤ 128 字符，超长直接 400（防止「绑定成功但会话建不出来」的死锁状态）
+- **设备停用（v0.8.0）**：`disabled=true` 的设备拒绝 compat 登录（403，提示联系管理员恢复；停用时的活跃会话已在同一事务撤销），心跳与系统信息静默丢弃（不刷新 `last_seen_at`），票据兑换返回 409。恢复后保持原绑定，同 uuid 客户端可直接登录。
 - **成员失去组织访问时**（v0.6.0 已接线：`DELETE .../members/{userId}` 与 admin→member 降级；v0.8.0 起也包括会籍停用）在**同一事务**内调用 `compatapi.RevokeOrgSessions` 撤销该用户在该组织的全部活跃 compat 会话（#39）；撤销失败整体回滚、请求 500，绝不返回成功。撤销后该用户的 compat 请求 401、免凭据心跳不再生效。停用的会籍对 compat 登录不可见：该组织不参与 `email#orgID` 选择，单会籍用户登录返回 403（提示会籍已停用）。
 - **会话有效 ≠ 会籍有效（v0.7.1 起）**：所有 compat 消费者在会话有效后**复核当前 membership**——`requireSession`（Bearer 端点）与免凭据 heartbeat/sysinfo 的 `activeSessionByUUID` 都要求 `(user_id, organization_id)` 仍存在且未停用（v0.8.0 增加 `disabled=false` 条件）。这样即使登录与成员移除/停用并发、会话在撤销之后才落库，后续请求也会 401，免凭据心跳也不会再刷新设备。membership 查询失败按“非成员”处理（fail closed）。
 
