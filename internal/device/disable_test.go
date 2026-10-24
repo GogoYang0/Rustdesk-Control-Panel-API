@@ -47,7 +47,9 @@ func TestSetDisabled_DisablesRevokesSessionsAndAudits(t *testing.T) {
 	ctx := context.Background()
 
 	dev := seedDevice(t, st, org.ID, "1001", "workstation", "uuid-disable")
-	sess := seedDeviceSession(t, st, org.ID, 9, dev.RustdeskID, "jti-disable")
+	// The jti index is unique across the whole database: on the shared
+	// Postgres/MySQL test database each test needs its own value.
+	sess := seedDeviceSession(t, st, org.ID, 9, dev.RustdeskID, "jti-disable-"+t.Name())
 
 	updated, err := svc.SetDisabled(ctx, org.ID, dev.ID, 7, true)
 	require.NoError(t, err)
@@ -113,7 +115,7 @@ func TestSetDisabled_AuditFailureRollsBack(t *testing.T) {
 	st, svc, recorder, org := newDisableFixture(t)
 	ctx := context.Background()
 	dev := seedDevice(t, st, org.ID, "1001", "workstation", "uuid-disable")
-	sess := seedDeviceSession(t, st, org.ID, 9, dev.RustdeskID, "jti-disable")
+	sess := seedDeviceSession(t, st, org.ID, 9, dev.RustdeskID, "jti-disable-"+t.Name())
 	recorder.fail = errors.New("audit down")
 
 	_, err := svc.SetDisabled(ctx, org.ID, dev.ID, 7, true)
