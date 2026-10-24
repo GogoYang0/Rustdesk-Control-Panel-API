@@ -20,8 +20,9 @@ Go 1.27 · Gin · GORM（SQLite / MySQL / PostgreSQL）· Viper · zap · Testif
 
 - **多租户**：组织 / 成员 / 角色；租户条件由 GORM 插件统一注入，缺上下文时 fail-closed（`WHERE 1 = 0`）。
 - **认证**：邮箱验证闭环（未验证不可登录）、邀请与邀请码、刷新令牌轮换、登录限流与锁定。
-- **设备**：登记（RustDesk ID 指纹 upsert）、客户端心跳、在线判定窗口。
-- **供应**：以 `docker` CLI 编排每组织的 hbbs/hbbr 容器（端口池、异步队列、补偿扫描）。
+- **设备**：登记（RustDesk ID 指纹 upsert）、分页列表与改绑（`rebind`，绑定代数 +1 并审计）、客户端心跳、在线判定窗口。
+- **供应**：以 `docker` CLI 编排每组织的 hbbs/hbbr 容器（端口池、异步队列、补偿扫描）；支持按组织开关（`GET/PUT /api/v1/orgs/{orgId}/provisioning`）、启动端口探测与部署前预检。
+- **会话治理**：连接票据（面板发起）、连接策略（并发/时长/时段/事前审批）、panel+native 会话记录、审批中心与违规告警（M3/v0.4.0）。
 - **审计**：领域事件与调用方事务同事务写入（`audit.TxRecorder`），中间件兜底。
 - **RustDesk 客户端兼容层**：`/api/*` 方言（登录 / 会话 / 心跳 / 设备列表 / 地址簿），让原生客户端把本面板当作 API 服务器。
 - **日志采集**：跟随 hbbs/hbbr 容器日志，按配置规则解析为租户隔离的 `LogEvent`；连接类日志同时作为设备心跳的辅助源。
@@ -118,7 +119,7 @@ logcollect:
 - 首次连接只跟随新日志（`--tail 0`），**不回填历史**——面板不是日志归档系统。重连从最后观测时间戳继续（`+1ns`，因为 docker 的 `--since` 是闭区间）。
 - 规则按顺序匹配，首个命中生效；命名捕获组进入事件 `detail`，特殊组 `device` 提取 RustDesk ID 用于设备关联。未匹配行只计数、不中断采集；规则配错会每分钟告警一次。
 - 容器重启时按 5s → 60s 指数退避重连；组织下线时其 tailer 立即退场。
-- 事件保留 30 天，启动时清理。
+- 事件保留 30 天；保留期清扫默认每 6h 且启动时执行一次（`logcollect.retentionSweepInterval` 设为 0 可禁用清扫）。
 - 连接类日志会顺带刷新设备心跳（`DeviceHeartbeat.Source = "log"`，与客户端上报的 `"api"` 区分），同一设备 30 秒内只记一次。
 
 `configs/config.yaml` 内置的规则与 `rustdesk/rustdesk-server:1.1.11` 的 `flexi_logger::opt_format` 对齐（`[时间戳] 级别 [源文件:行] 消息`，注意级别在第一个方括号**之外**、时间戳本身含空格），并有测试加载该文件、用该格式的样例行验证；换成其他镜像时请按 `docker logs -t <container>` 的真实输出校准。
@@ -134,12 +135,15 @@ internal/authz/      # 角色与成员校验
 internal/addressbook/# 地址簿（个人簿、修订号、冲突检测）
 internal/device/     # 设备登记、心跳、在线判定
 internal/provision/  # hbbs/hbbr 容器编排、端口池、异步队列
+internal/session/    # 会话治理（票据、策略、审批、告警、native 会话追踪）
 internal/logcollect/ # 日志采集（解析器、tailer、服务）
 internal/audit/      # 审计记录（事务内写入）
 internal/mail/       # 邮件投递（devMode / SMTP）
 internal/limit/      # 登录限流与锁定
+internal/logger/     # zap 日志初始化
 internal/model/      # 数据模型（租户注册表）
 internal/store/      # 打开数据库、租户作用域助手与插件
+internal/worker/     # 周期任务调度（panic 隔离、系统审计）
 configs/             # 配置样例
 openapi.yaml         # OpenAPI 3.1 契约（唯一事实源）
 gen/                 # oapi-codegen 生成产物（提交入库）

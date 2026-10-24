@@ -35,7 +35,7 @@ func newBoundaryDeps(t *testing.T) api.Deps {
 	return api.Deps{
 		DB:            st.DB,
 		Auth:          auth.NewService(st.DB, auth.NewIssuer("boundary-secret", time.Minute, time.Hour), nil),
-		Devices:       device.NewService(st.DB, nil),
+		Devices:       device.NewService(st.DB, nil, nil),
 		Issuer:        auth.NewIssuer("boundary-secret", time.Minute, time.Hour),
 		AccessTTL:     time.Minute,
 		RefreshTTL:    time.Hour,

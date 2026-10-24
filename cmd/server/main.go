@@ -110,7 +110,13 @@ func main() {
 
 	issuer := auth.NewIssuer(cfg.Auth.Secret, cfg.Auth.AccessTTL, cfg.Auth.RefreshTTL)
 	authSvc := auth.NewService(st.DB, issuer, zapLogger{lg})
-	deviceSvc := device.NewService(st.DB, nil)
+
+	// The shared audit recorder: the device service needs it before the API
+	// layer is built (binding resets must commit with their audit entry), so it
+	// is created here rather than next to the session service.
+	auditor := audit.NewGormAuditor(st.DB)
+
+	deviceSvc := device.NewService(st.DB, auditor, nil)
 	orch := &provision.DockerOrchestrator{
 		OrgLabel:  cfg.Provision.OrgLabel,
 		RoleLabel: cfg.Provision.RoleLabel,
@@ -119,11 +125,14 @@ func main() {
 		st.DB,
 		provision.NewPortPool(st.DB, cfg.Provision.PortStart, cfg.Provision.PortEnd),
 		orch,
+		auditor,
 		lg,
 		provision.Config{
 			Image:     cfg.Provision.Image,
 			RelayHost: cfg.Provision.RelayHost,
 			DataDir:   cfg.Provision.DataDir,
+			PortStart: cfg.Provision.PortStart,
+			PortEnd:   cfg.Provision.PortEnd,
 		},
 	)
 	provQueue := provision.NewQueue(provSvc, cfg.Provision.Workers, 0, lg)
@@ -172,10 +181,6 @@ func main() {
 		})
 	}
 
-	// The shared audit recorder: everything below (session service, worker
-	// scheduler) writes through it.
-	auditor := audit.NewGormAuditor(st.DB)
-
 	// One session service shared by the API handlers, the log collector's
 	// session hook and the background tasks: all three mutate the same rows,
 	// so they must see one clock and one audit recorder.
@@ -201,6 +206,25 @@ func main() {
 		lg.Info("log collector enabled", zap.Int("rules", parser.Rules()))
 	}
 
+	// The port pool only knows the panel's own allocations: report ports held by
+	// other processes before the first deploy, so an operator can fix the range
+	// instead of watching provisioning fail. The probe is advisory and never
+	// blocks startup.
+	if conflicts, perr := provSvc.ProbePortRange(rootCtx); perr != nil {
+		lg.Warn("provision port range probe failed", zap.Error(perr))
+	} else if len(conflicts) > 0 {
+		ports := make([]string, 0, len(conflicts))
+		for _, c := range conflicts {
+			ports = append(ports, c.String())
+		}
+		lg.Warn("provision port range has externally occupied ports",
+			zap.Int("count", len(conflicts)), zap.Strings("ports", ports))
+	} else {
+		lg.Info("provision port range is free",
+			zap.Uint16("start", cfg.Provision.PortStart),
+			zap.Uint16("end", cfg.Provision.PortEnd))
+	}
+
 	provQueue.Start(rootCtx)
 
 	// Background workers: the retention sweep must run regardless of whether
@@ -222,12 +246,6 @@ func main() {
 	})
 	sched := worker.New(lg, auditor)
 
-	// One session service shared by the API handlers, the log collector's
-	// session hook and the background tasks: all three mutate the same rows,
-	// so they must see one clock and one audit recorder.
-
-	// (sessionSvc is created above, before the collector, so the hook can be
-	// wired into it.)
 	// Pending approvals expire on their own deadline; the sweep only marks
 	// the rows so the inbox stops offering dead requests.
 	if err := sched.Register(worker.Task{
@@ -330,6 +348,7 @@ func main() {
 			Auth:           authSvc,
 			Devices:        deviceSvc,
 			ProvisionQueue: provQueue,
+			Provisioning:   provSvc,
 			OrgsPerUser:    cfg.Provision.MaxOrgsPerUser,
 			Issuer:         issuer,
 			Auditor:        auditor,

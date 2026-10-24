@@ -1,6 +1,6 @@
 # 后端 API 规范（Backend API Specification）
 
-> 适用版本：v0.4.0（M3，交付中；已发布版本为 v0.3.0）。本文档是对 `openapi.yaml`（契约 v0.4.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
+> 适用版本：v0.7.0（按组织 provisioning 开关 + 宿主端口探测；已发布版本为 v0.4.0）。本文档是对 `openapi.yaml`（契约 v0.7.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
 > 本文档随版本演进持续更新——契约变更的 PR 必须同步更新 §3/§4。
 > 配套文档：[部署指南](deployment.md) · [运维指南](operations.md)
 
@@ -71,7 +71,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 - **日志事件**（`GET .../log-events`）：`since` + `limit`（`limit` 取值 1–200，默认 50），筛选参数为 `since`、`deviceId`、`level`（`source` 是返回字段，不是筛选参数）
 - **compat 地址簿 peers**（`POST /api/ab/peers`，仅个人簿）：query 参数 `ab`（地址簿 guid，必填）、`current`（页码，默认 1，最小 1）、`pageSize`（默认 100，最小 1，超过 500 截断为 500）
 - **会话 / 审批 / 告警**（§3.6）：`page`（默认 1，最小 1）+ `pageSize`（默认 50，1–200）；响应形状为 `data.items/page/page_size/total`（这三张表无限增长，需要总数支撑翻页）
-- 设备暂无列表端点（见 §3.3 与 [#43](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/43)）
+- 设备（§3.3）：`page`（默认 1，最小 1）+ `pageSize`（默认 50，1–200），响应形状 `data.items/page/page_size/total`（与会话/审批/告警一致）
 
 ---
 
@@ -91,20 +91,36 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | 端点 | 说明 |
 |---|---|
 | `POST /api/v1/orgs` | 创建组织（受 `maxOrgsPerUser` 限制，超出 409/400） |
-| `GET /api/v1/orgs/{orgId}/members` | 成员列表及其组织内角色（**组织成员即可访问**，不限 admin）。成员的角色在邀请时指定；v0.4.0 仍无独立的角色变更/成员移除端点（契约里 members 路径只有 GET）——移除成员的管理端点落地时必须接线会话撤销（见 §4.1 与运维指南 §2.1） |
+| `GET /api/v1/orgs/{orgId}/members` | 成员列表及其组织内角色（**组织成员即可访问**，不限 admin） |
+| `DELETE /api/v1/orgs/{orgId}/members/{userId}` | 移除成员（v0.6.0，`member.manage`）：同一事务内撤销该用户在本组织的活跃 compat 会话；admin 不能移除 owner、不能移除自己、不能移除最后一个 owner |
+| `PATCH /api/v1/orgs/{orgId}/members/{userId}` | 变更角色（v0.6.0，**仅 owner**）：只接受 `admin`/`member`；降级（admin→member）在同一事务撤销该用户的 compat 会话，提升不撤销；不能改自己或 owner |
 | `POST /api/v1/orgs/{orgId}/invitations` | 邀请（admin 生成邀请令牌，邮件下发） |
 | `POST /api/v1/invitations/accept` | 接受邀请并加入组织 |
+| `GET /api/v1/orgs/{orgId}/provisioning` | 查询供应开关与部署状态（v0.7.0，**仅 owner**）：`enabled` + `state`（`disabled`/`pending`/`provisioning`/`deployed`/`failed`） |
+| `PUT /api/v1/orgs/{orgId}/provisioning` | 启用/禁用供应（v0.7.0，**仅 owner**，幂等）：`enabled=false` 同步下线容器、删 `ServerGroup` 行、置标记并在同一事务写 `organization.provisioning.update` 审计；`enabled=true` 只清标记，由供应队列异步部署 |
 
 角色矩阵：`owner` > `admin` > `member`。共享地址簿写操作需要 `addressbook` 权限（owner/admin）；**列表地址簿只需组织成员身份**。
+
+> **v0.7.0 provisioning 开关语义**：关闭是"下线"而不是"暂停"——已有容器会被同步删除、端口释放；再次开启不会复活旧容器，而是重新排队部署（`provision.dataDir/org-<orgId>/` 中的数据保留，但**每次部署都会重新生成服务端密钥对**，客户端需重新配对）。
+> 容器删除失败时请求 500、`ServerGroup` 行标 `failed`、开关不变（fail closed）；`failed` 行不会因开启而自动重试（既有语义：清理失败的部署需人工处理）。
+> 重复关闭不是纯 no-op：若并发部署在开关置位后才落库，重复关闭会下线该遗留部署并写一条审计（自愈）。
+> 若关闭时部署仍在进行（行状态 `provisioning` 且未超过 10 分钟宽限），`ServerGroup` 行会保留为容器清理锚点，审计 `Detail` 含 `deferred_cleanup=true` 与 `state=provisioning`；在途部署在持久化时自行收尾。回滚删除失败时行标 `failed`，重复关闭会立即重试清理；进程在部署中途中断时行保持 `provisioning`，重复关闭需等待宽限期后再清理。响应仍为 `disabled`。
+> 响应字段 `cleanup_pending` 区分“关闭意图已记录”与“容器清理已完成”：`disabled` 且 `cleanup_pending=true` 表示仍有待清理的部署行（在途部署回滚或重复关闭重试），`false` 表示清理已完成。
+> 供给队列满时开启仍返回 200，reconciler（2 分钟）会补入队。宿主端口探测与预检属于服务内部行为，不在契约内，语义见 [运维指南](operations.md) §6。
 
 ### 3.3 设备
 
 | 端点 | 说明 |
 |---|---|
+| `GET /api/v1/orgs/{orgId}/devices` | 分页列表（`device.read`，成员可读；`q`/`bound`/`page`/`pageSize`） |
 | `POST /api/v1/orgs/{orgId}/devices` | 注册设备（`device.write` 权限） |
 | `POST .../devices/{deviceId}/heartbeat` | 管理端手动心跳（`source=api`，30s 窗口合并） |
+| `POST .../devices/{deviceId}/rebind` | 重置绑定（`device.write`；`reason` 必填 1..500） |
 
-> ⚠️ **v0.3.0 契约没有设备列表（GET）与设备删除（DELETE）端点**。compat 客户端换机后「管理员删除设备行 → 重新认领」的恢复流程因此**没有管理面入口**，当前唯一手段是直接操作数据库（跟踪：[#43](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/43)）。compat 侧的认领与绑定语义见 §4。
+> **v0.5.0 起设备换机/重装的恢复流程有管理面入口**：管理员列出设备 → 调 `rebind` 填理由 →
+> 客户端重新登录自动重新认领。**仍不提供 `DELETE` 设备**（硬删除会留下心跳/会话/审计悬空引用；
+> 恢复用 rebind 即可，见增量设计文档）。`Device.bound` 表示当前是否绑定某个客户端实例。
+> compat 侧的认领与绑定语义见 §4。
 
 ### 3.4 地址簿
 
@@ -197,14 +213,15 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `POST /api/logout` | 撤销当前 compat 会话 |
 | `POST /api/currentUser` | 当前用户信息（需 Bearer） |
 
-**设备认领语义**（重要，v0.4.0 事务化 + 绑定代数）：
+**设备认领语义**（重要，v0.4.0 事务化 + 绑定代数，v0.5.0 增加重置入口）：
 
-- 设备 `rustdesk_id` 首次登录时绑定提交的 `uuid`（`BoundUUID`）；之后不同 uuid 登录同一 id → 403 `device is already bound`（仅管理员删除设备行可解绑）
+- 设备 `rustdesk_id` 首次登录时绑定提交的 `uuid`（`BoundUUID`）；之后不同 uuid 登录同一 id → 403 `device is already bound`
+- **解绑只能走管理面 `POST .../devices/{deviceId}/rebind`**（owner/admin，`reason` 必填随审计留存）：清 `BoundUUID` + `binding_generation` **无条件 +1** + 同一事务写 `device.binding.reset` 审计。重复调用每次成功且代数继续 +1；审计写失败则绑定不变（fail closed）。**禁止直接改 `bound_uuid` 而不动代数**——那会让旧会话仍能驱动设备。重置不吊销旧机 token，重新认领是**先到先得**：要让新机赢得认领，先让旧机退出登录/离线
 - **认领与会话在同一事务**（#40）：认领成功但会话落库失败会整体回滚——不存在「已绑定但无会话」或「有会话无绑定」的中间态；被拒绝的认领（403）不会留下任何会话行
 - **绑定代数**：每次绑定变更（首次认领、管理员改绑）使 `binding_generation` +1；登录会话快照当时的代数，`heartbeat`/`sysinfo` 校验会话代数与设备当前代数一致——**旧代数会话的活动被丢弃**（不落库、不推进 `last_seen_at`）。绑定的所有权语义因此不依赖 uuid 的保密性
 - uuid 非秘密且登录时不校验归属——这正是心跳必须按 `(uuid, device_id)` 双条件解析会话的原因
 - `id` ≤ 64 字符、`uuid` ≤ 128 字符，超长直接 400（防止「绑定成功但会话建不出来」的死锁状态）
-- **成员失去组织访问时**（移出组织、角色降级——当这些管理端点落地时），对应路径**必须**调用 `compatapi.RevokeOrgSessions` 立即撤销该用户在该组织的全部 compat 会话（#39）；撤销后管理请求 401、凭据免验心跳不再生效。约束已写入运维指南 §2.1
+- **成员失去组织访问时**（v0.6.0 已接线：`DELETE .../members/{userId}` 与 admin→member 降级）在**同一事务**内调用 `compatapi.RevokeOrgSessions` 撤销该用户在该组织的全部活跃 compat 会话（#39）；撤销失败整体回滚、请求 500，绝不返回成功。撤销后该用户的 compat 请求 401、免凭据心跳不再生效
 
 ### 4.2 心跳与系统信息（无凭据）
 
@@ -256,7 +273,9 @@ compat 地址簿**只服务个人地址簿**（`EnsurePersonalBook`），共享�
 
 ## 6. 版本与变更管理
 
-- 契约版本随 release 演进：v0.1.0（M0）→ v0.2.0（M1）→ v0.3.0（M2）→ **v0.4.0（M3，会话治理域）**
+- 契约版本随 release 演进：v0.1.0（M0）→ v0.2.0（M1）→ v0.3.0（M2）→ v0.4.0（M3，会话治理域）→ v0.5.0（设备管理增量）→ v0.6.0（成员离场）→ **v0.7.0（按组织 provisioning 开关）**
+- v0.6.0 为**加性变更**：新增 `DELETE/PATCH /orgs/{orgId}/members/{userId}`（#39 撤销接线）。v0.5.0 的新增设备列表与 rebind 保持不变；仍不提供 `DELETE` 设备
+- v0.7.0 为**加性变更**：新增 `GET/PUT /orgs/{orgId}/provisioning` 与 `ProvisioningStatus.cleanup_pending`；既有端点请求/响应形状与字段不变
 - v0.4.0 的既有端点请求/响应形状与字段零变更，但 **`ErrorCode` 新增了 `approval_required`**（所有响应共用的 `code` 类型）——对穷尽式 `switch` 或严格枚举解码的客户端属于 **breaking**，重新生成类型后必须处理该分支（0.x 阶段按 C10 以 minor 承载，见 §3.6）
 - **契约变更的 PR 必须同步更新本文档 §3/§4 与 `openapi.yaml`**，并保证 `go generate` 零漂移
 - WEB/APP 从 `openapi.yaml` 生成类型：任何字段/形状变更视为 breaking，需在 PR 描述中标注

@@ -38,7 +38,7 @@ func sessionHookFixture(t *testing.T, hook SessionRecorder, line string) (*Servi
 	stv, orgs := serviceFixture(t, "hook-org")
 	st := &stv
 	org := orgs[0]
-	devices := device.NewService(st.DB, nil)
+	devices := device.NewService(st.DB, nil, nil)
 	dev, err := devices.Register(context.Background(), org.ID, device.RegisterInput{
 		Name: "office-pc", RustdeskID: "123456789",
 	})

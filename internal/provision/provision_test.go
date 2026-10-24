@@ -12,7 +12,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"gorm.io/gorm"
 
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/provision"
@@ -25,15 +27,70 @@ const (
 )
 
 type fixture struct {
-	st      store.Store
-	pool    *provision.PortPool
-	orch    *provision.MockOrchestrator
-	svc     *provision.Service
-	logs    *bytes.Buffer
-	dataDir string
+	st       store.Store
+	pool     *provision.PortPool
+	orch     *provision.MockOrchestrator
+	svc      *provision.Service
+	recorder *fakeRecorder
+	logs     *bytes.Buffer
+	dataDir  string
+}
+
+// fakeRecorder captures the audit entries written inside a transaction and can
+// simulate an audit outage, which must roll the transaction back.
+type fakeRecorder struct {
+	mu      sync.Mutex
+	entries []audit.Entry
+	fail    error
+}
+
+func newFakeRecorder() *fakeRecorder { return &fakeRecorder{} }
+
+func (f *fakeRecorder) RecordTx(_ *gorm.DB, e audit.Entry) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail != nil {
+		return f.fail
+	}
+	f.entries = append(f.entries, e)
+	return nil
+}
+
+func (f *fakeRecorder) snapshot() []audit.Entry {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]audit.Entry, len(f.entries))
+	copy(out, f.entries)
+	return out
+}
+
+func (f *fakeRecorder) actions() []string {
+	entries := f.snapshot()
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, e.Action)
+	}
+	return out
+}
+
+func (f *fakeRecorder) setFail(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fail = err
+}
+
+func (f *fakeRecorder) reset() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.entries = nil
 }
 
 func newFixture(t *testing.T) *fixture {
+	t.Helper()
+	return newFixtureWithRecorder(t, newFakeRecorder())
+}
+
+func newFixtureWithRecorder(t *testing.T, recorder *fakeRecorder) *fixture {
 	t.Helper()
 	dsn := fmt.Sprintf("file:prov_%d?mode=memory&cache=shared", time.Now().UnixNano())
 	st, err := store.Open(config.DatabaseConfig{Driver: "sqlite", DSN: dsn})
@@ -52,17 +109,30 @@ func newFixture(t *testing.T) *fixture {
 	orch := &provision.MockOrchestrator{}
 	pool := provision.NewPortPool(st.DB, testPortStart, testPortEnd)
 	dataDir := t.TempDir()
+	// A typed nil pointer would still satisfy the interface, so only assign the
+	// fake when the test asked for a recorder.
+	var rec audit.TxRecorder
+	if recorder != nil {
+		rec = recorder
+	}
+	svc := provision.NewService(st.DB, pool, orch, rec, zap.New(core), provision.Config{
+		Image:     "rustdesk/rustdesk-server:test",
+		RelayHost: "relay.test",
+		DataDir:   dataDir,
+		PortStart: testPortStart,
+		PortEnd:   testPortEnd,
+	})
+	// Tests must not depend on the host's port state; conflict cases replace
+	// this checker explicitly.
+	svc.SetPortChecker(func(uint16, string) error { return nil })
 	return &fixture{
-		st:      *st,
-		pool:    pool,
-		orch:    orch,
-		dataDir: dataDir,
-		svc: provision.NewService(st.DB, pool, orch, zap.New(core), provision.Config{
-			Image:     "rustdesk/rustdesk-server:test",
-			RelayHost: "relay.test",
-			DataDir:   dataDir,
-		}),
-		logs: buf,
+		st:       *st,
+		pool:     pool,
+		orch:     orch,
+		dataDir:  dataDir,
+		recorder: recorder,
+		svc:      svc,
+		logs:     buf,
 	}
 }
 
@@ -410,4 +480,607 @@ func TestDeprovision_RemovalFailure_DoesNotNotify(t *testing.T) {
 
 	require.Error(t, f.svc.Deprovision(context.Background(), org.ID))
 	require.False(t, called, "a failed removal must not stop the tailers")
+}
+
+func TestState_DerivesFromFlagAndRow(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "state-org")
+
+	st, err := f.svc.State(context.Background(), org.ID)
+	require.NoError(t, err)
+	require.True(t, st.Enabled)
+	require.Equal(t, provision.StatusPending, st.Status)
+
+	_, err = f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.NoError(t, err)
+	st, err = f.svc.State(context.Background(), org.ID)
+	require.NoError(t, err)
+	require.True(t, st.Enabled)
+	require.Equal(t, model.ServerGroupDeployed, st.Status)
+
+	// The flag is the operator's intent and wins over a leftover row.
+	require.NoError(t, f.st.DB.Model(&model.Organization{}).Where("id = ?", org.ID).
+		Update("provisioning_disabled", true).Error)
+	st, err = f.svc.State(context.Background(), org.ID)
+	require.NoError(t, err)
+	require.False(t, st.Enabled)
+	require.Equal(t, provision.StatusDisabled, st.Status)
+	require.True(t, st.CleanupPending, "the deployed row still needs teardown")
+}
+
+func TestSetEnabled_DisableWithoutDeployment(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "disable-org")
+
+	st, changed, err := f.svc.SetEnabled(context.Background(), org.ID, 7, false)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.False(t, st.Enabled)
+	require.Equal(t, provision.StatusDisabled, st.Status)
+	require.False(t, st.CleanupPending)
+
+	var stored model.Organization
+	require.NoError(t, f.st.DB.First(&stored, org.ID).Error)
+	require.True(t, stored.ProvisioningDisabled)
+
+	entries := f.recorder.snapshot()
+	require.Len(t, entries, 1)
+	require.Equal(t, "organization.provisioning.update", entries[0].Action)
+	require.EqualValues(t, 7, entries[0].ActorUserID)
+	require.Equal(t, "organization", entries[0].TargetType)
+	require.Equal(t, fmt.Sprint(org.ID), entries[0].TargetID)
+	require.EqualValues(t, org.ID, entries[0].OrganizationID)
+	require.Equal(t, false, entries[0].Detail["enabled"])
+	require.Equal(t, false, entries[0].Detail["removed_deployment"])
+}
+
+func TestSetEnabled_DisableRemovesDeployment(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "disable-deployed")
+	_, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.NoError(t, err)
+
+	var notified []uint
+	f.svc.OnDeprovisioned(func(orgID uint) { notified = append(notified, orgID) })
+
+	st, changed, err := f.svc.SetEnabled(context.Background(), org.ID, 9, false)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, provision.StatusDisabled, st.Status)
+	require.False(t, st.CleanupPending)
+	require.Contains(t, f.orch.Removed, fmt.Sprintf("panel-org-%d", org.ID))
+	require.Equal(t, []uint{org.ID}, notified)
+
+	var count int64
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Model(&model.ServerGroup{}).Count(&count).Error)
+	require.Zero(t, count, "disabling must free the ports")
+
+	entries := f.recorder.snapshot()
+	require.Len(t, entries, 1)
+	require.Equal(t, true, entries[0].Detail["removed_deployment"])
+	require.EqualValues(t, testPortStart, entries[0].Detail["hbbs_port"])
+	require.EqualValues(t, testPortStart+3, entries[0].Detail["hbbr_port"])
+}
+
+func TestSetEnabled_DisableRemovalFailureKeepsRow(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "stuck-disable")
+	_, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.NoError(t, err)
+	f.recorder.reset()
+	f.orch.RemoveErr = errors.New("docker unavailable")
+
+	_, changed, err := f.svc.SetEnabled(context.Background(), org.ID, 3, false)
+	require.Error(t, err)
+	require.False(t, changed)
+	require.Contains(t, err.Error(), "remove deployment")
+
+	var stored model.Organization
+	require.NoError(t, f.st.DB.First(&stored, org.ID).Error)
+	require.False(t, stored.ProvisioningDisabled, "the flag must only change after removal succeeds")
+
+	var row model.ServerGroup
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).First(&row).Error)
+	require.Equal(t, model.ServerGroupFailed, row.State)
+	require.Empty(t, f.recorder.actions())
+}
+
+func TestSetEnabled_EnableClearsFlag(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "enable-org")
+	_, _, err := f.svc.SetEnabled(context.Background(), org.ID, 1, false)
+	require.NoError(t, err)
+	f.recorder.reset()
+
+	st, changed, err := f.svc.SetEnabled(context.Background(), org.ID, 2, true)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.True(t, st.Enabled)
+	require.Equal(t, provision.StatusPending, st.Status)
+
+	var stored model.Organization
+	require.NoError(t, f.st.DB.First(&stored, org.ID).Error)
+	require.False(t, stored.ProvisioningDisabled)
+
+	entries := f.recorder.snapshot()
+	require.Len(t, entries, 1)
+	require.EqualValues(t, 2, entries[0].ActorUserID)
+	require.Equal(t, true, entries[0].Detail["enabled"])
+}
+
+func TestSetEnabled_NoopIsSilent(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "noop-org")
+	_, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.NoError(t, err)
+	f.recorder.reset()
+	f.orch.Removed = nil
+
+	st, changed, err := f.svc.SetEnabled(context.Background(), org.ID, 1, true)
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Equal(t, model.ServerGroupDeployed, st.Status)
+	require.Empty(t, f.recorder.actions())
+	require.Empty(t, f.orch.Removed, "a no-op must not remove the deployment")
+
+	_, _, err = f.svc.SetEnabled(context.Background(), org.ID, 1, false)
+	require.NoError(t, err)
+	f.orch.Removed = nil
+	_, changed, err = f.svc.SetEnabled(context.Background(), org.ID, 1, false)
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Empty(t, f.orch.Removed, "a repeated disable must not remove containers twice")
+}
+
+func TestSetEnabled_AlreadyDisabledCleansLateDeployment(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "late-deployment")
+
+	_, _, err := f.svc.SetEnabled(context.Background(), org.ID, 1, false)
+	require.NoError(t, err)
+	f.recorder.reset()
+
+	// A deploy that started before the switch was flipped persisted its row
+	// after the flag was already true. The switch must take it down instead of
+	// reporting a no-op forever.
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Create(&model.ServerGroup{
+		OrganizationID: org.ID,
+		HbbsPort:       testPortStart,
+		HbbrPort:       testPortStart + 3,
+		State:          model.ServerGroupDeployed,
+	}).Error)
+
+	var notified []uint
+	f.svc.OnDeprovisioned(func(orgID uint) { notified = append(notified, orgID) })
+
+	state, changed, err := f.svc.SetEnabled(context.Background(), org.ID, 2, false)
+	require.NoError(t, err)
+	require.True(t, changed, "removing a late deployment is a real change")
+	require.Equal(t, provision.StatusDisabled, state.Status)
+	require.False(t, state.CleanupPending)
+	require.Contains(t, f.orch.Removed, fmt.Sprintf("panel-org-%d", org.ID))
+	require.Equal(t, []uint{org.ID}, notified)
+
+	var count int64
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Model(&model.ServerGroup{}).Count(&count).Error)
+	require.Zero(t, count)
+
+	entries := f.recorder.snapshot()
+	require.Len(t, entries, 1)
+	require.Equal(t, true, entries[0].Detail["removed_deployment"])
+
+	// Once the row is gone the switch is a true no-op again.
+	_, changed, err = f.svc.SetEnabled(context.Background(), org.ID, 3, false)
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Empty(t, f.recorder.actions()[1:])
+}
+
+func TestSetEnabled_DisableDuringProvisioningDefersCleanup(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "in-flight-disable")
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Create(&model.ServerGroup{
+		OrganizationID: org.ID,
+		HbbsPort:       testPortStart,
+		HbbrPort:       testPortStart + 3,
+		State:          model.ServerGroupProvisioning,
+	}).Error)
+
+	state, changed, err := f.svc.SetEnabled(context.Background(), org.ID, 4, false)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, provision.StatusDisabled, state.Status)
+	require.True(t, state.CleanupPending, "the in-flight row is still the cleanup anchor")
+	require.Empty(t, f.orch.Removed,
+		"an in-flight deploy still owns the containers and cleans them up itself")
+
+	var count int64
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Model(&model.ServerGroup{}).Count(&count).Error)
+	require.EqualValues(t, 1, count, "the row is the cleanup pointer and must survive")
+
+	entries := f.recorder.snapshot()
+	require.Len(t, entries, 1)
+	require.Equal(t, false, entries[0].Detail["removed_deployment"])
+	require.Equal(t, true, entries[0].Detail["deferred_cleanup"])
+	require.Equal(t, model.ServerGroupProvisioning, entries[0].Detail["state"])
+}
+
+func TestSetEnabled_DisableCleansStaleProvisioning(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "stale-provisioning")
+	row := model.ServerGroup{
+		OrganizationID: org.ID,
+		HbbsPort:       testPortStart,
+		HbbrPort:       testPortStart + 3,
+		State:          model.ServerGroupProvisioning,
+	}
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Create(&row).Error)
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Model(&model.ServerGroup{}).
+		Where("id = ?", row.ID).
+		UpdateColumn("updated_at", time.Now().Add(-11*time.Minute)).Error)
+
+	state, changed, err := f.svc.SetEnabled(context.Background(), org.ID, 5, false)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, provision.StatusDisabled, state.Status)
+	require.Contains(t, f.orch.Removed, fmt.Sprintf("panel-org-%d", org.ID),
+		"a provisioning row older than the deploy deadline is safe to clean")
+
+	var count int64
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Model(&model.ServerGroup{}).Count(&count).Error)
+	require.Zero(t, count)
+
+	entries := f.recorder.snapshot()
+	require.Len(t, entries, 1)
+	require.Equal(t, true, entries[0].Detail["removed_deployment"])
+}
+
+func TestSetEnabled_AlreadyDisabledKeepsFreshProvisioning(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "repeat-in-flight")
+	_, _, err := f.svc.SetEnabled(context.Background(), org.ID, 1, false)
+	require.NoError(t, err)
+	f.recorder.reset()
+
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Create(&model.ServerGroup{
+		OrganizationID: org.ID,
+		HbbsPort:       testPortStart,
+		HbbrPort:       testPortStart + 3,
+		State:          model.ServerGroupProvisioning,
+	}).Error)
+
+	_, changed, err := f.svc.SetEnabled(context.Background(), org.ID, 2, false)
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Empty(t, f.orch.Removed)
+	require.Empty(t, f.recorder.actions())
+
+	var count int64
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Model(&model.ServerGroup{}).Count(&count).Error)
+	require.EqualValues(t, 1, count)
+}
+
+func TestSetEnabled_NoRecorderFailsClosed(t *testing.T) {
+	f := newFixtureWithRecorder(t, nil)
+	org := f.org(t, "no-recorder")
+
+	_, _, err := f.svc.SetEnabled(context.Background(), org.ID, 1, false)
+	require.ErrorContains(t, err, "no audit recorder configured")
+
+	var stored model.Organization
+	require.NoError(t, f.st.DB.First(&stored, org.ID).Error)
+	require.False(t, stored.ProvisioningDisabled, "without an audit recorder nothing may change")
+
+	require.NoError(t, f.st.DB.Model(&model.Organization{}).Where("id = ?", org.ID).
+		Update("provisioning_disabled", true).Error)
+	_, _, err = f.svc.SetEnabled(context.Background(), org.ID, 1, true)
+	require.ErrorContains(t, err, "no audit recorder configured")
+	require.NoError(t, f.st.DB.First(&stored, org.ID).Error)
+	require.True(t, stored.ProvisioningDisabled)
+}
+
+func TestSetEnabled_AuditFailureRollsBackFlag(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "audit-down")
+	_, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.NoError(t, err)
+
+	called := false
+	f.svc.OnDeprovisioned(func(uint) { called = true })
+	f.recorder.setFail(errors.New("audit down"))
+
+	_, changed, err := f.svc.SetEnabled(context.Background(), org.ID, 5, false)
+	require.ErrorContains(t, err, "audit down")
+	require.False(t, changed)
+	require.False(t, called, "the hook must not fire before the flag commits")
+	require.Contains(t, f.orch.Removed, fmt.Sprintf("panel-org-%d", org.ID))
+
+	var stored model.Organization
+	require.NoError(t, f.st.DB.First(&stored, org.ID).Error)
+	require.False(t, stored.ProvisioningDisabled, "the rolled-back flag must stay false")
+
+	var row model.ServerGroup
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).First(&row).Error)
+	require.Equal(t, model.ServerGroupFailed, row.State,
+		"the containers are gone, so the row must not keep claiming deployed")
+}
+
+// recordingChecker records every (port, network) pair the service probes and
+// fails the ones the test marked as occupied.
+type recordingChecker struct {
+	mu       sync.Mutex
+	calls    []string
+	failures map[string]error
+}
+
+func newRecordingChecker() *recordingChecker {
+	return &recordingChecker{failures: map[string]error{}}
+}
+
+func (r *recordingChecker) occupy(port uint16, network string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.failures[fmt.Sprintf("%d/%s", port, network)] = errors.New("bind: address already in use")
+}
+
+func (r *recordingChecker) check(port uint16, network string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := fmt.Sprintf("%d/%s", port, network)
+	r.calls = append(r.calls, key)
+	return r.failures[key]
+}
+
+func (r *recordingChecker) called(port uint16, network string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := fmt.Sprintf("%d/%s", port, network)
+	for _, call := range r.calls {
+		if call == key {
+			return true
+		}
+	}
+	return false
+}
+
+func TestProvision_PortConflictReleasesRow(t *testing.T) {
+	f := newFixture(t)
+	checker := newRecordingChecker()
+	checker.occupy(testPortStart, "tcp")
+	f.svc.SetPortChecker(checker.check)
+	org := f.org(t, "port-conflict")
+
+	_, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.ErrorIs(t, err, provision.ErrPortConflict)
+	require.Contains(t, err.Error(), fmt.Sprintf("%d/tcp", testPortStart))
+	require.Empty(t, f.orch.Deployed, "the deploy must not run into the conflict")
+
+	var count int64
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Model(&model.ServerGroup{}).Count(&count).Error)
+	require.Zero(t, count, "the failed preflight releases the ports instead of reserving them")
+}
+
+func TestProvision_UDPConflictOnMainPort(t *testing.T) {
+	f := newFixture(t)
+	checker := newRecordingChecker()
+	checker.occupy(testPortStart+1, "udp")
+	f.svc.SetPortChecker(checker.check)
+	org := f.org(t, "udp-conflict")
+
+	_, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.ErrorIs(t, err, provision.ErrPortConflict)
+	require.Contains(t, err.Error(), fmt.Sprintf("%d/udp", testPortStart+1))
+	require.Empty(t, f.orch.Deployed)
+}
+
+func TestProbePortRange_SkipsReservedBlocks(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "reserved")
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Create(&model.ServerGroup{
+		OrganizationID: org.ID,
+		HbbsPort:       testPortStart,
+		HbbrPort:       testPortStart + 3,
+		State:          model.ServerGroupDeployed,
+	}).Error)
+
+	checker := newRecordingChecker()
+	f.svc.SetPortChecker(checker.check)
+	conflicts, err := f.svc.ProbePortRange(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, conflicts)
+
+	for _, call := range []string{"21116/tcp", "21117/tcp", "21117/udp", "21118/tcp", "21119/tcp", "21120/tcp"} {
+		require.NotContains(t, checker.calls, call, "a reserved block must not be probed")
+	}
+	require.True(t, checker.called(testPortStart+5, "tcp"), "the next free block must be probed")
+	require.True(t, checker.called(testPortStart+6, "udp"))
+}
+
+func TestProbePortRange_ReportsExternalConflicts(t *testing.T) {
+	f := newFixture(t)
+	checker := newRecordingChecker()
+	checker.occupy(testPortStart+10, "tcp")
+	f.svc.SetPortChecker(checker.check)
+
+	conflicts, err := f.svc.ProbePortRange(context.Background())
+	require.NoError(t, err)
+	require.Len(t, conflicts, 1)
+	require.EqualValues(t, testPortStart+10, conflicts[0].Port)
+	require.Equal(t, "tcp", conflicts[0].Network)
+	require.Contains(t, conflicts[0].String(), fmt.Sprintf("%d/tcp", testPortStart+10))
+}
+
+func TestProbePortRange_InvalidRange(t *testing.T) {
+	f := newFixture(t)
+	svc := provision.NewService(f.st.DB, f.pool, f.orch, f.recorder, zap.NewNop(), provision.Config{
+		PortStart: testPortStart,
+		PortEnd:   testPortStart + provision.PortBlockSize - 2,
+	})
+	svc.SetPortChecker(func(uint16, string) error { return nil })
+	_, err := svc.ProbePortRange(context.Background())
+	require.Error(t, err)
+}
+
+// disablingOrchestrator simulates an operator disabling the organization while
+// the deploy is still running. Deploy does not hold the organization lock, so
+// the switch can run and the persist step must clean the containers up.
+type disablingOrchestrator struct {
+	provision.MockOrchestrator
+	svc   *provision.Service
+	orgID uint
+}
+
+func (o *disablingOrchestrator) Deploy(ctx context.Context, _ provision.InstanceSpec) error {
+	_, _, err := o.svc.SetEnabled(ctx, o.orgID, 9, false)
+	return err
+}
+
+// replacingOrchestrator simulates a failed attempt whose organization was
+// already disabled, re-enabled and redeployed: a newer row owns the shared
+// container name by the time the rollback would run.
+type replacingOrchestrator struct {
+	provision.MockOrchestrator
+	db       *gorm.DB
+	orgID    uint
+	oldRowID uint
+	newRowID uint
+}
+
+func (o *replacingOrchestrator) Deploy(_ context.Context, _ provision.InstanceSpec) error {
+	var old model.ServerGroup
+	if err := store.ScopedByOrg(o.db, o.orgID).First(&old).Error; err != nil {
+		return err
+	}
+	o.oldRowID = old.ID
+	if err := store.ScopedByOrg(o.db, o.orgID).Delete(&model.ServerGroup{}, old.ID).Error; err != nil {
+		return err
+	}
+	replacement := model.ServerGroup{
+		OrganizationID: o.orgID,
+		HbbsPort:       old.HbbsPort,
+		HbbrPort:       old.HbbrPort,
+		State:          model.ServerGroupDeployed,
+	}
+	if err := store.ScopedByOrg(o.db, o.orgID).Create(&replacement).Error; err != nil {
+		return err
+	}
+	o.newRowID = replacement.ID
+	return errors.New("deploy failed")
+}
+
+func TestProvision_FailedAttemptDoesNotRemoveNewerDeployment(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "replaced-org")
+	orch := &replacingOrchestrator{db: f.st.DB, orgID: org.ID}
+	svc := provision.NewService(f.st.DB, f.pool, orch, f.recorder, zap.NewNop(), provision.Config{
+		Image:     "rustdesk/rustdesk-server:test",
+		RelayHost: "relay.test",
+		DataDir:   t.TempDir(),
+		PortStart: testPortStart,
+		PortEnd:   testPortEnd,
+	})
+	svc.SetPortChecker(func(uint16, string) error { return nil })
+
+	_, err := svc.ProvisionForOrg(context.Background(), org.ID)
+	require.Error(t, err)
+	require.NotZero(t, orch.newRowID)
+	require.NotEqual(t, orch.oldRowID, orch.newRowID)
+	require.Empty(t, orch.Removed,
+		"the failed attempt must not remove containers that belong to the newer deployment")
+
+	var row model.ServerGroup
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).First(&row).Error)
+	require.Equal(t, orch.newRowID, row.ID)
+	require.Equal(t, model.ServerGroupDeployed, row.State)
+}
+
+// disableThenFailCleanupOrchestrator disables the organization mid-deploy and
+// makes the rollback removal fail, leaving the failed row as the only cleanup
+// pointer to the containers.
+type disableThenFailCleanupOrchestrator struct {
+	provision.MockOrchestrator
+	svc   *provision.Service
+	orgID uint
+}
+
+func (o *disableThenFailCleanupOrchestrator) Deploy(ctx context.Context, _ provision.InstanceSpec) error {
+	if _, _, err := o.svc.SetEnabled(ctx, o.orgID, 9, false); err != nil {
+		return err
+	}
+	o.RemoveErr = errors.New("docker remove failed")
+	return nil
+}
+
+func TestProvision_RollbackFailureAfterDisableKeepsRow(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "rollback-failure")
+	orch := &disableThenFailCleanupOrchestrator{orgID: org.ID}
+	svc := provision.NewService(f.st.DB, f.pool, orch, f.recorder, zap.NewNop(), provision.Config{
+		Image:     "rustdesk/rustdesk-server:test",
+		RelayHost: "relay.test",
+		DataDir:   t.TempDir(),
+		PortStart: testPortStart,
+		PortEnd:   testPortEnd,
+	})
+	orch.svc = svc
+	svc.SetPortChecker(func(uint16, string) error { return nil })
+
+	_, err := svc.ProvisionQueued(context.Background(), org.ID)
+	require.ErrorIs(t, err, provision.ErrProvisioningDisabled)
+
+	// The removal failure must leave the row behind: without it a repeated
+	// disable has no way to find the containers.
+	var stored model.ServerGroup
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).First(&stored).Error)
+	require.Equal(t, model.ServerGroupFailed, stored.State)
+
+	var orgRow model.Organization
+	require.NoError(t, f.st.DB.First(&orgRow, org.ID).Error)
+	require.True(t, orgRow.ProvisioningDisabled)
+
+	failedState, err := svc.State(context.Background(), org.ID)
+	require.NoError(t, err)
+	require.True(t, failedState.CleanupPending,
+		"the failed row is still the cleanup pointer")
+
+	// A repeated disable retries the cleanup and finally frees the row.
+	orch.RemoveErr = nil
+	state, changed, err := svc.SetEnabled(context.Background(), org.ID, 10, false)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, provision.StatusDisabled, state.Status)
+	require.False(t, state.CleanupPending)
+
+	var count int64
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Model(&model.ServerGroup{}).Count(&count).Error)
+	require.Zero(t, count)
+
+	entries := f.recorder.snapshot()
+	require.Len(t, entries, 2)
+	require.Equal(t, false, entries[0].Detail["removed_deployment"])
+	require.Equal(t, true, entries[1].Detail["removed_deployment"])
+}
+
+func TestProvision_DisabledDuringDeploy_CleansUpContainer(t *testing.T) {
+	f := newFixture(t)
+	org := f.org(t, "disabled-mid-deploy")
+	orch := &disablingOrchestrator{orgID: org.ID}
+	svc := provision.NewService(f.st.DB, f.pool, orch, f.recorder, zap.NewNop(), provision.Config{
+		Image:     "rustdesk/rustdesk-server:test",
+		RelayHost: "relay.test",
+		DataDir:   t.TempDir(),
+		PortStart: testPortStart,
+		PortEnd:   testPortEnd,
+	})
+	orch.svc = svc
+	svc.SetPortChecker(func(uint16, string) error { return nil })
+
+	_, err := svc.ProvisionQueued(context.Background(), org.ID)
+	require.ErrorIs(t, err, provision.ErrProvisioningDisabled)
+	require.Contains(t, orch.Removed, fmt.Sprintf("panel-org-%d", org.ID),
+		"a deploy that lost its row to a concurrent disable must remove its container")
+
+	var count int64
+	require.NoError(t, store.WithoutTenantScope(f.st.DB).Model(&model.ServerGroup{}).Count(&count).Error)
+	require.Zero(t, count)
 }

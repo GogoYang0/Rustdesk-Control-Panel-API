@@ -1,6 +1,6 @@
 # 部署指南（Deployment Guide）
 
-> 适用版本：v0.3.0（M2）。本文档随版本演进持续更新——每次发布前必须复核一遍。
+> 适用版本：v0.7.0（按组织 provisioning 开关 + 宿主端口探测；已发布基线 v0.4.0）。本文档随版本演进持续更新——每次发布前必须复核一遍。
 > 配套文档：[运维指南](operations.md) · [后端 API 规范](api-spec.md)
 
 ---
@@ -11,9 +11,16 @@
 |---|---|---|
 | 操作系统 | Linux（推荐）或 Windows | panel 本身是单一 Go 二进制 |
 | Go | 1.27+ | 仅构建时需要；发布产物为静态二进制 |
-| Docker | 20.10+；**生产使用 rootless Docker 或受限的 Docker socket proxy**（见 §8） | 使用 provisioning 功能时需要（provisioning 无独立开关，始终启用）：panel 经 Docker CLI 操作容器，实际地址用 `DOCKER_HOST` 环境变量或 Docker CLI context 指定，**不要默认依赖 rootful 原始 socket** |
+| Docker | 20.10+；**生产使用 rootless Docker 或受限的 Docker socket proxy**（见 §8） | 使用 provisioning 功能时需要（默认每组织自动供应，可用 `PUT /api/v1/orgs/{orgId}/provisioning` 按组织关闭）：panel 经 Docker CLI 操作容器，实际地址用 `DOCKER_HOST` 环境变量或 Docker CLI context 指定，**不要默认依赖 rootful 原始 socket** |
 | 数据库 | SQLite（默认）/ PostgreSQL / MySQL | 生产建议 PostgreSQL |
 | 端口 | `:8080`（panel API）、`21116–22115`（hbbs/hbbr，可配；逐端口协议分布见 §7——仅每组织的 `HbbsPort+1` 同时用 TCP+UDP，其余 TCP） | 反代后面只需暴露 panel 的 443 |
+
+> **provisioning 开关与端口探测**：不需要 RustDesk 服务端的组织，由 owner 调用
+> `PUT /api/v1/orgs/{orgId}/provisioning`（`enabled=false`）关闭并下线，避免占用端口与容器。
+> panel 启动时探测 `provision.portStart..portEnd`（跳过已有 `ServerGroup` 预留块），把面板外
+> 占用写入告警日志；部署前还会对本块端口做预检，冲突错误包含具体端口。探测绑定**本机 IPv4**
+> 端口（IPv6-only 监听不在探测范围），默认部署假定 panel 与 Docker 同宿主；`DOCKER_HOST`
+> 指向远端时探测结果不适用，需以端口规划为准。
 
 ---
 
@@ -201,9 +208,28 @@ server {
 
 ## 9. RustDesk 客户端接入
 
-客户端「ID/中继服务器」指向该组织分配的 hbbs/hbbr 地址（provision 时按 `relayHost` + 分配端口生成）。客户端登录面板走 **compat 层**（协议与官方客户端一致）：
+客户端需要填三个字段：**ID 服务器**、**中继服务器**、**API 服务器**。前两个指向该组织分配的 hbbs/hbbr 地址（provision 时按 `relayHost` + 分配端口生成）；第三个常被忽略，但填错会让客户端启动时白等约 40 秒。
+
+| 客户端字段 | 取值 |
+|---|---|
+| ID 服务器 | `<hbbs 宿主地址>:<id 端口>`（provision 端口块中的 hbbs 映射端口） |
+| 中继服务器 | `<hbbr 宿主地址>:<relay 端口>` |
+| API 服务器 | **显式填** `http://<面板地址>:8080`（面板的 compat 入口） |
+
+**API 服务器为什么必须显式填**：客户端在 `api-server` 为空时会自动推导为「ID 服务器端口 − 2」（源码 `rustdesk/src/common.rs::get_api_server_`）。这个端口通常没有 HTTP 服务，客户端会先 `POST /api/sysinfo` 被拒、再走 TCP proxy fallback，**启动被拖慢约 40 秒**。注册（`register_pk`）发生在探测之前，所以**注册**不受该等待影响；UI 就绪与心跳会被推迟。
+
+- **显式指向面板**（推荐）：`http://<面板地址>:8080`——面板已提供 `POST /api/sysinfo` 与 `POST /api/heartbeat`，语义是「不可信活跃提示」。
+- **留空不解决问题**：仍会推导到那个端口（见上）。客户端批量部署时建议在配置预置里一并下发。
+- **不要用「映射 ID 端口 − 2」来省事**：该派生端口不在每组织连续 5 端口的分配范围内（首块 21116–21120，派生口是 21115），也不在本部署文档的监听、映射与防火墙清单里；硬映射会让端口规划跨组织串位。
+
+其余接入规则：
 
 - 登录凭据 = 面板账号（邮箱 + 密码）+ 组织；首次登录会认领设备（rustdesk id + uuid 绑定）
-- 换机器/重装后 uuid 变化会报 403「设备已绑定」。v0.3.0 **没有设备删除的管理面端点**（跟踪 [#43](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/43)），恢复需直接删除数据库中的设备行（临时流程）
+- 换机器/重装后 uuid 变化会报 403「设备已绑定」。v0.5.0 起由管理员在面板/API 调
+  `POST /api/v1/orgs/{orgId}/devices/{deviceId}/rebind`（填理由）重置绑定，客户端重新登录即重新认领；
+  **旧机需先退出登录/离线**——重新认领是先到先得，在线的旧机会抢先。仍不提供删除设备端点。
+  **不要直接改库**（只改 `bound_uuid` 不动代数会让旧会话继续驱动设备）
 
 详细协议见 [API 规范 §4](api-spec.md)。
+
+> 跟踪：[#65](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/65)。本文档先给出「显式配置 API 服务器」的运维口径；由面板在 provision/接入信息里**下发** API 服务器地址（免手填）属于契约变更，尚未实现。

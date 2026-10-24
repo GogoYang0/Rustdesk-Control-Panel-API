@@ -2,6 +2,7 @@
 package api
 
 import (
+	"context"
 	"io"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/provision"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/session"
 )
 
@@ -22,6 +24,7 @@ type Deps struct {
 	Auth           *auth.Service
 	Devices        *device.Service
 	ProvisionQueue Provisioner
+	Provisioning   ProvisioningManager
 	OrgsPerUser    int
 	Issuer         *auth.Issuer
 	Auditor        audit.Auditor
@@ -54,6 +57,14 @@ type Deps struct {
 // Provisioner schedules asynchronous server provisioning.
 type Provisioner interface {
 	Enqueue(orgID uint) error
+}
+
+// ProvisioningManager exposes the per-organization provisioning switch. It is
+// optional in tests that never touch the endpoint; a nil manager makes the
+// endpoint fail instead of pretending the deployment state is known.
+type ProvisioningManager interface {
+	State(ctx context.Context, orgID uint) (provision.State, error)
+	SetEnabled(ctx context.Context, orgID, actorID uint, enabled bool) (provision.State, bool, error)
 }
 
 // AdminAPI implements the generated gen.ServerInterface.

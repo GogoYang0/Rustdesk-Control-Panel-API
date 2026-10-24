@@ -310,6 +310,51 @@ func (e MemberRole) Valid() bool {
 	}
 }
 
+// Defines values for MemberRoleRequestRole.
+const (
+	MemberRoleRequestRoleAdmin  MemberRoleRequestRole = "admin"
+	MemberRoleRequestRoleMember MemberRoleRequestRole = "member"
+)
+
+// Valid indicates whether the value is a known member of the MemberRoleRequestRole enum.
+func (e MemberRoleRequestRole) Valid() bool {
+	switch e {
+	case MemberRoleRequestRoleAdmin:
+		return true
+	case MemberRoleRequestRoleMember:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ProvisioningStatusState.
+const (
+	ProvisioningStatusStateDeployed     ProvisioningStatusState = "deployed"
+	ProvisioningStatusStateDisabled     ProvisioningStatusState = "disabled"
+	ProvisioningStatusStateFailed       ProvisioningStatusState = "failed"
+	ProvisioningStatusStatePending      ProvisioningStatusState = "pending"
+	ProvisioningStatusStateProvisioning ProvisioningStatusState = "provisioning"
+)
+
+// Valid indicates whether the value is a known member of the ProvisioningStatusState enum.
+func (e ProvisioningStatusState) Valid() bool {
+	switch e {
+	case ProvisioningStatusStateDeployed:
+		return true
+	case ProvisioningStatusStateDisabled:
+		return true
+	case ProvisioningStatusStateFailed:
+		return true
+	case ProvisioningStatusStatePending:
+		return true
+	case ProvisioningStatusStateProvisioning:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SessionOrigin.
 const (
 	Native SessionOrigin = "native"
@@ -666,6 +711,8 @@ type ApprovalStatus string
 
 // Device defines model for Device.
 type Device struct {
+	// Bound 是否已绑定某个客户端实例（重置绑定后为 false）
+	Bound      bool         `json:"bound"`
 	Id         int64        `json:"id"`
 	LastSeenAt *time.Time   `json:"last_seen_at"`
 	Name       string       `json:"name"`
@@ -680,6 +727,38 @@ type DeviceStatus string
 type DeviceCreateRequest struct {
 	Name       string `json:"name"`
 	RustdeskId string `json:"rustdesk_id"`
+}
+
+// DeviceListResponse defines model for DeviceListResponse.
+type DeviceListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode  `json:"code"`
+	Data    DevicePage `json:"data"`
+	Message string     `json:"message"`
+}
+
+// DevicePage defines model for DevicePage.
+type DevicePage struct {
+	Items    []Device `json:"items"`
+	Page     int      `json:"page"`
+	PageSize int64    `json:"page_size"`
+	Total    int64    `json:"total"`
+}
+
+// DeviceRebindRequest defines model for DeviceRebindRequest.
+type DeviceRebindRequest struct {
+	// Reason 重置绑定的理由，随审计留存
+	Reason string `json:"reason"`
 }
 
 // DeviceResponse defines model for DeviceResponse.
@@ -885,6 +964,30 @@ type MemberListResponse struct {
 	Message string    `json:"message"`
 }
 
+// MemberMutation defines model for MemberMutation.
+type MemberMutation struct {
+	// RevokedSessions 本次撤销的活跃 compat 会话数
+	RevokedSessions int64 `json:"revoked_sessions"`
+}
+
+// MemberMutationResponse defines model for MemberMutationResponse.
+type MemberMutationResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode      `json:"code"`
+	Data    MemberMutation `json:"data"`
+	Message string         `json:"message"`
+}
+
 // MemberResponse defines model for MemberResponse.
 type MemberResponse struct {
 	// Code 机器可读错误码：
@@ -902,6 +1005,15 @@ type MemberResponse struct {
 	Data    Member    `json:"data"`
 	Message string    `json:"message"`
 }
+
+// MemberRoleRequest defines model for MemberRoleRequest.
+type MemberRoleRequest struct {
+	// Role 只接受 admin 或 member；所有权转移不在本端点范围
+	Role MemberRoleRequestRole `json:"role"`
+}
+
+// MemberRoleRequestRole 只接受 admin 或 member；所有权转移不在本端点范围
+type MemberRoleRequestRole string
 
 // OkResponse defines model for OkResponse.
 type OkResponse struct {
@@ -1053,6 +1165,43 @@ type PolicyResponse struct {
 	Code    ErrorCode `json:"code"`
 	Data    Policy    `json:"data"`
 	Message string    `json:"message"`
+}
+
+// ProvisioningResponse defines model for ProvisioningResponse.
+type ProvisioningResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode          `json:"code"`
+	Data    ProvisioningStatus `json:"data"`
+	Message string             `json:"message"`
+}
+
+// ProvisioningStatus defines model for ProvisioningStatus.
+type ProvisioningStatus struct {
+	// CleanupPending `enabled=false` 时是否仍有待清理的部署行（teardown 未确认）。
+	// true 表示开关已关但容器清理仍待完成（在途部署回滚或重复关闭重试）；
+	// false 表示没有遗留部署行。其他状态下恒为 false。
+	CleanupPending bool                    `json:"cleanup_pending"`
+	Enabled        bool                    `json:"enabled"`
+	State          ProvisioningStatusState `json:"state"`
+}
+
+// ProvisioningStatusState defines model for ProvisioningStatus.State.
+type ProvisioningStatusState string
+
+// ProvisioningUpdateRequest defines model for ProvisioningUpdateRequest.
+type ProvisioningUpdateRequest struct {
+	// Enabled true 允许供应（异步部署），false 关闭并下线
+	Enabled bool `json:"enabled"`
 }
 
 // RefreshRequest defines model for RefreshRequest.
@@ -1488,6 +1637,17 @@ type ListApprovalsParams struct {
 	PageSize *int            `form:"pageSize,omitempty" json:"pageSize,omitempty"`
 }
 
+// ListDevicesParams defines parameters for ListDevices.
+type ListDevicesParams struct {
+	// Q 按名称或 rustdesk_id 大小写不敏感子串匹配
+	Q *string `form:"q,omitempty" json:"q,omitempty"`
+
+	// Bound 是否已绑定客户端
+	Bound    *bool `form:"bound,omitempty" json:"bound,omitempty"`
+	Page     *int  `form:"page,omitempty" json:"page,omitempty"`
+	PageSize *int  `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
 // ListLogEventsParams defines parameters for ListLogEvents.
 type ListLogEventsParams struct {
 	DeviceId *int64                    `form:"deviceId,omitempty" json:"deviceId,omitempty"`
@@ -1556,14 +1716,23 @@ type DecideApprovalJSONRequestBody = ApprovalDecisionRequest
 // CreateDeviceJSONRequestBody defines body for CreateDevice for application/json ContentType.
 type CreateDeviceJSONRequestBody = DeviceCreateRequest
 
+// ResetDeviceBindingJSONRequestBody defines body for ResetDeviceBinding for application/json ContentType.
+type ResetDeviceBindingJSONRequestBody = DeviceRebindRequest
+
 // CreateInvitationJSONRequestBody defines body for CreateInvitation for application/json ContentType.
 type CreateInvitationJSONRequestBody = InvitationCreateRequest
+
+// UpdateMemberRoleJSONRequestBody defines body for UpdateMemberRole for application/json ContentType.
+type UpdateMemberRoleJSONRequestBody = MemberRoleRequest
 
 // CreatePolicyJSONRequestBody defines body for CreatePolicy for application/json ContentType.
 type CreatePolicyJSONRequestBody = PolicyRequest
 
 // UpdatePolicyJSONRequestBody defines body for UpdatePolicy for application/json ContentType.
 type UpdatePolicyJSONRequestBody = PolicyRequest
+
+// UpdateProvisioningJSONRequestBody defines body for UpdateProvisioning for application/json ContentType.
+type UpdateProvisioningJSONRequestBody = ProvisioningUpdateRequest
 
 // IssueTicketJSONRequestBody defines body for IssueTicket for application/json ContentType.
 type IssueTicketJSONRequestBody = TicketCreateRequest
@@ -1630,12 +1799,18 @@ type ServerInterface interface {
 	// DecideApproval 审批决定（approve/deny）
 	// (POST /api/v1/orgs/{orgId}/approvals/{approvalId}/decision)
 	DecideApproval(c *gin.Context, orgId int64, approvalId int64)
+	// ListDevices 列出组织设备
+	// (GET /api/v1/orgs/{orgId}/devices)
+	ListDevices(c *gin.Context, orgId int64, params ListDevicesParams)
 	// CreateDevice 注册设备
 	// (POST /api/v1/orgs/{orgId}/devices)
 	CreateDevice(c *gin.Context, orgId int64)
 	// DeviceHeartbeat 设备心跳
 	// (POST /api/v1/orgs/{orgId}/devices/{deviceId}/heartbeat)
 	DeviceHeartbeat(c *gin.Context, orgId int64, deviceId int64)
+	// ResetDeviceBinding 重置设备绑定
+	// (POST /api/v1/orgs/{orgId}/devices/{deviceId}/rebind)
+	ResetDeviceBinding(c *gin.Context, orgId int64, deviceId int64)
 	// CreateInvitation 邀请成员加入组织
 	// (POST /api/v1/orgs/{orgId}/invitations)
 	CreateInvitation(c *gin.Context, orgId int64)
@@ -1645,6 +1820,12 @@ type ServerInterface interface {
 	// ListMembers 列出组织成员
 	// (GET /api/v1/orgs/{orgId}/members)
 	ListMembers(c *gin.Context, orgId int64)
+	// RemoveMember 移除组织成员
+	// (DELETE /api/v1/orgs/{orgId}/members/{userId})
+	RemoveMember(c *gin.Context, orgId int64, userId int64)
+	// UpdateMemberRole 变更成员角色
+	// (PATCH /api/v1/orgs/{orgId}/members/{userId})
+	UpdateMemberRole(c *gin.Context, orgId int64, userId int64)
 	// ListPolicies 连接策略列表
 	// (GET /api/v1/orgs/{orgId}/policies)
 	ListPolicies(c *gin.Context, orgId int64)
@@ -1657,6 +1838,12 @@ type ServerInterface interface {
 	// UpdatePolicy 更新连接策略
 	// (PUT /api/v1/orgs/{orgId}/policies/{policyId})
 	UpdatePolicy(c *gin.Context, orgId int64, policyId int64)
+	// GetProvisioning 查询组织 provisioning 状态
+	// (GET /api/v1/orgs/{orgId}/provisioning)
+	GetProvisioning(c *gin.Context, orgId int64)
+	// UpdateProvisioning 启用或禁用组织 provisioning
+	// (PUT /api/v1/orgs/{orgId}/provisioning)
+	UpdateProvisioning(c *gin.Context, orgId int64)
 	// ListSessions 会话记录列表
 	// (GET /api/v1/orgs/{orgId}/sessions)
 	ListSessions(c *gin.Context, orgId int64, params ListSessionsParams)
@@ -2218,6 +2405,66 @@ func (siw *ServerInterfaceWrapper) DecideApproval(c *gin.Context) {
 	siw.Handler.DecideApproval(c, orgId, approvalId)
 }
 
+// ListDevices operation middleware
+func (siw *ServerInterfaceWrapper) ListDevices(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListDevicesParams
+
+	// ------------- Optional query parameter "q" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "q", c.Request.URL.Query(), &params.Q, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter q: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "bound" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "bound", c.Request.URL.Query(), &params.Bound, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter bound: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "page" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "page", c.Request.URL.Query(), &params.Page, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter page: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "pageSize" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "pageSize", c.Request.URL.Query(), &params.PageSize, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter pageSize: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListDevices(c, orgId, params)
+}
+
 // CreateDevice operation middleware
 func (siw *ServerInterfaceWrapper) CreateDevice(c *gin.Context) {
 
@@ -2275,6 +2522,40 @@ func (siw *ServerInterfaceWrapper) DeviceHeartbeat(c *gin.Context) {
 	}
 
 	siw.Handler.DeviceHeartbeat(c, orgId, deviceId)
+}
+
+// ResetDeviceBinding operation middleware
+func (siw *ServerInterfaceWrapper) ResetDeviceBinding(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "deviceId" -------------
+	var deviceId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "deviceId", c.Param("deviceId"), &deviceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ResetDeviceBinding(c, orgId, deviceId)
 }
 
 // CreateInvitation operation middleware
@@ -2385,6 +2666,74 @@ func (siw *ServerInterfaceWrapper) ListMembers(c *gin.Context) {
 	}
 
 	siw.Handler.ListMembers(c, orgId)
+}
+
+// RemoveMember operation middleware
+func (siw *ServerInterfaceWrapper) RemoveMember(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "userId" -------------
+	var userId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", c.Param("userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter userId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RemoveMember(c, orgId, userId)
+}
+
+// UpdateMemberRole operation middleware
+func (siw *ServerInterfaceWrapper) UpdateMemberRole(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "userId" -------------
+	var userId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", c.Param("userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter userId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UpdateMemberRole(c, orgId, userId)
 }
 
 // ListPolicies operation middleware
@@ -2503,6 +2852,56 @@ func (siw *ServerInterfaceWrapper) UpdatePolicy(c *gin.Context) {
 	}
 
 	siw.Handler.UpdatePolicy(c, orgId, policyId)
+}
+
+// GetProvisioning operation middleware
+func (siw *ServerInterfaceWrapper) GetProvisioning(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetProvisioning(c, orgId)
+}
+
+// UpdateProvisioning operation middleware
+func (siw *ServerInterfaceWrapper) UpdateProvisioning(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UpdateProvisioning(c, orgId)
 }
 
 // ListSessions operation middleware
@@ -2762,8 +3161,13 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/v1/orgs", wrapper.ListOrgs)
 	router.POST(options.BaseURL+"/api/v1/orgs", wrapper.CreateOrg)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/members", wrapper.ListMembers)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId", wrapper.RemoveMember)
+	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId", wrapper.UpdateMemberRole)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/provisioning", wrapper.GetProvisioning)
+	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/provisioning", wrapper.UpdateProvisioning)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/invitations", wrapper.CreateInvitation)
 	router.POST(options.BaseURL+"/api/v1/invitations/accept", wrapper.AcceptInvitation)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/devices", wrapper.ListDevices)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices", wrapper.CreateDevice)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/address-books", wrapper.ListAddressBooks)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/address-books", wrapper.CreateAddressBook)
@@ -2776,6 +3180,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/auth/verify-email", wrapper.VerifyEmail)
 	router.POST(options.BaseURL+"/api/v1/auth/resend-verification", wrapper.ResendVerification)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/heartbeat", wrapper.DeviceHeartbeat)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/rebind", wrapper.ResetDeviceBinding)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/sessions", wrapper.ListSessions)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/sessions/:sessionId", wrapper.GetSession)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/policies", wrapper.ListPolicies)

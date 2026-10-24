@@ -46,7 +46,7 @@ func newFixture(t *testing.T) *fixture {
 	require.NoError(t, st.DB.Create(&orgB).Error)
 
 	return &fixture{
-		svc:  device.NewService(st.DB, nil),
+		svc:  device.NewService(st.DB, nil, nil),
 		st:   *st,
 		orgA: orgA,
 		orgB: orgB,
@@ -151,13 +151,13 @@ func TestHeartbeat_NeverMovesLastSeenBackwards(t *testing.T) {
 	require.NoError(t, err)
 
 	later := time.Now()
-	f.svc = device.NewService(f.st.DB, func() time.Time { return later })
+	f.svc = device.NewService(f.st.DB, nil, func() time.Time { return later })
 	_, err = f.svc.Heartbeat(ctx, f.orgA.ID, dev.ID)
 	require.NoError(t, err)
 
 	// A heartbeat that started earlier but finishes later must not regress.
 	earlier := later.Add(-30 * time.Second)
-	f.svc = device.NewService(f.st.DB, func() time.Time { return earlier })
+	f.svc = device.NewService(f.st.DB, nil, func() time.Time { return earlier })
 	after, err := f.svc.Heartbeat(ctx, f.orgA.ID, dev.ID)
 	require.NoError(t, err)
 	require.NotNil(t, after.LastSeenAt)
@@ -193,10 +193,10 @@ func TestHeartbeat_SourceDistinguishesClientFromLog(t *testing.T) {
 	// 30s. The client then checks in after that window has passed, so both
 	// sources get their own row and the provenance stays distinguishable.
 	base := time.Now()
-	f.svc = device.NewService(f.st.DB, func() time.Time { return base })
+	f.svc = device.NewService(f.st.DB, nil, func() time.Time { return base })
 	_, err = f.svc.RecordLogActivity(ctx, f.orgA.ID, dev.RustdeskID, base)
 	require.NoError(t, err)
-	f.svc = device.NewService(f.st.DB, func() time.Time { return base.Add(31 * time.Second) })
+	f.svc = device.NewService(f.st.DB, nil, func() time.Time { return base.Add(31 * time.Second) })
 	_, err = f.svc.Heartbeat(ctx, f.orgA.ID, dev.ID)
 	require.NoError(t, err)
 

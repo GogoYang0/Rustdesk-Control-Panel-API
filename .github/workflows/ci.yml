@@ -88,8 +88,20 @@ jobs:
           go-version: "1.27.x"
       - name: wait for databases
         run: sleep 10
-      - name: go test (postgres + mysql)
-        run: go test ./...
+      - name: go test (postgres)
+        # Every package shares one Postgres instance and Go runs package test
+        # binaries in parallel (-p = GOMAXPROCS). Concurrent AutoMigrate of the
+        # same tables then races in the pg system catalogs (pg_type / pg_class)
+        # and surfaces as a bogus TestOpen_Postgres failure (#60). Serializing
+        # packages removes that concurrency without weakening an assertion.
+        #
+        # The two runs are separate on purpose: the harnesses prefer
+        # TEST_POSTGRES_DSN over TEST_MYSQL_DSN, so a single run with both set
+        # would exercise Postgres twice and never MySQL. Each step blanks the
+        # other DSN.
+        run: TEST_MYSQL_DSN= go test -p 1 ./...
+      - name: go test (mysql)
+        run: TEST_POSTGRES_DSN= go test -p 1 ./...
 
   contract:
     runs-on: ubuntu-latest

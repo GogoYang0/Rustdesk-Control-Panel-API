@@ -55,7 +55,7 @@ func newHarness(t *testing.T) *harness {
 	compatapi.Mount(r, compatapi.Deps{
 		DB:        st.DB,
 		Issuer:    issuer,
-		Devices:   device.NewService(st.DB, nil),
+		Devices:   device.NewService(st.DB, nil, nil),
 		Guard:     guard,
 		AccessTTL: time.Hour,
 	})
@@ -514,8 +514,8 @@ func TestLogin_AllowsSameUUIDRelogin(t *testing.T) {
 	require.Equal(t, "same-uuid", dev.BoundUUID)
 }
 
-// An admin's device-row delete is the binding reset: the old session must
-// not resurrect the row through a heartbeat, and a stale session must not
+// A device row removed out of band is treated like a reset: the old session
+// must not resurrect the row through a heartbeat, and a stale session must not
 // drive a row that was meanwhile re-bound to another client instance.
 func TestHeartbeat_DoesNotResurrectOrHijack(t *testing.T) {
 	h := newHarness(t)
@@ -539,8 +539,8 @@ func TestHeartbeat_DoesNotResurrectOrHijack(t *testing.T) {
 		Where("rustdesk_id = ?", id).First(&dev).Error)
 	require.Nil(t, dev.LastSeenAt, "a stale session must not drive a re-bound device")
 
-	// The admin resets the binding by deleting the row: the old session
-	// must not resurrect it.
+	// The row is removed out of band (the supported reset is the rebind
+	// endpoint): the old session must not resurrect it.
 	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).
 		Where("rustdesk_id = ?", id).Delete(&model.Device{}).Error)
 	w = h.do(t, http.MethodPost, "/api/heartbeat", fixture, "")
@@ -552,8 +552,8 @@ func TestHeartbeat_DoesNotResurrectOrHijack(t *testing.T) {
 	require.Zero(t, count, "the old session must not resurrect the deleted row")
 }
 
-// After the admin resets a binding by deleting the device row, the
-// legitimate client re-claims it through a fresh login.
+// After a device row is removed out of band, the legitimate client re-claims
+// it through a fresh login (the supported flow is the rebind endpoint).
 func TestLogin_ReclaimsAfterAdminDelete(t *testing.T) {
 	h := newHarness(t)
 	u := h.seedUser(t, "reclaim@example.com", "password123", true)
@@ -683,7 +683,8 @@ func TestHeartbeat_SharedUUID_DoesNotSuppressOtherDevice(t *testing.T) {
 // row is created (CompatSession.UUID, size 128). On MySQL/PostgreSQL a uuid
 // longer than 128 therefore binds the device and then fails to create the
 // session: the client gets a 500 and the device stays bound to a value it can
-// never present again, so only an administrator delete can recover it.
+// never present again, so only a binding reset (rebind endpoint) or an
+// out-of-band row delete can recover it.
 func TestLogin_RejectsOversizedDeviceIdentity(t *testing.T) {
 	h := newHarness(t)
 	u := h.seedUser(t, "long@example.com", "password123", true)
