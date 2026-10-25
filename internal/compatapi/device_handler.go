@@ -93,6 +93,11 @@ func (s *Server) touchDevice(c *gin.Context, session *model.CompatSession, rustd
 		// A transient query failure must not be mistaken for a missing row.
 		return err
 	}
+	if dev.Disabled {
+		// The administrator stopped the device: credential-free activity is
+		// dropped silently (the client protocol cannot act on an error here).
+		return nil
+	}
 	if dev.BoundUUID != session.UUID {
 		// The binding moved to another client instance meanwhile.
 		return nil

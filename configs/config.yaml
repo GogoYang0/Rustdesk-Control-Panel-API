@@ -112,3 +112,10 @@ session:
   # Must be positive: a non-positive value is not "disable the sweep" —
   # it logs a warning and falls back to the 10m default.
   idleTimeout: 10m
+
+# Audit-log retention archiving. Each organization may set
+# audit_retention_days (0 = keep forever, up to 3650); the hourly sweep
+# writes expired rows to a verified JSONL archive here BEFORE deleting them.
+# Keep this directory on storage included in operator backups.
+audit:
+  archiveDir: ./data/audit-archive

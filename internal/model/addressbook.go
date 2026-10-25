@@ -42,20 +42,27 @@ func (b *AddressBook) Valid() error {
 // the same book. Hash (unattended-access password hash) and Note are round-
 // tripped for the client compat layer (task 9): the personal book carries
 // them opaquely, the management contract does not expose them.
+//
+// DeletedAt marks a peer in the recycle bin. Deleting is a soft delete so a
+// mistaken removal or a client full-sync can be undone; the row keeps its
+// (book_id, peer_id) identity so re-adding restores it in place. A background
+// sweep purges rows older than the retention window.
 type AddressBookPeer struct {
-	ID             uint      `gorm:"primaryKey" json:"id"`
-	OrganizationID uint      `gorm:"index;not null" json:"organization_id"`
-	BookID         uint      `gorm:"index;not null;uniqueIndex:idx_abp_book_peer" json:"book_id"`
-	PeerID         string    `gorm:"size:64;not null;uniqueIndex:idx_abp_book_peer" json:"peer_id"`
-	Alias          string    `gorm:"size:128" json:"alias"`
-	Username       string    `gorm:"size:128" json:"username"`
-	Hostname       string    `gorm:"size:128" json:"hostname"`
-	Platform       string    `gorm:"size:64" json:"platform"`
-	TagsJSON       string    `gorm:"size:2048" json:"tags_json"`
-	Hash           string    `gorm:"size:128" json:"-"`
-	Note           string    `gorm:"size:512" json:"-"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID             uint       `gorm:"primaryKey" json:"id"`
+	OrganizationID uint       `gorm:"index;not null" json:"organization_id"`
+	BookID         uint       `gorm:"index;not null;uniqueIndex:idx_abp_book_peer" json:"book_id"`
+	PeerID         string     `gorm:"size:64;not null;uniqueIndex:idx_abp_book_peer" json:"peer_id"`
+	Alias          string     `gorm:"size:128" json:"alias"`
+	Username       string     `gorm:"size:128" json:"username"`
+	Hostname       string     `gorm:"size:128" json:"hostname"`
+	Platform       string     `gorm:"size:64" json:"platform"`
+	TagsJSON       string     `gorm:"size:2048" json:"tags_json"`
+	Hash           string     `gorm:"size:128" json:"-"`
+	Note           string     `gorm:"size:512" json:"-"`
+	DeletedAt      *time.Time `gorm:"index" json:"deleted_at,omitempty"`
+	DeletedBy      uint       `gorm:"not null;default:0" json:"deleted_by,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
 // AddressBookTag is a named color label scoped to one book. The (book_id,

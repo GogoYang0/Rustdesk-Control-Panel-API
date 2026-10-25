@@ -26,6 +26,7 @@ import (
 var (
 	ErrInvalidInput   = errors.New("invalid ticket input")
 	ErrDeviceNotFound = errors.New("device not found")
+	ErrDeviceDisabled = errors.New("device is disabled")
 	ErrTicketNotFound = errors.New("ticket not found")
 	ErrOutsideWindow  = errors.New("outside the allowed connection window")
 	ErrConflict       = errors.New("ticket cannot be redeemed")
@@ -326,6 +327,12 @@ func (s *Service) Redeem(ctx context.Context, orgID, actorID, ticketID uint, tok
 		dev, err := s.loadDevice(tx, orgID, ticket.DeviceID)
 		if err != nil {
 			return err
+		}
+		// The device must still be usable at redemption time: a ticket issued
+		// before an administrator disabled it must not open a session. The
+		// error rolls back the claim above, so the ticket stays unused.
+		if dev.Disabled {
+			return ErrDeviceDisabled
 		}
 		policyID, err := s.attributedPolicyID(tx, orgID)
 		if err != nil {

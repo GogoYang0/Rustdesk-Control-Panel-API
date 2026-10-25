@@ -32,6 +32,7 @@ import (
 	"gorm.io/gorm/logger"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
@@ -148,7 +149,7 @@ func runSeed(dbPath string) error {
 
 	if err := db.AutoMigrate(
 		&model.User{}, &model.RefreshToken{},
-		&model.Organization{}, &model.Membership{}, &model.Invitation{},
+		&model.Organization{}, &model.Membership{}, &model.Role{}, &model.Invitation{},
 		&model.AuditLog{}, &model.Device{}, &model.DeviceHeartbeat{},
 		&model.AddressBook{}, &model.AddressBookPeer{},
 		&model.AddressBookTag{}, &model.SyncCursor{}, &model.VerificationToken{},
@@ -241,7 +242,15 @@ func ensureMembership(db *gorm.DB, orgID, userID uint) error {
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return fmt.Errorf("lookup membership: %w", err)
 	}
-	row := model.Membership{OrganizationID: orgID, UserID: userID, Role: model.RoleOwner}
+	svc := authz.NewRoleService(db)
+	if err := svc.EnsureBuiltins(orgID); err != nil {
+		return fmt.Errorf("seed builtin roles: %w", err)
+	}
+	ownerRole, err := authz.RoleByNameTx(db, orgID, model.RoleOwner)
+	if err != nil {
+		return fmt.Errorf("load owner role: %w", err)
+	}
+	row := model.Membership{OrganizationID: orgID, UserID: userID, RoleID: ownerRole.ID, Role: ownerRole.Name}
 	if err := db.Create(&row).Error; err != nil {
 		return fmt.Errorf("create membership: %w", err)
 	}

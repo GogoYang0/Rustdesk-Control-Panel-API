@@ -19,6 +19,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/api"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
@@ -60,10 +61,12 @@ func newHarnessWith(t *testing.T, tune func(*api.Deps)) *harness {
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.DB.AutoMigrate(
 		&model.User{}, &model.RefreshToken{},
-		&model.Organization{}, &model.Membership{}, &model.Invitation{},
+		&model.UserTOTP{},
+		&model.Organization{}, &model.Membership{}, &model.Role{}, &model.Invitation{},
+		&model.APIToken{},
 		&model.AuditLog{}, &model.Device{}, &model.DeviceHeartbeat{},
 		&model.AddressBook{}, &model.AddressBookPeer{},
-		&model.AddressBookTag{}, &model.SyncCursor{}, &model.VerificationToken{},
+		&model.AddressBookTag{}, &model.AddressBookGrant{}, &model.SyncCursor{}, &model.VerificationToken{},
 		&model.MigrationMark{}, &model.CompatSession{}, &model.LogEvent{},
 		&model.Policy{}, &model.Ticket{}, &model.Session{},
 		&model.SessionEvent{}, &model.Approval{}, &model.Alert{},
@@ -71,13 +74,16 @@ func newHarnessWith(t *testing.T, tune func(*api.Deps)) *harness {
 
 	issuer := auth.NewIssuer("test-secret", time.Minute, time.Hour)
 	svc := auth.NewService(st.DB, issuer, nil)
+	auditor := audit.NewGormAuditor(st.DB)
 
 	deps := api.Deps{
-		DB:            st.DB,
-		Auth:          svc,
-		Devices:       device.NewService(st.DB, nil, nil),
+		DB:   st.DB,
+		Auth: svc,
+		// The device service refuses unaudited mutations, so the harness wires
+		// the same transactional auditor the production entrypoint uses.
+		Devices:       device.NewService(st.DB, auditor, nil),
 		Issuer:        issuer,
-		Auditor:       audit.NewGormAuditor(st.DB),
+		Auditor:       auditor,
 		AccessTTL:     time.Minute,
 		RefreshTTL:    time.Hour,
 		InvitationTTL: time.Hour,
@@ -319,6 +325,18 @@ func itoa(v int64) string {
 func sanitize(name string) string {
 	r := strings.NewReplacer("/", "_", " ", "_", "-", "_")
 	return r.Replace(name)
+}
+
+// roleID seeds the builtin roles of an organization and returns one role id.
+// Test fixtures insert memberships directly, so they must carry a role_id —
+// authorization never falls back to the legacy role string.
+func (h *harness) roleID(t *testing.T, orgID uint, name string) uint {
+	t.Helper()
+	svc := authz.NewRoleService(h.db.DB)
+	require.NoError(t, svc.EnsureBuiltins(orgID))
+	role, err := authz.RoleByNameTx(h.db.DB, orgID, name)
+	require.NoError(t, err)
+	return role.ID
 }
 
 // inviteSeq keeps each test invitation token unique: the token_hash column

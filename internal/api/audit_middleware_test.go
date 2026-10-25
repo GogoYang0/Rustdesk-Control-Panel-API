@@ -90,7 +90,9 @@ func TestMiddleware_SkipsWhenDomainRecorded(t *testing.T) {
 }
 
 // Without a TxRecorder the middleware fallback still runs: the spy proves
-// Record was called exactly once for the auditable request.
+// Record was called exactly once for the auditable request. Tenant creation
+// now refuses to commit without a transactional auditor, so a read is used as
+// the vehicle — the middleware records every request that reaches it.
 func TestMiddleware_FallbackWithoutTxRecorder(t *testing.T) {
 	spy := &spyAuditor{inner: audit.Nop{}}
 	h := newHarnessWith(t, func(d *api.Deps) {
@@ -110,8 +112,8 @@ func TestMiddleware_FallbackWithoutTxRecorder(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	recordsAfterLogin := spy.records
 
-	w = h.do(t, http.MethodPost, "/api/v1/orgs", map[string]string{"name": "fb-org"}, token)
-	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	w = h.do(t, http.MethodGet, "/api/v1/orgs", nil, token)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 
 	require.Equal(t, recordsAfterLogin+1, spy.records,
 		"the middleware fallback must record exactly once for the auditable request")
@@ -122,10 +124,16 @@ func TestMiddleware_FallbackWithoutTxRecorder(t *testing.T) {
 // address-book change to organization zero, which the persistent auditor
 // silently drops. The fallback must carry the compat actor and organization.
 func TestMiddleware_AttributesCompatMutations(t *testing.T) {
-	spy := &spyAuditor{inner: audit.Nop{}}
+	// Tenant creation requires a transactional auditor (fail closed), so the
+	// spy implements TxRecorder too; the compat write is still audited through
+	// the middleware fallback, which is what this test measures.
+	spy := &spyTxAuditor{}
 	h := newHarnessWith(t, func(d *api.Deps) {
+		ga := audit.NewGormAuditor(d.DB)
+		spy.inner = ga
+		spy.tx = ga
 		d.Auditor = spy
-		d.Tickets = session.NewService(d.DB, audit.NewGormAuditor(d.DB), nil)
+		d.Tickets = session.NewService(d.DB, ga, nil)
 	})
 	h.seedUser(t, "compat-audit@example.com", "password123")
 

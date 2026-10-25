@@ -171,6 +171,11 @@ func (s *Server) login(c *gin.Context) {
 					"device is already bound to another client; ask your administrator to reset it")
 				return
 			}
+			if errors.Is(err, errDeviceDisabled) {
+				compatError(c, http.StatusForbidden,
+					"device is disabled; ask your administrator to re-enable it")
+				return
+			}
 			compatError(c, http.StatusInternalServerError, "login failed")
 			return
 		}
@@ -203,6 +208,9 @@ func (s *Server) login(c *gin.Context) {
 // claimed by another client instance.
 var errDeviceBound = errors.New("device already bound")
 
+// errDeviceDisabled reports a login against a device an administrator stopped.
+var errDeviceDisabled = errors.New("device is disabled")
+
 // claimDeviceTx binds the logging-in device to the organization on the
 // caller's transaction, and returns the device's binding generation for the
 // session snapshot. The client protocol carries no ownership secret
@@ -234,6 +242,9 @@ func (s *Server) claimDeviceTx(tx *gorm.DB, orgID uint, rustdeskID, uuid string)
 		dev = *created
 	case err != nil:
 		return 0, err
+	}
+	if dev.Disabled {
+		return 0, errDeviceDisabled
 	}
 	if dev.BoundUUID != "" && uuid != "" && dev.BoundUUID != uuid {
 		return 0, errDeviceBound
@@ -283,16 +294,22 @@ func (s *Server) claimDeviceTx(tx *gorm.DB, orgID uint, rustdeskID, uuid string)
 	if err := finalRead.First(&final, dev.ID).Error; err != nil {
 		return 0, err
 	}
+	// A disable that committed while this login was claiming must win: the
+	// final read takes the row lock on the served dialects, so a login that
+	// raced the administrator is refused instead of persisting a session.
+	if final.Disabled {
+		return 0, errDeviceDisabled
+	}
 	return final.BindingGeneration, nil
 }
 
 // resolveOrg applies the C16 disambiguation: no selector requires exactly
-// one membership; a selector must name a membership of this user. The
-// message guides multi-org users to the management panel.
+// one active membership; a selector must name an active membership of this
+// user. A disabled membership is invisible to both paths.
 func (s *Server) resolveOrg(userID uint, selector string, hasSelector bool) (uint, int, string, bool) {
 	var memberships []model.Membership
 	if err := store.WithoutTenantScope(s.deps.DB).
-		Where("user_id = ?", userID).
+		Where("user_id = ? AND disabled = ?", userID, false).
 		Order("organization_id").
 		Find(&memberships).Error; err != nil {
 		return 0, http.StatusInternalServerError, "login failed", false
@@ -313,6 +330,18 @@ func (s *Server) resolveOrg(userID uint, selector string, hasSelector bool) (uin
 	case 1:
 		return memberships[0].OrganizationID, 0, "", true
 	case 0:
+		// Distinguish "never joined" from "disabled": the client's next step
+		// differs (ask for an invitation vs ask an administrator to re-enable).
+		var total int64
+		if err := store.WithoutTenantScope(s.deps.DB).
+			Model(&model.Membership{}).
+			Where("user_id = ?", userID).
+			Count(&total).Error; err != nil {
+			return 0, http.StatusInternalServerError, "login failed", false
+		}
+		if total > 0 {
+			return 0, http.StatusForbidden, "membership is disabled; ask your administrator to re-enable it", false
+		}
 		return 0, http.StatusForbidden, "no organization membership; ask your administrator for an invitation", false
 	default:
 		return 0, http.StatusForbidden,

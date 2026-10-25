@@ -19,9 +19,11 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/addressbook"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/api"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logcollect"
@@ -63,11 +65,13 @@ func main() {
 
 	if err := st.DB.AutoMigrate(
 		&model.User{}, &model.RefreshToken{},
-		&model.Organization{}, &model.Membership{}, &model.Invitation{},
+		&model.UserTOTP{},
+		&model.Organization{}, &model.Membership{}, &model.Role{}, &model.Invitation{},
+		&model.APIToken{},
 		&model.AuditLog{},
 		&model.Device{}, &model.DeviceHeartbeat{}, &model.ServerGroup{},
 		&model.AddressBook{}, &model.AddressBookPeer{},
-		&model.AddressBookTag{}, &model.SyncCursor{},
+		&model.AddressBookTag{}, &model.AddressBookGrant{}, &model.SyncCursor{},
 		&model.VerificationToken{},
 		&model.MigrationMark{},
 		&model.CompatSession{},
@@ -77,6 +81,14 @@ func main() {
 		&model.Approval{}, &model.Alert{},
 	); err != nil {
 		lg.Fatal("migrate database", zap.Error(err))
+	}
+
+	// Roles are the authorization source from v0.8.0: every organization gets
+	// its three builtin rows and every legacy membership string is mapped onto
+	// role_id. The marker inside MigrateRoles makes this retry-safe; an unknown
+	// role string aborts startup rather than silently demoting a member.
+	if err := authz.MigrateRoles(st.DB); err != nil {
+		lg.Fatal("migrate roles", zap.Error(err))
 	}
 
 	// One-time backfill, guarded by a persistent marker instead of the
@@ -294,6 +306,35 @@ func main() {
 		lg.Fatal("register duration session sweep", zap.Error(err))
 	}
 
+	// Address book peers are soft-deleted into a recycle bin; the hourly
+	// sweep purges entries older than the retention window.
+	bookSvc := addressbook.NewService(st.DB)
+	if err := sched.Register(worker.Task{
+		Name:       "addressbook-recycle-sweep",
+		Interval:   time.Hour,
+		RunOnStart: true,
+		Run: func(ctx context.Context) (int64, error) {
+			return bookSvc.SweepRecycleBin(ctx)
+		},
+	}); err != nil {
+		lg.Fatal("register address book recycle sweep", zap.Error(err))
+	}
+
+	// Audit retention archives expired rows to local JSONL files and deletes
+	// them only after the archive verifies; the hourly sweep is a system action.
+	retentionSvc := audit.NewRetentionService(st.DB, cfg.Audit.ArchiveDir, auditor, nil)
+	if err := sched.Register(worker.Task{
+		Name:       "audit-retention",
+		Interval:   time.Hour,
+		RunOnStart: true,
+		Run: func(ctx context.Context) (int64, error) {
+			_, purged, err := retentionSvc.RunOnce(ctx)
+			return purged, err
+		},
+	}); err != nil {
+		lg.Fatal("register audit retention sweep", zap.Error(err))
+	}
+
 	if cfg.Logcollect.RetentionSweepInterval > 0 {
 		if err := sched.Register(worker.Task{
 			Name:     "logcollect-retention",
@@ -360,6 +401,8 @@ func main() {
 			InvitationTTL:  7 * 24 * time.Hour,
 			WebBaseURL:     cfg.Web.BaseURL,
 			CompatTTL:      cfg.Compat.AccessTTL,
+			AuthSecret:     cfg.Auth.Secret,
+			Retention:      retentionSvc,
 		}),
 	}
 

@@ -1,6 +1,6 @@
 # 部署指南（Deployment Guide）
 
-> 适用版本：v0.7.0（按组织 provisioning 开关 + 宿主端口探测；已发布基线 v0.4.0）。本文档随版本演进持续更新——每次发布前必须复核一遍。
+> 适用版本：v0.8.0（M4：角色模型、审计查询/导出与保留归档、成员/设备停用、地址簿授权与回收站、个人令牌、管理面 2FA；上一基线 v0.7.0）。本文档随版本演进持续更新——每次发布前必须复核一遍。
 > 配套文档：[运维指南](operations.md) · [后端 API 规范](api-spec.md)
 
 ---
@@ -69,6 +69,7 @@ go build -o panel ./cmd/server
 | `logcollect.rules` | | **空（无内置默认）** | 省略即零规则：所有行按 unparseable 计数丢弃。必须显式配置（示例 `configs/config.yaml` 含 4 条经 1.1.11/1.1.16 实测的规则）；规则按序匹配、首条命中即停；命名捕获组 `device` 关联设备。断开事件（`kind: disconnected`）默认不配置，原因与加法见 §6 第 6 条 |
 | `compat.accessTTL` | | `720h` | compat 会话（RustDesk 客户端令牌）的有效期；成员失去组织访问时应通过会话撤销立即失效（见运维指南 §2.1/#39） |
 | `session.idleTimeout` | | `10m` | 会话空闲超时：open 会话超过该时长无活动（无活动记录则回退 `started_at`）由空闲清扫任务置 `closed`（`end_reason=idle_timeout`）；契约的"部署可配置"项。**必须为正**：`0`/负值不是禁用清扫，而是记 warning 并回退默认 `10m` |
+| `audit.archiveDir` | | `./data/audit-archive` | 按组织归档审计文件的根目录（`org-<orgId>/audit-<minId>.jsonl` + `.sha256`）。组织设置 `audit_retention_days > 0` 时每小时先归档校验、后删除；**备份范围必须包含该目录**（见运维指南 §3、§7） |
 
 ---
 

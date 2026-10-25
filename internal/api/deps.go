@@ -12,6 +12,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/addressbook"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/provision"
@@ -52,6 +53,25 @@ type Deps struct {
 	// Tickets issues and redeems connection tickets. NewAdminAPI builds one
 	// from DB/Auditor/Now when it is nil, so tests can leave it out.
 	Tickets *session.Service
+
+	// Roles resolves and seeds organization roles. NewAdminAPI derives it from
+	// DB when nil.
+	Roles *authz.RoleService
+
+	// Tokens mints and validates personal API tokens. NewRouter derives it from
+	// DB when nil so tests and the entrypoint share the same wiring.
+	Tokens *auth.TokenService
+
+	// TOTP owns management-login two-factor state. NewRouter derives it from DB
+	// and AuthSecret when nil.
+	TOTP *auth.TOTPService
+	// AuthSecret seeds the TOTP secret-encryption key (HKDF). The entrypoint
+	// passes the configured auth secret; tests may leave it empty.
+	AuthSecret string
+
+	// Retention archives and purges audit rows. NewRouter derives it from DB,
+	// Auditor and Now when nil.
+	Retention *audit.RetentionService
 }
 
 // Provisioner schedules asynchronous server provisioning.
@@ -69,11 +89,14 @@ type ProvisioningManager interface {
 
 // AdminAPI implements the generated gen.ServerInterface.
 type AdminAPI struct {
-	deps    Deps
-	guard   *loginGuard
-	resend  *loginGuard
-	books   *addressbook.Service
-	tickets *session.Service
+	deps      Deps
+	guard     *loginGuard
+	resend    *loginGuard
+	totpGuard *loginGuard
+	books     *addressbook.Service
+	tickets   *session.Service
+	totp      *auth.TOTPService
+	retention *audit.RetentionService
 }
 
 // NewAdminAPI builds the handler set.
@@ -101,6 +124,16 @@ func NewAdminAPI(d Deps) *AdminAPI {
 		// dependency wiring optional in tests that do not exercise mail.
 		d.Mailer = mail.NewDev(io.Discard)
 	}
+	if d.Roles == nil {
+		d.Roles = authz.NewRoleService(d.DB)
+	}
+	if d.TOTP == nil {
+		d.TOTP = auth.NewTOTPService(d.DB, d.AuthSecret, d.Now)
+	}
+	if d.Retention == nil {
+		recorder, _ := d.Auditor.(audit.TxRecorder)
+		d.Retention = audit.NewRetentionService(d.DB, "./data/audit-archive", recorder, d.Now)
+	}
 	tickets := d.Tickets
 	if tickets == nil {
 		// The service fails closed without a recorder, and governance
@@ -117,10 +150,13 @@ func NewAdminAPI(d Deps) *AdminAPI {
 	}
 
 	return &AdminAPI{
-		deps:    d,
-		guard:   newLoginGuard(),
-		resend:  newLoginGuard(),
-		books:   addressbook.NewService(d.DB),
-		tickets: tickets,
+		deps:      d,
+		guard:     newLoginGuard(),
+		resend:    newLoginGuard(),
+		totpGuard: newLoginGuard(),
+		books:     addressbook.NewService(d.DB),
+		tickets:   tickets,
+		totp:      d.TOTP,
+		retention: d.Retention,
 	}
 }

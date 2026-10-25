@@ -47,6 +47,7 @@ type deviceView struct {
 	RustdeskId string `json:"rustdesk_id"`
 	Status     string `json:"status"`
 	Bound      bool   `json:"bound"`
+	Disabled   bool   `json:"disabled"`
 }
 
 func createOrg(t *testing.T, h *harness, token, name string) int64 {
@@ -127,7 +128,7 @@ func TestListDevices_MemberReadsOrgOnly(t *testing.T) {
 	// A member may read the listing.
 	member := h.seedUser(t, "list-member@example.com", "password123")
 	require.NoError(t, h.db.DB.Create(&model.Membership{
-		OrganizationID: uint(orgID), UserID: member.ID, Role: "member",
+		OrganizationID: uint(orgID), UserID: member.ID, RoleID: h.roleID(t, uint(orgID), "member"), Role: "member",
 	}).Error)
 	memberToken := h.login(t, "list-member@example.com", "password123")
 	w = h.do(t, http.MethodGet, "/api/v1/orgs/"+itoa(orgID)+"/devices", nil, memberToken)
@@ -264,7 +265,7 @@ func TestResetDeviceBinding_PermissionsAndNotFound(t *testing.T) {
 
 	member := h.seedUser(t, "perm-member@example.com", "password123")
 	require.NoError(t, h.db.DB.Create(&model.Membership{
-		OrganizationID: uint(orgID), UserID: member.ID, Role: "member",
+		OrganizationID: uint(orgID), UserID: member.ID, RoleID: h.roleID(t, uint(orgID), "member"), Role: "member",
 	}).Error)
 	memberToken := h.login(t, "perm-member@example.com", "password123")
 	w := h.do(t, http.MethodPost, path, map[string]string{"reason": "越权"}, memberToken)
