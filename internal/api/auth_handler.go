@@ -389,25 +389,23 @@ func (a *AdminAPI) DisableTOTP(c *gin.Context) {
 		return
 	}
 	// Disabling checks a password and a TOTP code, so it is a credential oracle
-	// like the login second step and shares the same account/IP failure budget
-	// (CWE-307). The per-IP rate bucket is deliberately not consumed here: this
-	// path already requires an access JWT and normal 2FA management issues
-	// several requests in a row, so spending the unauthenticated login budget
-	// would lock legitimate users out of their own account settings.
+	// like the login second step (CWE-307). It has its own guard: the requests
+	// are authenticated and legitimate management issues several in a row, so
+	// they must not drain the unauthenticated login bucket — but a separate
+	// per-IP bucket still bounds them once the failure table fills up. Reserve
+	// spends the attempt up front, so concurrent requests cannot all pass a
+	// separate lock check and overshoot the budget.
 	ip := c.ClientIP()
 	account := fmt.Sprint(uid)
-	if a.totpGuard.Locked(account, ip) {
-		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "account temporarily locked")
+	if !a.totpManageGuard.AllowIP(ip) || !a.totpManageGuard.Reserve(account, ip) {
+		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "too many attempts")
 		return
 	}
 	if err := a.totp.Disable(uid, req.Password, req.Code); err != nil {
-		if errors.Is(err, auth.ErrInvalidTOTP) || errors.Is(err, auth.ErrInvalidPassword) {
-			a.totpGuard.RecordFailure(account, ip)
-		}
 		a.writeTOTPError(c, err, "disable two-factor failed")
 		return
 	}
-	a.totpGuard.Reset(account, ip)
+	a.totpManageGuard.Reset(account, ip)
 	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
 }
 
@@ -423,23 +421,20 @@ func (a *AdminAPI) RegenerateRecoveryCodes(c *gin.Context) {
 		return
 	}
 	// Same credential-oracle reasoning as DisableTOTP: the password and the
-	// code are verified here, so failures spend the shared account/IP budget.
-	// The unauthenticated per-IP login bucket is not consumed (see DisableTOTP).
+	// code are verified here, so attempts are reserved up front from the
+	// dedicated management guard and reset after a success.
 	ip := c.ClientIP()
 	account := fmt.Sprint(uid)
-	if a.totpGuard.Locked(account, ip) {
-		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "account temporarily locked")
+	if !a.totpManageGuard.AllowIP(ip) || !a.totpManageGuard.Reserve(account, ip) {
+		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "too many attempts")
 		return
 	}
 	codes, err := a.totp.RegenerateRecovery(uid, req.Password, req.Code)
 	if err != nil {
-		if errors.Is(err, auth.ErrInvalidTOTP) || errors.Is(err, auth.ErrInvalidPassword) {
-			a.totpGuard.RecordFailure(account, ip)
-		}
 		a.writeTOTPError(c, err, "regenerate recovery codes failed")
 		return
 	}
-	a.totpGuard.Reset(account, ip)
+	a.totpManageGuard.Reset(account, ip)
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, gen.TOTPRecoveryCodesResponse{
 		Code:    gen.ErrorCodeOk,
