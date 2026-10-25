@@ -316,7 +316,15 @@ func ensureArchiveDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create audit archive directory: %w", err)
 	}
-	for p := dir; ; {
+	// Resolve before walking: for a relative root such as ./data/audit-archive
+	// filepath.Dir(".") == "." and the working directory would be mistaken for
+	// the filesystem root, so the entry of a freshly created data/ directory
+	// would never be flushed.
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return fmt.Errorf("resolve audit archive directory: %w", err)
+	}
+	for p := abs; ; {
 		parent := filepath.Dir(p)
 		if parent == p {
 			break

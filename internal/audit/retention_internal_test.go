@@ -159,6 +159,48 @@ func TestRetention_RetryAcrossCyclesKeepsOneArchive(t *testing.T) {
 	require.Len(t, files, 1, "one committed batch leaves exactly one archive")
 }
 
+// A relative archive root must be resolved before walking the chain: with
+// filepath.Dir(".") == "." the working directory would be mistaken for the
+// filesystem root, so the entry of a freshly created data/ directory would
+// never be flushed.
+func TestRetention_RelativeArchiveDirSyncsWorkingDirectory(t *testing.T) {
+	dsn := fmt.Sprintf("file:retention_relative_%d?mode=memory&cache=shared", time.Now().UnixNano())
+	st, err := store.Open(config.DatabaseConfig{Driver: "sqlite", DSN: dsn})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	require.NoError(t, st.DB.AutoMigrate(&model.Organization{}, &model.AuditLog{}))
+
+	org := model.Organization{Name: "relative-org"}
+	require.NoError(t, st.DB.Create(&org).Error)
+	require.NoError(t, st.DB.Create(&model.AuditLog{
+		OrganizationID: org.ID, Seq: 1, Action: "test.action",
+		TargetType: "device", TargetID: "1",
+		CreatedAt: time.Now().UTC().AddDate(0, 0, -40),
+	}).Error)
+
+	t.Chdir(t.TempDir())
+	svc := NewRetentionService(st.DB, filepath.Join("data", "archive"), NewGormAuditor(st.DB), nil)
+	ctx := context.Background()
+	require.NoError(t, svc.SetDays(ctx, org.ID, 30))
+
+	var synced []string
+	syncDirHook = func(dir string) error {
+		synced = append(synced, dir)
+		return nil
+	}
+	t.Cleanup(func() { syncDirHook = nil })
+
+	archived, purged, err := svc.RunOnce(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, archived)
+	require.EqualValues(t, 1, purged)
+
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	require.Contains(t, synced, cwd, "the working directory holds the new data/ entry and must be flushed")
+	require.NotContains(t, synced, ".")
+}
+
 // A directory-sync failure must abort the batch before the deleting
 // transaction. The retry must not trust directories created by the failed
 // attempt: it re-syncs the whole existing chain, and when the sync still fails
