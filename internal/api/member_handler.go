@@ -74,7 +74,7 @@ func lockActor(tx *gorm.DB, orgID, actorID uint, lockOwners bool, required ...st
 			owners = append(owners, rows[i])
 		}
 	}
-	if actor == nil {
+	if actor == nil || actor.Disabled {
 		return nil, errActorNoLongerAuthorized
 	}
 	for _, perm := range required {

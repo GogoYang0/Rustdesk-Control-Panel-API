@@ -307,20 +307,30 @@ func syncDirectory(dir string) error {
 // whole parent chain durable. Every level is flushed unconditionally instead of
 // only the directories created by this call: a previous attempt may have
 // created them and then failed during the sync, so their entries are not known
-// to be durable and must be flushed again on retry. The chain includes the
-// filesystem root, because a top-level archive directory created under it needs
-// that entry persisted too. Any sync failure aborts the batch (fail closed).
+// to be durable and must be flushed again on retry. The filesystem root itself
+// is skipped: flushing a directory needs write access, which a service account
+// normally does not have on the volume root, and failing there would stop
+// retention for every organization just to persist the entry of a root-level
+// archive directory. Any other sync failure aborts the batch (fail closed).
 func ensureArchiveDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create audit archive directory: %w", err)
 	}
-	for p := dir; ; {
-		if err := syncDirectory(p); err != nil {
-			return fmt.Errorf("sync audit archive directory: %w", err)
-		}
+	// Resolve before walking: for a relative root such as ./data/audit-archive
+	// filepath.Dir(".") == "." and the working directory would be mistaken for
+	// the filesystem root, so the entry of a freshly created data/ directory
+	// would never be flushed.
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return fmt.Errorf("resolve audit archive directory: %w", err)
+	}
+	for p := abs; ; {
 		parent := filepath.Dir(p)
 		if parent == p {
 			break
+		}
+		if err := syncDirectory(p); err != nil {
+			return fmt.Errorf("sync audit archive directory: %w", err)
 		}
 		p = parent
 	}

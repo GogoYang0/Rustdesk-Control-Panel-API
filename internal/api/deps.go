@@ -93,10 +93,15 @@ type AdminAPI struct {
 	guard     *loginGuard
 	resend    *loginGuard
 	totpGuard *loginGuard
-	books     *addressbook.Service
-	tickets   *session.Service
-	totp      *auth.TOTPService
-	retention *audit.RetentionService
+	// totpManageGuard throttles the authenticated self-service 2FA endpoints.
+	// It is a separate instance so their requests never drain the
+	// unauthenticated login bucket, and their own per-IP bucket still bounds
+	// attempts once the shared failure table is full.
+	totpManageGuard *loginGuard
+	books           *addressbook.Service
+	tickets         *session.Service
+	totp            *auth.TOTPService
+	retention       *audit.RetentionService
 }
 
 // NewAdminAPI builds the handler set.
@@ -154,9 +159,11 @@ func NewAdminAPI(d Deps) *AdminAPI {
 		guard:     newLoginGuard(),
 		resend:    newLoginGuard(),
 		totpGuard: newLoginGuard(),
-		books:     addressbook.NewService(d.DB),
-		tickets:   tickets,
-		totp:      d.TOTP,
-		retention: d.Retention,
+
+		totpManageGuard: newLoginGuard(),
+		books:           addressbook.NewService(d.DB),
+		tickets:         tickets,
+		totp:            d.TOTP,
+		retention:       d.Retention,
 	}
 }

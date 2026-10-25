@@ -160,6 +160,12 @@ func runSeed(dbPath string) error {
 	); err != nil {
 		return fmt.Errorf("auto migrate: %w", err)
 	}
+	// Seed the builtin roles and backfill role_id for memberships of an older
+	// fixture: a membership with role_id 0 is rejected by membershipFor, which
+	// would turn every organization-scoped flows request into a 403.
+	if err := authz.MigrateRoles(db); err != nil {
+		return fmt.Errorf("migrate roles: %w", err)
+	}
 
 	// Owner user (verified): login must succeed, so the password is hashed with
 	// the project's own Argon2id implementation.
