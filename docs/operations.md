@@ -165,7 +165,7 @@
 
 恢复：恢复 DB + 数据目录 → **恢复对应的 Docker 容器状态**（reconciler 会跳过已有 `ServerGroup` 行的组织，不会重建缺失的容器）——容器状态不可恢复时，须对每个已恢复的组织执行并验证容器重建 → 启动 panel → AutoMigrate 幂等。
 
-**审计完整性巡检**：按组织检查 audit 序列号连续性（断号 = 行被删/篡改）。
+**审计完整性巡检**：按组织检查 audit 序列号连续性。**保留期清理会产生预期断号**——先排除已成功归档并由 `audit.retention.purge` 清理的区间（用归档文件 JSONL + `.sha256` 与 `audit.retention.archive` / `audit.retention.purge` 审计交叉核对），只对**保留窗口内（未归档范围）**的非预期断号按"行被删/篡改"告警（见 §3）。
 
 ---
 
@@ -195,4 +195,4 @@ Prometheus 指标端点属后续硬化项（见 #31 描述遗留清单）。
 | 地址簿整本推送 409 | `ab_conflict`：content hash 与服务器不一致，先 `GET /api/ab` 取最新 |
 | 500 `ab` 相关 | 历史 compat 写入缺校验导致唯一索引冲突——v0.3.0 已修；仍出现请带请求样本反馈 |
 | panel 启动即退出 | 启动序列某步 Fatal：看日志第一行（配置/DB/邮件校验，见部署指南 §4.1） |
-| 审计序列断号 | 立即排查（§3），确认 DB 访问面 |
+| 审计序列断号 | 先确认是否落在已归档清理区间（`audit.retention.archive`/`audit.retention.purge` + 归档 JSONL/`.sha256` 交叉核对，§3）；保留窗口内的非预期断号立即排查，确认 DB 访问面 |
