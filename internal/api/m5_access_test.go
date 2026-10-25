@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
 
 // m5UserGroupView mirrors the UserGroup schema of contract 0.9.0.
@@ -42,6 +43,17 @@ func TestAccess_UserGroupAdminFlow(t *testing.T) {
 	decodeData(t, w, &mutation)
 	require.Equal(t, 1, mutation.Added)
 	require.Zero(t, mutation.Removed)
+
+	// A domain-audited write must suppress the middleware's fallback row: the
+	// request produces exactly one audit entry (the domain one).
+	var httpRows int64
+	require.NoError(t, store.WithoutTenantScope(h.db.DB).Model(&model.AuditLog{}).
+		Where("action = ?", "POST /api/v1/orgs/:orgId/user-groups").Count(&httpRows).Error)
+	require.Zero(t, httpRows, "the domain audit entry must replace the http fallback")
+	var domainRows int64
+	require.NoError(t, store.WithoutTenantScope(h.db.DB).Model(&model.AuditLog{}).
+		Where("action = ?", "access.user_group.create").Count(&domainRows).Error)
+	require.EqualValues(t, 1, domainRows)
 
 	w = h.do(t, http.MethodGet, base, nil, adminToken)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())

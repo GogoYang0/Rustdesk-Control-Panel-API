@@ -101,6 +101,11 @@ var (
 	// ErrAuditUnavailable refuses a group mutation when the configured auditor
 	// cannot record inside the same transaction: no audit, no change.
 	ErrAuditUnavailable = errors.New("transactional auditor unavailable")
+
+	ErrDeviceGroupNotFound    = errors.New("device group not found")
+	ErrDeviceGroupNameTaken   = errors.New("device group name already in use")
+	ErrInvalidDeviceGroupName = errors.New("invalid device group name")
+	ErrInvalidDevice          = errors.New("invalid device")
 )
 
 // maxGroupNameLen matches the size:64 column of model.UserGroup.
@@ -112,6 +117,13 @@ const maxGroupNameLen = 64
 type GroupView struct {
 	Group     model.UserGroup
 	MemberIDs []uint
+}
+
+// DeviceGroupView is one device group together with the ids of its devices. A
+// device belongs to at most one group, so the ids never appear in two views.
+type DeviceGroupView struct {
+	Group     model.DeviceGroup
+	DeviceIDs []uint
 }
 
 // Service owns the access-control writes: groups, memberships (device groups
@@ -151,7 +163,7 @@ func (s *Service) ListUserGroups(ctx context.Context, orgID uint) ([]GroupView, 
 	}
 	var members []model.UserGroupMember
 	if err := store.ScopedByOrg(db, orgID).
-		Where("group_id IN ?", ids).Find(&members).Error; err != nil {
+		Where("group_id IN ?", ids).Order("id").Find(&members).Error; err != nil {
 		return nil, err
 	}
 	byGroup := make(map[uint][]uint, len(groups))
@@ -178,7 +190,7 @@ func (s *Service) UserGroupView(ctx context.Context, orgID, groupID uint) (Group
 	}
 	var members []model.UserGroupMember
 	if err := store.ScopedByOrg(s.db.WithContext(ctx), orgID).
-		Where("group_id = ?", groupID).Find(&members).Error; err != nil {
+		Where("group_id = ?", groupID).Order("id").Find(&members).Error; err != nil {
 		return GroupView{}, err
 	}
 	ids := make([]uint, 0, len(members))
@@ -258,11 +270,9 @@ func (s *Service) RenameUserGroup(ctx context.Context, orgID, actorID, groupID u
 		if res.Error != nil {
 			return mapGroupNameConflict(res.Error)
 		}
-		if res.RowsAffected == 0 {
-			// The row stopped being a custom group between the read and the
-			// update; audited success would claim a rename that never happened.
-			return ErrGroupNotFound
-		}
+		// MySQL reports 0 affected rows when the collation considers the new name
+		// unchanged; the reload, not RowsAffected, decides whether the row still
+		// exists.
 		reloaded, err := groupByID(tx, orgID, group.ID)
 		if err != nil {
 			return err
@@ -436,6 +446,322 @@ func (s *Service) ReplaceUserGroupMembers(ctx context.Context, orgID, actorID, g
 	return removed, added, nil
 }
 
+// ListDeviceGroups returns the organization's device groups ordered by id,
+// each with the ids of the devices currently assigned to it.
+func (s *Service) ListDeviceGroups(ctx context.Context, orgID uint) ([]DeviceGroupView, error) {
+	db := s.db.WithContext(ctx)
+	var groups []model.DeviceGroup
+	if err := store.ScopedByOrg(db, orgID).Order("id").Find(&groups).Error; err != nil {
+		return nil, err
+	}
+	views := make([]DeviceGroupView, 0, len(groups))
+	if len(groups) == 0 {
+		return views, nil
+	}
+	ids := make([]uint, 0, len(groups))
+	for _, group := range groups {
+		ids = append(ids, group.ID)
+	}
+	var devices []model.Device
+	if err := store.ScopedByOrg(db, orgID).
+		Where("device_group_id IN ?", ids).Order("id").Find(&devices).Error; err != nil {
+		return nil, err
+	}
+	byGroup := make(map[uint][]uint, len(groups))
+	for _, device := range devices {
+		if device.DeviceGroupID == nil {
+			continue
+		}
+		byGroup[*device.DeviceGroupID] = append(byGroup[*device.DeviceGroupID], device.ID)
+	}
+	for _, group := range groups {
+		deviceIDs := byGroup[group.ID]
+		if deviceIDs == nil {
+			deviceIDs = []uint{}
+		}
+		views = append(views, DeviceGroupView{Group: group, DeviceIDs: deviceIDs})
+	}
+	return views, nil
+}
+
+// DeviceGroupViewByID reloads one device group with its device ids for the
+// create/rename responses.
+func (s *Service) DeviceGroupViewByID(ctx context.Context, orgID, groupID uint) (DeviceGroupView, error) {
+	db := s.db.WithContext(ctx)
+	group, err := deviceGroupByID(db, orgID, groupID)
+	if err != nil {
+		return DeviceGroupView{}, err
+	}
+	var devices []model.Device
+	if err := store.ScopedByOrg(db, orgID).
+		Where("device_group_id = ?", groupID).Order("id").Find(&devices).Error; err != nil {
+		return DeviceGroupView{}, err
+	}
+	ids := make([]uint, 0, len(devices))
+	for _, device := range devices {
+		ids = append(ids, device.ID)
+	}
+	return DeviceGroupView{Group: *group, DeviceIDs: ids}, nil
+}
+
+// CreateDeviceGroup adds a device group. Names are unique per organization
+// (case-insensitive) and are not reserved.
+func (s *Service) CreateDeviceGroup(ctx context.Context, orgID, actorID uint, name string) (*model.DeviceGroup, error) {
+	clean, err := cleanDeviceGroupName(name)
+	if err != nil {
+		return nil, err
+	}
+	var group model.DeviceGroup
+	err = s.write(ctx, func(tx *gorm.DB) error {
+		if err := lockOrgRow(tx, orgID); err != nil {
+			return err
+		}
+		if err := ensureDeviceGroupNameFree(tx, orgID, clean, 0); err != nil {
+			return err
+		}
+		group = model.DeviceGroup{OrganizationID: orgID, Name: clean}
+		if err := store.ScopedByOrg(tx, orgID).Create(&group).Error; err != nil {
+			return mapDeviceGroupNameConflict(err)
+		}
+		return s.record(tx, audit.Entry{
+			OrganizationID: orgID,
+			ActorUserID:    actorID,
+			Action:         "access.device_group.create",
+			TargetType:     "device_group",
+			TargetID:       fmt.Sprint(group.ID),
+			Detail:         map[string]any{"name": group.Name},
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &group, nil
+}
+
+// RenameDeviceGroup renames a device group.
+func (s *Service) RenameDeviceGroup(ctx context.Context, orgID, actorID, groupID uint, name string) (*model.DeviceGroup, error) {
+	clean, err := cleanDeviceGroupName(name)
+	if err != nil {
+		return nil, err
+	}
+	var updated model.DeviceGroup
+	err = s.write(ctx, func(tx *gorm.DB) error {
+		if err := lockOrgRow(tx, orgID); err != nil {
+			return err
+		}
+		group, err := deviceGroupByID(tx, orgID, groupID)
+		if err != nil {
+			return err
+		}
+		if group.Name == clean {
+			updated = *group
+			return nil
+		}
+		if err := ensureDeviceGroupNameFree(tx, orgID, clean, group.ID); err != nil {
+			return err
+		}
+		res := store.ScopedByOrg(tx, orgID).Model(&model.DeviceGroup{}).
+			Where("id = ?", group.ID).
+			Updates(map[string]any{"name": clean, "updated_at": s.now().UTC()})
+		if res.Error != nil {
+			return mapDeviceGroupNameConflict(res.Error)
+		}
+		// MySQL reports 0 affected rows when the collation considers the new name
+		// unchanged; the reload decides whether the group still exists.
+		reloaded, err := deviceGroupByID(tx, orgID, group.ID)
+		if err != nil {
+			return err
+		}
+		updated = *reloaded
+		return s.record(tx, audit.Entry{
+			OrganizationID: orgID,
+			ActorUserID:    actorID,
+			Action:         "access.device_group.update",
+			TargetType:     "device_group",
+			TargetID:       fmt.Sprint(group.ID),
+			Detail:         map[string]any{"name": clean, "previous_name": group.Name},
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
+// DeleteDeviceGroup deletes a device group. Devices assigned to it return to
+// ungrouped and every rule targeting it is cascaded with its own audit entry.
+// It returns how many rules were removed and how many devices were ungrouped.
+func (s *Service) DeleteDeviceGroup(ctx context.Context, orgID, actorID, groupID uint) (removedRules, ungrouped int, err error) {
+	err = s.write(ctx, func(tx *gorm.DB) error {
+		if err := lockOrgRow(tx, orgID); err != nil {
+			return err
+		}
+		group, err := deviceGroupByID(tx, orgID, groupID)
+		if err != nil {
+			return err
+		}
+		var rules []model.AccessRule
+		if err := store.ScopedByOrg(tx, orgID).
+			Where("target_kind = ? AND target_group_id = ?",
+				model.AccessTargetKindDeviceGroup, group.ID).
+			Find(&rules).Error; err != nil {
+			return err
+		}
+		if len(rules) > 0 {
+			if err := store.ScopedByOrg(tx, orgID).
+				Where("target_kind = ? AND target_group_id = ?",
+					model.AccessTargetKindDeviceGroup, group.ID).
+				Delete(&model.AccessRule{}).Error; err != nil {
+				return err
+			}
+			for _, rule := range rules {
+				if err := s.record(tx, audit.Entry{
+					OrganizationID: orgID,
+					ActorUserID:    actorID,
+					Action:         "access.rule.delete",
+					TargetType:     "access_rule",
+					TargetID:       fmt.Sprint(rule.ID),
+					Detail: map[string]any{
+						"source_group_id": rule.SourceGroupID,
+						"target_kind":     rule.TargetKind,
+						"target_group_id": rule.TargetGroupID,
+						"cascade":         true,
+					},
+				}); err != nil {
+					return err
+				}
+			}
+		}
+		res := store.ScopedByOrg(tx, orgID).Model(&model.Device{}).
+			Where("device_group_id = ?", group.ID).
+			Update("device_group_id", nil)
+		if res.Error != nil {
+			return res.Error
+		}
+		ungrouped = int(res.RowsAffected)
+
+		del := store.ScopedByOrg(tx, orgID).Delete(&model.DeviceGroup{}, group.ID)
+		if del.Error != nil {
+			return del.Error
+		}
+		if del.RowsAffected == 0 {
+			return ErrDeviceGroupNotFound
+		}
+		removedRules = len(rules)
+		return s.record(tx, audit.Entry{
+			OrganizationID: orgID,
+			ActorUserID:    actorID,
+			Action:         "access.device_group.delete",
+			TargetType:     "device_group",
+			TargetID:       fmt.Sprint(group.ID),
+			Detail: map[string]any{
+				"name":              group.Name,
+				"removed_rules":     removedRules,
+				"ungrouped_devices": ungrouped,
+			},
+		})
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	return removedRules, ungrouped, nil
+}
+
+// ReplaceDeviceGroupDevices replaces the device set of a group. Target devices
+// are moved in from whatever group they were in (one device, one group); group
+// members not listed are released back to ungrouped. Every requested device
+// must belong to the organization, otherwise the whole request is rejected.
+func (s *Service) ReplaceDeviceGroupDevices(ctx context.Context, orgID, actorID, groupID uint, deviceIDs []uint) (added, removed int, err error) {
+	wanted := dedupeIDs(deviceIDs)
+	err = s.write(ctx, func(tx *gorm.DB) error {
+		if err := lockOrgRow(tx, orgID); err != nil {
+			return err
+		}
+		group, err := deviceGroupByID(tx, orgID, groupID)
+		if err != nil {
+			return err
+		}
+		if err := validateDevices(tx, orgID, wanted); err != nil {
+			return err
+		}
+		var current []model.Device
+		if err := store.ScopedByOrg(tx, orgID).
+			Where("device_group_id = ?", group.ID).Find(&current).Error; err != nil {
+			return err
+		}
+		have := make(map[uint]bool, len(current))
+		for _, device := range current {
+			have[device.ID] = true
+		}
+		keep := make(map[uint]bool, len(wanted))
+		for _, id := range wanted {
+			keep[id] = true
+		}
+		var toRelease, toAdd []uint
+		for _, device := range current {
+			if !keep[device.ID] {
+				toRelease = append(toRelease, device.ID)
+			}
+		}
+		for _, id := range wanted {
+			if !have[id] {
+				toAdd = append(toAdd, id)
+			}
+		}
+		if len(toRelease) > 0 {
+			if err := store.ScopedByOrg(tx, orgID).Model(&model.Device{}).
+				Where("device_group_id = ? AND id IN ?", group.ID, toRelease).
+				Update("device_group_id", nil).Error; err != nil {
+				return err
+			}
+		}
+		movedFrom := make(map[uint]uint)
+		if len(toAdd) > 0 {
+			// Capture the previous group of every device being moved: the
+			// UPDATE below overwrites the only reference, so the audit entry is
+			// the only trace left of where the device came from.
+			var moved []model.Device
+			if err := store.ScopedByOrg(tx, orgID).
+				Where("id IN ? AND device_group_id IS NOT NULL", toAdd).
+				Find(&moved).Error; err != nil {
+				return err
+			}
+			for _, device := range moved {
+				if device.DeviceGroupID != nil {
+					movedFrom[device.ID] = *device.DeviceGroupID
+				}
+			}
+			// This single UPDATE also detaches the devices from any previous
+			// group, which is what enforces "one device belongs to one group".
+			if err := store.ScopedByOrg(tx, orgID).Model(&model.Device{}).
+				Where("id IN ?", toAdd).
+				Update("device_group_id", group.ID).Error; err != nil {
+				return err
+			}
+		}
+		added, removed = len(toAdd), len(toRelease)
+		if added == 0 && removed == 0 {
+			return nil
+		}
+		detail := map[string]any{"device_ids": wanted, "added": added, "removed": removed}
+		if len(movedFrom) > 0 {
+			detail["moved_from"] = movedFrom
+		}
+		return s.record(tx, audit.Entry{
+			OrganizationID: orgID,
+			ActorUserID:    actorID,
+			Action:         "access.device_group.devices",
+			TargetType:     "device_group",
+			TargetID:       fmt.Sprint(group.ID),
+			Detail:         detail,
+		})
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	return added, removed, nil
+}
+
 // write runs fn inside one transaction, refusing to start without a
 // transactional recorder so an unaudited group change can never commit.
 func (s *Service) write(ctx context.Context, fn func(tx *gorm.DB) error) error {
@@ -565,4 +891,76 @@ func lockOrgRow(tx *gorm.DB, orgID uint) error {
 	}
 	var org model.Organization
 	return query.First(&org, orgID).Error
+}
+
+// deviceGroupByID loads one device group of the tenant or reports
+// ErrDeviceGroupNotFound.
+func deviceGroupByID(db *gorm.DB, orgID, groupID uint) (*model.DeviceGroup, error) {
+	var group model.DeviceGroup
+	if err := store.ScopedByOrg(db, orgID).First(&group, groupID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrDeviceGroupNotFound
+		}
+		return nil, err
+	}
+	return &group, nil
+}
+
+// cleanDeviceGroupName trims and bounds a device group display name.
+func cleanDeviceGroupName(name string) (string, error) {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" || len([]rune(trimmed)) > maxGroupNameLen {
+		return "", ErrInvalidDeviceGroupName
+	}
+	return trimmed, nil
+}
+
+// ensureDeviceGroupNameFree rejects a name already used by another device group
+// of the organization, folding case in Go so all three dialects agree.
+func ensureDeviceGroupNameFree(db *gorm.DB, orgID uint, name string, exceptID uint) error {
+	var existing []model.DeviceGroup
+	if err := store.ScopedByOrg(db, orgID).
+		Select("id", "name").Find(&existing).Error; err != nil {
+		return err
+	}
+	for _, group := range existing {
+		if exceptID != 0 && group.ID == exceptID {
+			continue
+		}
+		if strings.EqualFold(group.Name, name) {
+			return ErrDeviceGroupNameTaken
+		}
+	}
+	return nil
+}
+
+// validateDevices rejects the whole request when any requested device has no
+// row in the organization.
+func validateDevices(tx *gorm.DB, orgID uint, ids []uint) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	var found []uint
+	if err := store.ScopedByOrg(tx, orgID).Model(&model.Device{}).
+		Where("id IN ?", ids).Pluck("id", &found).Error; err != nil {
+		return err
+	}
+	if len(found) != len(ids) {
+		return ErrInvalidDevice
+	}
+	return nil
+}
+
+// mapDeviceGroupNameConflict translates a unique-index violation into the
+// domain error the handler maps onto 409, with a string fallback for drivers
+// that have no ErrorTranslator (the SQLite driver).
+func mapDeviceGroupNameConflict(err error) error {
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return ErrDeviceGroupNameTaken
+	}
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "unique") || strings.Contains(lower, "duplicate") {
+		return ErrDeviceGroupNameTaken
+	}
+	return err
 }
