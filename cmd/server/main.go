@@ -19,6 +19,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/access"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/addressbook"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/api"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
@@ -79,6 +80,7 @@ func main() {
 		&model.Session{}, &model.SessionEvent{},
 		&model.Ticket{}, &model.Policy{},
 		&model.Approval{}, &model.Alert{},
+		&model.UserGroup{}, &model.UserGroupMember{}, &model.DeviceGroup{}, &model.AccessRule{},
 	); err != nil {
 		lg.Fatal("migrate database", zap.Error(err))
 	}
@@ -89,6 +91,20 @@ func main() {
 	// role string aborts startup rather than silently demoting a member.
 	if err := authz.MigrateRoles(st.DB); err != nil {
 		lg.Fatal("migrate roles", zap.Error(err))
+	}
+
+	// v0.9.0 extends the builtin permission sets with access.manage. The sets
+	// are stored as JSON per role row, so the catalog change alone would leave
+	// every existing admin without the code; the marker makes the rewrite
+	// one-shot and a failure aborts startup instead of half-applying it.
+	if err := authz.MigrateAccessPermission(st.DB); err != nil {
+		lg.Fatal("migrate access permission", zap.Error(err))
+	}
+
+	// Every organization needs its everyone group and the all-devices rule or
+	// its members would see no devices at all after the upgrade.
+	if err := access.Migrate(st.DB); err != nil {
+		lg.Fatal("migrate access defaults", zap.Error(err))
 	}
 
 	// One-time backfill, guarded by a persistent marker instead of the

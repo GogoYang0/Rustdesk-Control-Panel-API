@@ -31,6 +31,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/access"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
@@ -157,6 +158,8 @@ func runSeed(dbPath string) error {
 		// The six M3 models.
 		&model.Policy{}, &model.Ticket{}, &model.Session{},
 		&model.SessionEvent{}, &model.Approval{}, &model.Alert{},
+		// The four M5 access-control models.
+		&model.UserGroup{}, &model.UserGroupMember{}, &model.DeviceGroup{}, &model.AccessRule{},
 	); err != nil {
 		return fmt.Errorf("auto migrate: %w", err)
 	}
@@ -165,6 +168,14 @@ func runSeed(dbPath string) error {
 	// would turn every organization-scoped flows request into a 403.
 	if err := authz.MigrateRoles(db); err != nil {
 		return fmt.Errorf("migrate roles: %w", err)
+	}
+	if err := authz.MigrateAccessPermission(db); err != nil {
+		return fmt.Errorf("migrate access permission: %w", err)
+	}
+	// The everyone defaults keep the seeded organization's peers list
+	// non-empty once the M5 visibility filter is in place.
+	if err := access.Migrate(db); err != nil {
+		return fmt.Errorf("migrate access defaults: %w", err)
 	}
 
 	// Owner user (verified): login must succeed, so the password is hashed with

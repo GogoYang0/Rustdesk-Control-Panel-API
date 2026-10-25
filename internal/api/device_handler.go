@@ -246,12 +246,23 @@ func (a *AdminAPI) SetDeviceDisabled(c *gin.Context, orgId int64, deviceId int64
 func (a *AdminAPI) deviceToAPI(d *model.Device) gen.Device {
 	status := device.Status(d, a.deps.Now())
 	return gen.Device{
-		Id:         int64(d.ID),
-		Name:       d.Name,
-		RustdeskId: d.RustdeskID,
-		Status:     gen.DeviceStatus(status),
-		LastSeenAt: d.LastSeenAt,
-		Bound:      d.BoundUUID != "",
-		Disabled:   d.Disabled,
+		Id:            int64(d.ID),
+		Name:          d.Name,
+		RustdeskId:    d.RustdeskID,
+		Status:        gen.DeviceStatus(status),
+		LastSeenAt:    d.LastSeenAt,
+		Bound:         d.BoundUUID != "",
+		Disabled:      d.Disabled,
+		DeviceGroupId: deviceGroupIDToAPI(d.DeviceGroupID),
 	}
+}
+
+// deviceGroupIDToAPI maps the nullable group reference onto the contract's
+// nullable int64 (0 is never a valid group id, so a nil pointer stays null).
+func deviceGroupIDToAPI(v *uint) *int64 {
+	if v == nil {
+		return nil
+	}
+	out := int64(*v)
+	return &out
 }

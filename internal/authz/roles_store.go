@@ -194,6 +194,55 @@ func MigrateRoles(db *gorm.DB) error {
 // builtin role.
 var ErrUnknownLegacyRole = errors.New("unknown legacy role")
 
+// accessPermMigrationName is the one-shot marker of the access.manage backfill.
+const accessPermMigrationName = "2026-10-25-m5-access-perm"
+
+// MigrateAccessPermission rewrites the builtin owner/admin permission sets of
+// every organization to the current catalog.
+//
+// Permission sets are stored as JSON in roles.permissions, so extending the
+// catalog alone leaves existing rows behind: every established admin would get
+// 403 from the access-control endpoints. The rewrite is fail closed — any error
+// rolls back and leaves the marker unwritten, so the next startup retries.
+func MigrateAccessPermission(db *gorm.DB) error {
+	var mark model.MigrationMark
+	err := db.Where("name = ?", accessPermMigrationName).First(&mark).Error
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return fmt.Errorf("look up access permission migration mark: %w", err)
+	}
+
+	return db.Transaction(func(tx *gorm.DB) error {
+		var orgIDs []uint
+		if err := tx.Model(&model.Organization{}).Order("id").Pluck("id", &orgIDs).Error; err != nil {
+			return fmt.Errorf("list organizations: %w", err)
+		}
+		for _, orgID := range orgIDs {
+			for _, kind := range []string{model.RoleKindOwner, model.RoleKindAdmin} {
+				role, err := ensureBuiltinTx(tx, orgID, kind)
+				if err != nil {
+					return fmt.Errorf("ensure builtin %s role for organization %d: %w", kind, orgID, err)
+				}
+				raw := *role
+				if err := raw.SetPermissions(BuiltinPermissions(kind)); err != nil {
+					return fmt.Errorf("encode %s permissions: %w", kind, err)
+				}
+				if err := store.ScopedByOrg(tx, orgID).Model(&model.Role{}).
+					Where("id = ? AND kind = ?", role.ID, kind).
+					Update("permissions", raw.Permissions).Error; err != nil {
+					return fmt.Errorf("backfill %s permissions for organization %d: %w", kind, orgID, err)
+				}
+			}
+		}
+		return tx.Create(&model.MigrationMark{
+			Name:      accessPermMigrationName,
+			AppliedAt: time.Now().UTC(),
+		}).Error
+	})
+}
+
 // RoleByIDTx returns a role of the tenant on the caller's transaction.
 func RoleByIDTx(tx *gorm.DB, orgID, roleID uint) (*model.Role, error) {
 	var role model.Role

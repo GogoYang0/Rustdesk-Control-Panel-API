@@ -23,6 +23,10 @@ const (
 	// PermRoleManage gates role CRUD and assignment. It is owner-only and not
 	// delegable: a custom role must never be able to edit the role table.
 	PermRoleManage = "role.manage"
+	// PermAccessManage gates user groups, device groups and access rules. It is
+	// not delegable: handing it to a custom role would let that role reshape
+	// who can reach which devices.
+	PermAccessManage = "access.manage"
 )
 
 // Permission is one entry of the catalog served to role builders.
@@ -37,6 +41,7 @@ type Permission struct {
 var catalog = []Permission{
 	{PermOrgAdmin, "Administer organization settings and provisioning", false},
 	{PermRoleManage, "Create, edit, delete, and assign roles", false},
+	{PermAccessManage, "Manage user groups, device groups and access rules", false},
 	{PermMemberManage, "Invite and remove members, disable memberships", true},
 	{PermDeviceRead, "Read devices", true},
 	{PermDeviceWrite, "Register devices, heartbeat, rebind, disable", true},
@@ -82,6 +87,7 @@ func BuiltinPermissions(kind string) []string {
 		return []string{
 			PermMemberManage, PermDeviceRead, PermDeviceWrite,
 			PermAuditRead, PermAddressBook, PermPolicyWrite, PermApprovalDecide,
+			PermAccessManage,
 		}
 	case "member":
 		return []string{PermDeviceRead}
@@ -134,7 +140,8 @@ func NormalizePermissions(codes []string) ([]string, error) {
 }
 
 // ValidateDelegable rejects codes a custom role may not include. Only
-// owner-only capabilities (org.admin, role.manage) are non-delegable.
+// owner-only capabilities (org.admin, role.manage, access.manage) are
+// non-delegable.
 func ValidateDelegable(codes []string) error {
 	for _, code := range codes {
 		for _, p := range catalog {
