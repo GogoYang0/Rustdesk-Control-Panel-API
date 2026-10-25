@@ -71,9 +71,13 @@ func TestRetention_SyncFailureKeepsRowsAndRetryResyncs(t *testing.T) {
 	require.NoError(t, svc.SetDays(ctx, org.ID, 30))
 
 	// Fail on the parent of the leaf (the archive root) so the created chain
-	// exists when the second attempt starts.
+	// exists when the second attempt starts. Every flushed path is recorded to
+	// assert the chain reaches the filesystem root.
+	failParent := true
+	var synced []string
 	syncDirHook = func(dir string) error {
-		if dir == root {
+		synced = append(synced, dir)
+		if failParent && dir == root {
 			return errors.New("parent sync down")
 		}
 		return nil
@@ -102,7 +106,7 @@ func TestRetention_SyncFailureKeepsRowsAndRetryResyncs(t *testing.T) {
 
 	// Once the sync succeeds the retry re-syncs the chain, publishes the
 	// archive and only then deletes the row.
-	syncDirHook = nil
+	failParent = false
 	archived, purged, err = svc.RunOnce(ctx)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, archived)
@@ -110,6 +114,9 @@ func TestRetention_SyncFailureKeepsRowsAndRetryResyncs(t *testing.T) {
 	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).
 		Model(&model.AuditLog{}).Count(&remaining).Error)
 	require.EqualValues(t, 2, remaining, "only the archive/purge audit rows remain")
+
+	volumeRoot := filepath.VolumeName(root) + string(os.PathSeparator)
+	require.Contains(t, synced, volumeRoot, "the chain must reach the filesystem root")
 
 	files, err := filepath.Glob(filepath.Join(root, fmt.Sprintf("org-%d", org.ID), "audit-*.jsonl"))
 	require.NoError(t, err)

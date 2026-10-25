@@ -78,7 +78,7 @@
 ## 3. 审计日志
 
 - 写入路径：管理 API 由中间件回退记录（一次可审计请求恰好一条）；地址簿等领域写由 `TxRecorder` 在**实体事务内**原子记录（#26）；compat 写路径的归因由中间件回退读取 `compat.*` 上下文（#37，v0.3.0 恢复）
-- **完整性**：每条审计行带 per-org 连续序列号，序列断裂即表示行被删除或篡改——巡检时应检查序列连续性
+- **完整性**：每条审计行带 per-org 连续序列号，序列断裂通常表示行被删除或篡改。**保留期清理是唯一的预期缺口**：`audit.retention.purge` 只删除已成功归档且早于保留阈值的行，因此巡检应只把**保留窗口内（未归档范围）**的非预期缺口当作篡改信号，并用归档文件（JSONL + `.sha256`）与 `audit.retention.archive` / `audit.retention.purge` 审计交叉核对被清理的区间。
 - 无租户请求（login、healthz）不产生持久审计行（`GormAuditor` 对 org 0 直接丢弃，有意 fail-closed）
 - 遗留：compat 写路径的**事务级**审计（与业务写同事务）尚未实现，当前为请求级归因
 - **领域审计动作**（`TxRecorder` 在实体事务内记录）：`session.ticket.issue`（票据签发）、`session.ticket.redeem`（票据兑换）、`session.ticket.denied`（策略拒绝）、`session.approval.request`（新建审批请求；复用不重复记）、`session.approval.decide`（approve/deny 决策）、**`device.binding.reset`（v0.5.0 重置设备绑定；含 actor、`rustdesk_id`、reason、had_binding）**、`organization.member.remove` / `organization.member.role`（v0.6.0 成员离场；含目标用户、角色变化与撤销会话数）、**v0.8.0 新增：`organization.member.disable` / `organization.member.enable`（成员停用/恢复，含撤销会话数）、`device.disable` / `device.enable`（设备停用/恢复，含撤销会话数）、`role.create` / `role.update` / `role.delete`、`token.create` / `token.revoke`（个人令牌，明文不入审计）、`user.2fa.reset`（管理员重置成员 2FA）、`organization.audit_retention.set`、`audit.retention.archive` / `audit.retention.purge`（系统动作，actor 0）**。地址簿授权与回收站动作仍由请求级中间件回退归因（与 compat 写路径同一机制）。会话治理与设备列表的**轮询读不产生审计**（读静默），单个详情读会记录；provision 供应与保留期清扫等基础设施动作的审计见 provision 相关节（#46）

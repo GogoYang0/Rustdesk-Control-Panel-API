@@ -287,19 +287,16 @@ func syncDirectory(dir string) error {
 // whole parent chain durable. Every level is flushed unconditionally instead of
 // only the directories created by this call: a previous attempt may have
 // created them and then failed during the sync, so their entries are not known
-// to be durable and must be flushed again on retry. The volume root is skipped
-// (its children normally predate the archive), and any sync failure aborts the
-// batch (fail closed).
+// to be durable and must be flushed again on retry. The chain includes the
+// filesystem root, because a top-level archive directory created under it needs
+// that entry persisted too. Any sync failure aborts the batch (fail closed).
 func ensureArchiveDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create audit archive directory: %w", err)
 	}
-	volumeRoot := filepath.VolumeName(dir) + string(os.PathSeparator)
 	for p := dir; ; {
-		if p != volumeRoot && p != string(os.PathSeparator) {
-			if err := syncDirectory(p); err != nil {
-				return fmt.Errorf("sync audit archive directory: %w", err)
-			}
+		if err := syncDirectory(p); err != nil {
+			return fmt.Errorf("sync audit archive directory: %w", err)
 		}
 		parent := filepath.Dir(p)
 		if parent == p {
