@@ -195,4 +195,4 @@ Prometheus 指标端点属后续硬化项（见 #31 描述遗留清单）。
 | 地址簿整本推送 409 | `ab_conflict`：content hash 与服务器不一致，先 `GET /api/ab` 取最新 |
 | 500 `ab` 相关 | 历史 compat 写入缺校验导致唯一索引冲突——v0.3.0 已修；仍出现请带请求样本反馈 |
 | panel 启动即退出 | 启动序列某步 Fatal：看日志第一行（配置/DB/邮件校验，见部署指南 §4.1） |
-| 审计序列断号 | 先确认是否落在已归档清理区间（`audit.retention.archive`/`audit.retention.purge` + 归档 JSONL/`.sha256` 交叉核对，§3）；保留窗口内的非预期断号立即排查，确认 DB 访问面 |
+| 审计序列断号 | 先确认是否落在已归档清理区间（`audit.retention.archive`/`audit.retention.purge` + 归档 JSONL/`.sha256` 交叉核对，§3）；保留窗口内的非预期断号立即排查，确认 DB 访问权限是否受控（应用账号以外的写入途径、是否有直连改表） |
