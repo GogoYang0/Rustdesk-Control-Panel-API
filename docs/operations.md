@@ -94,6 +94,23 @@
 
 **排查**：普通成员客户端设备列表为空 → 检查该成员所在用户组是否被规则覆盖、`everyone → 全部设备` 是否已被删除、设备是否处于停用状态；管理员看不到某设备 → 先查管理面设备列表（全量），规则只影响客户端可见性与票据准入。
 
+### 2.4 验证码运维（v0.10.0）
+
+**启用前置**：选定 `captcha.provider`（默认 `altcha`），注入对应秘密（`PANEL_CAPTCHA_ALTCHA_KEY` / `PANEL_CAPTCHA_GEETEST_KEY` / `PANEL_CAPTCHA_CAP_SECRET`），并把 `captcha.enabled=true`。启用后 `/auth/login`、`/auth/2fa/verify`、`/invitations/accept` 全部要求 `GET /auth/captcha` 发放的挑战；compat `/api/login`（原生客户端）不受影响。
+
+**提供商与运维归属**：
+- `altcha`：自带 proof-of-work，无外部依赖；`maxNumber` 越高越难爆破、客户端越费 CPU（默认 10 万次哈希，通常毫秒级）。
+- `geetest`：需要极验账号与 `captchaId`；依赖境外服务，部署前确认可达。
+- `cap`：需要单独部署并升级 Cap Standalone，面板只调用其 `/siteverify`；Cap 不可用时按 `failMode` 处理。
+
+**失败语义**：缺 `captcha` → `400 captcha_required`；挑战过期/已用/答案错/**提供商判定失败** → `400 captcha_invalid`（不区分账号是否存在）；提供商网络错误/超时/非 2xx 且 `failMode=closed` → `503 captcha_unavailable`。`failMode=open` 只放行“提供商不可达”，提供商判定失败永远不放行，且每次放行都打 error 日志——仅用于临时运维窗口，用完立即改回 `closed`。
+
+**状态与多副本**：挑战本身无状态，但“已消耗挑战”与登录限流都在进程内存。多副本部署必须单副本或按 IP 粘性路由，否则同一挑战可能被另一实例判为未知/重复。TTL 范围内一个挑战只有一次尝试机会；错误答案也会消耗它。
+
+**停用**：把 `captcha.enabled=false` 重启即可恢复原登录流程（无需数据库变更）；停用后 `GET /auth/captcha` 返回 `enabled=false`，客户端可跳过验证码。
+
+**排查**：全员卡在登录 → 先看 `/auth/captcha` 是否 5xx（提供商不可达或配置错误），再看 `captcha` 配置与秘密是否注入；个别用户反复 `captcha_invalid` → 检查客户端时钟与挑战 TTL；日志出现 `captcha provider unavailable; fail-mode open` → 说明正在放行，立即确认提供商状态并改回 `closed`。
+
 ---
 
 ## 3. 审计日志
@@ -218,3 +235,6 @@ Prometheus 指标端点属后续硬化项（见 #31 描述遗留清单）。
 | panel 启动即退出 | 启动序列某步 Fatal：看日志第一行（配置/DB/邮件校验，见部署指南 §4.1） |
 | 审计序列断号 | 先确认是否落在已归档清理区间（`audit.retention.archive`/`audit.retention.purge` + 归档 JSONL/`.sha256` 交叉核对，§3）；保留窗口内的非预期断号立即排查，确认 DB 访问权限是否受控（应用账号以外的写入途径、是否有直连改表） |
 | 普通成员客户端设备列表为空 | 访问控制（§2.3）：成员所在用户组是否有规则覆盖、`everyone → 全部设备` 是否已删除、设备是否停用；票据签发/兑换被拒 `404` 同因 |
+| 登录/2FA/邀请接受报 400 `captcha_required`/`captcha_invalid` | 验证码（§2.4）：客户端需先 `GET /auth/captcha`；挑战过期/已用/答案错都归为 invalid，重新取挑战再试 |
+| 登录报 503 `captcha_unavailable` | 提供商不可达且 `failMode=closed`（§2.4）：检查网络/提供商状态/秘密配置；确认后可临时 `open` 或停用验证码 |
+| 全员登录被限流 429 | 挑战端点与登录各有一个独立的 5/min/IP 桶：排查是否有客户端在循环刷 `/auth/captcha`；正常用户刷新一两次不会触发 |

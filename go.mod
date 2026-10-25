@@ -6,6 +6,7 @@ toolchain go1.27.2
 
 require (
 	github.com/alexedwards/argon2id v1.0.0
+	github.com/altcha-org/altcha-lib-go v1.0.0
 	github.com/gin-gonic/gin v1.12.0
 	github.com/glebarez/sqlite v1.11.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
@@ -23,7 +24,6 @@ require (
 
 require (
 	filippo.io/edwards25519 v1.1.1 // indirect
-	github.com/altcha-org/altcha-lib-go v1.0.0 // indirect
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.15.0 // indirect

@@ -82,7 +82,8 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 
 | 端点 | 说明 |
 |---|---|
-| `POST /api/v1/auth/login` | 邮箱+密码；未验证邮箱返回 `email_not_verified`；连续失败触发 LoginGuard 锁定（429，键含用户名规范化） |
+| `POST /api/v1/auth/login` | 邮箱+密码；启用验证码时先校验 `captcha`（v0.10.0）；未验证邮箱返回 `email_not_verified`；连续失败触发 LoginGuard 锁定（429，键含用户名规范化） |
+| `GET /api/v1/auth/captcha` | 公开：返回当前验证码提供商与挑战（v0.10.0）；未启用时 `enabled=false`；独立 IP 限流（429） |
 | `POST /api/v1/auth/refresh` | 刷新令牌轮换：旧 refresh 即刻撤销，重放旧令牌会**整族撤销**（重放检测） |
 | `POST /api/v1/auth/verify-email` | 邮箱验证（一次性令牌，邮件下发） |
 | `POST /api/v1/auth/resend-verification` | 重发验证邮件（结果不明时令牌保留，可重试） |
@@ -93,7 +94,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `POST /api/v1/auth/2fa/enable` | 校验首个 TOTP 码后启用（v0.8.0） |
 | `POST /api/v1/auth/2fa/disable` | 关闭 2FA（v0.8.0，需当前密码 + TOTP/恢复码） |
 | `POST /api/v1/auth/2fa/recovery-codes` | 重新生成 10 个一次性恢复码（v0.8.0，需当前密码 + TOTP/恢复码） |
-| `POST /api/v1/auth/2fa/verify` | 登录第二步（v0.8.0，公开）：`{challenge_token, code}` → 令牌对 |
+| `POST /api/v1/auth/2fa/verify` | 登录第二步（v0.8.0，公开；v0.10.0 起启用验证码时同样要求 `captcha`）：`{challenge_token, code}` → 令牌对 |
 | `POST /api/v1/orgs/{orgId}/members/{userId}/2fa/reset` | 管理员重置成员 2FA（v0.8.0，`member.manage`，写 `user.2fa.reset` 审计） |
 
 > **v0.8.0 个人访问令牌**：明文格式 `rdt_<32B base64url>`，服务端只存 SHA-256，列表只回 `token_prefix`（前 8 字符）。
@@ -105,6 +106,9 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 > **v0.8.0 管理面 2FA（TOTP）**：启用后 `/auth/login` 密码正确也**不直接发令牌**，而是返回 `401 + code=two_factor_required`，`data.challenge_token` 为 5 分钟有效的挑战令牌；客户端用它调用公开的 `/auth/2fa/verify`（TOTP 码或一次性恢复码）换取令牌对。挑战令牌本身可重复提交（不是一次性凭据），一次性体现在凭据层面——每个 TOTP 码仅在其时间步内可用且不可重放，每个恢复码只能成功使用一次；该端点与登录共用两轨限流（IP 桶 + 账户/IP 失败计数，超限 429）。
 > TOTP 秘密以 AES-256-GCM 加密存储（密钥由 `auth.secret` 经 HKDF-SHA256 派生）；验证窗口 ±1 步，`last_step` 保证同一码不可重放；恢复码 10 个、Argon2id 存储、成功后即作废。
 > 管理员 `member.manage` 可重置成员 2FA（丢失设备场景），重置动作写审计 `user.2fa.reset`；该审计失败则整体失败（fail closed）。管理员**不能重置自己**（409）——自服务移除走 `/auth/2fa/disable`（需当前密码 + TOTP/恢复码），否则该端点就成了第二因素的旁路。2FA 是**账号级**状态：目标在本组织是 owner 时只有 owner（`org.admin`）能重置；目标只要**在本组织之外还存在任何会籍**（无论角色、含已停用）就一律 403——清除账号级因素会同时削弱其登录其他组织的保护，这类跨组织用户的账号恢复只能走平台级运维（系统外）。
+
+> **v0.10.0 交互式验证码**：部署启用后，三个公开凭据入口（`/auth/login`、`/auth/2fa/verify`、`/invitations/accept`）都在密码/TOTP 校验**之前**要求 `captcha` 对象：`{response: {<provider 字段>}}`。客户端先调 `GET /auth/captcha` 取挑战。提供商：`altcha`（默认，自托管 proof-of-work，`response.payload` 为 widget 返回的 base64 payload）、`geetest`（v4，`response` 带 `lot_number`/`captcha_output`/`pass_token`/`gen_time`）、`cap`（自托管 Standalone，`response.response` 为 token）。
+> 错误码：缺 `captcha` → `400 captcha_required`；挑战过期/已用/答案错/提供商判定失败 → `400 captcha_invalid`（响应不区分账号是否存在）；提供商不可达且 `failMode=closed` → `503 captcha_unavailable`。**验证码失败不计入登录失败窗口**，只受 IP 桶约束；挑战单次使用，TTL 默认 5 分钟。compat `/api/login` 不接验证码（原生客户端无法解交互式验证码）。
 
 ### 3.2 组织与成员
 
@@ -309,6 +313,19 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 - **停用优先**：停用的设备与停用/无角色的会籍一律不可达，先于规则判定。
 - **两处执行点**：compat `GET /api/peers`（§4.1）只返回判定允许且未停用的设备；票据签发（按签发人）与兑换（按兑换人）各判一次——**一般访问拒绝返回 `404`**，但兑换一张有效票据且目标设备已停用时返回 `409 conflict` 并记 `device_disabled` 审计（见 §3.6）。已建立的连接不因规则变更中断。
 - **审计**：组/规则写操作为 `access.user_group.*` / `access.device_group.*` / `access.rule.*`；票据访问拒绝为 `session.ticket.denied`，`Detail` 含 `reason`（`access_control`|`device_disabled`）、`stage`（`issue`|`redeem`）、`device_id`（兑换含 `ticket_id`）。签发阶段遇到停用设备也记 `access_control`（判定层先于管理员绕过拒绝）。
+
+### 3.11 验证码（v0.10.0）
+
+`GET /api/v1/auth/captcha`（公开，独立 5 次/分钟/IP 限流）：
+
+```json
+{"code":"ok","message":"ok","data":{"enabled":true,"provider":"altcha","challenge":{"params":{"algorithm":"SHA-256","challenge":"...","maxNumber":100000,"salt":"...?expires=...","signature":"..."}}}}
+```
+
+- `enabled=false` 时 `provider` 与 `challenge` 省略，客户端按原流程直接登录。
+- `geetest`：`params={"captcha_id":"...","script_url":"https://static.geetest.com/v4/gt4.js"}`。
+- `cap`：`params={"api_endpoint":"https://cap.example.com/<site_key>","site_key":"..."}`。
+- 挑战只对 `altcha` 携带 `maxNumber`（解题上限）；TTL 与提供商超时由部署配置，见 [部署指南 §3.2](deployment.md)。
 
 ---
 
