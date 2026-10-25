@@ -167,6 +167,26 @@ func (s *Service) ListUserGroups(_ context.Context, orgID uint) ([]GroupView, er
 	return views, nil
 }
 
+// UserGroupView reloads one group with its explicit member ids. Create and
+// rename responses use it so their member_ids stay consistent with the list
+// (a client round-trips that shape into the PUT replacement).
+func (s *Service) UserGroupView(_ context.Context, orgID, groupID uint) (GroupView, error) {
+	group, err := groupByID(s.db, orgID, groupID)
+	if err != nil {
+		return GroupView{}, err
+	}
+	var members []model.UserGroupMember
+	if err := store.ScopedByOrg(s.db, orgID).
+		Where("group_id = ?", groupID).Find(&members).Error; err != nil {
+		return GroupView{}, err
+	}
+	ids := make([]uint, 0, len(members))
+	for _, m := range members {
+		ids = append(ids, m.UserID)
+	}
+	return GroupView{Group: *group, MemberIDs: ids}, nil
+}
+
 // CreateUserGroup adds a custom group. The reserved name is refused in any
 // casing, and duplicate names are rejected before the insert.
 func (s *Service) CreateUserGroup(_ context.Context, orgID, actorID uint, name string) (*model.UserGroup, error) {
@@ -231,13 +251,22 @@ func (s *Service) RenameUserGroup(_ context.Context, orgID, actorID, groupID uin
 		if err := ensureGroupNameFree(tx, orgID, clean, group.ID); err != nil {
 			return err
 		}
-		if err := store.ScopedByOrg(tx, orgID).Model(&model.UserGroup{}).
+		res := store.ScopedByOrg(tx, orgID).Model(&model.UserGroup{}).
 			Where("id = ? AND kind = ?", group.ID, model.UserGroupKindCustom).
-			Updates(map[string]any{"name": clean, "updated_at": s.now().UTC()}).Error; err != nil {
-			return mapGroupNameConflict(err)
+			Updates(map[string]any{"name": clean, "updated_at": s.now().UTC()})
+		if res.Error != nil {
+			return mapGroupNameConflict(res.Error)
 		}
-		updated = *group
-		updated.Name = clean
+		if res.RowsAffected == 0 {
+			// The row stopped being a custom group between the read and the
+			// update; audited success would claim a rename that never happened.
+			return ErrGroupNotFound
+		}
+		reloaded, err := groupByID(tx, orgID, group.ID)
+		if err != nil {
+			return err
+		}
+		updated = *reloaded
 		return s.record(tx, audit.Entry{
 			OrganizationID: orgID,
 			ActorUserID:    actorID,
@@ -290,6 +319,7 @@ func (s *Service) DeleteUserGroup(_ context.Context, orgID, actorID, groupID uin
 					Detail: map[string]any{
 						"source_group_id": rule.SourceGroupID,
 						"target_kind":     rule.TargetKind,
+						"target_group_id": rule.TargetGroupID,
 						"cascade":         true,
 					},
 				}); err != nil {
@@ -448,20 +478,22 @@ func cleanGroupName(name string) (string, error) {
 }
 
 // ensureGroupNameFree rejects a name already used by another group of the
-// organization. The comparison is case-insensitive in the query so MySQL's
-// collation and SQLite/PostgreSQL's byte ordering agree.
+// organization. The comparison happens in Go with strings.EqualFold so
+// non-ASCII names behave identically on SQLite, PostgreSQL and MySQL instead of
+// following each database's LOWER() collation.
 func ensureGroupNameFree(tx *gorm.DB, orgID uint, name string, exceptID uint) error {
-	query := store.ScopedByOrg(tx, orgID).Model(&model.UserGroup{}).
-		Where("LOWER(name) = ?", strings.ToLower(name))
-	if exceptID != 0 {
-		query = query.Where("id <> ?", exceptID)
-	}
-	var count int64
-	if err := query.Count(&count).Error; err != nil {
+	var existing []model.UserGroup
+	if err := store.ScopedByOrg(tx, orgID).
+		Select("id", "name").Find(&existing).Error; err != nil {
 		return err
 	}
-	if count > 0 {
-		return ErrGroupNameTaken
+	for _, group := range existing {
+		if exceptID != 0 && group.ID == exceptID {
+			continue
+		}
+		if strings.EqualFold(group.Name, name) {
+			return ErrGroupNameTaken
+		}
 	}
 	return nil
 }
@@ -498,9 +530,15 @@ func dedupeIDs(ids []uint) []uint {
 }
 
 // mapGroupNameConflict translates a unique-index violation into the domain
-// error the handler maps onto 409.
+// error the handler maps onto 409. The string fallback covers drivers without
+// an ErrorTranslator (the SQLite driver used in local runs and tests), so a
+// race past the pre-check does not surface as a 500.
 func mapGroupNameConflict(err error) error {
 	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return ErrGroupNameTaken
+	}
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "unique") || strings.Contains(lower, "duplicate") {
 		return ErrGroupNameTaken
 	}
 	return err

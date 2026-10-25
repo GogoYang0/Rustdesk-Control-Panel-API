@@ -76,10 +76,15 @@ func (a *AdminAPI) CreateUserGroup(c *gin.Context, orgId int64) {
 		a.writeAccessError(c, err, "create user group failed")
 		return
 	}
+	view, err := a.deps.Access.UserGroupView(c.Request.Context(), uint(orgId), group.ID)
+	if err != nil {
+		a.writeAccessError(c, err, "reload created user group failed")
+		return
+	}
 	c.JSON(http.StatusCreated, gen.UserGroupResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
-		Data:    userGroupToAPI(access.GroupView{Group: *group}),
+		Data:    userGroupToAPI(view),
 	})
 }
 
@@ -106,10 +111,15 @@ func (a *AdminAPI) RenameUserGroup(c *gin.Context, orgId int64, groupId int64) {
 		a.writeAccessError(c, err, "rename user group failed")
 		return
 	}
+	view, err := a.deps.Access.UserGroupView(c.Request.Context(), uint(orgId), group.ID)
+	if err != nil {
+		a.writeAccessError(c, err, "reload renamed user group failed")
+		return
+	}
 	c.JSON(http.StatusOK, gen.UserGroupResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
-		Data:    userGroupToAPI(access.GroupView{Group: *group}),
+		Data:    userGroupToAPI(view),
 	})
 }
 
@@ -154,6 +164,12 @@ func (a *AdminAPI) ReplaceUserGroupMembers(c *gin.Context, orgId int64, groupId 
 	var req gen.UserGroupMembersRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid user group members body")
+		return
+	}
+	// The contract marks user_ids required: a missing/null field must never be
+	// read as "clear every member" (a typo would silently revoke access).
+	if req.UserIds == nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "user_ids is required")
 		return
 	}
 	ids := make([]uint, 0, len(req.UserIds))

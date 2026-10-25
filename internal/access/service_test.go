@@ -162,11 +162,45 @@ func TestAccess_DeleteUserGroupCascades(t *testing.T) {
 		Model(&model.AccessRule{}).Where("source_group_id = ?", group.ID).Count(&rules).Error)
 	require.Zero(t, rules)
 
+	// The cascaded rule is gone from the table, so its audit entry must carry
+	// enough identity to reconstruct what access was revoked.
+	var audits []model.AuditLog
+	require.NoError(t, store.WithoutTenantScope(st.DB).Model(&model.AuditLog{}).
+		Where("action = ?", "access.rule.delete").Find(&audits).Error)
+	require.Len(t, audits, 1)
+	require.Contains(t, audits[0].Detail, `"target_group_id"`)
+	require.Contains(t, audits[0].Detail, `"cascade":true`)
+
 	// The default everyone rule is untouched by deleting a custom group.
 	var defaultRules int64
 	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).
 		Model(&model.AccessRule{}).Count(&defaultRules).Error)
 	require.EqualValues(t, 1, defaultRules)
+}
+
+// TestAccess_UserGroupCrossTenantNotFound pins tenant scoping: a group id that
+// belongs to another organization is indistinguishable from a missing one.
+func TestAccess_UserGroupCrossTenantNotFound(t *testing.T) {
+	ctx := context.Background()
+	st, svc, orgA, _ := newGroupFixture(t)
+	orgB := model.Organization{Name: "other-group-org"}
+	require.NoError(t, st.DB.Create(&orgB).Error)
+	groupB, err := svc.CreateUserGroup(ctx, orgB.ID, 1, "Team B")
+	require.NoError(t, err)
+
+	_, err = svc.RenameUserGroup(ctx, orgA.ID, 1, groupB.ID, "hijacked")
+	require.ErrorIs(t, err, access.ErrGroupNotFound)
+
+	_, err = svc.DeleteUserGroup(ctx, orgA.ID, 1, groupB.ID)
+	require.ErrorIs(t, err, access.ErrGroupNotFound)
+
+	_, _, err = svc.ReplaceUserGroupMembers(ctx, orgA.ID, 1, groupB.ID, nil)
+	require.ErrorIs(t, err, access.ErrGroupNotFound)
+
+	var name string
+	require.NoError(t, store.WithoutTenantScope(st.DB).Model(&model.UserGroup{}).
+		Where("id = ?", groupB.ID).Pluck("name", &name).Error)
+	require.Equal(t, "Team B", name, "a cross-tenant request must not touch the other organization's group")
 }
 
 // TestAccess_UserGroupWriteFailsClosed pins the audit contract: without a
