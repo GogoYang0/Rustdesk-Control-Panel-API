@@ -198,9 +198,11 @@ func (s *RetentionService) writeArchive(orgID uint, rows []model.AuditLog) (path
 	if err := ensureArchiveDir(dir); err != nil {
 		return "", "", err
 	}
-	stamp := s.now().UTC().Format("20060102T150405.000000000Z")
-	// The id range keeps consecutive batches of one run apart even when the
-	// clock is frozen (tests) or two runs land in the same nanosecond.
+	// The id range alone names the archive: a retry of the same batch (the
+	// transaction failed after the file was published) overwrites the exact
+	// path instead of accumulating one orphan file per attempt. Deleting
+	// never removes a published archive, because the commit may have landed
+	// before the error surfaced.
 	minID, maxID := rows[0].ID, rows[0].ID
 	for _, row := range rows[1:] {
 		if row.ID < minID {
@@ -210,7 +212,7 @@ func (s *RetentionService) writeArchive(orgID uint, rows []model.AuditLog) (path
 			maxID = row.ID
 		}
 	}
-	path = filepath.Join(dir, fmt.Sprintf("audit-%s-%d-%d.jsonl", stamp, minID, maxID))
+	path = filepath.Join(dir, fmt.Sprintf("audit-%d-%d.jsonl", minID, maxID))
 	tmp := path + ".tmp"
 	shaTmp := path + ".sha256.tmp"
 

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
@@ -43,6 +44,63 @@ func sha256Hex(t *testing.T, path string) string {
 	require.NoError(t, err)
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
+}
+
+// flakyRecorder fails the transactional audit on demand.
+type flakyRecorder struct{ fail bool }
+
+func (r *flakyRecorder) RecordTx(_ *gorm.DB, _ Entry) error {
+	if r.fail {
+		return errors.New("audit down")
+	}
+	return nil
+}
+
+// The archive is published before the deleting transaction. When that
+// transaction fails, the batch stays and the next run must overwrite the same
+// archive path instead of leaving one orphan file per failed attempt.
+func TestRetention_RetryAfterTransactionFailureReusesArchivePath(t *testing.T) {
+	dsn := fmt.Sprintf("file:retention_retry_%d?mode=memory&cache=shared", time.Now().UnixNano())
+	st, err := store.Open(config.DatabaseConfig{Driver: "sqlite", DSN: dsn})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	require.NoError(t, st.DB.AutoMigrate(&model.Organization{}, &model.AuditLog{}))
+
+	org := model.Organization{Name: "retry-org"}
+	require.NoError(t, st.DB.Create(&org).Error)
+	require.NoError(t, st.DB.Create(&model.AuditLog{
+		OrganizationID: org.ID, Seq: 1, Action: "test.action",
+		TargetType: "device", TargetID: "1",
+		CreatedAt: time.Now().UTC().AddDate(0, 0, -40),
+	}).Error)
+
+	root := filepath.Join(t.TempDir(), "archives")
+	rec := &flakyRecorder{fail: true}
+	svc := NewRetentionService(st.DB, root, rec, nil)
+	ctx := context.Background()
+	require.NoError(t, svc.SetDays(ctx, org.ID, 30))
+
+	_, _, err = svc.RunOnce(ctx)
+	require.Error(t, err)
+	pattern := filepath.Join(root, fmt.Sprintf("org-%d", org.ID), "audit-*.jsonl")
+	files, ferr := filepath.Glob(pattern)
+	require.NoError(t, ferr)
+	require.Len(t, files, 1, "the failed transaction still leaves its archive")
+
+	var remaining int64
+	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).
+		Model(&model.AuditLog{}).Count(&remaining).Error)
+	require.EqualValues(t, 1, remaining)
+
+	rec.fail = false
+	archived, purged, err := svc.RunOnce(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, archived)
+	require.EqualValues(t, 1, purged)
+
+	files, ferr = filepath.Glob(pattern)
+	require.NoError(t, ferr)
+	require.Len(t, files, 1, "the retry overwrites the same batch archive")
 }
 
 // A directory-sync failure must abort the batch before the deleting

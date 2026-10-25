@@ -275,7 +275,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `PUT .../audit-retention` | `org.admin`（owner） | 设置保留天数：`days` 必填（缺失 400），0 = 永久，1..3650；写 `organization.audit_retention.set` 审计 |
 
 - **先归档、后删除（fail closed）**：每小时后台任务对每个保留期 > 0 的组织，把早于阈值的审计行写成 JSONL，附同名 `.sha256`，**重新读取校验行数与摘要一致后才删除**；某批归档或校验失败时**该批不删除任何行**，已成功的批次不回滚，下个周期从剩余行继续。按批处理（每批 ≤1000 行，逐批归档/校验/删除，直到剩余不足一批），积压不会一次性载入或撞占位符上限。
-- **归档路径**：`<audit.archiveDir>/org-<orgId>/audit-<UTC时间戳>-<minId>-<maxId>.jsonl`；临时文件原子改名落盘，id 区间避免同轮多批重名。归档文件不经 API 暴露，运维备份见运维指南。
+- **归档路径**：`<audit.archiveDir>/org-<orgId>/audit-<minId>-<maxId>.jsonl`；临时文件原子改名落盘，文件名只由 id 区间决定（同一批重试覆盖同一路径，不堆积孤立归档）。归档文件不经 API 暴露，运维备份见运维指南。
 - **系统动作也审计**：归档与清理分别写 `audit.retention.archive`（含行数、路径、摘要、阈值）与 `audit.retention.purge`；actor 为 0（系统）。
 - **删除与归档同事务**：两条系统审计与按 id 精确删除在同一事务提交；无事务审计器时整轮拒绝删除。
 
