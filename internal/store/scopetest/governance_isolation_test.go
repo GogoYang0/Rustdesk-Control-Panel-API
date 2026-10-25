@@ -24,6 +24,7 @@ func TestGovernance_TenantIsolation(t *testing.T) {
 	require.NoError(t, db.AutoMigrate(
 		&model.Device{}, &model.Session{}, &model.SessionEvent{}, &model.Ticket{},
 		&model.Policy{}, &model.Approval{}, &model.Alert{},
+		&model.UserGroup{}, &model.UserGroupMember{}, &model.DeviceGroup{}, &model.AccessRule{},
 	))
 
 	orgA := model.Organization{Name: "gov-iso-a"}
@@ -34,6 +35,9 @@ func TestGovernance_TenantIsolation(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	deviceA := model.Device{OrganizationID: orgA.ID, RustdeskID: "100000001", Name: "iso-device"}
 	require.NoError(t, db.Create(&deviceA).Error)
+
+	groupA := model.UserGroup{OrganizationID: orgA.ID, Name: "iso-group", Kind: model.UserGroupKindCustom}
+	require.NoError(t, db.Create(&groupA).Error)
 
 	sessionA := model.Session{
 		OrganizationID: orgA.ID, DeviceID: deviceA.ID, RustdeskID: deviceA.RustdeskID,
@@ -70,6 +74,17 @@ func TestGovernance_TenantIsolation(t *testing.T) {
 			OrganizationID: orgA.ID, SessionID: &sessionA.ID, DeviceID: &deviceA.ID,
 			Kind: model.AlertKindDurationExceeded, Severity: model.AlertSeverityWarning,
 			CreatedAt: now,
+		}, false},
+		{"user_groups", &model.UserGroup{}, &groupA, true},
+		{"user_group_members", &model.UserGroupMember{}, &model.UserGroupMember{
+			OrganizationID: orgA.ID, GroupID: groupA.ID, UserID: 1,
+		}, false},
+		{"device_groups", &model.DeviceGroup{}, &model.DeviceGroup{
+			OrganizationID: orgA.ID, Name: "iso-device-group",
+		}, false},
+		{"access_rules", &model.AccessRule{}, &model.AccessRule{
+			OrganizationID: orgA.ID, SourceGroupID: groupA.ID,
+			TargetKind: model.AccessTargetKindAllDevices, TargetGroupID: 0,
 		}, false},
 	}
 

@@ -976,6 +976,9 @@ type Device struct {
 	// Bound 是否已绑定某个客户端实例（重置绑定后为 false）
 	Bound bool `json:"bound"`
 
+	// DeviceGroupId 设备所属设备组 id；null 表示未分组。一台设备只能属于一个设备组。
+	DeviceGroupId *int64 `json:"device_group_id"`
+
 	// Disabled 设备是否已被停用（停用期间拒绝认领、心跳与票据兑换）
 	Disabled   bool         `json:"disabled"`
 	Id         int64        `json:"id"`

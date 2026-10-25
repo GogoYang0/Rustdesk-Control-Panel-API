@@ -18,6 +18,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/gen"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/access"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
@@ -92,6 +93,12 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 			RoleID:         ownerRole.ID,
 			Role:           ownerRole.Name,
 		}).Error; err != nil {
+			return err
+		}
+		// The access-control defaults (reserved everyone group + its all-devices
+		// rule) commit with the organization: without them every member of a new
+		// organization would start with an empty device list.
+		if err := access.EnsureDefaultsTx(tx, org.ID); err != nil {
 			return err
 		}
 		// Record the audit entry on the same transaction (issue #19): the

@@ -31,6 +31,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/access"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
@@ -157,6 +158,8 @@ func runSeed(dbPath string) error {
 		// The six M3 models.
 		&model.Policy{}, &model.Ticket{}, &model.Session{},
 		&model.SessionEvent{}, &model.Approval{}, &model.Alert{},
+		// The four M5 access-control models.
+		&model.UserGroup{}, &model.UserGroupMember{}, &model.DeviceGroup{}, &model.AccessRule{},
 	); err != nil {
 		return fmt.Errorf("auto migrate: %w", err)
 	}
@@ -177,6 +180,13 @@ func runSeed(dbPath string) error {
 	org, err := findOrCreateOrg(db)
 	if err != nil {
 		return err
+	}
+	// The fixture creates its organization directly, outside the API's
+	// creation transaction, so it must seed the access defaults itself; the
+	// panel's startup convergence then keeps them and upgrades the builtin
+	// permission sets.
+	if err := access.EnsureDefaultsTx(db, org.ID); err != nil {
+		return fmt.Errorf("seed access defaults: %w", err)
 	}
 
 	if err := ensureMembership(db, org.ID, user.ID); err != nil {
