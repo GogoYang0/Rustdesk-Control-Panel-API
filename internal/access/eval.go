@@ -161,13 +161,14 @@ func effectiveUserGroups(db *gorm.DB, orgID, userID uint) ([]uint, error) {
 	}
 	groups := dedupeIDs(explicit)
 
-	var everyone uint
-	if err := store.ScopedByOrg(db, orgID).Model(&model.UserGroup{}).
-		Where("kind = ?", model.UserGroupKindEveryone).Pluck("id", &everyone).Error; err != nil {
+	var everyone model.UserGroup
+	if err := store.ScopedByOrg(db, orgID).
+		Select("id").Where("kind = ?", model.UserGroupKindEveryone).
+		Order("id").Limit(1).Find(&everyone).Error; err != nil {
 		return nil, err
 	}
-	if everyone != 0 {
-		groups = append(groups, everyone)
+	if everyone.ID != 0 {
+		groups = append(groups, everyone.ID)
 	}
 	return groups, nil
 }

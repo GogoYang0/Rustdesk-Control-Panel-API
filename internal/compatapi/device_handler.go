@@ -124,6 +124,9 @@ func (s *Server) peers(c *gin.Context) {
 		compatError(c, http.StatusInternalServerError, "could not list peers")
 		return
 	}
+	// The disabled filter is deliberate even though the evaluation filters
+	// disabled devices for the id path: the bypass returns all=true without an
+	// id set, and a device stopped between the two queries must not leak here.
 	query := store.ScopedByOrg(s.deps.DB, orgID).Where("disabled = ?", false)
 	if !all {
 		if len(allowedIDs) == 0 {

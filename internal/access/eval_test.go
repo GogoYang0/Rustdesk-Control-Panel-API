@@ -314,6 +314,20 @@ func TestAccess_UnresolvedRoleFailsClosed(t *testing.T) {
 	allowed, err := f.svc.CanAccess(context.Background(), f.org.ID, user.ID, device.ID)
 	require.NoError(t, err)
 	require.False(t, allowed)
+
+	// A role id that points at no row of this tenant fails closed the same way.
+	ghost := model.User{Email: "ghostrole@example.com", PasswordHash: "x", EmailVerified: true}
+	require.NoError(t, f.st.DB.Create(&ghost).Error)
+	require.NoError(t, f.st.DB.Create(&model.Membership{
+		OrganizationID: f.org.ID, UserID: ghost.ID, Role: model.RoleOwner, RoleID: 999999,
+	}).Error)
+	all, ids, err = f.svc.AllowedDeviceIDs(context.Background(), f.org.ID, ghost.ID)
+	require.NoError(t, err)
+	require.False(t, all)
+	require.Empty(t, ids)
+	allowed, err = f.svc.CanAccess(context.Background(), f.org.ID, ghost.ID, device.ID)
+	require.NoError(t, err)
+	require.False(t, allowed)
 }
 
 // TestAccess_EvaluationIsTenantScoped pins that another organization's default

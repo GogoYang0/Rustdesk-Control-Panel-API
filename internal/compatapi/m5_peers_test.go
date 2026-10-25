@@ -129,10 +129,34 @@ func TestAccess_AdminSeesAllDevicesInPeers(t *testing.T) {
 	memberToken, _ := h.login(t, "member-peers@example.com", "password123", "", "")
 	w := h.do(t, http.MethodGet, "/api/peers", nil, memberToken)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	require.Empty(t, peersOf(t, w.Body.Bytes()), "a tightened org grants the ordinary member nothing")
+	memberPeers := peersOf(t, w.Body.Bytes())
+	require.NotNil(t, memberPeers, "the frozen protocol shape is an array, not null")
+	require.Empty(t, memberPeers, "a tightened org grants the ordinary member nothing")
 
 	adminToken, _ := h.login(t, "admin-peers@example.com", "password123", "", "")
 	w = h.do(t, http.MethodGet, "/api/peers", nil, adminToken)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	require.Len(t, peersOf(t, w.Body.Bytes()), 2, "the admin bypass must return the whole enabled set")
+}
+
+// TestAccess_PeersDefaultRuleKeepsDevicesVisible pins Review Focus #1 at the
+// HTTP layer: an ordinary member of a freshly migrated organization (everyone
+// membership is implicit, only the seeded default rule exists) keeps every
+// enabled device in the peer list.
+func TestAccess_PeersDefaultRuleKeepsDevicesVisible(t *testing.T) {
+	h := newHarness(t)
+	user := h.seedUser(t, "default-peers@example.com", "password123", true)
+	org := h.seedOrg(t, "default-peers-org")
+	h.seedMembershipKind(t, user.ID, org.ID, model.RoleKindMember)
+	require.NoError(t, access.Migrate(h.db.DB))
+
+	for _, id := range []string{"135791357", "246802468"} {
+		device := model.Device{OrganizationID: org.ID, RustdeskID: id, Name: id}
+		require.NoError(t, h.db.DB.Create(&device).Error)
+	}
+
+	token, _ := h.login(t, "default-peers@example.com", "password123", "", "")
+	w := h.do(t, http.MethodGet, "/api/peers", nil, token)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	require.Len(t, peersOf(t, w.Body.Bytes()), 2, "the migrated default rule must keep every device visible")
 }
