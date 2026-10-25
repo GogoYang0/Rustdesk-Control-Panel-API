@@ -151,6 +151,10 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 > **v0.8.0 设备停用（`disabled`）与 `rebind` 正交**：停用只阻断访问、不解除绑定，恢复后同一客户端
 > （同 uuid）可直接重新登录；要换机仍走 `rebind`。停用不清理历史心跳/会话/审计，这些记录保持
 > 可追溯。停用与恢复是幂等的，重复设置同值不产生审计。
+>
+> **v0.9.0 `Device.device_group_id`**：设备所属设备组（nullable，未分组为 `null`）。只由
+> `PUT .../device-groups/{deviceGroupId}/devices` 全量替换维护（一设备一组，换组即从原组移出），
+> 管理面设备列表对该字段只读，语义见 §3.10。
 
 ### 3.4 地址簿
 
@@ -235,7 +239,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 - **多策略同时生效**：所有 `enabled` 策略参与评估，各维度取最严——并发/时长取最小值、时段取交集（按模 1440 求交，跨零点窗口先展开成区间，**交集为空 = 该时段完全禁止**）、任一条要求审批即需审批；组织没有策略等于不限。`Session.policy_id` 记 id 最小的生效策略（多策略各管不同维度时无法唯一归因，具体约束以交集为准）。
 - **审批分两类**：`pre_approval` 放行**一次**签发（审批本身不出票，客户端重试 `POST .../tickets` 才拿到 token，**签发即消费审批**并回填 `ticket_id`；票据过期不退还审批，需重新申请）；`ratification` 是对**已发生**的原生直连违规会话补追认——请求必须给 `session_id`（会话须属本组织且 `origin=native`，`device_id` 由服务端派生），决策通过即"已追认"，只改状态 + 落审计，不产生票据、不消费额度、`ticket_id` 恒为 null。
 - **`approval_required` 是 409 + 业务码**（不是新 HTTP 状态）：`data.approval_id` 指向新建或复用的待审批请求。
-- **票据不外泄、只用一次**：明文 `token` 只在签发响应出现一次，服务端只存摘要；`used_at` 非 null 即不可再用。兑换先做**无副作用**的 token/终态校验：错误 token、重复、过期、撤销一律 `409`（不区分原因，避免探测，且不会因设备状态产生差异）。**通过校验后**才按兑换人做访问判定：没有规则覆盖 → `404`（§3.10）；停用设备 → `409`。拒绝路径不消耗票据、不建会话，并写 `session.ticket.denied` 审计（理由 `access_control` / `device_disabled`）。
+- **票据不外泄、只用一次**：明文 `token` 只在签发响应出现一次，服务端只存摘要；`used_at` 非 null 即不可再用。兑换先做**无副作用**的 token/终态校验：错误 token、重复、过期、撤销一律 `409`（不区分原因，避免探测，且不会因设备状态产生差异）。**通过校验后**才按兑换人做访问判定：没有规则覆盖 → `404`（§3.10）；停用设备 → `409`。拒绝路径不消耗票据、不建会话，并写 `session.ticket.denied` 审计（理由 `access_control` / `device_disabled`；`Detail` 含 `stage=issue|redeem`、`device_id`，兑换另含 `ticket_id`；签发阶段的停用设备也记 `access_control`）。
 
 其它易错点：
 
@@ -303,7 +307,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 - **管理员绕过**：会籍角色 `owner`/`admin`（按 `role_id` 解析）不受组规则限制，管理面设备列表与票据签发/兑换均为全量；绕过不看是否持有 `access.manage`。
 - **停用优先**：停用的设备与停用/无角色的会籍一律不可达，先于规则判定。
 - **两处执行点**：compat `GET /api/peers`（§4.1）只返回判定允许且未停用的设备；票据签发（按签发人）与兑换（按兑换人）各判一次，拒绝 404（见 §3.6）。已建立的连接不因规则变更中断。
-- **审计**：组/规则写操作为 `access.user_group.*` / `access.device_group.*` / `access.rule.*`；票据访问拒绝为 `session.ticket.denied`（`reason`=`access_control`|`device_disabled`）。
+- **审计**：组/规则写操作为 `access.user_group.*` / `access.device_group.*` / `access.rule.*`；票据访问拒绝为 `session.ticket.denied`，`Detail` 含 `reason`（`access_control`|`device_disabled`）、`stage`（`issue`|`redeem`）、`device_id`（兑换含 `ticket_id`）。签发阶段遇到停用设备也记 `access_control`（判定层先于管理员绕过拒绝）。
 
 ---
 
@@ -319,7 +323,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `GET /api/login-options` | 登录能力协商（当前返回空列表） |
 | `POST /api/logout` | 撤销当前 compat 会话 |
 | `POST /api/currentUser` | 当前用户信息（需 Bearer） |
-| `GET /api/peers` | 设备列表（需 Bearer）：会话所属组织内、访问规则允许且未停用的设备；owner/admin 返回全量（v0.9.0，见 §3.10） |
+| `GET /api/peers` | 设备列表（需 Bearer）：v0.4.0 起按会话所属组织隔离；v0.9.0 起按访问规则过滤并隐藏停用设备，owner/admin 返回组织内全部**未停用**设备（见 §3.10） |
 
 **设备认领语义**（重要，v0.4.0 事务化 + 绑定代数，v0.5.0 增加重置入口）：
 
@@ -386,7 +390,7 @@ compat 地址簿**只服务个人地址簿**（`EnsurePersonalBook`），共享�
 - 契约版本随 release 演进：v0.1.0（M0）→ v0.2.0（M1）→ v0.3.0（M2）→ v0.4.0（M3，会话治理域）→ v0.5.0（设备管理增量）→ v0.6.0（成员离场）→ v0.7.0（按组织 provisioning 开关）→ v0.8.0（M4：角色模型、审计查询/导出、停用、地址簿授权与回收站、令牌、2FA）→ **v0.9.0（M5：访问控制——用户组/设备组/组规则、peers 过滤与票据准入）**
 - v0.6.0 为**加性变更**：新增 `DELETE/PATCH /orgs/{orgId}/members/{userId}`（#39 撤销接线）。v0.5.0 的新增设备列表与 rebind 保持不变；仍不提供 `DELETE` 设备
 - v0.7.0 为**加性变更**：新增 `GET/PUT /orgs/{orgId}/provisioning` 与 `ProvisioningStatus.cleanup_pending`；既有端点请求/响应形状与字段不变
-- v0.9.0 为**加性变更**（新增 user-groups/device-groups/access-rules 端点、`access.manage` 权限枚举与 `Device.device_group_id` 字段），但**票据访问语义有变化**：签发/兑换新增访问控制判定（拒绝 `404 not_found`），停用设备的签发由成功变为 `404`（兑换仍为 `409`）；客户端需处理该分支
+- v0.9.0 为**加性变更**（新增 user-groups/device-groups/access-rules 端点、`access.manage` 权限目录项与 `Device.device_group_id` 字段），但**票据访问语义有变化**：签发/兑换新增访问控制判定（拒绝 `404 not_found`），停用设备的签发由成功变为 `404`（兑换仍为 `409`）；客户端需处理该分支
 - v0.4.0 的既有端点请求/响应形状与字段零变更，但 **`ErrorCode` 新增了 `approval_required`**（所有响应共用的 `code` 类型）——对穷尽式 `switch` 或严格枚举解码的客户端属于 **breaking**，重新生成类型后必须处理该分支（0.x 阶段按 C10 以 minor 承载，见 §3.6）
 - **契约变更的 PR 必须同步更新本文档 §3/§4 与 `openapi.yaml`**，并保证 `go generate` 零漂移
 - WEB/APP 从 `openapi.yaml` 生成类型：任何字段/形状变更视为 breaking，需在 PR 描述中标注
