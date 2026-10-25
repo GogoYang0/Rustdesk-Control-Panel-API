@@ -103,6 +103,62 @@ func TestRetention_RetryAfterTransactionFailureReusesArchivePath(t *testing.T) {
 	require.Len(t, files, 1, "the retry overwrites the same batch archive")
 }
 
+// A persistent transaction failure must not accumulate one archive per cycle.
+// The retry reselects the pending batch and it can only grow (rows are never
+// deleted without committing), so a name derived from a moving id range leaks a
+// file per cycle; the retry must overwrite the pending archive.
+func TestRetention_RetryAcrossCyclesKeepsOneArchive(t *testing.T) {
+	dsn := fmt.Sprintf("file:retention_cycles_%d?mode=memory&cache=shared", time.Now().UnixNano())
+	st, err := store.Open(config.DatabaseConfig{Driver: "sqlite", DSN: dsn})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	require.NoError(t, st.DB.AutoMigrate(&model.Organization{}, &model.AuditLog{}))
+
+	org := model.Organization{Name: "cross-cycle-org"}
+	require.NoError(t, st.DB.Create(&org).Error)
+
+	now := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	rec := &flakyRecorder{fail: true}
+	root := filepath.Join(t.TempDir(), "archives")
+	svc := NewRetentionService(st.DB, root, rec, func() time.Time { return now })
+	ctx := context.Background()
+	require.NoError(t, svc.SetDays(ctx, org.ID, 30))
+
+	require.NoError(t, st.DB.Create(&model.AuditLog{
+		OrganizationID: org.ID, Seq: 1, Action: "test.action",
+		TargetType: "device", TargetID: "1",
+		CreatedAt: now.AddDate(0, 0, -40),
+	}).Error)
+
+	_, _, err = svc.RunOnce(ctx)
+	require.Error(t, err)
+
+	// Advance the clock so a second row crosses the retention threshold: the
+	// retry now selects a larger batch than the failed attempt did.
+	now = now.AddDate(0, 0, 1)
+	require.NoError(t, st.DB.Create(&model.AuditLog{
+		OrganizationID: org.ID, Seq: 2, Action: "test.action",
+		TargetType: "device", TargetID: "2",
+		CreatedAt: now.AddDate(0, 0, -31),
+	}).Error)
+
+	_, _, err = svc.RunOnce(ctx)
+	require.Error(t, err)
+	pattern := filepath.Join(root, fmt.Sprintf("org-%d", org.ID), "audit-*.jsonl")
+	files, ferr := filepath.Glob(pattern)
+	require.NoError(t, ferr)
+	require.Len(t, files, 1, "the grown batch overwrites the pending archive instead of leaving an orphan")
+
+	rec.fail = false
+	archived, purged, err := svc.RunOnce(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, archived)
+	require.EqualValues(t, 2, purged)
+	files, ferr = filepath.Glob(pattern)
+	require.NoError(t, ferr)
+	require.Len(t, files, 1, "one committed batch leaves exactly one archive")
+}
+
 // A directory-sync failure must abort the batch before the deleting
 // transaction. The retry must not trust directories created by the failed
 // attempt: it re-syncs the whole existing chain, and when the sync still fails
@@ -271,7 +327,7 @@ func TestRetention_ChecksumPublishFailureKeepsDataFile(t *testing.T) {
 	require.NoError(t, os.MkdirAll(leaf, 0o750))
 	// Renaming onto an existing directory fails on every platform, so the
 	// checksum publication errors after the data file is already in place.
-	blocked := filepath.Join(leaf, fmt.Sprintf("audit-%d-%d.jsonl.sha256", row.ID, row.ID))
+	blocked := filepath.Join(leaf, fmt.Sprintf("audit-%d.jsonl.sha256", row.ID))
 	require.NoError(t, os.Mkdir(blocked, 0o750))
 
 	svc := NewRetentionService(st.DB, root, NewGormAuditor(st.DB), nil)
@@ -283,7 +339,7 @@ func TestRetention_ChecksumPublishFailureKeepsDataFile(t *testing.T) {
 	require.Zero(t, archived)
 	require.Zero(t, purged)
 
-	dataFile := filepath.Join(leaf, fmt.Sprintf("audit-%d-%d.jsonl", row.ID, row.ID))
+	dataFile := filepath.Join(leaf, fmt.Sprintf("audit-%d.jsonl", row.ID))
 	_, statErr := os.Stat(dataFile)
 	require.NoError(t, statErr, "the published data file is never deleted by a failed attempt")
 	tmps, gerr := filepath.Glob(filepath.Join(leaf, "audit-*.tmp"))

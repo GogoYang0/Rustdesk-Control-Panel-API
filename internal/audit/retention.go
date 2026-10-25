@@ -198,21 +198,21 @@ func (s *RetentionService) writeArchive(orgID uint, rows []model.AuditLog) (path
 	if err := ensureArchiveDir(dir); err != nil {
 		return "", "", err
 	}
-	// The id range alone names the archive: a retry of the same batch (the
-	// transaction failed after the file was published) overwrites the exact
-	// path instead of accumulating one orphan file per attempt. Deleting
-	// never removes a published archive, because the commit may have landed
-	// before the error surfaced.
-	minID, maxID := rows[0].ID, rows[0].ID
+	// The smallest row id alone names the archive. A retry reselects the pending
+	// batch, and that batch can only grow (rows are never deleted without
+	// committing), so an id range moves on every cycle and would leak one file
+	// per failed attempt, while the minimum id stays put and makes the retry
+	// overwrite the exact path. A committed batch deletes its rows, so its
+	// minimum id is never selected again and no committed archive is overwritten.
+	// Deleting never removes a published archive, because the commit may have
+	// landed before the error surfaced.
+	minID := rows[0].ID
 	for _, row := range rows[1:] {
 		if row.ID < minID {
 			minID = row.ID
 		}
-		if row.ID > maxID {
-			maxID = row.ID
-		}
 	}
-	path = filepath.Join(dir, fmt.Sprintf("audit-%d-%d.jsonl", minID, maxID))
+	path = filepath.Join(dir, fmt.Sprintf("audit-%d.jsonl", minID))
 
 	// Temp names are unique per attempt: two instances may archive the same
 	// batch concurrently, and they must never write into each other's temp
