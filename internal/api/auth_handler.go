@@ -547,8 +547,8 @@ func (a *AdminAPI) ResetMemberTOTP(c *gin.Context, orgId int64, userId int64) {
 	case errors.Is(err, errTOTPOwnerReset):
 		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "only an owner can reset an owner's two-factor")
 		return
-	case errors.Is(err, errTOTPOtherOwner):
-		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "target owns another organization; their two-factor must be reset there")
+	case errors.Is(err, errTOTPOtherOrgMembership):
+		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "target also belongs to another organization; account-wide two-factor recovery must be handled out of band")
 		return
 	case errors.Is(err, errAuditUnavailable):
 		a.deps.Logger.Error("reset 2fa failed: transactional auditor unavailable")
@@ -565,9 +565,11 @@ func (a *AdminAPI) ResetMemberTOTP(c *gin.Context, orgId int64, userId int64) {
 
 // assertResettableTOTP guards the global second factor of a user against
 // tenant-local administrators: an owner inside the organization may only be
-// reset by an owner (org.admin), and a user who owns a different organization
-// must be reset from there instead, otherwise any admin could weaken the login
-// protection of a tenant they do not administer (CWE-269).
+// reset by an owner (org.admin), and a user who belongs to any other
+// organization must not be reset here at all — their factor also protects
+// tenants this administrator does not control, and a non-owner there (say an
+// administrator or a custom role) is just as exposed as an owner (CWE-269).
+// Such multi-organization users recover their account out of band.
 func (a *AdminAPI) assertResettableTOTP(tx *gorm.DB, c *gin.Context, orgID, targetID uint) error {
 	var m model.Membership
 	if err := store.ScopedByOrg(tx, orgID).Where("user_id = ?", targetID).First(&m).Error; err != nil {
@@ -583,26 +585,24 @@ func (a *AdminAPI) assertResettableTOTP(tx *gorm.DB, c *gin.Context, orgID, targ
 			return errTOTPOwnerReset
 		}
 	}
-	var otherOwned int64
+	var outside int64
 	if err := store.WithoutTenantScope(tx).
 		Model(&model.Membership{}).
-		Joins("JOIN roles ON roles.id = memberships.role_id AND roles.organization_id = memberships.organization_id").
-		Where("memberships.user_id = ? AND roles.kind = ? AND memberships.organization_id <> ?",
-			targetID, model.RoleKindOwner, orgID).
-		Count(&otherOwned).Error; err != nil {
+		Where("user_id = ? AND organization_id <> ?", targetID, orgID).
+		Count(&outside).Error; err != nil {
 		return err
 	}
-	if otherOwned > 0 {
-		return errTOTPOtherOwner
+	if outside > 0 {
+		return errTOTPOtherOrgMembership
 	}
 	return nil
 }
 
-// errTOTPOwnerReset and errTOTPOtherOwner refuse an administrator reset that
-// would cross the authority boundary of the (global) second factor.
+// errTOTPOwnerReset and errTOTPOtherOrgMembership refuse an administrator reset
+// that would cross the authority boundary of the (global) second factor.
 var (
-	errTOTPOwnerReset = errors.New("only an owner can reset an owner's two-factor")
-	errTOTPOtherOwner = errors.New("target owns another organization")
+	errTOTPOwnerReset         = errors.New("only an owner can reset an owner's two-factor")
+	errTOTPOtherOrgMembership = errors.New("target belongs to another organization")
 )
 
 // writeTOTPError maps second-factor failures onto 401/409 responses.
