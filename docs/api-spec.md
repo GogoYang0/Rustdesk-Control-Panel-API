@@ -42,7 +42,7 @@
 
 ### 2.2 租户隔离（管理 API）
 
-管理 API 的一切组织内资源都带 `{orgId}` 路径参数；**例外**是个人令牌端点 `/auth/tokens`（列表用必填 `organizationId` 查询参数，创建用请求体 `organization_id`）——令牌属于用户而非组织路径资源，但签发后只在对应组织的路径上生效。服务端通过 `ScopedByOrg` 强制租户过滤，**组织内**跨租户资源访问返回 `404 not_found`（不泄露存在性）；**调用者不属于该组织**时返回 `403 forbidden`（"不是本组织成员"本身不构成信息泄露，且便于前端区分"没权限"与"资源没了"）。compat 层不带 `{orgId}`：**已认证请求**使用已验证 token 的 `org` claim 作为组织上下文；**无凭据的 heartbeat/sysinfo** 从持久化会话取得 `OrganizationID` 后执行组织范围查询（见 §4）。
+管理 API 的一切组织内资源都带 `{orgId}` 路径参数；**例外**是个人令牌端点 `/auth/tokens`（列表用必填 `organizationId` 查询参数，创建用请求体 `organization_id`）——令牌属于用户而非组织路径资源，但签发后只在对应组织的路径上生效。这组令牌管理端点（列表、创建、撤销）**只接受管理 JWT**：个人令牌仅能访问带 `{orgId}` 的组织路径，用它调用 `/auth/tokens` 一律返回 `401 unauthorized`。服务端通过 `ScopedByOrg` 强制租户过滤，**组织内**跨租户资源访问返回 `404 not_found`（不泄露存在性）；**调用者不属于该组织**时返回 `403 forbidden`（"不是本组织成员"本身不构成信息泄露，且便于前端区分"没权限"与"资源没了"）。compat 层不带 `{orgId}`：**已认证请求**使用已验证 token 的 `org` claim 作为组织上下文；**无凭据的 heartbeat/sysinfo** 从持久化会话取得 `OrganizationID` 后执行组织范围查询（见 §4）。
 
 fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件注册为准）：
 
