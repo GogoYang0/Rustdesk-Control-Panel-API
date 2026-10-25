@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 	"unicode/utf8"
 
 	"gorm.io/gorm"
@@ -329,6 +330,16 @@ func (s *Service) AddPeer(userID uint, orgID, bookID uint, in PeerJSON) error {
 		if in.Tags != nil {
 			updates["tags_json"] = TagsJSON(in.Tags)
 		}
+		// Re-adding a recycled peer restores it in place: the (book, peer) row
+		// survives deletion so the opaque hash/note stay attached. Restoring
+		// grows the live list, so it must respect the per-book limit too.
+		if row.DeletedAt != nil {
+			if err := ensurePeerCapacity(tx, orgID, book.ID); err != nil {
+				return err
+			}
+			updates["deleted_at"] = nil
+			updates["deleted_by"] = uint(0)
+		}
 		if len(updates) == 0 {
 			return nil
 		}
@@ -364,6 +375,17 @@ func (s *Service) UpdatePeer(userID uint, orgID, bookID uint, peerID string, fie
 				updates["tags_json"] = TagsJSON(tags)
 			}
 		}
+		// The client considers a peer it updates to be live. Writing into a
+		// recycled row would return success while the change stays invisible to
+		// the client's next read, so restore the row in place (and respect the
+		// per-book limit the same way AddPeer does).
+		if row.DeletedAt != nil && len(updates) > 0 {
+			if err := ensurePeerCapacity(tx, orgID, book.ID); err != nil {
+				return err
+			}
+			updates["deleted_at"] = nil
+			updates["deleted_by"] = uint(0)
+		}
 		if len(updates) == 0 {
 			return nil
 		}
@@ -374,9 +396,12 @@ func (s *Service) UpdatePeer(userID uint, orgID, bookID uint, peerID string, fie
 // DeletePeers removes the listed peer ids from the book.
 func (s *Service) DeletePeers(userID uint, orgID, bookID uint, peerIDs []string) error {
 	return s.mutateBook(userID, orgID, bookID, func(tx *gorm.DB, book *model.AddressBook) error {
+		// Deleting from the client is soft as well (D9): the entry moves to the
+		// recycle bin and a later full sync can restore it.
 		return store.ScopedByOrg(tx, orgID).
-			Where("book_id = ? AND peer_id IN ?", book.ID, peerIDs).
-			Delete(&model.AddressBookPeer{}).Error
+			Model(&model.AddressBookPeer{}).
+			Where("book_id = ? AND peer_id IN ? AND deleted_at IS NULL", book.ID, peerIDs).
+			Updates(map[string]any{"deleted_at": time.Now().UTC(), "deleted_by": userID}).Error
 	})
 }
 
@@ -611,7 +636,7 @@ func derefString(s *string) string {
 func ensurePeerCapacity(tx *gorm.DB, orgID, bookID uint) error {
 	var n int64
 	if err := store.ScopedByOrg(tx, orgID).Model(&model.AddressBookPeer{}).
-		Where("book_id = ?", bookID).Count(&n).Error; err != nil {
+		Where("book_id = ? AND deleted_at IS NULL", bookID).Count(&n).Error; err != nil {
 		return err
 	}
 	if n >= MaxPeersPerBook {
@@ -647,7 +672,7 @@ func (s *Service) ReplaceBookContent(userID uint, orgID, bookID uint, expectedHa
 	if err != nil {
 		return nil, err
 	}
-	if !canWrite(book, userID, "") {
+	if !canWrite(book, userID, nil) {
 		return nil, ErrForbidden
 	}
 	// Client pushes are untrusted input: apply the same column bounds and
@@ -677,8 +702,9 @@ func (s *Service) ReplaceBookContent(userID uint, orgID, bookID uint, expectedHa
 				return ErrContentConflict
 			}
 		}
-		// Load the stored opaque fields before the delete: omitted legacy
-		// fields inherit them, explicit empty strings clear them.
+		// Load the stored opaque fields before the replace: omitted legacy
+		// fields inherit them, explicit empty strings clear them. Recycled rows
+		// are included so re-adding a deleted peer keeps its hash/note.
 		var stored []model.AddressBookPeer
 		if err := store.ScopedByOrg(tx, orgID).
 			Where("book_id = ?", book.ID).Find(&stored).Error; err != nil {
@@ -688,35 +714,33 @@ func (s *Service) ReplaceBookContent(userID uint, orgID, bookID uint, expectedHa
 		for _, row := range stored {
 			opaque[row.PeerID] = row
 		}
-		if err := store.ScopedByOrg(tx, orgID).
-			Where("book_id = ?", book.ID).Delete(&model.AddressBookPeer{}).Error; err != nil {
+		// Peers missing from the push move to the recycle bin (D9) instead of
+		// being destroyed; incoming ids restore or update their row in place.
+		writes := make([]peerWrite, 0, len(peers))
+		for _, p := range peers {
+			old, ok := opaque[p.ID]
+			prevHash, prevNote := "", ""
+			if ok {
+				prevHash, prevNote = old.Hash, old.Note
+			}
+			writes = append(writes, peerWrite{
+				PeerID:    p.ID,
+				Alias:     p.Alias,
+				Username:  p.Username,
+				Hostname:  p.Hostname,
+				Platform:  p.Platform,
+				TagsJSON:  TagsJSON(p.Tags),
+				Hash:      resolveOptional(p.Hash, prevHash),
+				Note:      resolveOptional(p.Note, prevNote),
+				SetOpaque: true,
+			})
+		}
+		if err := replacePeersTx(tx, orgID, book.ID, userID, writes, time.Now().UTC()); err != nil {
 			return err
 		}
 		if err := store.ScopedByOrg(tx, orgID).
 			Where("book_id = ?", book.ID).Delete(&model.AddressBookTag{}).Error; err != nil {
 			return err
-		}
-		for _, p := range peers {
-			row := model.AddressBookPeer{
-				OrganizationID: orgID,
-				BookID:         book.ID,
-				PeerID:         p.ID,
-				Alias:          p.Alias,
-				Username:       p.Username,
-				Hostname:       p.Hostname,
-				Platform:       p.Platform,
-				TagsJSON:       TagsJSON(p.Tags),
-			}
-			if old, ok := opaque[p.ID]; ok {
-				row.Hash = resolveOptional(p.Hash, old.Hash)
-				row.Note = resolveOptional(p.Note, old.Note)
-			} else {
-				row.Hash = resolveOptional(p.Hash, "")
-				row.Note = resolveOptional(p.Note, "")
-			}
-			if err := store.ScopedByOrg(tx, orgID).Create(&row).Error; err != nil {
-				return err
-			}
 		}
 		for _, tg := range tags {
 			row := model.AddressBookTag{
@@ -755,7 +779,7 @@ func resolveOptional(incoming *string, stored string) string {
 func (s *Service) snapshotTx(tx *gorm.DB, orgID uint, book *model.AddressBook) (*BookSnapshot, error) {
 	var peerRows []model.AddressBookPeer
 	if err := store.ScopedByOrg(tx, orgID).
-		Where("book_id = ?", book.ID).Order("id").Find(&peerRows).Error; err != nil {
+		Where("book_id = ? AND deleted_at IS NULL", book.ID).Order("id").Find(&peerRows).Error; err != nil {
 		return nil, err
 	}
 	var tagRows []model.AddressBookTag
@@ -777,7 +801,7 @@ func (s *Service) mutateBook(userID, orgID, bookID uint, fn func(tx *gorm.DB, bo
 	if err != nil {
 		return err
 	}
-	if !canWrite(book, userID, "") {
+	if !canWrite(book, userID, nil) {
 		return ErrForbidden
 	}
 	return s.db.Transaction(func(tx *gorm.DB) error {
@@ -793,7 +817,8 @@ func (s *Service) mutateBook(userID, orgID, bookID uint, fn func(tx *gorm.DB, bo
 }
 
 // rewritePeerTags decodes every peer's tag list in the book, applies fn and
-// writes the result back (tag rename/delete cascades).
+// writes the result back (tag rename/delete cascades). Recycled rows are
+// included: a restored peer must not reference a tag that no longer exists.
 func rewritePeerTags(tx *gorm.DB, orgID, bookID uint, fn func([]string) []string) error {
 	var rows []model.AddressBookPeer
 	if err := store.ScopedByOrg(tx, orgID).

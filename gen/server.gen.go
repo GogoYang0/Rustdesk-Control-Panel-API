@@ -49,6 +49,45 @@ func (e AddressBookCreateRequestScope) Valid() bool {
 	}
 }
 
+// Defines values for AddressBookGrantAccess.
+const (
+	Full  AddressBookGrantAccess = "full"
+	Read  AddressBookGrantAccess = "read"
+	Write AddressBookGrantAccess = "write"
+)
+
+// Valid indicates whether the value is a known member of the AddressBookGrantAccess enum.
+func (e AddressBookGrantAccess) Valid() bool {
+	switch e {
+	case Full:
+		return true
+	case Read:
+		return true
+	case Write:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for AddressBookGrantKind.
+const (
+	Everyone AddressBookGrantKind = "everyone"
+	User     AddressBookGrantKind = "user"
+)
+
+// Valid indicates whether the value is a known member of the AddressBookGrantKind enum.
+func (e AddressBookGrantKind) Valid() bool {
+	switch e {
+	case Everyone:
+		return true
+	case User:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AlertSeverity.
 const (
 	AlertSeverityCritical AlertSeverity = "critical"
@@ -150,16 +189,17 @@ func (e DeviceStatus) Valid() bool {
 
 // Defines values for ErrorCode.
 const (
-	ErrorCodeApprovalRequired ErrorCode = "approval_required"
-	ErrorCodeConflict         ErrorCode = "conflict"
-	ErrorCodeEmailNotVerified ErrorCode = "email_not_verified"
-	ErrorCodeForbidden        ErrorCode = "forbidden"
-	ErrorCodeInternal         ErrorCode = "internal"
-	ErrorCodeInvalidRequest   ErrorCode = "invalid_request"
-	ErrorCodeNotFound         ErrorCode = "not_found"
-	ErrorCodeOk               ErrorCode = "ok"
-	ErrorCodeRateLimited      ErrorCode = "rate_limited"
-	ErrorCodeUnauthorized     ErrorCode = "unauthorized"
+	ErrorCodeApprovalRequired  ErrorCode = "approval_required"
+	ErrorCodeConflict          ErrorCode = "conflict"
+	ErrorCodeEmailNotVerified  ErrorCode = "email_not_verified"
+	ErrorCodeForbidden         ErrorCode = "forbidden"
+	ErrorCodeInternal          ErrorCode = "internal"
+	ErrorCodeInvalidRequest    ErrorCode = "invalid_request"
+	ErrorCodeNotFound          ErrorCode = "not_found"
+	ErrorCodeOk                ErrorCode = "ok"
+	ErrorCodeRateLimited       ErrorCode = "rate_limited"
+	ErrorCodeTwoFactorRequired ErrorCode = "two_factor_required"
+	ErrorCodeUnauthorized      ErrorCode = "unauthorized"
 )
 
 // Valid indicates whether the value is a known member of the ErrorCode enum.
@@ -182,6 +222,8 @@ func (e ErrorCode) Valid() bool {
 	case ErrorCodeOk:
 		return true
 	case ErrorCodeRateLimited:
+		return true
+	case ErrorCodeTwoFactorRequired:
 		return true
 	case ErrorCodeUnauthorized:
 		return true
@@ -289,45 +331,6 @@ func (e LogEventSource) Valid() bool {
 	}
 }
 
-// Defines values for MemberRole.
-const (
-	MemberRoleAdmin  MemberRole = "admin"
-	MemberRoleMember MemberRole = "member"
-	MemberRoleOwner  MemberRole = "owner"
-)
-
-// Valid indicates whether the value is a known member of the MemberRole enum.
-func (e MemberRole) Valid() bool {
-	switch e {
-	case MemberRoleAdmin:
-		return true
-	case MemberRoleMember:
-		return true
-	case MemberRoleOwner:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for MemberRoleRequestRole.
-const (
-	MemberRoleRequestRoleAdmin  MemberRoleRequestRole = "admin"
-	MemberRoleRequestRoleMember MemberRoleRequestRole = "member"
-)
-
-// Valid indicates whether the value is a known member of the MemberRoleRequestRole enum.
-func (e MemberRoleRequestRole) Valid() bool {
-	switch e {
-	case MemberRoleRequestRoleAdmin:
-		return true
-	case MemberRoleRequestRoleMember:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for ProvisioningStatusState.
 const (
 	ProvisioningStatusStateDeployed     ProvisioningStatusState = "deployed"
@@ -349,6 +352,48 @@ func (e ProvisioningStatusState) Valid() bool {
 	case ProvisioningStatusStatePending:
 		return true
 	case ProvisioningStatusStateProvisioning:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RoleAuditScope.
+const (
+	Global     RoleAuditScope = "global"
+	Individual RoleAuditScope = "individual"
+)
+
+// Valid indicates whether the value is a known member of the RoleAuditScope enum.
+func (e RoleAuditScope) Valid() bool {
+	switch e {
+	case Global:
+		return true
+	case Individual:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for RoleKind.
+const (
+	RoleKindAdmin  RoleKind = "admin"
+	RoleKindCustom RoleKind = "custom"
+	RoleKindMember RoleKind = "member"
+	RoleKindOwner  RoleKind = "owner"
+)
+
+// Valid indicates whether the value is a known member of the RoleKind enum.
+func (e RoleKind) Valid() bool {
+	switch e {
+	case RoleKindAdmin:
+		return true
+	case RoleKindCustom:
+		return true
+	case RoleKindMember:
+		return true
+	case RoleKindOwner:
 		return true
 	default:
 		return false
@@ -430,6 +475,41 @@ func (e GetHealthz200JSONResponseBodyStatus) Valid() bool {
 	}
 }
 
+// APIToken defines model for APIToken.
+type APIToken struct {
+	CreatedAt      time.Time  `json:"created_at"`
+	ExpiresAt      time.Time  `json:"expires_at"`
+	Id             int64      `json:"id"`
+	LastUsedAt     *time.Time `json:"last_used_at,omitempty"`
+	Name           string     `json:"name"`
+	OrganizationId int64      `json:"organization_id"`
+
+	// Permissions 申请时的权限子集；有效权限还要与该用户当前角色取交集
+	Permissions []string   `json:"permissions"`
+	RevokedAt   *time.Time `json:"revoked_at,omitempty"`
+
+	// TokenPrefix 令牌前 8 个字符，用于列表辨识（不足以重放）
+	TokenPrefix string `json:"token_prefix"`
+}
+
+// APITokenListResponse defines model for APITokenListResponse.
+type APITokenListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode  `json:"code"`
+	Data    []APIToken `json:"data"`
+	Message string     `json:"message"`
+}
+
 // AddressBook defines model for AddressBook.
 type AddressBook struct {
 	CreatedAt time.Time `json:"created_at"`
@@ -458,6 +538,77 @@ type AddressBookCreateRequest struct {
 
 // AddressBookCreateRequestScope defines model for AddressBookCreateRequest.Scope.
 type AddressBookCreateRequestScope string
+
+// AddressBookGrant defines model for AddressBookGrant.
+type AddressBookGrant struct {
+	// Access - read：只读（当前共享簿默认成员可读，显式 everyone/user 授权可覆盖）
+	// - write：可替换 peers/tags
+	// - full：可改名、删除簿、管理授权
+	Access      AddressBookGrantAccess `json:"access"`
+	CreatedAt   time.Time              `json:"created_at"`
+	CreatedBy   int64                  `json:"created_by"`
+	Id          int64                  `json:"id"`
+	SubjectKind AddressBookGrantKind   `json:"subject_kind"`
+
+	// SubjectUserId `user` 主体为用户 id；`everyone` 为 null
+	SubjectUserId *int64 `json:"subject_user_id,omitempty"`
+}
+
+// AddressBookGrantAccess - read：只读（当前共享簿默认成员可读，显式 everyone/user 授权可覆盖）
+// - write：可替换 peers/tags
+// - full：可改名、删除簿、管理授权
+type AddressBookGrantAccess string
+
+// AddressBookGrantKind defines model for AddressBookGrantKind.
+type AddressBookGrantKind string
+
+// AddressBookGrantListResponse defines model for AddressBookGrantListResponse.
+type AddressBookGrantListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode          `json:"code"`
+	Data    []AddressBookGrant `json:"data"`
+	Message string             `json:"message"`
+}
+
+// AddressBookGrantRequest defines model for AddressBookGrantRequest.
+type AddressBookGrantRequest struct {
+	// Access - read：只读（当前共享簿默认成员可读，显式 everyone/user 授权可覆盖）
+	// - write：可替换 peers/tags
+	// - full：可改名、删除簿、管理授权
+	Access      AddressBookGrantAccess `json:"access"`
+	SubjectKind AddressBookGrantKind   `json:"subject_kind"`
+
+	// SubjectUserId `subject_kind=user` 时必填且必须是本组织成员；`everyone` 时必须省略或为 null
+	SubjectUserId *int64 `json:"subject_user_id,omitempty"`
+}
+
+// AddressBookGrantResponse defines model for AddressBookGrantResponse.
+type AddressBookGrantResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode        `json:"code"`
+	Data    AddressBookGrant `json:"data"`
+	Message string           `json:"message"`
+}
 
 // AddressBookListResponse defines model for AddressBookListResponse.
 type AddressBookListResponse struct {
@@ -492,6 +643,40 @@ type AddressBookPeer struct {
 // AddressBookPeersReplaceRequest defines model for AddressBookPeersReplaceRequest.
 type AddressBookPeersReplaceRequest struct {
 	Peers []AddressBookPeer `json:"peers"`
+}
+
+// AddressBookRecycleBinItem defines model for AddressBookRecycleBinItem.
+type AddressBookRecycleBinItem struct {
+	Alias *string `json:"alias,omitempty"`
+
+	// DeletedAt 删除时间；30 天后由后台清扫永久删除
+	DeletedAt time.Time `json:"deleted_at"`
+
+	// DeletedBy 删除人；0 表示系统清扫
+	DeletedBy int64     `json:"deleted_by"`
+	Hostname  *string   `json:"hostname,omitempty"`
+	PeerId    string    `json:"peer_id"`
+	Platform  *string   `json:"platform,omitempty"`
+	Tags      *[]string `json:"tags,omitempty"`
+	Username  *string   `json:"username,omitempty"`
+}
+
+// AddressBookRecycleBinResponse defines model for AddressBookRecycleBinResponse.
+type AddressBookRecycleBinResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode                   `json:"code"`
+	Data    []AddressBookRecycleBinItem `json:"data"`
+	Message string                      `json:"message"`
 }
 
 // AddressBookResponse defines model for AddressBookResponse.
@@ -709,10 +894,90 @@ type ApprovalResponse struct {
 //   - expired：超期未决策（后台任务标记）
 type ApprovalStatus string
 
+// AuditLog defines model for AuditLog.
+type AuditLog struct {
+	Action string `json:"action"`
+
+	// ActorUserId 操作者；0 表示系统动作
+	ActorUserId int64     `json:"actor_user_id"`
+	CreatedAt   time.Time `json:"created_at"`
+
+	// Detail 解析后的 `detail` JSON 对象；若历史记录不是合法 JSON，则返回原始字符串
+	// （不丢数据）。查询与导出本身不修改审计内容。
+	Detail interface{} `json:"detail,omitempty"`
+	Id     int64       `json:"id"`
+
+	// Seq 组织内连续序号
+	Seq        int64  `json:"seq"`
+	TargetId   string `json:"target_id"`
+	TargetType string `json:"target_type"`
+}
+
+// AuditLogListResponse defines model for AuditLogListResponse.
+type AuditLogListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode    `json:"code"`
+	Data    AuditLogPage `json:"data"`
+	Message string       `json:"message"`
+}
+
+// AuditLogPage defines model for AuditLogPage.
+type AuditLogPage struct {
+	Items    []AuditLog `json:"items"`
+	Page     int        `json:"page"`
+	PageSize int64      `json:"page_size"`
+	Total    int64      `json:"total"`
+}
+
+// AuditRetention defines model for AuditRetention.
+type AuditRetention struct {
+	// AuditRetentionDays 0 = 永久保留；正值为保留天数
+	AuditRetentionDays int `json:"audit_retention_days"`
+
+	// LastArchive 最近一次成功归档的摘要（`at`、`rows`、`path`）；从未归档时为 null。
+	LastArchive *map[string]interface{} `json:"last_archive,omitempty"`
+}
+
+// AuditRetentionRequest defines model for AuditRetentionRequest.
+type AuditRetentionRequest struct {
+	Days int `json:"days"`
+}
+
+// AuditRetentionResponse defines model for AuditRetentionResponse.
+type AuditRetentionResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode      `json:"code"`
+	Data    AuditRetention `json:"data"`
+	Message string         `json:"message"`
+}
+
 // Device defines model for Device.
 type Device struct {
 	// Bound 是否已绑定某个客户端实例（重置绑定后为 false）
-	Bound      bool         `json:"bound"`
+	Bound bool `json:"bound"`
+
+	// Disabled 设备是否已被停用（停用期间拒绝认领、心跳与票据兑换）
+	Disabled   bool         `json:"disabled"`
 	Id         int64        `json:"id"`
 	LastSeenAt *time.Time   `json:"last_seen_at"`
 	Name       string       `json:"name"`
@@ -727,6 +992,12 @@ type DeviceStatus string
 type DeviceCreateRequest struct {
 	Name       string `json:"name"`
 	RustdeskId string `json:"rustdesk_id"`
+}
+
+// DeviceDisableRequest defines model for DeviceDisableRequest.
+type DeviceDisableRequest struct {
+	// Disabled true 停用设备，false 恢复
+	Disabled bool `json:"disabled"`
 }
 
 // DeviceListResponse defines model for DeviceListResponse.
@@ -814,6 +1085,8 @@ type ErrorResponse struct {
 
 	// Data 错误上下文；多数错误为 null。`code=approval_required` 时带
 	// `approval_id`（int64，待审批请求 id），客户端据此跳转审批中心。
+	// `code=two_factor_required` 时带 `challenge_token`（短期挑战令牌），
+	// 客户端用它调用 `POST /auth/2fa/verify` 完成第二步登录。
 	Data    *map[string]interface{} `json:"data,omitempty"`
 	Message string                  `json:"message"`
 }
@@ -860,6 +1133,31 @@ type InvitationResponse struct {
 	Code    ErrorCode  `json:"code"`
 	Data    Invitation `json:"data"`
 	Message string     `json:"message"`
+}
+
+// IssuedAPIToken defines model for IssuedAPIToken.
+type IssuedAPIToken struct {
+	// Plaintext 明文令牌，只在本响应出现一次，服务端不保存
+	Plaintext string   `json:"plaintext"`
+	Token     APIToken `json:"token"`
+}
+
+// IssuedAPITokenResponse defines model for IssuedAPITokenResponse.
+type IssuedAPITokenResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode      `json:"code"`
+	Data    IssuedAPIToken `json:"data"`
+	Message string         `json:"message"`
 }
 
 // IssuedTicket defines model for IssuedTicket.
@@ -936,15 +1234,23 @@ type LoginRequest struct {
 
 // Member defines model for Member.
 type Member struct {
-	CreatedAt time.Time           `json:"created_at"`
-	Email     openapi_types.Email `json:"email"`
-	Id        int64               `json:"id"`
-	Role      MemberRole          `json:"role"`
-	UserId    int64               `json:"user_id"`
-}
+	CreatedAt time.Time `json:"created_at"`
 
-// MemberRole defines model for Member.Role.
-type MemberRole string
+	// Disabled 会籍是否已停用；停用后不能登录或访问该组织
+	Disabled bool                `json:"disabled"`
+	Email    openapi_types.Email `json:"email"`
+	Id       int64               `json:"id"`
+
+	// Role 兼容字段，等同于 `role_name`；自定义角色名不限于内置三种
+	Role string `json:"role"`
+
+	// RoleId 会籍引用的角色 id（`memberships.role_id`）
+	RoleId int64 `json:"role_id"`
+
+	// RoleName 角色展示名（内置 owner/admin/member 或自定义名称）
+	RoleName string `json:"role_name"`
+	UserId   int64  `json:"user_id"`
+}
 
 // MemberListResponse defines model for MemberListResponse.
 type MemberListResponse struct {
@@ -1006,14 +1312,18 @@ type MemberResponse struct {
 	Message string    `json:"message"`
 }
 
-// MemberRoleRequest defines model for MemberRoleRequest.
-type MemberRoleRequest struct {
-	// Role 只接受 admin 或 member；所有权转移不在本端点范围
-	Role MemberRoleRequestRole `json:"role"`
-}
+// MemberUpdateRequest 按字段更新会籍，至少给出 `role_id` 或 `disabled` 之一。
+//   - `role_id`：授予本组织内的内置 admin/member 或自定义角色（不能授予 owner）；
+//     需要 `org.admin`（仅 owner）。
+//   - `disabled`：停用或恢复会籍；需要 `member.manage`。不能停用自己或末位 owner；
+//     停用会在同一事务内撤销该用户在本组织的活跃 compat 会话。
+type MemberUpdateRequest struct {
+	// Disabled true 停用，false 恢复
+	Disabled *bool `json:"disabled,omitempty"`
 
-// MemberRoleRequestRole 只接受 admin 或 member；所有权转移不在本端点范围
-type MemberRoleRequestRole string
+	// RoleId 目标角色 id；owner 角色不可通过本端点授予
+	RoleId *int64 `json:"role_id,omitempty"`
+}
 
 // OkResponse defines model for OkResponse.
 type OkResponse struct {
@@ -1078,6 +1388,34 @@ type OrgResponse struct {
 	Code    ErrorCode `json:"code"`
 	Data    Org       `json:"data"`
 	Message string    `json:"message"`
+}
+
+// Permission defines model for Permission.
+type Permission struct {
+	// Code 权限码，如 `member.manage`
+	Code string `json:"code"`
+
+	// Delegable 自定义角色是否可以包含该权限码；false 为 owner 专属
+	Delegable   bool   `json:"delegable"`
+	Description string `json:"description"`
+}
+
+// PermissionListResponse defines model for PermissionListResponse.
+type PermissionListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode    `json:"code"`
+	Data    []Permission `json:"data"`
+	Message string       `json:"message"`
 }
 
 // Policy defines model for Policy.
@@ -1212,6 +1550,92 @@ type RefreshRequest struct {
 // ResendVerificationRequest defines model for ResendVerificationRequest.
 type ResendVerificationRequest struct {
 	Email openapi_types.Email `json:"email"`
+}
+
+// Role defines model for Role.
+type Role struct {
+	// AuditScope 审计可见范围：`global` 可查全组织审计；`individual` 只查自己作为操作者
+	// 或目标（用户类目标）的条目。仅对持有 `audit.read` 的角色有意义。
+	AuditScope RoleAuditScope `json:"audit_scope"`
+
+	// Builtin true 表示内置角色（不可编辑/删除/授予 owner）
+	Builtin   bool      `json:"builtin"`
+	CreatedAt time.Time `json:"created_at"`
+	Id        int64     `json:"id"`
+
+	// Kind - owner/admin/member：内置角色，权限集固定，不可修改或删除
+	// - custom：组织自建角色，权限只能是目录中 `delegable=true` 的子集
+	Kind RoleKind `json:"kind"`
+	Name string   `json:"name"`
+
+	// Permissions 角色持有的权限码集合
+	Permissions []string  `json:"permissions"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// RoleAuditScope 审计可见范围：`global` 可查全组织审计；`individual` 只查自己作为操作者
+// 或目标（用户类目标）的条目。仅对持有 `audit.read` 的角色有意义。
+type RoleAuditScope string
+
+// RoleCreateRequest defines model for RoleCreateRequest.
+type RoleCreateRequest struct {
+	// AuditScope 省略时默认 `individual`
+	AuditScope *RoleAuditScope `json:"audit_scope,omitempty"`
+
+	// Name 自定义角色名；不能与内置角色或已有角色重名
+	Name string `json:"name"`
+
+	// Permissions 权限码子集；必须全部来自权限目录且 `delegable=true`
+	Permissions []string `json:"permissions"`
+}
+
+// RoleKind - owner/admin/member：内置角色，权限集固定，不可修改或删除
+// - custom：组织自建角色，权限只能是目录中 `delegable=true` 的子集
+type RoleKind string
+
+// RoleListResponse defines model for RoleListResponse.
+type RoleListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode `json:"code"`
+	Data    []Role    `json:"data"`
+	Message string    `json:"message"`
+}
+
+// RoleResponse defines model for RoleResponse.
+type RoleResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode `json:"code"`
+	Data    Role      `json:"data"`
+	Message string    `json:"message"`
+}
+
+// RoleUpdateRequest defines model for RoleUpdateRequest.
+type RoleUpdateRequest struct {
+	// AuditScope 审计可见范围：`global` 可查全组织审计；`individual` 只查自己作为操作者
+	// 或目标（用户类目标）的条目。仅对持有 `audit.read` 的角色有意义。
+	AuditScope  *RoleAuditScope `json:"audit_scope,omitempty"`
+	Name        string          `json:"name"`
+	Permissions []string        `json:"permissions"`
 }
 
 // Session 会话生命周期（契约语义；实现见 M3 T4/T5/T7）：
@@ -1515,6 +1939,78 @@ type SessionResponse struct {
 // - denied：签发阶段被策略拒绝（仅 panel 来源，用于留痕）
 type SessionStatus string
 
+// TOTPCodeRequest defines model for TOTPCodeRequest.
+type TOTPCodeRequest struct {
+	// Code 6 位 TOTP 码或恢复码
+	Code string `json:"code"`
+}
+
+// TOTPDisableRequest defines model for TOTPDisableRequest.
+type TOTPDisableRequest struct {
+	// Code TOTP 码或一次性恢复码
+	Code     string `json:"code"`
+	Password string `json:"password"`
+}
+
+// TOTPRecoveryCodes defines model for TOTPRecoveryCodes.
+type TOTPRecoveryCodes struct {
+	// Codes 10 个一次性恢复码，只在本响应出现一次
+	Codes []string `json:"codes"`
+}
+
+// TOTPRecoveryCodesResponse defines model for TOTPRecoveryCodesResponse.
+type TOTPRecoveryCodesResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode         `json:"code"`
+	Data    TOTPRecoveryCodes `json:"data"`
+	Message string            `json:"message"`
+}
+
+// TOTPSetup defines model for TOTPSetup.
+type TOTPSetup struct {
+	// OtpauthUri 供验证器 App 扫码/导入的 `otpauth://totp/...` URI
+	OtpauthUri string `json:"otpauth_uri"`
+
+	// Secret Base32 编码的 TOTP 秘密（尚未启用）
+	Secret string `json:"secret"`
+}
+
+// TOTPSetupResponse defines model for TOTPSetupResponse.
+type TOTPSetupResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode `json:"code"`
+	Data    TOTPSetup `json:"data"`
+	Message string    `json:"message"`
+}
+
+// TOTPVerifyRequest defines model for TOTPVerifyRequest.
+type TOTPVerifyRequest struct {
+	ChallengeToken string `json:"challenge_token"`
+
+	// Code TOTP 码或一次性恢复码
+	Code string `json:"code"`
+}
+
 // Ticket defines model for Ticket.
 type Ticket struct {
 	ActorUserId *int64 `json:"actor_user_id,omitempty"`
@@ -1570,6 +2066,20 @@ type TicketResponse struct {
 	Message string    `json:"message"`
 }
 
+// TokenCreateRequest defines model for TokenCreateRequest.
+type TokenCreateRequest struct {
+	ExpiresInDays *int `json:"expires_in_days,omitempty"`
+
+	// Name 用户可读标签
+	Name string `json:"name"`
+
+	// OrganizationId 令牌绑定的组织；请求必须来自该组织的有效会籍
+	OrganizationId int64 `json:"organization_id"`
+
+	// Permissions 省略时取当前角色的全部权限；给出时必须是当前角色权限的子集
+	Permissions *[]string `json:"permissions,omitempty"`
+}
+
 // TokenPair defines model for TokenPair.
 type TokenPair struct {
 	AccessToken string `json:"access_token"`
@@ -1618,6 +2128,11 @@ type TooManyRequests = ErrorResponse
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = ErrorResponse
 
+// ListTokensParams defines parameters for ListTokens.
+type ListTokensParams struct {
+	OrganizationId int64 `form:"organizationId" json:"organizationId"`
+}
+
 // ListAlertsParams defines parameters for ListAlerts.
 type ListAlertsParams struct {
 	Severity *AlertSeverity `form:"severity,omitempty" json:"severity,omitempty"`
@@ -1635,6 +2150,32 @@ type ListApprovalsParams struct {
 	DeviceId *int64          `form:"deviceId,omitempty" json:"deviceId,omitempty"`
 	Page     *int            `form:"page,omitempty" json:"page,omitempty"`
 	PageSize *int            `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
+// ListAuditLogsParams defines parameters for ListAuditLogs.
+type ListAuditLogsParams struct {
+	Action      *string `form:"action,omitempty" json:"action,omitempty"`
+	ActorUserId *int64  `form:"actorUserId,omitempty" json:"actorUserId,omitempty"`
+	TargetType  *string `form:"targetType,omitempty" json:"targetType,omitempty"`
+	TargetId    *string `form:"targetId,omitempty" json:"targetId,omitempty"`
+
+	// From 含下界（UTC）
+	From *time.Time `form:"from,omitempty" json:"from,omitempty"`
+
+	// To 不含上界（UTC）
+	To       *time.Time `form:"to,omitempty" json:"to,omitempty"`
+	Page     *int       `form:"page,omitempty" json:"page,omitempty"`
+	PageSize *int       `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
+// ExportAuditLogsParams defines parameters for ExportAuditLogs.
+type ExportAuditLogsParams struct {
+	Action      *string    `form:"action,omitempty" json:"action,omitempty"`
+	ActorUserId *int64     `form:"actorUserId,omitempty" json:"actorUserId,omitempty"`
+	TargetType  *string    `form:"targetType,omitempty" json:"targetType,omitempty"`
+	TargetId    *string    `form:"targetId,omitempty" json:"targetId,omitempty"`
+	From        *time.Time `form:"from,omitempty" json:"from,omitempty"`
+	To          *time.Time `form:"to,omitempty" json:"to,omitempty"`
 }
 
 // ListDevicesParams defines parameters for ListDevices.
@@ -1677,6 +2218,18 @@ type ListSessionsParams struct {
 // GetHealthz200JSONResponseBodyStatus defines parameters for GetHealthz.
 type GetHealthz200JSONResponseBodyStatus string
 
+// DisableTOTPJSONRequestBody defines body for DisableTOTP for application/json ContentType.
+type DisableTOTPJSONRequestBody = TOTPDisableRequest
+
+// EnableTOTPJSONRequestBody defines body for EnableTOTP for application/json ContentType.
+type EnableTOTPJSONRequestBody = TOTPCodeRequest
+
+// RegenerateRecoveryCodesJSONRequestBody defines body for RegenerateRecoveryCodes for application/json ContentType.
+type RegenerateRecoveryCodesJSONRequestBody = TOTPDisableRequest
+
+// VerifyTOTPJSONRequestBody defines body for VerifyTOTP for application/json ContentType.
+type VerifyTOTPJSONRequestBody = TOTPVerifyRequest
+
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
 
@@ -1685,6 +2238,9 @@ type RefreshTokensJSONRequestBody = RefreshRequest
 
 // ResendVerificationJSONRequestBody defines body for ResendVerification for application/json ContentType.
 type ResendVerificationJSONRequestBody = ResendVerificationRequest
+
+// CreateTokenJSONRequestBody defines body for CreateToken for application/json ContentType.
+type CreateTokenJSONRequestBody = TokenCreateRequest
 
 // VerifyEmailJSONRequestBody defines body for VerifyEmail for application/json ContentType.
 type VerifyEmailJSONRequestBody = EmailVerificationRequest
@@ -1701,6 +2257,9 @@ type CreateAddressBookJSONRequestBody = AddressBookCreateRequest
 // UpdateAddressBookJSONRequestBody defines body for UpdateAddressBook for application/json ContentType.
 type UpdateAddressBookJSONRequestBody = AddressBookUpdateRequest
 
+// CreateAddressBookGrantJSONRequestBody defines body for CreateAddressBookGrant for application/json ContentType.
+type CreateAddressBookGrantJSONRequestBody = AddressBookGrantRequest
+
 // ReplaceAddressBookPeersJSONRequestBody defines body for ReplaceAddressBookPeers for application/json ContentType.
 type ReplaceAddressBookPeersJSONRequestBody = AddressBookPeersReplaceRequest
 
@@ -1713,8 +2272,14 @@ type CreateApprovalJSONRequestBody = ApprovalCreateRequest
 // DecideApprovalJSONRequestBody defines body for DecideApproval for application/json ContentType.
 type DecideApprovalJSONRequestBody = ApprovalDecisionRequest
 
+// SetAuditRetentionJSONRequestBody defines body for SetAuditRetention for application/json ContentType.
+type SetAuditRetentionJSONRequestBody = AuditRetentionRequest
+
 // CreateDeviceJSONRequestBody defines body for CreateDevice for application/json ContentType.
 type CreateDeviceJSONRequestBody = DeviceCreateRequest
+
+// SetDeviceDisabledJSONRequestBody defines body for SetDeviceDisabled for application/json ContentType.
+type SetDeviceDisabledJSONRequestBody = DeviceDisableRequest
 
 // ResetDeviceBindingJSONRequestBody defines body for ResetDeviceBinding for application/json ContentType.
 type ResetDeviceBindingJSONRequestBody = DeviceRebindRequest
@@ -1723,7 +2288,7 @@ type ResetDeviceBindingJSONRequestBody = DeviceRebindRequest
 type CreateInvitationJSONRequestBody = InvitationCreateRequest
 
 // UpdateMemberRoleJSONRequestBody defines body for UpdateMemberRole for application/json ContentType.
-type UpdateMemberRoleJSONRequestBody = MemberRoleRequest
+type UpdateMemberRoleJSONRequestBody = MemberUpdateRequest
 
 // CreatePolicyJSONRequestBody defines body for CreatePolicy for application/json ContentType.
 type CreatePolicyJSONRequestBody = PolicyRequest
@@ -1734,6 +2299,12 @@ type UpdatePolicyJSONRequestBody = PolicyRequest
 // UpdateProvisioningJSONRequestBody defines body for UpdateProvisioning for application/json ContentType.
 type UpdateProvisioningJSONRequestBody = ProvisioningUpdateRequest
 
+// CreateRoleJSONRequestBody defines body for CreateRole for application/json ContentType.
+type CreateRoleJSONRequestBody = RoleCreateRequest
+
+// UpdateRoleJSONRequestBody defines body for UpdateRole for application/json ContentType.
+type UpdateRoleJSONRequestBody = RoleUpdateRequest
+
 // IssueTicketJSONRequestBody defines body for IssueTicket for application/json ContentType.
 type IssueTicketJSONRequestBody = TicketCreateRequest
 
@@ -1742,6 +2313,21 @@ type RedeemTicketJSONRequestBody = TicketRedeemRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// DisableTOTP 关闭 TOTP 两步验证
+	// (POST /api/v1/auth/2fa/disable)
+	DisableTOTP(c *gin.Context)
+	// EnableTOTP 启用 TOTP 两步验证
+	// (POST /api/v1/auth/2fa/enable)
+	EnableTOTP(c *gin.Context)
+	// RegenerateRecoveryCodes 重新生成恢复码
+	// (POST /api/v1/auth/2fa/recovery-codes)
+	RegenerateRecoveryCodes(c *gin.Context)
+	// SetupTOTP 初始化 TOTP 两步验证
+	// (POST /api/v1/auth/2fa/setup)
+	SetupTOTP(c *gin.Context)
+	// VerifyTOTP 登录第二步校验
+	// (POST /api/v1/auth/2fa/verify)
+	VerifyTOTP(c *gin.Context)
 	// Login 邮箱密码登录
 	// (POST /api/v1/auth/login)
 	Login(c *gin.Context)
@@ -1751,6 +2337,15 @@ type ServerInterface interface {
 	// ResendVerification 重发验证邮件
 	// (POST /api/v1/auth/resend-verification)
 	ResendVerification(c *gin.Context)
+	// ListTokens 列出个人访问令牌
+	// (GET /api/v1/auth/tokens)
+	ListTokens(c *gin.Context, params ListTokensParams)
+	// CreateToken 创建个人访问令牌
+	// (POST /api/v1/auth/tokens)
+	CreateToken(c *gin.Context)
+	// RevokeToken 撤销个人访问令牌
+	// (DELETE /api/v1/auth/tokens/{tokenId})
+	RevokeToken(c *gin.Context, tokenId int64)
 	// VerifyEmail 邮箱验证
 	// (POST /api/v1/auth/verify-email)
 	VerifyEmail(c *gin.Context)
@@ -1778,9 +2373,30 @@ type ServerInterface interface {
 	// UpdateAddressBook 更新地址簿名称
 	// (PUT /api/v1/orgs/{orgId}/address-books/{bookId})
 	UpdateAddressBook(c *gin.Context, orgId int64, bookId int64)
+	// ListAddressBookGrants 列出共享地址簿授权
+	// (GET /api/v1/orgs/{orgId}/address-books/{bookId}/grants)
+	ListAddressBookGrants(c *gin.Context, orgId int64, bookId int64)
+	// CreateAddressBookGrant 新增或更新共享地址簿授权
+	// (POST /api/v1/orgs/{orgId}/address-books/{bookId}/grants)
+	CreateAddressBookGrant(c *gin.Context, orgId int64, bookId int64)
+	// DeleteAddressBookGrant 撤销共享地址簿授权
+	// (DELETE /api/v1/orgs/{orgId}/address-books/{bookId}/grants/{grantId})
+	DeleteAddressBookGrant(c *gin.Context, orgId int64, bookId int64, grantId int64)
 	// ReplaceAddressBookPeers 全量替换地址簿 peers
 	// (PUT /api/v1/orgs/{orgId}/address-books/{bookId}/peers)
 	ReplaceAddressBookPeers(c *gin.Context, orgId int64, bookId int64)
+	// DeleteAddressBookPeer 删除地址簿条目（进回收站）
+	// (DELETE /api/v1/orgs/{orgId}/address-books/{bookId}/peers/{peerId})
+	DeleteAddressBookPeer(c *gin.Context, orgId int64, bookId int64, peerId string)
+	// ListAddressBookRecycleBin 回收站列表
+	// (GET /api/v1/orgs/{orgId}/address-books/{bookId}/recycle-bin)
+	ListAddressBookRecycleBin(c *gin.Context, orgId int64, bookId int64)
+	// PurgeAddressBookPeer 永久删除回收站条目
+	// (DELETE /api/v1/orgs/{orgId}/address-books/{bookId}/recycle-bin/{peerId})
+	PurgeAddressBookPeer(c *gin.Context, orgId int64, bookId int64, peerId string)
+	// RestoreAddressBookPeer 从回收站恢复条目
+	// (POST /api/v1/orgs/{orgId}/address-books/{bookId}/recycle-bin/{peerId}/restore)
+	RestoreAddressBookPeer(c *gin.Context, orgId int64, bookId int64, peerId string)
 	// ReplaceAddressBookTags 全量替换地址簿标签
 	// (PUT /api/v1/orgs/{orgId}/address-books/{bookId}/tags)
 	ReplaceAddressBookTags(c *gin.Context, orgId int64, bookId int64)
@@ -1799,12 +2415,27 @@ type ServerInterface interface {
 	// DecideApproval 审批决定（approve/deny）
 	// (POST /api/v1/orgs/{orgId}/approvals/{approvalId}/decision)
 	DecideApproval(c *gin.Context, orgId int64, approvalId int64)
+	// ListAuditLogs 查询审计日志
+	// (GET /api/v1/orgs/{orgId}/audit-logs)
+	ListAuditLogs(c *gin.Context, orgId int64, params ListAuditLogsParams)
+	// ExportAuditLogs 导出审计日志 CSV
+	// (GET /api/v1/orgs/{orgId}/audit-logs/export)
+	ExportAuditLogs(c *gin.Context, orgId int64, params ExportAuditLogsParams)
+	// GetAuditRetention 查询审计保留期
+	// (GET /api/v1/orgs/{orgId}/audit-retention)
+	GetAuditRetention(c *gin.Context, orgId int64)
+	// SetAuditRetention 设置审计保留期
+	// (PUT /api/v1/orgs/{orgId}/audit-retention)
+	SetAuditRetention(c *gin.Context, orgId int64)
 	// ListDevices 列出组织设备
 	// (GET /api/v1/orgs/{orgId}/devices)
 	ListDevices(c *gin.Context, orgId int64, params ListDevicesParams)
 	// CreateDevice 注册设备
 	// (POST /api/v1/orgs/{orgId}/devices)
 	CreateDevice(c *gin.Context, orgId int64)
+	// SetDeviceDisabled 停用或恢复设备
+	// (PATCH /api/v1/orgs/{orgId}/devices/{deviceId})
+	SetDeviceDisabled(c *gin.Context, orgId int64, deviceId int64)
 	// DeviceHeartbeat 设备心跳
 	// (POST /api/v1/orgs/{orgId}/devices/{deviceId}/heartbeat)
 	DeviceHeartbeat(c *gin.Context, orgId int64, deviceId int64)
@@ -1823,9 +2454,12 @@ type ServerInterface interface {
 	// RemoveMember 移除组织成员
 	// (DELETE /api/v1/orgs/{orgId}/members/{userId})
 	RemoveMember(c *gin.Context, orgId int64, userId int64)
-	// UpdateMemberRole 变更成员角色
+	// UpdateMemberRole 更新成员角色或停用状态
 	// (PATCH /api/v1/orgs/{orgId}/members/{userId})
 	UpdateMemberRole(c *gin.Context, orgId int64, userId int64)
+	// ResetMemberTOTP 重置成员的 2FA
+	// (POST /api/v1/orgs/{orgId}/members/{userId}/2fa/reset)
+	ResetMemberTOTP(c *gin.Context, orgId int64, userId int64)
 	// ListPolicies 连接策略列表
 	// (GET /api/v1/orgs/{orgId}/policies)
 	ListPolicies(c *gin.Context, orgId int64)
@@ -1844,6 +2478,21 @@ type ServerInterface interface {
 	// UpdateProvisioning 启用或禁用组织 provisioning
 	// (PUT /api/v1/orgs/{orgId}/provisioning)
 	UpdateProvisioning(c *gin.Context, orgId int64)
+	// ListRoles 列出组织角色
+	// (GET /api/v1/orgs/{orgId}/roles)
+	ListRoles(c *gin.Context, orgId int64)
+	// CreateRole 创建自定义角色
+	// (POST /api/v1/orgs/{orgId}/roles)
+	CreateRole(c *gin.Context, orgId int64)
+	// DeleteRole 删除自定义角色
+	// (DELETE /api/v1/orgs/{orgId}/roles/{roleId})
+	DeleteRole(c *gin.Context, orgId int64, roleId int64)
+	// GetRole 查询角色详情
+	// (GET /api/v1/orgs/{orgId}/roles/{roleId})
+	GetRole(c *gin.Context, orgId int64, roleId int64)
+	// UpdateRole 更新自定义角色
+	// (PUT /api/v1/orgs/{orgId}/roles/{roleId})
+	UpdateRole(c *gin.Context, orgId int64, roleId int64)
 	// ListSessions 会话记录列表
 	// (GET /api/v1/orgs/{orgId}/sessions)
 	ListSessions(c *gin.Context, orgId int64, params ListSessionsParams)
@@ -1859,6 +2508,9 @@ type ServerInterface interface {
 	// RedeemTicket 兑换连接票据（创建面板会话）
 	// (POST /api/v1/orgs/{orgId}/tickets/{ticketId}/redeem)
 	RedeemTicket(c *gin.Context, orgId int64, ticketId int64)
+	// ListPermissions 列出权限目录
+	// (GET /api/v1/permissions)
+	ListPermissions(c *gin.Context)
 	// GetHealthz 存活探针
 	// (GET /healthz)
 	GetHealthz(c *gin.Context)
@@ -1872,6 +2524,71 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(c *gin.Context)
+
+// DisableTOTP operation middleware
+func (siw *ServerInterfaceWrapper) DisableTOTP(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DisableTOTP(c)
+}
+
+// EnableTOTP operation middleware
+func (siw *ServerInterfaceWrapper) EnableTOTP(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.EnableTOTP(c)
+}
+
+// RegenerateRecoveryCodes operation middleware
+func (siw *ServerInterfaceWrapper) RegenerateRecoveryCodes(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RegenerateRecoveryCodes(c)
+}
+
+// SetupTOTP operation middleware
+func (siw *ServerInterfaceWrapper) SetupTOTP(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.SetupTOTP(c)
+}
+
+// VerifyTOTP operation middleware
+func (siw *ServerInterfaceWrapper) VerifyTOTP(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.VerifyTOTP(c)
+}
 
 // Login operation middleware
 func (siw *ServerInterfaceWrapper) Login(c *gin.Context) {
@@ -1910,6 +2627,71 @@ func (siw *ServerInterfaceWrapper) ResendVerification(c *gin.Context) {
 	}
 
 	siw.Handler.ResendVerification(c)
+}
+
+// ListTokens operation middleware
+func (siw *ServerInterfaceWrapper) ListTokens(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListTokensParams
+
+	// ------------- Required query parameter "organizationId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "organizationId", c.Request.URL.Query(), &params.OrganizationId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter organizationId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListTokens(c, params)
+}
+
+// CreateToken operation middleware
+func (siw *ServerInterfaceWrapper) CreateToken(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateToken(c)
+}
+
+// RevokeToken operation middleware
+func (siw *ServerInterfaceWrapper) RevokeToken(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "tokenId" -------------
+	var tokenId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "tokenId", c.Param("tokenId"), &tokenId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter tokenId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RevokeToken(c, tokenId)
 }
 
 // VerifyEmail operation middleware
@@ -2116,6 +2898,117 @@ func (siw *ServerInterfaceWrapper) UpdateAddressBook(c *gin.Context) {
 	siw.Handler.UpdateAddressBook(c, orgId, bookId)
 }
 
+// ListAddressBookGrants operation middleware
+func (siw *ServerInterfaceWrapper) ListAddressBookGrants(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "bookId" -------------
+	var bookId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "bookId", c.Param("bookId"), &bookId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter bookId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListAddressBookGrants(c, orgId, bookId)
+}
+
+// CreateAddressBookGrant operation middleware
+func (siw *ServerInterfaceWrapper) CreateAddressBookGrant(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "bookId" -------------
+	var bookId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "bookId", c.Param("bookId"), &bookId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter bookId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateAddressBookGrant(c, orgId, bookId)
+}
+
+// DeleteAddressBookGrant operation middleware
+func (siw *ServerInterfaceWrapper) DeleteAddressBookGrant(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "bookId" -------------
+	var bookId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "bookId", c.Param("bookId"), &bookId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter bookId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "grantId" -------------
+	var grantId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "grantId", c.Param("grantId"), &grantId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter grantId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteAddressBookGrant(c, orgId, bookId, grantId)
+}
+
 // ReplaceAddressBookPeers operation middleware
 func (siw *ServerInterfaceWrapper) ReplaceAddressBookPeers(c *gin.Context) {
 
@@ -2148,6 +3041,169 @@ func (siw *ServerInterfaceWrapper) ReplaceAddressBookPeers(c *gin.Context) {
 	}
 
 	siw.Handler.ReplaceAddressBookPeers(c, orgId, bookId)
+}
+
+// DeleteAddressBookPeer operation middleware
+func (siw *ServerInterfaceWrapper) DeleteAddressBookPeer(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "bookId" -------------
+	var bookId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "bookId", c.Param("bookId"), &bookId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter bookId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "peerId" -------------
+	var peerId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "peerId", c.Param("peerId"), &peerId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter peerId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteAddressBookPeer(c, orgId, bookId, peerId)
+}
+
+// ListAddressBookRecycleBin operation middleware
+func (siw *ServerInterfaceWrapper) ListAddressBookRecycleBin(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "bookId" -------------
+	var bookId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "bookId", c.Param("bookId"), &bookId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter bookId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListAddressBookRecycleBin(c, orgId, bookId)
+}
+
+// PurgeAddressBookPeer operation middleware
+func (siw *ServerInterfaceWrapper) PurgeAddressBookPeer(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "bookId" -------------
+	var bookId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "bookId", c.Param("bookId"), &bookId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter bookId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "peerId" -------------
+	var peerId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "peerId", c.Param("peerId"), &peerId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter peerId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.PurgeAddressBookPeer(c, orgId, bookId, peerId)
+}
+
+// RestoreAddressBookPeer operation middleware
+func (siw *ServerInterfaceWrapper) RestoreAddressBookPeer(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "bookId" -------------
+	var bookId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "bookId", c.Param("bookId"), &bookId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter bookId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "peerId" -------------
+	var peerId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "peerId", c.Param("peerId"), &peerId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter peerId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RestoreAddressBookPeer(c, orgId, bookId, peerId)
 }
 
 // ReplaceAddressBookTags operation middleware
@@ -2405,6 +3461,224 @@ func (siw *ServerInterfaceWrapper) DecideApproval(c *gin.Context) {
 	siw.Handler.DecideApproval(c, orgId, approvalId)
 }
 
+// ListAuditLogs operation middleware
+func (siw *ServerInterfaceWrapper) ListAuditLogs(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListAuditLogsParams
+
+	// ------------- Optional query parameter "action" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "action", c.Request.URL.Query(), &params.Action, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter action: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "actorUserId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "actorUserId", c.Request.URL.Query(), &params.ActorUserId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter actorUserId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "targetType" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "targetType", c.Request.URL.Query(), &params.TargetType, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter targetType: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "targetId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "targetId", c.Request.URL.Query(), &params.TargetId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter targetId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "from" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "from", c.Request.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter from: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "to" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "to", c.Request.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter to: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "page" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "page", c.Request.URL.Query(), &params.Page, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter page: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "pageSize" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "pageSize", c.Request.URL.Query(), &params.PageSize, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter pageSize: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListAuditLogs(c, orgId, params)
+}
+
+// ExportAuditLogs operation middleware
+func (siw *ServerInterfaceWrapper) ExportAuditLogs(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ExportAuditLogsParams
+
+	// ------------- Optional query parameter "action" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "action", c.Request.URL.Query(), &params.Action, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter action: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "actorUserId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "actorUserId", c.Request.URL.Query(), &params.ActorUserId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter actorUserId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "targetType" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "targetType", c.Request.URL.Query(), &params.TargetType, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter targetType: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "targetId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "targetId", c.Request.URL.Query(), &params.TargetId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter targetId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "from" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "from", c.Request.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter from: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "to" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "to", c.Request.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter to: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ExportAuditLogs(c, orgId, params)
+}
+
+// GetAuditRetention operation middleware
+func (siw *ServerInterfaceWrapper) GetAuditRetention(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetAuditRetention(c, orgId)
+}
+
+// SetAuditRetention operation middleware
+func (siw *ServerInterfaceWrapper) SetAuditRetention(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.SetAuditRetention(c, orgId)
+}
+
 // ListDevices operation middleware
 func (siw *ServerInterfaceWrapper) ListDevices(c *gin.Context) {
 
@@ -2488,6 +3762,40 @@ func (siw *ServerInterfaceWrapper) CreateDevice(c *gin.Context) {
 	}
 
 	siw.Handler.CreateDevice(c, orgId)
+}
+
+// SetDeviceDisabled operation middleware
+func (siw *ServerInterfaceWrapper) SetDeviceDisabled(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "deviceId" -------------
+	var deviceId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "deviceId", c.Param("deviceId"), &deviceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.SetDeviceDisabled(c, orgId, deviceId)
 }
 
 // DeviceHeartbeat operation middleware
@@ -2736,6 +4044,40 @@ func (siw *ServerInterfaceWrapper) UpdateMemberRole(c *gin.Context) {
 	siw.Handler.UpdateMemberRole(c, orgId, userId)
 }
 
+// ResetMemberTOTP operation middleware
+func (siw *ServerInterfaceWrapper) ResetMemberTOTP(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "userId" -------------
+	var userId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", c.Param("userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter userId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ResetMemberTOTP(c, orgId, userId)
+}
+
 // ListPolicies operation middleware
 func (siw *ServerInterfaceWrapper) ListPolicies(c *gin.Context) {
 
@@ -2902,6 +4244,158 @@ func (siw *ServerInterfaceWrapper) UpdateProvisioning(c *gin.Context) {
 	}
 
 	siw.Handler.UpdateProvisioning(c, orgId)
+}
+
+// ListRoles operation middleware
+func (siw *ServerInterfaceWrapper) ListRoles(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListRoles(c, orgId)
+}
+
+// CreateRole operation middleware
+func (siw *ServerInterfaceWrapper) CreateRole(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateRole(c, orgId)
+}
+
+// DeleteRole operation middleware
+func (siw *ServerInterfaceWrapper) DeleteRole(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "roleId" -------------
+	var roleId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "roleId", c.Param("roleId"), &roleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter roleId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteRole(c, orgId, roleId)
+}
+
+// GetRole operation middleware
+func (siw *ServerInterfaceWrapper) GetRole(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "roleId" -------------
+	var roleId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "roleId", c.Param("roleId"), &roleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter roleId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetRole(c, orgId, roleId)
+}
+
+// UpdateRole operation middleware
+func (siw *ServerInterfaceWrapper) UpdateRole(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "roleId" -------------
+	var roleId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "roleId", c.Param("roleId"), &roleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter roleId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UpdateRole(c, orgId, roleId)
 }
 
 // ListSessions operation middleware
@@ -3115,6 +4609,19 @@ func (siw *ServerInterfaceWrapper) RedeemTicket(c *gin.Context) {
 	siw.Handler.RedeemTicket(c, orgId, ticketId)
 }
 
+// ListPermissions operation middleware
+func (siw *ServerInterfaceWrapper) ListPermissions(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListPermissions(c)
+}
+
 // GetHealthz operation middleware
 func (siw *ServerInterfaceWrapper) GetHealthz(c *gin.Context) {
 
@@ -3158,11 +4665,30 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/healthz", wrapper.GetHealthz)
 	router.POST(options.BaseURL+"/api/v1/auth/login", wrapper.Login)
 	router.POST(options.BaseURL+"/api/v1/auth/refresh", wrapper.RefreshTokens)
+	router.GET(options.BaseURL+"/api/v1/auth/tokens", wrapper.ListTokens)
+	router.POST(options.BaseURL+"/api/v1/auth/tokens", wrapper.CreateToken)
+	router.DELETE(options.BaseURL+"/api/v1/auth/tokens/:tokenId", wrapper.RevokeToken)
+	router.POST(options.BaseURL+"/api/v1/auth/2fa/setup", wrapper.SetupTOTP)
+	router.POST(options.BaseURL+"/api/v1/auth/2fa/enable", wrapper.EnableTOTP)
+	router.POST(options.BaseURL+"/api/v1/auth/2fa/disable", wrapper.DisableTOTP)
+	router.POST(options.BaseURL+"/api/v1/auth/2fa/recovery-codes", wrapper.RegenerateRecoveryCodes)
+	router.POST(options.BaseURL+"/api/v1/auth/2fa/verify", wrapper.VerifyTOTP)
 	router.GET(options.BaseURL+"/api/v1/orgs", wrapper.ListOrgs)
 	router.POST(options.BaseURL+"/api/v1/orgs", wrapper.CreateOrg)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/members", wrapper.ListMembers)
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId", wrapper.RemoveMember)
 	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId", wrapper.UpdateMemberRole)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId/2fa/reset", wrapper.ResetMemberTOTP)
+	router.GET(options.BaseURL+"/api/v1/permissions", wrapper.ListPermissions)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/roles", wrapper.ListRoles)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/roles", wrapper.CreateRole)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/roles/:roleId", wrapper.DeleteRole)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/roles/:roleId", wrapper.GetRole)
+	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/roles/:roleId", wrapper.UpdateRole)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-logs", wrapper.ListAuditLogs)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-logs/export", wrapper.ExportAuditLogs)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-retention", wrapper.GetAuditRetention)
+	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/audit-retention", wrapper.SetAuditRetention)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/provisioning", wrapper.GetProvisioning)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/provisioning", wrapper.UpdateProvisioning)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/invitations", wrapper.CreateInvitation)
@@ -3175,12 +4701,20 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId", wrapper.GetAddressBook)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId", wrapper.UpdateAddressBook)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId/peers", wrapper.ReplaceAddressBookPeers)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId/grants", wrapper.ListAddressBookGrants)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId/grants", wrapper.CreateAddressBookGrant)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId/grants/:grantId", wrapper.DeleteAddressBookGrant)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId/peers/:peerId", wrapper.DeleteAddressBookPeer)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId/recycle-bin", wrapper.ListAddressBookRecycleBin)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId/recycle-bin/:peerId/restore", wrapper.RestoreAddressBookPeer)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId/recycle-bin/:peerId", wrapper.PurgeAddressBookPeer)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/address-books/:bookId/tags", wrapper.ReplaceAddressBookTags)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/log-events", wrapper.ListLogEvents)
 	router.POST(options.BaseURL+"/api/v1/auth/verify-email", wrapper.VerifyEmail)
 	router.POST(options.BaseURL+"/api/v1/auth/resend-verification", wrapper.ResendVerification)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/heartbeat", wrapper.DeviceHeartbeat)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/rebind", wrapper.ResetDeviceBinding)
+	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId", wrapper.SetDeviceDisabled)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/sessions", wrapper.ListSessions)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/sessions/:sessionId", wrapper.GetSession)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/policies", wrapper.ListPolicies)

@@ -28,16 +28,18 @@ var errLastOwner = errors.New("organization must keep at least one owner")
 var errActorNoLongerAuthorized = errors.New("actor is no longer authorized")
 
 // lockActor re-reads the actor membership inside the mutation transaction and
-// re-checks its permission. When lockOwners is set, the actor row and every
+// re-checks its permission set. When lockOwners is set, the actor row and every
 // owner row are locked in one id-ordered query, so concurrent owner removals
 // acquire locks in the same order (no deadlock) and a lost actor is detected
-// before any write or session revocation.
-func lockActor(tx *gorm.DB, orgID, actorID uint, lockOwners bool, perm string) ([]model.Membership, error) {
+// before any write or session revocation. Owner rows are identified by the role
+// kind, never by the legacy role string.
+func lockActor(tx *gorm.DB, orgID, actorID uint, lockOwners bool, required ...string) ([]model.Membership, error) {
 	var rows []model.Membership
-	read := store.ScopedByOrg(tx, orgID).Select("id", "user_id", "role")
-	if lockOwners {
-		read = read.Where("user_id = ? OR role = ?", actorID, model.RoleOwner)
-	} else {
+	// No JOIN here: the tenant plugin injects an unqualified organization_id
+	// condition, which becomes ambiguous once two scoped tables are joined.
+	// Owner rows are resolved from the role rows below instead.
+	read := store.ScopedByOrg(tx, orgID).Model(&model.Membership{})
+	if !lockOwners {
 		read = read.Where("user_id = ?", actorID)
 	}
 	read = read.Order("id ASC")
@@ -48,18 +50,37 @@ func lockActor(tx *gorm.DB, orgID, actorID uint, lockOwners bool, perm string) (
 		return nil, err
 	}
 
+	var roles []model.Role
+	if err := store.ScopedByOrg(tx, orgID).Find(&roles).Error; err != nil {
+		return nil, err
+	}
+	kinds := make(map[uint]string, len(roles))
+	rolePerms := make(map[uint][]string, len(roles))
+	for _, r := range roles {
+		kinds[r.ID] = r.Kind
+		rolePerms[r.ID] = r.PermissionList()
+	}
+
 	var actor *model.Membership
 	var owners []model.Membership
 	for i := range rows {
 		if rows[i].UserID == actorID {
 			actor = &rows[i]
 		}
-		if rows[i].Role == model.RoleOwner {
+		// Only active owners count: disabling every active owner would leave the
+		// organization unadministrable, and removing a disabled one is harmless
+		// while another active owner remains.
+		if kinds[rows[i].RoleID] == model.RoleKindOwner && !rows[i].Disabled {
 			owners = append(owners, rows[i])
 		}
 	}
-	if actor == nil || !authz.Can(actor.Role, perm) {
+	if actor == nil || actor.Disabled {
 		return nil, errActorNoLongerAuthorized
+	}
+	for _, perm := range required {
+		if !authz.Has(rolePerms[actor.RoleID], perm) {
+			return nil, errActorNoLongerAuthorized
+		}
 	}
 	return owners, nil
 }
@@ -82,7 +103,7 @@ func (a *AdminAPI) RemoveMember(c *gin.Context, orgId int64, userId int64) {
 	if !ok {
 		return
 	}
-	if !authz.Can(actor.Role, authz.PermMemberManage) {
+	if perms, _ := authz.OrgPermissions(c); !authz.Has(perms, authz.PermMemberManage) {
 		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "insufficient permissions")
 		return
 	}
@@ -92,11 +113,19 @@ func (a *AdminAPI) RemoveMember(c *gin.Context, orgId int64, userId int64) {
 		a.writeMemberError(c, err, "could not load membership")
 		return
 	}
+	roleIdx, err := a.roleIndex(uint(orgId))
+	if err != nil {
+		a.deps.Logger.Error("load roles failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not load role")
+		return
+	}
+	actorKind := roleKindOf(roleIdx, actor.RoleID)
+	targetKind := roleKindOf(roleIdx, target.RoleID)
 	if target.UserID == uid {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "cannot remove yourself")
 		return
 	}
-	if target.Role == model.RoleOwner && actor.Role != model.RoleOwner {
+	if targetKind == model.RoleKindOwner && actorKind != model.RoleKindOwner {
 		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "only an owner can remove an owner")
 		return
 	}
@@ -104,16 +133,27 @@ func (a *AdminAPI) RemoveMember(c *gin.Context, orgId int64, userId int64) {
 	var revoked int64
 	domainRecorded := false
 	err = a.deps.DB.Transaction(func(tx *gorm.DB) error {
-		owners, err := lockActor(tx, uint(orgId), uid, target.Role == model.RoleOwner, authz.PermMemberManage)
+		owners, err := lockActor(tx, uint(orgId), uid, targetKind == model.RoleKindOwner, authz.PermMemberManage)
 		if err != nil {
 			return err
 		}
-		if target.Role == model.RoleOwner && len(owners) <= 1 {
-			return errLastOwner
+		if targetKind == model.RoleKindOwner {
+			// Count the owners that remain after removing the target. A disabled
+			// co-owner is already excluded from the active set, so removing them
+			// must not trip this guard while the actor stays an active owner.
+			remaining := 0
+			for _, owner := range owners {
+				if owner.UserID != target.UserID {
+					remaining++
+				}
+			}
+			if remaining == 0 {
+				return errLastOwner
+			}
 		}
 
 		res := store.ScopedByOrg(tx, uint(orgId)).
-			Where("user_id = ? AND role = ?", target.UserID, target.Role).Delete(&model.Membership{})
+			Where("user_id = ? AND role_id = ?", target.UserID, target.RoleID).Delete(&model.Membership{})
 		if res.Error != nil {
 			return res.Error
 		}
@@ -127,24 +167,27 @@ func (a *AdminAPI) RemoveMember(c *gin.Context, orgId int64, userId int64) {
 		}
 		revoked = n
 
-		if tr, ok := a.deps.Auditor.(audit.TxRecorder); ok {
-			if err := tr.RecordTx(tx, audit.Entry{
-				OrganizationID: uint(orgId),
-				ActorUserID:    uid,
-				Action:         "organization.member.remove",
-				TargetType:     "user",
-				TargetID:       fmt.Sprint(target.UserID),
-				Detail:         map[string]any{"role": target.Role, "revoked_sessions": n},
-			}); err != nil {
-				return err
-			}
-			domainRecorded = true
+		if tr, ok := a.deps.Auditor.(audit.TxRecorder); !ok {
+			return errAuditUnavailable
+		} else if err := tr.RecordTx(tx, audit.Entry{
+			OrganizationID: uint(orgId),
+			ActorUserID:    uid,
+			Action:         "organization.member.remove",
+			TargetType:     "user",
+			TargetID:       fmt.Sprint(target.UserID),
+			Detail:         map[string]any{"role": roleNameOf(roleIdx, target.RoleID), "revoked_sessions": n},
+		}); err != nil {
+			return err
 		}
+		domainRecorded = true
 		return nil
 	})
 	switch {
 	case errors.Is(err, errActorNoLongerAuthorized):
 		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "insufficient permissions")
+		return
+	case errors.Is(err, errAuditUnavailable):
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "audit unavailable")
 		return
 	case errors.Is(err, errLastOwner):
 		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "organization must keep at least one owner")
@@ -170,10 +213,15 @@ func (a *AdminAPI) RemoveMember(c *gin.Context, orgId int64, userId int64) {
 	})
 }
 
-// UpdateMemberRole changes a membership between admin and member. Only an
-// owner may do this; ownership transfer is out of scope. A demotion revokes the
-// user's compat sessions in the same transaction — the member lost the role
-// that justified those sessions, and #39 treats that as an offboarding event.
+// UpdateMemberRole updates a membership by field. role_id grants a builtin
+// admin/member role or a custom role (owner-only, org.admin); disabled stops or
+// restores the membership (member.manage). Both may be sent together and each
+// needs its own permission. Ownership transfer is out of scope, so the owner
+// role can never be granted here, and the last owner can never be disabled.
+//
+// A change that takes permissions away — a narrowing role change or a disable —
+// revokes the user's compat sessions in the same transaction: a capability that
+// was withdrawn must not keep a 720h token that still authorizes it.
 func (a *AdminAPI) UpdateMemberRole(c *gin.Context, orgId int64, userId int64) {
 	uid, ok := requireUserID(c)
 	if !ok {
@@ -183,23 +231,26 @@ func (a *AdminAPI) UpdateMemberRole(c *gin.Context, orgId int64, userId int64) {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid id")
 		return
 	}
-	actor, ok := a.membershipFor(c, uid, uint(orgId))
-	if !ok {
-		return
-	}
-	if !authz.Can(actor.Role, authz.PermOrgAdmin) {
-		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "only an owner can change roles")
+	if _, ok := a.membershipFor(c, uid, uint(orgId)); !ok {
 		return
 	}
 
-	var req gen.MemberRoleRequest
+	var req gen.MemberUpdateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "role must be admin or member")
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid member update")
 		return
 	}
-	role := string(req.Role)
-	if role != model.RoleAdmin && role != model.RoleMember {
-		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "role must be admin or member")
+	if req.RoleId == nil && req.Disabled == nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "at least one of role_id or disabled is required")
+		return
+	}
+	perms, _ := authz.OrgPermissions(c)
+	if req.RoleId != nil && !authz.Has(perms, authz.PermOrgAdmin) {
+		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "only an owner can change roles")
+		return
+	}
+	if req.Disabled != nil && !authz.Has(perms, authz.PermMemberManage) {
+		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "insufficient permissions")
 		return
 	}
 
@@ -208,27 +259,116 @@ func (a *AdminAPI) UpdateMemberRole(c *gin.Context, orgId int64, userId int64) {
 		a.writeMemberError(c, err, "could not load membership")
 		return
 	}
-	if target.UserID == uid {
-		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "cannot change your own role")
+	roleIdx, err := a.roleIndex(uint(orgId))
+	if err != nil {
+		a.deps.Logger.Error("load roles failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not load role")
 		return
 	}
-	if target.Role == model.RoleOwner {
-		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "owner role changes are not supported")
-		return
+	targetKind := roleKindOf(roleIdx, target.RoleID)
+
+	// Resolve the role change, if any.
+	var newRole *model.Role
+	if req.RoleId != nil {
+		if target.UserID == uid {
+			abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "cannot change your own role")
+			return
+		}
+		if targetKind == model.RoleKindOwner {
+			abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "owner role changes are not supported")
+			return
+		}
+		role, err := a.deps.Roles.RoleByID(uint(orgId), uint(*req.RoleId))
+		if err != nil {
+			a.writeRoleError(c, err, "load target role failed")
+			return
+		}
+		if role.Kind == model.RoleKindOwner {
+			abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "owner role cannot be granted")
+			return
+		}
+		if target.RoleID != role.ID {
+			newRole = role
+		}
 	}
-	if target.Role == role {
+
+	// Resolve the disable change, if any. Repeating the current state is a
+	// successful no-op instead of a second audit row.
+	var disableTo *bool
+	if req.Disabled != nil {
+		if *req.Disabled && target.UserID == uid {
+			abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "cannot disable yourself")
+			return
+		}
+		if targetKind == model.RoleKindOwner && !authz.Has(perms, authz.PermOrgAdmin) {
+			abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "only an owner can change an owner's membership")
+			return
+		}
+		if target.Disabled != *req.Disabled {
+			disableTo = req.Disabled
+		}
+	}
+
+	if newRole == nil && disableTo == nil {
 		a.respondMember(c, target)
 		return
 	}
 
+	oldRole, oldKnown := roleIdx[target.RoleID]
+	if newRole != nil && !oldKnown {
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "membership role unavailable")
+		return
+	}
+	narrowed := false
+	if newRole != nil {
+		for _, p := range oldRole.PermissionList() {
+			if !authz.Has(newRole.PermissionList(), p) {
+				narrowed = true
+				break
+			}
+		}
+	}
+	revoke := narrowed || (disableTo != nil && *disableTo)
+
 	var revoked int64
 	domainRecorded := false
 	err = a.deps.DB.Transaction(func(tx *gorm.DB) error {
-		if _, err := lockActor(tx, uint(orgId), uid, false, authz.PermOrgAdmin); err != nil {
+		var required []string
+		if newRole != nil {
+			required = append(required, authz.PermOrgAdmin)
+		}
+		if disableTo != nil {
+			required = append(required, authz.PermMemberManage)
+		}
+		owners, err := lockActor(tx, uint(orgId), uid, disableTo != nil && *disableTo && targetKind == model.RoleKindOwner, required...)
+		if err != nil {
 			return err
 		}
+		if disableTo != nil && *disableTo && targetKind == model.RoleKindOwner && len(owners) <= 1 {
+			return errLastOwner
+		}
+
+		updates := map[string]any{}
+		if newRole != nil {
+			updates["role_id"] = newRole.ID
+			// The legacy string column is no longer read (staged migration) and is
+			// bounded to 16 bytes: store the kind, not a custom display name.
+			updates["role"] = newRole.Kind
+		}
+		if disableTo != nil {
+			updates["disabled"] = *disableTo
+			if *disableTo {
+				now := a.deps.Now()
+				updates["disabled_at"] = now
+				updates["disabled_by"] = uid
+			} else {
+				updates["disabled_at"] = nil
+				updates["disabled_by"] = uint(0)
+			}
+		}
 		res := store.ScopedByOrg(tx, uint(orgId)).Model(&model.Membership{}).
-			Where("user_id = ? AND role = ?", target.UserID, target.Role).Update("role", role)
+			Where("user_id = ? AND role_id = ?", target.UserID, target.RoleID).
+			Updates(updates)
 		if res.Error != nil {
 			return res.Error
 		}
@@ -236,7 +376,7 @@ func (a *AdminAPI) UpdateMemberRole(c *gin.Context, orgId int64, userId int64) {
 			return gorm.ErrRecordNotFound
 		}
 
-		if target.Role == model.RoleAdmin && role == model.RoleMember {
+		if revoke {
 			n, err := compatapi.RevokeOrgSessions(c.Request.Context(), tx, uint(orgId), target.UserID, a.deps.Now())
 			if err != nil {
 				return fmt.Errorf("revoke compat sessions: %w", err)
@@ -244,31 +384,57 @@ func (a *AdminAPI) UpdateMemberRole(c *gin.Context, orgId int64, userId int64) {
 			revoked = n
 		}
 
-		if tr, ok := a.deps.Auditor.(audit.TxRecorder); ok {
+		tr, ok := a.deps.Auditor.(audit.TxRecorder)
+		if !ok {
+			return errAuditUnavailable
+		}
+		if newRole != nil {
 			if err := tr.RecordTx(tx, audit.Entry{
 				OrganizationID: uint(orgId),
 				ActorUserID:    uid,
 				Action:         "organization.member.role",
 				TargetType:     "user",
 				TargetID:       fmt.Sprint(target.UserID),
-				Detail:         map[string]any{"from": target.Role, "to": role, "revoked_sessions": revoked},
+				Detail:         map[string]any{"from": oldRole.Name, "to": newRole.Name, "revoked_sessions": revoked},
 			}); err != nil {
 				return err
 			}
-			domainRecorded = true
 		}
+		if disableTo != nil {
+			action := "organization.member.enable"
+			if *disableTo {
+				action = "organization.member.disable"
+			}
+			if err := tr.RecordTx(tx, audit.Entry{
+				OrganizationID: uint(orgId),
+				ActorUserID:    uid,
+				Action:         action,
+				TargetType:     "user",
+				TargetID:       fmt.Sprint(target.UserID),
+				Detail:         map[string]any{"revoked_sessions": revoked},
+			}); err != nil {
+				return err
+			}
+		}
+		domainRecorded = true
 		return nil
 	})
 	switch {
 	case errors.Is(err, errActorNoLongerAuthorized):
 		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "insufficient permissions")
 		return
+	case errors.Is(err, errAuditUnavailable):
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "audit unavailable")
+		return
+	case errors.Is(err, errLastOwner):
+		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "organization must keep at least one owner")
+		return
 	case errors.Is(err, gorm.ErrRecordNotFound):
 		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "member not found")
 		return
 	case err != nil:
-		a.deps.Logger.Error("update member role failed")
-		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not update member role")
+		a.deps.Logger.Error("update member failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not update member")
 		return
 	}
 
@@ -277,8 +443,44 @@ func (a *AdminAPI) UpdateMemberRole(c *gin.Context, orgId int64, userId int64) {
 	} else {
 		c.Set(contextOrgID, uint(orgId))
 	}
-	target.Role = role
+	if newRole != nil {
+		target.RoleID = newRole.ID
+		target.Role = newRole.Name
+	}
+	if disableTo != nil {
+		target.Disabled = *disableTo
+	}
 	a.respondMember(c, target)
+}
+
+// roleIndex loads the tenant's roles keyed by id. Member responses and owner
+// checks read names and kinds from this index, never from the legacy string.
+func (a *AdminAPI) roleIndex(orgID uint) (map[uint]model.Role, error) {
+	var roles []model.Role
+	if err := store.ScopedByOrg(a.deps.DB, orgID).Find(&roles).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[uint]model.Role, len(roles))
+	for _, r := range roles {
+		out[r.ID] = r
+	}
+	return out, nil
+}
+
+// roleKindOf returns the kind of a role id, or "" when it is unknown.
+func roleKindOf(idx map[uint]model.Role, roleID uint) string {
+	if r, ok := idx[roleID]; ok {
+		return r.Kind
+	}
+	return ""
+}
+
+// roleNameOf returns the display name of a role id, or "" when it is unknown.
+func roleNameOf(idx map[uint]model.Role, roleID uint) string {
+	if r, ok := idx[roleID]; ok {
+		return r.Name
+	}
+	return ""
 }
 
 // loadMembership reads a membership by (org, user) cross-tenant, because the
@@ -315,6 +517,10 @@ func (a *AdminAPI) respondMember(c *gin.Context, m *model.Membership) {
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not load member")
 		return
 	}
+	name := m.Role
+	if role, err := a.deps.Roles.RoleByID(m.OrganizationID, m.RoleID); err == nil {
+		name = role.Name
+	}
 	c.JSON(http.StatusOK, gen.MemberResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
@@ -322,7 +528,10 @@ func (a *AdminAPI) respondMember(c *gin.Context, m *model.Membership) {
 			Id:        int64(m.ID),
 			UserId:    int64(m.UserID),
 			Email:     types.Email(user.Email),
-			Role:      gen.MemberRole(m.Role),
+			Role:      name,
+			RoleId:    int64(m.RoleID),
+			RoleName:  name,
+			Disabled:  m.Disabled,
 			CreatedAt: m.CreatedAt,
 		},
 	})

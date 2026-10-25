@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	tokenTypeAccess = "access"
-	tokenTypeCompat = "compat"
+	tokenTypeAccess    = "access"
+	tokenTypeCompat    = "compat"
+	tokenTypeChallenge = "2fa"
 )
 
 // Issuer mints access JWTs and opaque refresh tokens.
@@ -145,6 +146,45 @@ func (i *Issuer) ParseCompat(token string) (userID, orgID uint, jti string, err 
 		return 0, 0, "", fmt.Errorf("missing jti")
 	}
 	return userID, orgID, jti, nil
+}
+
+// IssueChallenge mints a short-lived token that proves password possession
+// during the second login step. It carries no refresh or session authority.
+func (i *Issuer) IssueChallenge(userID uint, ttl time.Duration) (string, error) {
+	now := time.Now()
+	claims := jwt.MapClaims{
+		"sub": fmt.Sprint(userID),
+		"typ": tokenTypeChallenge,
+		"iat": now.Unix(),
+		"exp": now.Add(ttl).Unix(),
+	}
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(i.secret)
+	if err != nil {
+		return "", fmt.Errorf("sign challenge token: %w", err)
+	}
+	return token, nil
+}
+
+// ParseChallenge validates a challenge token and returns the user id. Access
+// tokens are rejected: a challenge is only valid for the second login step.
+func (i *Issuer) ParseChallenge(token string) (uint, error) {
+	parsed, err := jwt.Parse(token, func(t *jwt.Token) (any, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method %v", t.Header["alg"])
+		}
+		return i.secret, nil
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithExpirationRequired())
+	if err != nil {
+		return 0, fmt.Errorf("parse challenge token: %w", err)
+	}
+	claims, ok := parsed.Claims.(jwt.MapClaims)
+	if !ok || !parsed.Valid {
+		return 0, fmt.Errorf("invalid challenge token")
+	}
+	if typ, _ := claims["typ"].(string); typ != tokenTypeChallenge {
+		return 0, fmt.Errorf("wrong token type %q", typ)
+	}
+	return parseUintClaim(claims["sub"])
 }
 
 // parseUintClaim converts a numeric or string claim into a uint.

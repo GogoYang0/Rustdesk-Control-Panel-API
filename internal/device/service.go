@@ -20,6 +20,10 @@ import (
 // ErrDeviceNotFound is returned when a device id does not exist in the org.
 var ErrDeviceNotFound = errors.New("device not found")
 
+// ErrDeviceDisabled reports a device an administrator stopped: logins, client
+// claims, heartbeats and ticket redemptions are refused while it is disabled.
+var ErrDeviceDisabled = errors.New("device is disabled")
+
 // ErrInvalidInput reports client input that does not satisfy the contract.
 var ErrInvalidInput = errors.New("invalid device input")
 
@@ -171,6 +175,12 @@ func (s *Service) RecordLogActivity(ctx context.Context, orgID uint, rustdeskID 
 	if err != nil {
 		return nil, err
 	}
+	if dev.Disabled {
+		// A disabled device is not resurrected by log lines either: the
+		// administrator stopped it, so replayed traffic must not make it look
+		// online until it is explicitly re-enabled.
+		return nil, nil
+	}
 	if dev.LastSeenAt != nil && now.Sub(*dev.LastSeenAt) < logHeartbeatMinInterval {
 		return &dev, nil
 	}
@@ -230,6 +240,9 @@ func (s *Service) Heartbeat(ctx context.Context, orgID, deviceID uint) (*model.D
 			return nil, ErrDeviceNotFound
 		}
 		return nil, err
+	}
+	if dev.Disabled {
+		return nil, ErrDeviceDisabled
 	}
 	return s.heartbeat(ctx, orgID, dev, "api")
 }
@@ -449,6 +462,101 @@ func (s *Service) ResetBinding(ctx context.Context, orgID, deviceID, actorID uin
 		return nil, fmt.Errorf("load device: %w", err)
 	}
 	return &stored, nil
+}
+
+// SetDisabled disables or re-enables a device. Disabling revokes every active
+// compat session of that device in the same transaction and records the change
+// with its audit entry: a stopped device must not keep a 720h token that still
+// drives it. Repeating the current state is a successful no-op with no audit
+// row. A service without a recorder refuses the mutation.
+func (s *Service) SetDisabled(ctx context.Context, orgID, deviceID, actorID uint, disabled bool) (*model.Device, error) {
+	if orgID == 0 {
+		return nil, fmt.Errorf("%w: organization is required", ErrInvalidInput)
+	}
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var dev model.Device
+		read := store.ScopedByOrg(tx, orgID)
+		if tx.Name() != "sqlite" {
+			// Serialise against a concurrent claim/login: both write the same
+			// device row, and the login path re-reads it under this lock.
+			read = read.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		if err := read.First(&dev, deviceID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrDeviceNotFound
+			}
+			return err
+		}
+		if dev.Disabled == disabled {
+			return nil
+		}
+
+		now := s.now()
+		updates := map[string]any{"disabled": disabled, "updated_at": now}
+		var revoked int64
+		if disabled {
+			updates["disabled_at"] = now
+			updates["disabled_by"] = actorID
+			n, err := revokeDeviceSessions(tx, orgID, dev.RustdeskID, now)
+			if err != nil {
+				return fmt.Errorf("revoke compat sessions: %w", err)
+			}
+			revoked = n
+		} else {
+			updates["disabled_at"] = nil
+			updates["disabled_by"] = uint(0)
+		}
+		result := store.ScopedByOrg(tx, orgID).Model(&model.Device{}).
+			Where("id = ?", dev.ID).
+			Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return ErrDeviceNotFound
+		}
+
+		action := "device.enable"
+		if disabled {
+			action = "device.disable"
+		}
+		return s.record(tx, audit.Entry{
+			OrganizationID: orgID,
+			ActorUserID:    actorID,
+			Action:         action,
+			TargetType:     "device",
+			TargetID:       fmt.Sprint(dev.ID),
+			Detail: map[string]any{
+				"rustdesk_id":      dev.RustdeskID,
+				"revoked_sessions": revoked,
+			},
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var stored model.Device
+	if err := store.ScopedByOrg(s.db.WithContext(ctx), orgID).First(&stored, deviceID).Error; err != nil {
+		return nil, fmt.Errorf("load device: %w", err)
+	}
+	return &stored, nil
+}
+
+// revokeDeviceSessions revokes the active compat sessions bound to a rustdesk
+// id inside one organization. The compat session table keys the client-visible
+// device id (a string), not the device row id, so both are passed through.
+func revokeDeviceSessions(tx *gorm.DB, orgID uint, rustdeskID string, now time.Time) (int64, error) {
+	res := store.WithoutTenantScope(tx).
+		Model(&model.CompatSession{}).
+		Where("organization_id = ? AND device_id = ? AND revoked_at IS NULL AND expires_at > ?",
+			orgID, rustdeskID, now).
+		Update("revoked_at", now)
+	if res.Error != nil {
+		return 0, res.Error
+	}
+	return res.RowsAffected, nil
 }
 
 // record writes the audit entry on the caller's transaction. A service without

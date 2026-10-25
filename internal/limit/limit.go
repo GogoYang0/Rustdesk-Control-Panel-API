@@ -118,6 +118,36 @@ func (g *LoginGuard) RecordFailure(account, ip string) {
 	w.count++
 }
 
+// Reserve spends one attempt of the account+IP budget up front and reports
+// whether the attempt may proceed. Checking and counting in one step keeps
+// concurrent requests from all passing a separate pre-check and then
+// overshooting the budget; a successful credential check calls Reset. When the
+// failure table is full, an untracked pair is refused instead of running
+// without a budget (fail closed) — evicting a live window would silently reset
+// somebody's lockout.
+func (g *LoginGuard) Reserve(account, ip string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	now := g.now()
+	g.maybeGCLocked(now)
+
+	key := account + "\x00" + ip
+	w, ok := g.failures[key]
+	if !ok || now.Sub(w.since) > failureWindowD {
+		if len(g.failures) >= maxFailures {
+			return false
+		}
+		g.failures[key] = &failureWindow{count: 1, since: now}
+		return true
+	}
+	if w.count >= failureLimit {
+		return false
+	}
+	w.count++
+	return true
+}
+
 // Reset clears the failure counter after a successful credential check.
 func (g *LoginGuard) Reset(account, ip string) {
 	g.mu.Lock()

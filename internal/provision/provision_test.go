@@ -811,6 +811,10 @@ type recordingChecker struct {
 	mu       sync.Mutex
 	calls    []string
 	failures map[string]error
+	// noRepeat panics when a pair is probed twice. The skip list must move the
+	// attempt to the next block; without this guard a regression would turn
+	// into an unbounded allocate loop (a test timeout), not a clear failure.
+	noRepeat bool
 }
 
 func newRecordingChecker() *recordingChecker {
@@ -827,6 +831,13 @@ func (r *recordingChecker) check(port uint16, network string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	key := fmt.Sprintf("%d/%s", port, network)
+	if r.noRepeat {
+		for _, call := range r.calls {
+			if call == key {
+				panic("port probed twice: a conflicted block was reselected (skip list ignored)")
+			}
+		}
+	}
 	r.calls = append(r.calls, key)
 	return r.failures[key]
 }
@@ -843,34 +854,152 @@ func (r *recordingChecker) called(port uint16, network string) bool {
 	return false
 }
 
-func TestProvision_PortConflictReleasesRow(t *testing.T) {
+// count reports how often a port/network pair was probed.
+func (r *recordingChecker) count(port uint16, network string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := fmt.Sprintf("%d/%s", port, network)
+	n := 0
+	for _, call := range r.calls {
+		if call == key {
+			n++
+		}
+	}
+	return n
+}
+
+// A block whose host ports are held by an outside process must not strand the
+// organization: the attempt releases that block and lands on the next one.
+func TestProvision_SkipsHostOccupiedBlock(t *testing.T) {
 	f := newFixture(t)
 	checker := newRecordingChecker()
+	checker.noRepeat = true
 	checker.occupy(testPortStart, "tcp")
 	f.svc.SetPortChecker(checker.check)
 	org := f.org(t, "port-conflict")
 
-	_, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
-	require.ErrorIs(t, err, provision.ErrPortConflict)
-	require.Contains(t, err.Error(), fmt.Sprintf("%d/tcp", testPortStart))
-	require.Empty(t, f.orch.Deployed, "the deploy must not run into the conflict")
+	row, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.NoError(t, err)
+	require.EqualValues(t, testPortStart+provision.PortBlockSize, row.HbbsPort,
+		"the occupied block is skipped, not retried")
+	require.Equal(t, 1, checker.count(testPortStart, "tcp"),
+		"the conflicted block is probed exactly once")
+	require.Equal(t, model.ServerGroupDeployed, row.State)
+	require.Len(t, f.orch.Deployed, 1)
 
 	var count int64
 	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Model(&model.ServerGroup{}).Count(&count).Error)
-	require.Zero(t, count, "the failed preflight releases the ports instead of reserving them")
+	require.EqualValues(t, 1, count, "only the surviving block keeps a row")
 }
 
-func TestProvision_UDPConflictOnMainPort(t *testing.T) {
+// When every block fails the preflight the organization cannot be deployed and
+// the error must name the occupied ports.
+func TestProvision_AllBlocksOccupiedReportsConflict(t *testing.T) {
 	f := newFixture(t)
 	checker := newRecordingChecker()
+	checker.occupy(testPortStart, "tcp")
+	f.svc.SetPortChecker(checker.check)
+	svc := provision.NewService(f.st.DB, provision.NewPortPool(f.st.DB, testPortStart, testPortStart+provision.PortBlockSize-1),
+		f.orch, f.recorder, zap.NewNop(), provision.Config{
+			Image:     "rustdesk/rustdesk-server:test",
+			RelayHost: "relay.test",
+			DataDir:   t.TempDir(),
+			PortStart: testPortStart,
+			PortEnd:   testPortStart + provision.PortBlockSize - 1,
+		})
+	svc.SetPortChecker(checker.check)
+	org := f.org(t, "all-occupied")
+
+	_, err := svc.ProvisionForOrg(context.Background(), org.ID)
+	require.ErrorIs(t, err, provision.ErrPortConflict)
+	require.Contains(t, err.Error(), fmt.Sprintf("%d/tcp", testPortStart))
+	require.Empty(t, f.orch.Deployed)
+
+	var count int64
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).Model(&model.ServerGroup{}).Count(&count).Error)
+	require.Zero(t, count, "every skipped block is released again")
+}
+
+// Mixed exhaustion: one block is host-conflicted, the rest of the range is
+// already allocated in the database. Freeing host ports alone could not make
+// the attempt succeed, so the error must stay the pool exhaustion instead of
+// blaming the host ports.
+func TestProvision_MixedExhaustionKeepsPoolError(t *testing.T) {
+	f := newFixture(t)
+	svc := provision.NewService(f.st.DB,
+		provision.NewPortPool(f.st.DB, testPortStart, testPortStart+2*provision.PortBlockSize-1),
+		f.orch, f.recorder, zap.NewNop(), provision.Config{
+			Image:     "rustdesk/rustdesk-server:test",
+			RelayHost: "relay.test",
+			DataDir:   t.TempDir(),
+			PortStart: testPortStart,
+			PortEnd:   testPortStart + 2*provision.PortBlockSize - 1,
+		})
+	checker := newRecordingChecker()
+	checker.noRepeat = true
+	checker.occupy(testPortStart, "tcp")
+	svc.SetPortChecker(checker.check)
+
+	holder := f.org(t, "block-holder")
+	require.NoError(t, store.ScopedByOrg(f.st.DB, holder.ID).Create(&model.ServerGroup{
+		OrganizationID: holder.ID,
+		HbbsPort:       testPortStart + provision.PortBlockSize,
+		HbbrPort:       testPortStart + provision.PortBlockSize + 3,
+		State:          model.ServerGroupDeployed,
+	}).Error)
+
+	org := f.org(t, "mixed-exhaustion")
+	_, err := svc.ProvisionForOrg(context.Background(), org.ID)
+	require.ErrorIs(t, err, provision.ErrPortPoolExhausted)
+	require.NotErrorIs(t, err, provision.ErrPortConflict,
+		"one database-held block also caused the exhaustion, so the host ports are not the only reason")
+}
+
+func TestProvision_UDPConflictSkipsBlock(t *testing.T) {
+	f := newFixture(t)
+	checker := newRecordingChecker()
+	checker.noRepeat = true
 	checker.occupy(testPortStart+1, "udp")
 	f.svc.SetPortChecker(checker.check)
 	org := f.org(t, "udp-conflict")
 
+	row, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
+	require.NoError(t, err)
+	require.EqualValues(t, testPortStart+provision.PortBlockSize, row.HbbsPort,
+		"a UDP conflict on the main port disqualifies the whole block")
+	require.Len(t, f.orch.Deployed, 1)
+}
+
+// When the release of a conflicted block fails, the row keeps reserving its
+// ports. Leaving it in "provisioning" would make every later attempt report
+// "provisioning in progress" with no deployment behind it, so the attempt must
+// park the row in the documented manual-recovery state instead.
+func TestProvision_ReleaseFailureMarksRowFailed(t *testing.T) {
+	f := newFixture(t)
+	checker := newRecordingChecker()
+	checker.occupy(testPortStart, "tcp")
+	f.svc.SetPortChecker(checker.check)
+	org := f.org(t, "release-failure")
+
+	// A database-side fault is the only way to make the row delete fail while
+	// the rest of the attempt still works.
+	require.NoError(t, f.st.DB.Exec(
+		`CREATE TRIGGER block_release BEFORE DELETE ON server_groups BEGIN SELECT RAISE(ABORT, 'blocked'); END`).Error)
+
 	_, err := f.svc.ProvisionForOrg(context.Background(), org.ID)
-	require.ErrorIs(t, err, provision.ErrPortConflict)
-	require.Contains(t, err.Error(), fmt.Sprintf("%d/udp", testPortStart+1))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "release skipped block")
 	require.Empty(t, f.orch.Deployed)
+
+	var row model.ServerGroup
+	require.NoError(t, store.ScopedByOrg(f.st.DB, org.ID).First(&row).Error)
+	require.Equal(t, model.ServerGroupFailed, row.State,
+		"a stuck allocation must surface as failed, not as an endless provision")
+	require.NotEmpty(t, row.LastError)
+
+	state, serr := f.svc.State(context.Background(), org.ID)
+	require.NoError(t, serr)
+	require.Equal(t, model.ServerGroupFailed, state.Status)
 }
 
 func TestProbePortRange_SkipsReservedBlocks(t *testing.T) {

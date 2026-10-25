@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Rustdesk-Control-Panel API
-  version: 0.7.0
+  version: 0.8.0
   contact:
     name: Rustdesk-Control-Panel
     url: https://github.com/GogoYang0/Rustdesk-Control-Panel-API
@@ -41,6 +41,13 @@ info:
     标记，部署由供应队列异步执行。状态取值为
     `disabled|pending|provisioning|deployed|failed`；`cleanup_pending` 区分
     “关闭意图已记录”与“容器清理已完成”。
+
+    0.8.0 新增**角色模型**：权限判定改为 `memberships.role_id → roles.permissions`，
+    owner/admin/member 变为内置角色行，组织可创建自定义角色并授予。
+    新增 `GET /permissions` 权限目录与 `/orgs/{orgId}/roles` 系列端点；
+    `Member` 增加 `role_id`、`role_name`、`disabled`，`role` 不再限定为内置三种
+    （自定义角色名会出现在该字段，等价于 `role_name`）。`PATCH members` 请求体
+    改为按字段的 `MemberUpdateRequest`（`role_id` / `disabled`）。
 servers:
   - url: http://localhost:8080
     description: 本地开发
@@ -146,6 +153,237 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/auth/tokens:
+    get:
+      operationId: listTokens
+      summary: 列出个人访问令牌
+      description: |
+        返回当前用户在某组织内的个人令牌（v0.8.0，不返回明文）。需要 JWT 身份
+        （个人令牌本身不能管理令牌）。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: organizationId
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 令牌列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APITokenListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      operationId: createToken
+      summary: 创建个人访问令牌
+      description: |
+        签发一个绑定到单个组织的个人令牌（v0.8.0）。明文只在创建响应中出现一次；
+        服务端只存 SHA-256。`permissions` 省略时取当前角色的全部权限，给出时必须是
+        当前角色权限的子集（不能借令牌提权）。每人每组织最多 20 个活跃令牌。
+        有效期 `expires_in_days` 1..365，默认 90。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TokenCreateRequest"
+      responses:
+        "201":
+          description: 已创建（含一次性明文）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IssuedAPITokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/auth/tokens/{tokenId}:
+    delete:
+      operationId: revokeToken
+      summary: 撤销个人访问令牌
+      description: 撤销当前用户名下的一个个人令牌（v0.8.0）；重复撤销幂等，他人令牌返回 404。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tokenId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已撤销
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/auth/2fa/setup:
+    post:
+      operationId: setupTOTP
+      summary: 初始化 TOTP 两步验证
+      description: |
+        生成新的 TOTP 秘密并返回 `otpauth://` URI（v0.8.0）。秘密在用户完成
+        `/auth/2fa/enable` 之前不生效；已启用时再次调用返回 409。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 秘密与 provisioning URI
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TOTPSetupResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/auth/2fa/enable:
+    post:
+      operationId: enableTOTP
+      summary: 启用 TOTP 两步验证
+      description: 校验首个 TOTP 码后启用（v0.8.0）。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TOTPCodeRequest"
+      responses:
+        "200":
+          description: 已启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/auth/2fa/disable:
+    post:
+      operationId: disableTOTP
+      summary: 关闭 TOTP 两步验证
+      description: 需要当前密码 + 一个有效的 TOTP 码或恢复码（v0.8.0）。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TOTPDisableRequest"
+      responses:
+        "200":
+          description: 已关闭
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/auth/2fa/recovery-codes:
+    post:
+      operationId: regenerateRecoveryCodes
+      summary: 重新生成恢复码
+      description: 需要当前密码 + 有效 TOTP 码或恢复码；返回 10 个一次性恢复码（只出现一次，v0.8.0）。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TOTPDisableRequest"
+      responses:
+        "200":
+          description: 新的恢复码
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TOTPRecoveryCodesResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/auth/2fa/verify:
+    post:
+      operationId: verifyTOTP
+      summary: 登录第二步校验
+      description: |
+        使用登录返回的短期 `challenge_token` 与 TOTP 码（或一次性恢复码）完成登录
+        （v0.8.0）。成功返回与 `/auth/login` 相同的令牌对。
+
+        挑战令牌本身不是一次性凭据：它在签发后 5 分钟内有效，期间可重复提交校验。
+        一次性的是凭据——每个 TOTP 码仅在对应时间步内可用（同一时间步不可重放），
+        每个恢复码只能成功使用一次。
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TOTPVerifyRequest"
+      responses:
+        "200":
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
 
   /api/v1/orgs:
     get:
@@ -267,11 +505,13 @@ paths:
           $ref: "#/components/responses/Conflict"
     patch:
       operationId: updateMemberRole
-      summary: 变更成员角色
+      summary: 更新成员角色或停用状态
       description: |
-        在 `admin` 与 `member` 之间变更角色（**不接受 owner**，所有权转移另行设计）。
-        只有 owner 可以调用。降级（admin → member）会在同一事务内撤销该用户在本组织的
-        活跃 compat 会话；提升不撤销。不能变更自己的角色或 owner 的角色。
+        按字段更新会籍：`role_id` 授予内置 admin/member 或自定义角色（仅 owner，
+        不能授予 owner），`disabled` 停用或恢复会籍（`member.manage`）。两个字段可
+        同时出现，需同时满足各自权限。降级角色或停用会在同一事务内撤销该用户在本
+        组织的活跃 compat 会话；恢复与提升不撤销。不能变更自己的角色或停用自己，
+        也不能停用末位 owner。
       tags:
         - orgs
       security:
@@ -294,7 +534,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/MemberRoleRequest"
+              $ref: "#/components/schemas/MemberUpdateRequest"
       responses:
         "200":
           description: 更新后的成员
@@ -312,6 +552,489 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/members/{userId}/2fa/reset:
+    post:
+      operationId: resetMemberTOTP
+      summary: 重置成员的 2FA
+      description: |
+        管理员重置成员的 TOTP 配置（v0.8.0，`member.manage`），使该用户下次登录
+        不再要求第二步，并写审计 `user.2fa.reset`。用于用户丢失设备与恢复码的场景。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已重置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/permissions:
+    get:
+      operationId: listPermissions
+      summary: 列出权限目录
+      description: |
+        返回全部权限码、说明与是否可委派。任何已认证用户可读；自定义角色只能包含
+        `delegable=true` 的权限码。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 权限目录
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PermissionListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/v1/orgs/{orgId}/roles:
+    get:
+      operationId: listRoles
+      summary: 列出组织角色
+      description: 返回内置角色与自定义角色；调用者必须是该组织成员。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 角色列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoleListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      operationId: createRole
+      summary: 创建自定义角色
+      description: |
+        仅 owner（`role.manage`）。权限码必须来自权限目录；包含不可委派权限码返回
+        403。名称不能与内置角色（owner/admin/member）或其他角色重名，重名返回 409。
+        内置角色不可创建或修改。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RoleCreateRequest"
+      responses:
+        "201":
+          description: 已创建的角色
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoleResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/roles/{roleId}:
+    get:
+      operationId: getRole
+      summary: 查询角色详情
+      description: 调用者必须是该组织成员。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: roleId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 角色详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoleResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      operationId: updateRole
+      summary: 更新自定义角色
+      description: |
+        仅 owner（`role.manage`）。内置角色返回 409；新名称与内置角色或其他角色
+        重名返回 409；包含不可委派权限码返回 403。`PUT` 是全量替换。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: roleId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RoleUpdateRequest"
+      responses:
+        "200":
+          description: 更新后的角色
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoleResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      operationId: deleteRole
+      summary: 删除自定义角色
+      description: |
+        仅 owner（`role.manage`）。内置角色返回 409；仍被成员会籍引用返回 409，
+        必须先改派该角色的成员。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: roleId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/audit-logs:
+    get:
+      operationId: listAuditLogs
+      summary: 查询审计日志
+      description: |
+        按 `created_at desc, id desc` 分页返回组织审计记录（v0.8.0，`audit.read`）。
+        过滤条件全部可选；`from` 含、`to` 不含（UTC 半开区间）。
+
+        可见范围由角色 `audit_scope` 决定：`global` 可查全组织；`individual` 只返回
+        自己是操作者（`actor_user_id`）或用户类目标（`target_type=user` 且
+        `target_id` 为自己）的条目。列表轮询不产生新的审计记录。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: action
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 128
+        - name: actorUserId
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: targetType
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: targetId
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: 含下界（UTC）
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: 不含上界（UTC）
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: 审计记录页
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditLogListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/orgs/{orgId}/audit-logs/export:
+    get:
+      operationId: exportAuditLogs
+      summary: 导出审计日志 CSV
+      description: |
+        按与查询相同的过滤条件导出 CSV（v0.8.0，`audit.read`），单次最多 1000 行，
+        超出返回 400 并提示收窄过滤。可见范围与查询一致。CSV 列：
+        `created_at, actor_user_id, actor_email, action, target_type, target_id, detail`；
+        以 `= + - @` 开头的单元格会加 `'` 前缀防止公式注入。导出动作写审计
+        `audit.export`（含过滤条件与行数）。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: action
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 128
+        - name: actorUserId
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: targetType
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: targetId
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: CSV 文件
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+          content:
+            text/csv:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/orgs/{orgId}/audit-retention:
+    get:
+      operationId: getAuditRetention
+      summary: 查询审计保留期
+      description: |
+        返回组织的审计保留天数（v0.8.0，仅 owner `org.admin`）。0 = 永久保留。
+        响应含最近一次归档的状态。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 保留期
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditRetentionResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      operationId: setAuditRetention
+      summary: 设置审计保留期
+      description: |
+        设置组织的审计保留天数（v0.8.0，仅 owner `org.admin`）；0 = 永久保留，
+        1..3650 为正的保留窗口。到期记录由后台任务先归档到本地文件校验后再删除；
+        归档失败则该组织本轮不删除。设置动作写审计 `organization.audit_retention.set`。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuditRetentionRequest"
+      responses:
+        "200":
+          description: 更新后的保留期
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditRetentionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /api/v1/orgs/{orgId}/provisioning:
     get:
@@ -778,6 +1501,300 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v1/orgs/{orgId}/address-books/{bookId}/grants:
+    get:
+      operationId: listAddressBookGrants
+      summary: 列出共享地址簿授权
+      description: |
+        列出共享簿的授权（v0.8.0）。需要 `full` 访问：`addressbook.write` 权限或
+        该簿的 `full` 授权。个人簿没有授权概念，返回 400。
+      tags:
+        - addressbooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: bookId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 授权列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddressBookGrantListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      operationId: createAddressBookGrant
+      summary: 新增或更新共享地址簿授权
+      description: |
+        为共享簿授予按用户或 `everyone` 的访问级别（v0.8.0）。需要 `full` 访问。
+        同一主体重复授权时改为更新其访问级别（201 创建 / 200 更新）。用户主体必须
+        是本组织成员。`user` 授权的优先级高于 `everyone`。
+      tags:
+        - addressbooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: bookId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddressBookGrantRequest"
+      responses:
+        "200":
+          description: 已更新授权
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddressBookGrantResponse"
+        "201":
+          description: 已创建授权
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddressBookGrantResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/address-books/{bookId}/grants/{grantId}:
+    delete:
+      operationId: deleteAddressBookGrant
+      summary: 撤销共享地址簿授权
+      description: 需要 `full` 访问（v0.8.0）。
+      tags:
+        - addressbooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: bookId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: grantId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已撤销
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/address-books/{bookId}/peers/{peerId}:
+    delete:
+      operationId: deleteAddressBookPeer
+      summary: 删除地址簿条目（进回收站）
+      description: |
+        软删除一个 peer（v0.8.0，需 `write` 及以上：`addressbook.write` 或该簿 write/full
+        授权）。条目进入回收站保留 30 天，可恢复；不会硬删除。
+      tags:
+        - addressbooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: bookId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: peerId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 已进入回收站
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/address-books/{bookId}/recycle-bin:
+    get:
+      operationId: listAddressBookRecycleBin
+      summary: 回收站列表
+      description: 返回该簿已软删除的 peer（v0.8.0，需 `write` 及以上），按删除时间倒序。
+      tags:
+        - addressbooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: bookId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 回收站条目
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AddressBookRecycleBinResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/address-books/{bookId}/recycle-bin/{peerId}/restore:
+    post:
+      operationId: restoreAddressBookPeer
+      summary: 从回收站恢复条目
+      description: 恢复一个软删除的 peer（v0.8.0，需 `write` 及以上），并 bump revision。
+      tags:
+        - addressbooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: bookId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: peerId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 已恢复
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/address-books/{bookId}/recycle-bin/{peerId}:
+    delete:
+      operationId: purgeAddressBookPeer
+      summary: 永久删除回收站条目
+      description: 永久删除一个软删除的 peer（v0.8.0，需 `full` 访问）。不可恢复。
+      tags:
+        - addressbooks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: bookId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: peerId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 已永久删除
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/v1/orgs/{orgId}/address-books/{bookId}/tags:
     put:
       operationId: replaceAddressBookTags
@@ -939,7 +1956,9 @@ paths:
     post:
       operationId: deviceHeartbeat
       summary: 设备心跳
-      description: 上报设备在线心跳，刷新 last_seen_at。需要 device.write 权限。
+      description: |
+        上报设备在线心跳，刷新 last_seen_at。需要 device.write 权限。
+        设备已停用时返回 409（停用设备的活跃提示不再可信，也不会刷新时间）。
       tags:
         - devices
       security:
@@ -970,6 +1989,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
 
   /api/v1/orgs/{orgId}/devices/{deviceId}/rebind:
     post:
@@ -1008,6 +2029,54 @@ paths:
       responses:
         "200":
           description: 重置后的设备（`bound=false`）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/devices/{deviceId}:
+    patch:
+      operationId: setDeviceDisabled
+      summary: 停用或恢复设备
+      description: |
+        停用设备（v0.8.0，`device.write`）：拒绝该设备的新客户端认领、compat 登录、
+        心跳与系统信息上报，并在同一事务撤销该设备在本组织的活跃 compat 会话；
+        票据兑换被拒绝（409）。恢复后设备重新可被认领与连接。设备历史（心跳、会话、
+        审计）保留。重复设置同一状态为 200 no-op。设备不属于本组织或不存在返回 404。
+      tags:
+        - devices
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: deviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceDisableRequest"
+      responses:
+        "200":
+          description: 更新后的设备
           content:
             application/json:
               schema:
@@ -1836,6 +2905,7 @@ components:
         - internal
         - email_not_verified
         - approval_required
+        - two_factor_required
 
     ErrorResponse:
       type: object
@@ -1855,6 +2925,8 @@ components:
           description: |
             错误上下文；多数错误为 null。`code=approval_required` 时带
             `approval_id`（int64，待审批请求 id），客户端据此跳转审批中心。
+            `code=two_factor_required` 时带 `challenge_token`（短期挑战令牌），
+            客户端用它调用 `POST /auth/2fa/verify` 完成第二步登录。
 
     LoginRequest:
       type: object
@@ -1909,6 +2981,205 @@ components:
           type: string
         data:
           $ref: "#/components/schemas/TokenPair"
+
+    APIToken:
+      type: object
+      required:
+        - id
+        - organization_id
+        - name
+        - token_prefix
+        - permissions
+        - expires_at
+        - created_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        organization_id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        token_prefix:
+          type: string
+          description: 令牌前 8 个字符，用于列表辨识（不足以重放）
+        permissions:
+          type: array
+          items:
+            type: string
+          description: 申请时的权限子集；有效权限还要与该用户当前角色取交集
+        expires_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        revoked_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    IssuedAPIToken:
+      type: object
+      required:
+        - token
+        - plaintext
+      properties:
+        token:
+          $ref: "#/components/schemas/APIToken"
+        plaintext:
+          type: string
+          description: 明文令牌，只在本响应出现一次，服务端不保存
+
+    APITokenListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/APIToken"
+
+    IssuedAPITokenResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/IssuedAPIToken"
+
+    TokenCreateRequest:
+      type: object
+      required:
+        - name
+        - organization_id
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: 用户可读标签
+        organization_id:
+          type: integer
+          format: int64
+          description: 令牌绑定的组织；请求必须来自该组织的有效会籍
+        permissions:
+          type: array
+          items:
+            type: string
+          description: 省略时取当前角色的全部权限；给出时必须是当前角色权限的子集
+        expires_in_days:
+          type: integer
+          minimum: 1
+          maximum: 365
+          default: 90
+
+    TOTPSetup:
+      type: object
+      required:
+        - secret
+        - otpauth_uri
+      properties:
+        secret:
+          type: string
+          description: Base32 编码的 TOTP 秘密（尚未启用）
+        otpauth_uri:
+          type: string
+          description: 供验证器 App 扫码/导入的 `otpauth://totp/...` URI
+
+    TOTPSetupResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/TOTPSetup"
+
+    TOTPCodeRequest:
+      type: object
+      required:
+        - code
+      properties:
+        code:
+          type: string
+          minLength: 6
+          maxLength: 10
+          description: 6 位 TOTP 码或恢复码
+
+    TOTPDisableRequest:
+      type: object
+      required:
+        - password
+        - code
+      properties:
+        password:
+          type: string
+        code:
+          type: string
+          description: TOTP 码或一次性恢复码
+
+    TOTPRecoveryCodes:
+      type: object
+      required:
+        - codes
+      properties:
+        codes:
+          type: array
+          items:
+            type: string
+          description: 10 个一次性恢复码，只在本响应出现一次
+
+    TOTPRecoveryCodesResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/TOTPRecoveryCodes"
+
+    TOTPVerifyRequest:
+      type: object
+      required:
+        - challenge_token
+        - code
+      properties:
+        challenge_token:
+          type: string
+        code:
+          type: string
+          description: TOTP 码或一次性恢复码
 
     Org:
       type: object
@@ -1974,6 +3245,9 @@ components:
         - user_id
         - email
         - role
+        - role_id
+        - role_name
+        - disabled
         - created_at
       properties:
         id:
@@ -1987,10 +3261,17 @@ components:
           format: email
         role:
           type: string
-          enum:
-            - owner
-            - admin
-            - member
+          description: 兼容字段，等同于 `role_name`；自定义角色名不限于内置三种
+        role_id:
+          type: integer
+          format: int64
+          description: 会籍引用的角色 id（`memberships.role_id`）
+        role_name:
+          type: string
+          description: 角色展示名（内置 owner/admin/member 或自定义名称）
+        disabled:
+          type: boolean
+          description: 会籍是否已停用；停用后不能登录或访问该组织
         created_at:
           type: string
           format: date-time
@@ -2025,17 +3306,23 @@ components:
           items:
             $ref: "#/components/schemas/Member"
 
-    MemberRoleRequest:
+    MemberUpdateRequest:
       type: object
-      required:
-        - role
+      minProperties: 1
+      description: |
+        按字段更新会籍，至少给出 `role_id` 或 `disabled` 之一。
+        - `role_id`：授予本组织内的内置 admin/member 或自定义角色（不能授予 owner）；
+          需要 `org.admin`（仅 owner）。
+        - `disabled`：停用或恢复会籍；需要 `member.manage`。不能停用自己或末位 owner；
+          停用会在同一事务内撤销该用户在本组织的活跃 compat 会话。
       properties:
-        role:
-          type: string
-          description: 只接受 admin 或 member；所有权转移不在本端点范围
-          enum:
-            - admin
-            - member
+        role_id:
+          type: integer
+          format: int64
+          description: 目标角色 id；owner 角色不可通过本端点授予
+        disabled:
+          type: boolean
+          description: true 停用，false 恢复
 
     MemberMutation:
       type: object
@@ -2060,6 +3347,272 @@ components:
           type: string
         data:
           $ref: "#/components/schemas/MemberMutation"
+
+    Permission:
+      type: object
+      required:
+        - code
+        - description
+        - delegable
+      properties:
+        code:
+          type: string
+          description: 权限码，如 `member.manage`
+        description:
+          type: string
+        delegable:
+          type: boolean
+          description: 自定义角色是否可以包含该权限码；false 为 owner 专属
+
+    PermissionListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Permission"
+
+    RoleAuditScope:
+      type: string
+      description: |
+        审计可见范围：`global` 可查全组织审计；`individual` 只查自己作为操作者
+        或目标（用户类目标）的条目。仅对持有 `audit.read` 的角色有意义。
+      enum:
+        - global
+        - individual
+
+    RoleKind:
+      type: string
+      description: |
+        - owner/admin/member：内置角色，权限集固定，不可修改或删除
+        - custom：组织自建角色，权限只能是目录中 `delegable=true` 的子集
+      enum:
+        - owner
+        - admin
+        - member
+        - custom
+
+    Role:
+      type: object
+      required:
+        - id
+        - name
+        - kind
+        - permissions
+        - audit_scope
+        - builtin
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        kind:
+          $ref: "#/components/schemas/RoleKind"
+        permissions:
+          type: array
+          items:
+            type: string
+          description: 角色持有的权限码集合
+        audit_scope:
+          $ref: "#/components/schemas/RoleAuditScope"
+        builtin:
+          type: boolean
+          description: true 表示内置角色（不可编辑/删除/授予 owner）
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    RoleCreateRequest:
+      type: object
+      required:
+        - name
+        - permissions
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: 自定义角色名；不能与内置角色或已有角色重名
+        permissions:
+          type: array
+          items:
+            type: string
+          description: 权限码子集；必须全部来自权限目录且 `delegable=true`
+        audit_scope:
+          $ref: "#/components/schemas/RoleAuditScope"
+          description: 省略时默认 `individual`
+
+    RoleUpdateRequest:
+      type: object
+      required:
+        - name
+        - permissions
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        permissions:
+          type: array
+          items:
+            type: string
+        audit_scope:
+          $ref: "#/components/schemas/RoleAuditScope"
+
+    RoleResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/Role"
+
+    RoleListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Role"
+
+    AuditLog:
+      type: object
+      required:
+        - id
+        - seq
+        - actor_user_id
+        - action
+        - target_type
+        - target_id
+        - created_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        seq:
+          type: integer
+          format: int64
+          description: 组织内连续序号
+        actor_user_id:
+          type: integer
+          format: int64
+          description: 操作者；0 表示系统动作
+        action:
+          type: string
+        target_type:
+          type: string
+        target_id:
+          type: string
+        detail:
+          description: |
+            解析后的 `detail` JSON 对象；若历史记录不是合法 JSON，则返回原始字符串
+            （不丢数据）。查询与导出本身不修改审计内容。
+        created_at:
+          type: string
+          format: date-time
+
+    AuditLogPage:
+      type: object
+      required:
+        - items
+        - page
+        - page_size
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditLog"
+        page:
+          type: integer
+        page_size:
+          type: integer
+          format: int64
+        total:
+          type: integer
+          format: int64
+
+    AuditLogListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/AuditLogPage"
+
+    AuditRetention:
+      type: object
+      required:
+        - audit_retention_days
+      properties:
+        audit_retention_days:
+          type: integer
+          description: 0 = 永久保留；正值为保留天数
+        last_archive:
+          description: |
+            最近一次成功归档的摘要（`at`、`rows`、`path`）；从未归档时为 null。
+          type:
+            - object
+            - "null"
+          additionalProperties: true
+
+    AuditRetentionResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/AuditRetention"
+
+    AuditRetentionRequest:
+      type: object
+      required:
+        - days
+      properties:
+        days:
+          type: integer
+          minimum: 0
+          maximum: 3650
 
     ProvisioningUpdateRequest:
       type: object
@@ -2183,6 +3736,7 @@ components:
         - status
         - last_seen_at
         - bound
+        - disabled
       properties:
         id:
           type: integer
@@ -2206,6 +3760,9 @@ components:
         bound:
           type: boolean
           description: 是否已绑定某个客户端实例（重置绑定后为 false）
+        disabled:
+          type: boolean
+          description: 设备是否已被停用（停用期间拒绝认领、心跳与票据兑换）
 
     DeviceCreateRequest:
       type: object
@@ -2246,6 +3803,15 @@ components:
           description: 重置绑定的理由，随审计留存
           minLength: 1
           maxLength: 500
+
+    DeviceDisableRequest:
+      type: object
+      required:
+        - disabled
+      properties:
+        disabled:
+          type: boolean
+          description: true 停用设备，false 恢复
 
     DevicePage:
       type: object
@@ -2380,6 +3946,145 @@ components:
           minimum: 0
           maximum: 4294967295
           description: RGB 颜色值（同 RustDesk 客户端 tag_colors 语义）
+
+    AddressBookRecycleBinItem:
+      type: object
+      required:
+        - peer_id
+        - deleted_at
+        - deleted_by
+      properties:
+        peer_id:
+          type: string
+        alias:
+          type: string
+        username:
+          type: string
+        hostname:
+          type: string
+        platform:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        deleted_at:
+          type: string
+          format: date-time
+          description: 删除时间；30 天后由后台清扫永久删除
+        deleted_by:
+          type: integer
+          format: int64
+          description: 删除人；0 表示系统清扫
+
+    AddressBookRecycleBinResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AddressBookRecycleBinItem"
+
+    AddressBookGrantKind:
+      type: string
+      enum:
+        - user
+        - everyone
+
+    AddressBookGrantAccess:
+      type: string
+      description: |
+        - read：只读（当前共享簿默认成员可读，显式 everyone/user 授权可覆盖）
+        - write：可替换 peers/tags
+        - full：可改名、删除簿、管理授权
+      enum:
+        - read
+        - write
+        - full
+
+    AddressBookGrant:
+      type: object
+      required:
+        - id
+        - subject_kind
+        - access
+        - created_by
+        - created_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        subject_kind:
+          $ref: "#/components/schemas/AddressBookGrantKind"
+        subject_user_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: "`user` 主体为用户 id；`everyone` 为 null"
+        access:
+          $ref: "#/components/schemas/AddressBookGrantAccess"
+        created_by:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+
+    AddressBookGrantRequest:
+      type: object
+      required:
+        - subject_kind
+        - access
+      properties:
+        subject_kind:
+          $ref: "#/components/schemas/AddressBookGrantKind"
+        subject_user_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: "`subject_kind=user` 时必填且必须是本组织成员；`everyone` 时必须省略或为 null"
+        access:
+          $ref: "#/components/schemas/AddressBookGrantAccess"
+
+    AddressBookGrantResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/AddressBookGrant"
+
+    AddressBookGrantListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AddressBookGrant"
 
     AddressBook:
       type: object

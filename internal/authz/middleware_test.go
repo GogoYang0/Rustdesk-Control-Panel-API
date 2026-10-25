@@ -16,6 +16,7 @@ func routerWithRole(role string) *gin.Engine {
 	r := gin.New()
 	r.GET("/devices", func(c *gin.Context) {
 		authz.SetOrgRole(c, role)
+		authz.SetOrgPermissions(c, authz.BuiltinPermissions(role))
 	}, authz.RequirePerm(authz.PermDeviceWrite), func(c *gin.Context) {
 		c.Status(http.StatusOK)
 	})

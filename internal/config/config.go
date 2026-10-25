@@ -20,6 +20,14 @@ type Config struct {
 	Compat     CompatConfig     `mapstructure:"compat"`
 	Logcollect LogcollectConfig `mapstructure:"logcollect"`
 	Session    SessionConfig    `mapstructure:"session"`
+	Audit      AuditConfig      `mapstructure:"audit"`
+}
+
+// AuditConfig tunes audit-log retention archiving.
+type AuditConfig struct {
+	// ArchiveDir receives per-organization JSONL archives before the source
+	// rows are purged. It must live on storage included in operator backups.
+	ArchiveDir string `mapstructure:"archiveDir"`
 }
 
 // SessionConfig tunes the session-governance background sweeps.
@@ -149,6 +157,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("mail.smtp.port", 587)
 	v.SetDefault("compat.accessTTL", "720h")
 	v.SetDefault("session.idleTimeout", "10m")
+	v.SetDefault("audit.archiveDir", "./data/audit-archive")
 	// Log collection is opt-in: without rules nothing can be parsed.
 	v.SetDefault("logcollect.enabled", false)
 	v.SetDefault("logcollect.containerprefix", "panel-org")

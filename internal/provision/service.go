@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -403,6 +404,47 @@ func (s *Service) ProvisionQueued(ctx context.Context, orgID uint) (*model.Serve
 	return s.provision(ctx, orgID)
 }
 
+// allocateChecked reserves a block whose host ports are actually free. A block
+// held by a process outside the panel is released and skipped, so one occupied
+// block cannot strand the organization while later blocks are still available;
+// ErrPortConflict is reported only when the whole range fails the preflight.
+// The returned strings name the occupied ports. Callers must hold the
+// organization lock so a released block cannot be reselected concurrently.
+func (s *Service) allocateChecked(orgID uint) (*model.ServerGroup, []string, error) {
+	skip := map[uint16]bool{}
+	var occupied []string
+	for {
+		row, err := s.pool.allocate(orgID, func(base uint16) bool { return skip[base] })
+		if err != nil {
+			// Exhaustion means the preflight walked every remaining block. It is
+			// a host-port conflict only when every block in the range was skipped
+			// after the checker rejected it: if any block was also held by a
+			// database allocation, freeing host ports alone could not make the
+			// attempt succeed, so the pool error is the honest one.
+			if len(occupied) > 0 && len(occupied) == s.pool.blockCount() &&
+				errors.Is(err, ErrPortPoolExhausted) {
+				return nil, occupied, fmt.Errorf("provision: %w: %s (%v)",
+					ErrPortConflict, strings.Join(occupied, ", "), err)
+			}
+			return nil, occupied, err
+		}
+		if conflict := s.checkBlock(row.HbbsPort); conflict != nil {
+			if rerr := s.releasePending(row); rerr != nil {
+				// The row still occupies the block. Leaving it in "provisioning"
+				// would make every later attempt report "provisioning in progress"
+				// with no deployment behind it, so park it in the documented
+				// manual-recovery state before surfacing the error.
+				s.markFailed(row, rerr)
+				return nil, occupied, fmt.Errorf("provision: release skipped block %d: %w", row.HbbsPort, rerr)
+			}
+			skip[row.HbbsPort] = true
+			occupied = append(occupied, conflict.String())
+			continue
+		}
+		return row, occupied, nil
+	}
+}
+
 // setProvisioningDisabled flips the deprovision marker. The write is detached
 // from the caller context: bookkeeping must not depend on the caller still being
 // around.
@@ -420,8 +462,10 @@ func (s *Service) setProvisioningDisabled(orgID uint, disabled bool) error {
 func (s *Service) provision(ctx context.Context, orgID uint) (*model.ServerGroup, error) {
 	// Allocation shares the organization lock with the switch: a disable either
 	// sees the row and removes it, or commits first and makes this check fail.
+	// The lock also covers the host-port preflight, so a released block cannot
+	// be handed to a concurrent attempt of the same organization.
 	unlock := s.lockOrg(orgID)
-	row, err := s.pool.Allocate(orgID)
+	row, occupied, err := s.allocateChecked(orgID)
 	if err == nil {
 		var org model.Organization
 		if lerr := s.db.Select("id", "provisioning_disabled").First(&org, orgID).Error; lerr != nil {
@@ -436,14 +480,13 @@ func (s *Service) provision(ctx context.Context, orgID uint) (*model.ServerGroup
 	if err != nil {
 		return nil, err
 	}
-
-	// Ports are a host resource shared with everything else on the machine.
-	// Failing here keeps the rollback path out of the picture (no container
-	// exists yet) and names the occupied port instead of leaving an opaque
-	// docker run error; the released block is retried by the reconciler.
-	if conflict := s.checkBlock(row.HbbsPort); conflict != nil {
-		s.release(row)
-		return nil, fmt.Errorf("provision: %w: %s", ErrPortConflict, conflict.String())
+	if len(occupied) > 0 {
+		// Deployment landed, but earlier blocks were unusable: name the ports so
+		// the startup probe's warning has a per-attempt counterpart.
+		s.logger.Warn("provisioning skipped host-occupied port blocks",
+			zap.Uint("org_id", orgID),
+			zap.Uint16("hbbs_port", row.HbbsPort),
+			zap.Strings("occupied", occupied))
 	}
 
 	keys, err := GenerateKeyPair()
@@ -736,10 +779,16 @@ func (s *Service) markFailed(row *model.ServerGroup, cause error) {
 	}
 }
 
+// releasePending deletes the pending row and returns the delete error, for
+// callers that must not continue when the ports are still reserved.
+func (s *Service) releasePending(row *model.ServerGroup) error {
+	return store.ScopedByOrg(s.db, row.OrganizationID).
+		Delete(&model.ServerGroup{}, row.ID).Error
+}
+
 // release deletes the pending row so the ports become available again.
 func (s *Service) release(row *model.ServerGroup) {
-	if err := store.ScopedByOrg(s.db, row.OrganizationID).
-		Delete(&model.ServerGroup{}, row.ID).Error; err != nil {
+	if err := s.releasePending(row); err != nil {
 		s.logger.Error("release ports failed",
 			zap.Uint("org_id", row.OrganizationID), zap.Error(err))
 	}

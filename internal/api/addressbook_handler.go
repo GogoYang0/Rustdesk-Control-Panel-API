@@ -13,6 +13,8 @@ import (
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/gen"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/addressbook"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 )
 
@@ -103,19 +105,25 @@ func (a *AdminAPI) CreateAddressBook(c *gin.Context, orgId int64) {
 		return
 	}
 
-	role := ""
 	if req.Scope == gen.AddressBookCreateRequestScopeShared {
-		m, member := a.membershipFor(c, uid, uint(orgId))
-		if !member {
+		if _, member := a.membershipFor(c, uid, uint(orgId)); !member {
 			return
 		}
-		role = m.Role
-		if !canWriteShared(role) {
+		perms, _ := authz.OrgPermissions(c)
+		if !a.requireBookWriteScope(c, perms) {
+			return
+		}
+		if !canWriteShared(perms) {
 			abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "insufficient permissions")
 			return
 		}
-	} else if _, member := a.membershipFor(c, uid, uint(orgId)); !member {
-		return
+	} else {
+		if _, member := a.membershipFor(c, uid, uint(orgId)); !member {
+			return
+		}
+		if perms, _ := authz.OrgPermissions(c); !a.requireBookWriteScope(c, perms) {
+			return
+		}
 	}
 
 	book, err := a.books.Create(uid, uint(orgId), string(req.Scope), req.Name)
@@ -180,6 +188,9 @@ func (a *AdminAPI) UpdateAddressBook(c *gin.Context, orgId int64, bookId int64) 
 	if !ok {
 		return
 	}
+	if !a.requireBookWriteScope(c, role) {
+		return
+	}
 	book, err := a.books.Update(uid, role, uint(orgId), uint(bookId), req.Name)
 	if err != nil && mapBookError(c, err) {
 		return
@@ -200,6 +211,9 @@ func (a *AdminAPI) DeleteAddressBook(c *gin.Context, orgId int64, bookId int64) 
 	}
 	role, ok := a.roleForBook(c, uid, orgId, bookId)
 	if !ok {
+		return
+	}
+	if !a.requireBookWriteScope(c, role) {
 		return
 	}
 	book, err := a.books.Delete(uid, role, uint(orgId), uint(bookId))
@@ -303,6 +317,9 @@ func (a *AdminAPI) ReplaceAddressBookPeers(c *gin.Context, orgId int64, bookId i
 	if !ok {
 		return
 	}
+	if !a.requireBookWriteScope(c, role) {
+		return
+	}
 	if !validatePeers(req.Peers) {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest,
 			"peer_id must be non-empty, at most 64 characters and unique within the request")
@@ -349,6 +366,9 @@ func (a *AdminAPI) ReplaceAddressBookTags(c *gin.Context, orgId int64, bookId in
 	if !ok {
 		return
 	}
+	if !a.requireBookWriteScope(c, role) {
+		return
+	}
 	if !validateTags(req.Tags) {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest,
 			"tag name must be non-empty, at most 64 characters and unique within the request")
@@ -376,6 +396,272 @@ func (a *AdminAPI) ReplaceAddressBookTags(c *gin.Context, orgId int64, bookId in
 	respondBook(c, http.StatusOK, book)
 }
 
+// ListAddressBookGrants lists the grants of a shared book. Grant management
+// requires full access.
+func (a *AdminAPI) ListAddressBookGrants(c *gin.Context, orgId int64, bookId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	perms, ok := a.roleForBook(c, uid, orgId, bookId)
+	if !ok {
+		return
+	}
+	grants, err := a.books.ListGrants(uid, uint(orgId), uint(bookId), perms)
+	if err != nil && mapGrantError(c, err) {
+		return
+	}
+	if err != nil {
+		a.deps.Logger.Error("list address book grants failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not list grants")
+		return
+	}
+	out := make([]gen.AddressBookGrant, 0, len(grants))
+	for i := range grants {
+		out = append(out, grantToGen(&grants[i]))
+	}
+	c.JSON(http.StatusOK, gen.AddressBookGrantListResponse{Code: gen.ErrorCodeOk, Message: "ok", Data: out})
+}
+
+// CreateAddressBookGrant creates or updates one subject's grant.
+func (a *AdminAPI) CreateAddressBookGrant(c *gin.Context, orgId int64, bookId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	var req gen.AddressBookGrantRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid grant payload")
+		return
+	}
+	var subjectUserID uint
+	if req.SubjectUserId != nil {
+		if *req.SubjectUserId <= 0 {
+			abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "subject_user_id must be positive")
+			return
+		}
+		subjectUserID = uint(*req.SubjectUserId)
+	}
+	perms, ok := a.roleForBook(c, uid, orgId, bookId)
+	if !ok {
+		return
+	}
+	if !a.requireBookWriteScope(c, perms) {
+		return
+	}
+
+	grant, created, err := a.books.UpsertGrant(uid, uint(orgId), uint(bookId), subjectUserID,
+		string(req.SubjectKind), string(req.Access), perms)
+	if err != nil && mapGrantError(c, err) {
+		return
+	}
+	if err != nil {
+		a.deps.Logger.Error("create address book grant failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not update grant")
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	c.JSON(status, gen.AddressBookGrantResponse{Code: gen.ErrorCodeOk, Message: "ok", Data: grantToGen(grant)})
+}
+
+// DeleteAddressBookGrant revokes one grant of a shared book.
+func (a *AdminAPI) DeleteAddressBookGrant(c *gin.Context, orgId int64, bookId int64, grantId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if grantId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid grant id")
+		return
+	}
+	perms, ok := a.roleForBook(c, uid, orgId, bookId)
+	if !ok {
+		return
+	}
+	if !a.requireBookWriteScope(c, perms) {
+		return
+	}
+	if err := a.books.DeleteGrant(uid, uint(orgId), uint(bookId), uint(grantId), perms); err != nil {
+		if mapGrantError(c, err) {
+			return
+		}
+		a.deps.Logger.Error("delete address book grant failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not delete grant")
+		return
+	}
+	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
+}
+
+// mapGrantError translates grant-specific service errors; shared cases defer to
+// mapBookError.
+func mapGrantError(c *gin.Context, err error) bool {
+	switch {
+	case errors.Is(err, addressbook.ErrInvalidGrant):
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
+	case errors.Is(err, addressbook.ErrGrantNotShared):
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
+	case errors.Is(err, addressbook.ErrSubjectNotMember):
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
+	case errors.Is(err, addressbook.ErrGrantNotFound):
+		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "grant not found")
+	default:
+		return mapBookError(c, err)
+	}
+	return true
+}
+
+// grantToGen maps a grant row onto the contract shape. subject_user_id is
+// omitted for the everyone grant.
+func grantToGen(g *model.AddressBookGrant) gen.AddressBookGrant {
+	out := gen.AddressBookGrant{
+		Id:          int64(g.ID),
+		SubjectKind: gen.AddressBookGrantKind(g.SubjectKind),
+		Access:      gen.AddressBookGrantAccess(g.Access),
+		CreatedBy:   int64(g.CreatedBy),
+		CreatedAt:   g.CreatedAt,
+	}
+	if g.SubjectKind == model.GrantSubjectUser {
+		id := int64(g.SubjectUserID)
+		out.SubjectUserId = &id
+	}
+	return out
+}
+
+// DeleteAddressBookPeer moves one peer to the recycle bin.
+func (a *AdminAPI) DeleteAddressBookPeer(c *gin.Context, orgId int64, bookId int64, peerId string) {
+	uid, perms, ok := a.peerBookContext(c, orgId, bookId, peerId)
+	if !ok {
+		return
+	}
+	if !a.requireBookWriteScope(c, perms) {
+		return
+	}
+	if err := a.books.DeletePeer(uid, perms, uint(orgId), uint(bookId), peerId); err != nil {
+		a.writePeerError(c, err, "delete address book peer failed")
+		return
+	}
+	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
+}
+
+// ListAddressBookRecycleBin lists the soft-deleted peers of a book.
+func (a *AdminAPI) ListAddressBookRecycleBin(c *gin.Context, orgId int64, bookId int64) {
+	uid, perms, ok := a.peerBookContext(c, orgId, bookId, "")
+	if !ok {
+		return
+	}
+	rows, err := a.books.ListRecycleBin(uid, perms, uint(orgId), uint(bookId))
+	if err != nil {
+		a.writePeerError(c, err, "list recycle bin failed")
+		return
+	}
+	out := make([]gen.AddressBookRecycleBinItem, 0, len(rows))
+	for i := range rows {
+		row := &rows[i]
+		item := gen.AddressBookRecycleBinItem{
+			PeerId:    row.PeerID,
+			DeletedAt: *row.DeletedAt,
+			DeletedBy: int64(row.DeletedBy),
+		}
+		if row.Alias != "" {
+			v := row.Alias
+			item.Alias = &v
+		}
+		if row.Username != "" {
+			v := row.Username
+			item.Username = &v
+		}
+		if row.Hostname != "" {
+			v := row.Hostname
+			item.Hostname = &v
+		}
+		if row.Platform != "" {
+			v := row.Platform
+			item.Platform = &v
+		}
+		if tags, derr := addressbook.DecodeTagsJSON(row.TagsJSON); derr == nil && len(tags) > 0 {
+			item.Tags = &tags
+		}
+		out = append(out, item)
+	}
+	c.JSON(http.StatusOK, gen.AddressBookRecycleBinResponse{Code: gen.ErrorCodeOk, Message: "ok", Data: out})
+}
+
+// RestoreAddressBookPeer returns one recycled peer to the live list.
+func (a *AdminAPI) RestoreAddressBookPeer(c *gin.Context, orgId int64, bookId int64, peerId string) {
+	uid, perms, ok := a.peerBookContext(c, orgId, bookId, peerId)
+	if !ok {
+		return
+	}
+	if !a.requireBookWriteScope(c, perms) {
+		return
+	}
+	if err := a.books.RestorePeer(uid, perms, uint(orgId), uint(bookId), peerId); err != nil {
+		a.writePeerError(c, err, "restore address book peer failed")
+		return
+	}
+	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
+}
+
+// PurgeAddressBookPeer permanently deletes one recycled peer.
+func (a *AdminAPI) PurgeAddressBookPeer(c *gin.Context, orgId int64, bookId int64, peerId string) {
+	uid, perms, ok := a.peerBookContext(c, orgId, bookId, peerId)
+	if !ok {
+		return
+	}
+	if !a.requireBookWriteScope(c, perms) {
+		return
+	}
+	if err := a.books.PurgePeer(uid, perms, uint(orgId), uint(bookId), peerId); err != nil {
+		a.writePeerError(c, err, "purge address book peer failed")
+		return
+	}
+	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
+}
+
+// peerBookContext validates ids, checks membership and returns the caller's
+// permission set. A non-empty peerId is validated against the contract bound.
+func (a *AdminAPI) peerBookContext(c *gin.Context, orgId, bookId int64, peerId string) (uint, []string, bool) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return 0, nil, false
+	}
+	if orgId <= 0 || bookId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid id")
+		return 0, nil, false
+	}
+	if peerId != "" && tooManyRunes(peerId, 64) {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "peer id is too long")
+		return 0, nil, false
+	}
+	perms, ok := a.roleForBook(c, uid, orgId, bookId)
+	if !ok {
+		return 0, nil, false
+	}
+	return uid, perms, true
+}
+
+// writePeerError maps recycle-bin errors onto the standard envelope.
+func (a *AdminAPI) writePeerError(c *gin.Context, err error, logMsg string) {
+	if errors.Is(err, addressbook.ErrPeerNotFound) {
+		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "address book peer not found")
+		return
+	}
+	if errors.Is(err, addressbook.ErrInvalidContent) {
+		// Restoring a peer can exceed the per-book limit; that is a client
+		// conflict with the book state, not a server failure.
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
+		return
+	}
+	if mapBookError(c, err) {
+		return
+	}
+	a.deps.Logger.Error(logMsg)
+	abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not update address book")
+}
+
 // loadBook resolves the caller's role and fetches the book with peers/tags,
 // mapping service errors onto the standard envelope.
 func (a *AdminAPI) loadBook(c *gin.Context, uid uint, orgId, bookId int64) (*model.AddressBook, []model.AddressBookPeer, []model.AddressBookTag, error) {
@@ -398,22 +684,36 @@ func (a *AdminAPI) loadBook(c *gin.Context, uid uint, orgId, bookId int64) (*mod
 	return book, peers, tags, nil
 }
 
-// roleForBook resolves the caller's role after checking membership; it does
-// not load the book (the service enforces personal-book rules).
-func (a *AdminAPI) roleForBook(c *gin.Context, uid uint, orgId, bookId int64) (string, bool) {
+// roleForBook resolves the caller's permission set after checking membership;
+// it does not load the book (the service enforces personal-book rules).
+func (a *AdminAPI) roleForBook(c *gin.Context, uid uint, orgId, bookId int64) ([]string, bool) {
 	if orgId <= 0 || bookId <= 0 {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid id")
-		return "", false
+		return nil, false
 	}
-	m, member := a.membershipFor(c, uid, uint(orgId))
-	if !member {
-		return "", false
+	if _, member := a.membershipFor(c, uid, uint(orgId)); !member {
+		return nil, false
 	}
-	return m.Role, true
+	perms, _ := authz.OrgPermissions(c)
+	return perms, true
 }
 
-func canWriteShared(role string) bool {
-	return role == model.RoleOwner || role == model.RoleAdmin
+func canWriteShared(perms []string) bool {
+	return authz.Has(perms, authz.PermAddressBook)
+}
+
+// requireBookWriteScope applies the personal-token ceiling to address-book
+// mutations. Ownership and grants can authorize write/full access independently
+// of the role permission, so without this check a token minted with unrelated
+// permissions (for example device.read only) could still delete its user's
+// personal book or a book the user holds a full grant on. The token's effective
+// set is the upper bound; JWT callers are unaffected.
+func (a *AdminAPI) requireBookWriteScope(c *gin.Context, perms []string) bool {
+	if _, tokenAuth := auth.TokenPermissions(c); tokenAuth && !authz.Has(perms, authz.PermAddressBook) {
+		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "personal token lacks addressbook.write")
+		return false
+	}
+	return true
 }
 
 // errStop marks "response already written" inside the load helpers.

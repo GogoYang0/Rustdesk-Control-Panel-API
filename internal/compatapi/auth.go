@@ -37,6 +37,20 @@ func (s *Server) requireSession() gin.HandlerFunc {
 			abortUnauthorized(c, "session revoked or expired")
 			return
 		}
+		// The token claims and the persisted session must describe the same
+		// identity: handlers scope their queries by the token's org/user, so
+		// authorizing as one identity while checking another must fail closed.
+		if uid != session.UserID || orgID != session.OrganizationID {
+			abortUnauthorized(c, "session does not match token")
+			return
+		}
+		// Session validity is not membership validity: a login that overlapped
+		// a member removal can persist a session after the revocation pass. Re-check
+		// the current membership so offboarding closes every consumer path.
+		if !s.membershipActive(session.UserID, session.OrganizationID) {
+			abortUnauthorized(c, "membership revoked")
+			return
+		}
 		c.Set(ContextUserID, uid)
 		c.Set(ContextOrgID, orgID)
 		c.Set(ContextJTI, jti)
@@ -85,5 +99,23 @@ func (s *Server) activeSessionByUUID(uuid, deviceID string) (*model.CompatSessio
 	if !session.Active(s.deps.Now()) {
 		return nil, false
 	}
+	if !s.membershipActive(session.UserID, session.OrganizationID) {
+		return nil, false
+	}
 	return &session, true
+}
+
+// membershipActive reports whether the session owner still belongs to the
+// organization with an active (not disabled) membership. The query goes through
+// the tenant scope, so the organization filter is injected by the plugin (a
+// zero orgID matches nothing) and the membership lookup can never leave the
+// session's tenant. A lookup failure is treated as inactive: a revoked or
+// disabled membership must never be masked by an unavailable database.
+func (s *Server) membershipActive(userID, orgID uint) bool {
+	var membership model.Membership
+	err := store.ScopedByOrg(s.deps.DB, orgID).
+		Select("id").
+		Where("user_id = ? AND disabled = ?", userID, false).
+		First(&membership).Error
+	return err == nil
 }

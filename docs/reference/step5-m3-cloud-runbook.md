@@ -68,6 +68,8 @@ PUBLIC_HOST=<同上> ./docs/reference/step5-m3-run.sh /root/step5m3-work --probe
 
 > 关键易错点（测试失败时先看这几条）：**并发闸门在兑换不在签发**；**策略 PUT 是全量替换且 `enabled`/`require_approval` 必填**；时段是 **UTC 当日分钟**、`start==end` 返回 400（全天用 null）；事前审批阻断**不产生告警**（正常受控流程）。
 
+> **策略名保留（归属约束）**：`m3harness` 用固定名 `harness-concurrency` / `harness-approval` 创建策略（检查 5/6/8），启动清扫与收尾清理都按这两个**精确名**删除（绝不按 `harness-` 前缀，避免误删运维策略）。因此这两个名字为工具保留，且工具**无法区分同名策略的创建者**：不要对同一数据库/组织**并发**运行多个 `m3harness` 实例，运维也不要创建同名策略——否则会互相清理。
+
 ---
 
 ## 3. 前置数据为什么直写库
@@ -124,7 +126,7 @@ PUBLIC_HOST=<同上> ./docs/reference/step5-m3-run.sh /root/step5m3-work --probe
 
 > **客户端 `api-server` 端口（云端实测踩过）**：RustDesk 客户端把 `custom-rendezvous-server` 的端口 **减 2** 当作 API 端口（本例 21117−2 = 21115），而该端口在宿主上没有映射到任何 HTTP 服务 → 客户端日志出现 `POST .../api/sysinfo → Connection refused`，随后 TCP proxy fallback 超时，**启动被拖慢约 40 s**。注册（`register_pk`）在此之前已发出，因此不影响本手册的断言。
 >
-> **唯一有效的处置**：把 `api-server` **显式**指向可达的 HTTP 入口——面板的 compat 入口 `http://<panel>:8080`（面板已提供 `POST /api/sysinfo` 与 `/api/heartbeat`，语义为「不可信活跃提示」，见 `compatapi`），或把「id 端口 −2」映射到面板。**留空不会消除延迟**：源码 `get_api_server_()`（`rustdesk/src/common.rs`）在 `api-server` 为空时取 `increase_port(custom_rendezvous_server, -2)`，即仍会推导到 21115。
+> **唯一有效的处置**：把 `api-server` **显式**指向实际可达的 HTTP 入口——脚本生成的配置默认只监听 `127.0.0.1:8080`，远程客户端需经反向代理或端口映射访问面板，并把 `api-server` 设为该可达入口；公网入口应使用 `https://<面板域名>`。**同网段直连 `http://<panel>:8080` 需要先把面板绑定到 LAN 地址或 `0.0.0.0`**（默认 loopback 监听远程连不上，`api-server` 仍会失败并保留启动延迟），并用防火墙限制来源。面板已提供 `POST /api/sysinfo` 与 `/api/heartbeat`（语义为「不可信活跃提示」，见 `compatapi`）。**留空不会消除延迟**：源码 `get_api_server_()`（`rustdesk/src/common.rs`）在 `api-server` 为空时取 `increase_port(custom_rendezvous_server, -2)`，即仍会推导到 21115。
 
 ---
 
@@ -199,8 +201,9 @@ bash docs/reference/step5-collision-probe.sh "100 1000 5000 20000"
 ```bash
 # 需要一份真实 hbbs 日志（含 update_pk 行），例如从容器导出：
 docker logs -t panel-org-1-hbbs > hbbs.log
-go run ./tools/regression/m3native -db "file:/tmp/m3native.db" -logfile ./hbbs.log -out /tmp/m3native-evidence -phase all
+# 一次性库没有任何 server_group 行，工具必须 -force-state 才能写入 deployed 行（见下条）
+go run ./tools/regression/m3native -db "file:/tmp/m3native.db" -logfile ./hbbs.log -out /tmp/m3native-evidence -phase all -force-state
 ```
 
-- **必须用一次性数据库**：它会在 `server_groups` 里写入/翻转该组织为 `deployed`（为了触发真实 `Service.Start` 的 tail 条件）。**运行前先停掉使用同一数据库的 panel**；指向在用的面板库会让该组织后续 provision 报「已供应」，端口块被占。若组织行已存在且非 `deployed`，工具会拒绝执行并提示；确需翻转时加 `-force-state`。
+- **必须用一次性数据库**：它会在 `server_groups` 里写入/翻转该组织为 `deployed`（为了触发真实 `Service.Start` 的 tail 条件）。**运行前先停掉使用同一数据库的 panel**；指向在用的面板库会让该组织后续 provision 报「已供应」，端口块被占。若组织行已存在且非 `deployed`，工具会拒绝执行并提示；**组织没有 `server_group` 行时同样会拒绝**（创建一条假的 `deployed` 行会让 reconciler 跳过该组织）；两种「拒绝」都可用 `-force-state` 明确覆盖。
 - 它**不能**替代容器验证：docker CLI 本身、容器 stdout/stderr 合并、`--since` 纳秒精度与 #36 碰撞率都必须在云端真跑（工具的 SKIP 项会如实列出）。

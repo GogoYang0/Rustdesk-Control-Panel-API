@@ -54,3 +54,31 @@ func TestLoginGuard_LocksAfterFiveFailures(t *testing.T) {
 	g.Reset("a@example.com", "192.0.2.1")
 	require.False(t, g.Locked("a@example.com", "192.0.2.1"))
 }
+
+// Reserve spends one attempt up front so concurrent requests cannot all pass a
+// separate check and then overshoot the budget: the fifth attempt is allowed,
+// the sixth refused, and a successful credential check resets the window.
+func TestLoginGuard_ReserveConsumesTheBudgetAtomically(t *testing.T) {
+	g := NewLoginGuard()
+	for i := 0; i < failureLimit; i++ {
+		require.True(t, g.Reserve("a@example.com", "192.0.2.1"))
+	}
+	require.False(t, g.Reserve("a@example.com", "192.0.2.1"))
+
+	g.Reset("a@example.com", "192.0.2.1")
+	require.True(t, g.Reserve("a@example.com", "192.0.2.1"))
+}
+
+// A full failure table must refuse an untracked pair instead of letting it run
+// unlimited attempts: the table cannot grow past its cap, and evicting a live
+// window would silently reset somebody's lockout.
+func TestLoginGuard_ReserveFailsClosedWhenFull(t *testing.T) {
+	g := NewLoginGuard()
+	g.now = func() time.Time { return time.Unix(1700000000, 0) }
+	for i := 0; i < maxFailures; i++ {
+		require.True(t, g.Reserve(fmt.Sprintf("user%d@example.com", i), "203.0.113.7"))
+	}
+	require.False(t, g.Reserve("new@example.com", "203.0.113.7"))
+	// Already tracked pairs keep their remaining budget.
+	require.True(t, g.Reserve("user0@example.com", "203.0.113.7"))
+}

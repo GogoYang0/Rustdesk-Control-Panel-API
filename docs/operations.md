@@ -1,6 +1,6 @@
 # 运维指南（Operations Guide）
 
-> 适用版本：v0.7.0（按组织 provisioning 开关 + 宿主端口探测；已发布基线 v0.4.0）。本文档随版本演进持续更新——每次发布前必须复核一遍。
+> 适用版本：v0.8.0（M4：角色模型、审计查询/导出与保留归档、成员/设备停用、地址簿授权与回收站、个人令牌、管理面 2FA；上一基线 v0.7.0）。本文档随版本演进持续更新——每次发布前必须复核一遍。
 > 配套文档：[部署指南](deployment.md) · [后端 API 规范](api-spec.md)
 
 ---
@@ -15,8 +15,10 @@
 | 邀请成员 | `POST /api/v1/orgs/{orgId}/invitations` | admin |
 | 接受邀请 | `POST /api/v1/invitations/accept` | 被邀请人 |
 | 移除成员（离场） | `DELETE /api/v1/orgs/{orgId}/members/{userId}`（v0.6.0；同事务撤销该用户 compat 会话） | owner/admin |
-| 变更成员角色 | `PATCH /api/v1/orgs/{orgId}/members/{userId}`（v0.6.0；仅 admin↔member，仅 owner 可调） | owner |
-| 查看设备 | `GET /api/v1/orgs/{orgId}/devices`（v0.5.0；分页、`q` 搜索、`bound` 过滤） | member |
+| 变更成员角色 | `PATCH /api/v1/orgs/{orgId}/members/{userId}`（仅 owner 可调；支持 admin、member 和自定义角色） | owner |
+| 停用/恢复成员 | `PATCH /api/v1/orgs/{orgId}/members/{userId}`（字段 `disabled`；停用在同一事务撤销该成员在本组织的 compat 会话；重复设置当前状态不产生审计） | `member.manage` |
+| 查看设备 | `GET /api/v1/orgs/{orgId}/devices`（v0.5.0；分页、`q` 搜索、`bound` 过滤） | `device.read` |
+| 停用/恢复设备 | `PATCH /api/v1/orgs/{orgId}/devices/{deviceId}`（字段 `disabled`；停用在同一事务撤销该设备的 compat 会话；重复设置当前状态不产生审计） | `device.write` |
 | 重置设备绑定（换机/重装） | `POST /api/v1/orgs/{orgId}/devices/{deviceId}/rebind`（v0.5.0；`reason` 必填） | owner/admin |
 | 查看/切换供应开关 | `GET/PUT /api/v1/orgs/{orgId}/provisioning`（v0.7.0；关闭同步下线；开启仅在无部署行即 `pending` 时异步入队，`deployed`/`failed` 不入队、`failed` 需人工恢复；`cleanup_pending` 表示清理未完成） | owner |
 | 查询日志事件 | `GET /api/v1/orgs/{orgId}/log-events` | member |
@@ -48,6 +50,7 @@
 
 - **免凭据心跳 = 不可信的活跃提示**。`/api/heartbeat`、`/api/sysinfo` 无凭据，任何知道 `(rustdesk id, uuid)` 组合的调用者都可提交活动。设备活跃数据**不得作为安全决策依据**：授权判断一律基于管理令牌或 compat 会话（签名令牌 + 活跃 JTI）。写放大已由 30s 窗口收敛；全局请求限流为后续硬化项；日志保留期的周期化清扫见 [#41](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/41)。
 - **offboarding 即时撤销（v0.6.0 已接线）**。移除成员（`DELETE .../members/{userId}`）与 admin→member 降级在**同一事务**内调用 `compatapi.RevokeOrgSessions` 撤销该用户在本组织的全部活跃 compat 会话；撤销失败整体回滚并返回 500，不会出现「已删除」半状态。被撤销的 compat 令牌立即失效（管理请求 401、免凭据心跳不再生效），无需等待 720h 过期。
+- **并发登录竞态（v0.8.0 起关闭）**。登录在事务外解析会籍、随后才落会话；若与成员移除重叠，旧实现可能留下“撤销后才创建”的活跃会话。现在所有 compat 消费者（Bearer 中间件与免凭据 heartbeat/sysinfo 的会话解析）都会复核当前 membership，缺少会籍即 401/忽略；membership 查询失败按非成员处理（fail closed）。v0.8.0 起该复核同时要求会籍未停用（`disabled=false`）。
 - **设备认领的竞态已关闭（v0.4.0）**。认领与会话落库在同一事务，落败方不留会话行；设备带**绑定代数**（每次绑定变更 +1，v0.5.0 起由 `rebind` 端点承担重置），会话快照登录时的代数，旧代数会话的心跳/系统信息被丢弃——绑定的所有权语义不依赖 uuid 保密性。免凭据心跳仍是**不可信活跃提示**（无凭据的本质不变），但落败/过期会话不再能驱动设备活动。
 - **审批中心轮询是静默读**：`GET .../approvals`、`GET .../alerts` 不写审计（请求级审计回退被抑制），详情读（单个 approval）会记录——与票据/会话详情同规则。
 
@@ -75,10 +78,20 @@
 ## 3. 审计日志
 
 - 写入路径：管理 API 由中间件回退记录（一次可审计请求恰好一条）；地址簿等领域写由 `TxRecorder` 在**实体事务内**原子记录（#26）；compat 写路径的归因由中间件回退读取 `compat.*` 上下文（#37，v0.3.0 恢复）
-- **完整性**：每条审计行带 per-org 连续序列号，序列断裂即表示行被删除或篡改——巡检时应检查序列连续性
+- **完整性**：每条审计行带 per-org 连续序列号，序列断裂通常表示行被删除或篡改。**保留期清理是唯一的预期缺口**：`audit.retention.purge` 只删除已成功归档且早于保留阈值的行，因此巡检应只把**保留窗口内（未归档范围）**的非预期缺口当作篡改信号，并用归档文件（JSONL + `.sha256`）与 `audit.retention.archive` / `audit.retention.purge` 审计交叉核对被清理的区间。
 - 无租户请求（login、healthz）不产生持久审计行（`GormAuditor` 对 org 0 直接丢弃，有意 fail-closed）
 - 遗留：compat 写路径的**事务级**审计（与业务写同事务）尚未实现，当前为请求级归因
-- **M3 新增的领域审计动作**（`TxRecorder` 在实体事务内记录）：`session.ticket.issue`（票据签发）、`session.ticket.redeem`（票据兑换）、`session.ticket.denied`（策略拒绝）、`session.approval.request`（新建审批请求；复用不重复记）、`session.approval.decide`（approve/deny 决策）、**`device.binding.reset`（v0.5.0 重置设备绑定；含 actor、`rustdesk_id`、reason、had_binding）**、`organization.member.remove` / `organization.member.role`（v0.6.0 成员离场；含目标用户、角色变化与撤销会话数）。会话治理与设备列表的**轮询读不产生审计**（读静默），单个详情读会记录；provision 供应与保留期清扫等基础设施动作的审计见 provision 相关节（#46）
+- **领域审计动作**（`TxRecorder` 在实体事务内记录）：`session.ticket.issue`（票据签发）、`session.ticket.redeem`（票据兑换）、`session.ticket.denied`（策略拒绝）、`session.approval.request`（新建审批请求；复用不重复记）、`session.approval.decide`（approve/deny 决策）、**`device.binding.reset`（v0.5.0 重置设备绑定；含 actor、`rustdesk_id`、reason、had_binding）**、`organization.member.remove` / `organization.member.role`（v0.6.0 成员离场；含目标用户、角色变化与撤销会话数）、**v0.8.0 新增：`organization.member.disable` / `organization.member.enable`（成员停用/恢复，含撤销会话数）、`device.disable` / `device.enable`（设备停用/恢复，含撤销会话数）、`role.create` / `role.update` / `role.delete`、`token.create` / `token.revoke`（个人令牌，明文不入审计）、`user.2fa.reset`（管理员重置成员 2FA）、`organization.audit_retention.set`、`audit.retention.archive` / `audit.retention.purge`（系统动作，actor 0）**。地址簿授权与回收站动作仍由请求级中间件回退归因（与 compat 写路径同一机制）。会话治理与设备列表的**轮询读不产生审计**（读静默），单个详情读会记录；provision 供应与保留期清扫等基础设施动作的审计见 provision 相关节（#46）
+
+### 3.1 审计保留期与本地归档（v0.8.0）
+
+- **按组织配置**：`GET/PUT /api/v1/orgs/{orgId}/audit-retention`（仅 owner）。`audit_retention_days=0` 永久保留；`1..3650` 为正的保留窗口；`days` 字段必填（缺失返回 400，避免误把空请求当成"永久保留"）。设置动作写 `organization.audit_retention.set` 审计。
+- **先归档、校验、后删除**：每小时后台任务对每个保留期 > 0 的组织，把 `created_at` 早于阈值的行写成 JSONL（每行一条），附同名 `.sha256`；**重新读取校验行数与摘要一致后**才按 id 精确删除。归档或校验失败时**该批不删除任何行**（fail closed），此前已成功的批次保持已删除、不会被回滚，下个周期从剩余行继续。**按批处理**：每批最多 1000 行，逐批归档/校验/删除，直到该组织剩余不足一批——首次开启或长期停摆造成的积压不会一次性载入内存，也不会撞上数据库的占位符上限。归档数据文件与校验文件均在删除前 `fsync`；重命名在 Windows 使用 `MOVEFILE_WRITE_THROUGH`、在其他平台 rename 后 `fsync`；每次运行都会无条件重同步归档目录的整条父链（不依赖本次是否新建，覆盖上次同步失败后的重试），任一同步失败即保留该批数据库行。同步链**跳过文件系统根目录**：以写权限打开卷根通常被服务账号的 ACL 拒绝，强行同步会让保留期任务整轮卡死；归档根直接位于卷根时，该目录条目的持久化交给操作系统。
+- **归档位置**：`<audit.archiveDir>/org-<orgId>/audit-<minId>.jsonl`（先写 `.tmp` 再原子改名；文件名只由批次最小 id 决定，事务失败后的重试会覆盖同一路径，即使期间有新行过期也不堆积孤立归档）。归档文件不经 API 暴露；**运维备份必须覆盖该目录**，否则删除后的历史只存在于备份之外。
+- **系统动作也审计**：归档写 `audit.retention.archive`（`Detail` 含 rows/path/sha256/threshold）、清理写 `audit.retention.purge`；actor 为 0（系统）。两条审计与删除在同一事务提交；无事务审计器时整轮拒绝删除。
+- **回收站（地址簿 v0.8.0）**：删除的 peer 软删除保留 30 天，每小时清扫永久删除过期行；恢复会 bump revision，永久删除不动 revision 与 live 内容。
+- **个人令牌（v0.8.0）**：只在组织路径生效；有效权限 = 申请集 ∩ 当前角色权限集，每请求实时重算。列表只显示 `token_prefix`，明文只在创建响应出现一次；遗失令牌请直接撤销后重建。**令牌权限是硬上限**：地址簿写入即使由所有权或 full 授权放行，仍要求令牌含 `addressbook.write`，否则 403。
+- **管理面 2FA（v0.8.0）**：启用后用户登录需要第二步（`/auth/2fa/verify`，与登录共用两轨限流）。用户丢失设备与恢复码时，由 owner/admin 用 `POST /orgs/{orgId}/members/{userId}/2fa/reset` 重置（写 `user.2fa.reset` 审计）。**边界**：2FA 是账号级而非组织级——管理员不能重置自己（409，自服务走 `/auth/2fa/disable`）；目标在本组织是 owner 时只有 owner（`org.admin`）能重置；目标只要**在本组织之外还存在任何会籍**（无论角色、含已停用）就一律拒绝（403）——账号级因素同时保护其在其他组织的登录，清除它会让任一组织的管理员越权削弱别租户；这类跨组织用户的账号恢复只能走平台级运维（系统外）。TOTP 密钥以 `auth.secret` 派生的密钥加密存储，**未配置 `auth.secret` 时 2FA 操作 fail closed**（500）；**轮换 `auth.secret` 会让既有 2FA 配置无法解密**，须先重置相关用户 2FA 再轮换。**启用流程原子化**：已启用的配置不会被再次 setup 覆盖（行锁 + `enabled_at IS NULL` 条件写），Enable 只激活它校验过的那个待启用秘密——并发的 setup 不能把已激活账号"降级"回待启用状态。
 
 ---
 
@@ -130,12 +143,12 @@
 
 - **单实例前提**：供应队列、reconciler 与组织级切换锁都是**进程内**组件，同一数据库只应由一个 panel 实例执行 provisioning；多实例会重复对账并绕过切换锁（数据库侧的开关复核与 `RowsAffected` 守卫仍会清理越权持久化的行，但容器操作无法跨进程互斥）
 - 每组织一对容器：`panel-org-<orgId>-hbbs` / `-hbbr`，端口从 `provision.portStart..portEnd` 池分配并持久化在 `ServerGroup` 行
-- **开关 API（v0.7.0，仅 owner）**：`GET/PUT /api/v1/orgs/{orgId}/provisioning`。关闭（`enabled=false`）会同步删除容器、删除 `ServerGroup` 行、置 `provisioning_disabled`，并在同一事务写 `organization.provisioning.update` 审计（`Detail` 含 `removed_deployment` 与端口）；容器删除失败则请求 500、行标 `failed`、开关不变。开启只清除标记并把组织交给队列（队列满由 reconciler 兜底）；**下次部署会重新生成服务端密钥对**（`dataDir/org-<orgId>/` 中的数据保留，但密钥文件被覆盖，客户端需重新配对）。重复关闭会清理并发失序遗留的部署行（自愈）
+- **开关 API（v0.7.0，仅 owner）**：`GET/PUT /api/v1/orgs/{orgId}/provisioning`。关闭（`enabled=false`）会同步删除容器、删除 `ServerGroup` 行、置 `provisioning_disabled`，并在同一事务写 `organization.provisioning.update` 审计（`Detail` 含 `removed_deployment` 与端口）；容器删除失败则请求 500、行标 `failed`、开关不变。开启只清除标记；**仅在无部署行（`pending`）时异步入队**，已有 `deployed` 不入队、`failed` 需人工恢复；队列满由 reconciler 兜底。**下次部署会重新生成服务端密钥对**（`dataDir/org-<orgId>/` 中的数据保留，但密钥文件被覆盖，客户端需重新配对）。重复关闭会清理并发失序遗留的部署行（自愈）
 - **在途部署的关闭（deferred cleanup）**：若关闭时行状态为 `provisioning` 且未超过 10 分钟宽限，接口**不删除该行**（审计 `Detail.deferred_cleanup=true`、`state=provisioning`），保留为容器清理锚点；在途部署在持久化时发现开关已关会自行回滚。若回滚删除失败，行会保留为 `failed`，重复关闭会**立即**重试清理；若进程在部署中途中断，行保持 `provisioning`，重复关闭需在该行超过 10 分钟宽限后才会清理。这样不会出现“容器仍在运行但数据库无行可追踪”的状态
 - **回滚归属校验**：失败部署在删除容器前会核对当前 `ServerGroup` 行的 id；若组织已被关闭并重新开启、已存在更新的部署行，旧尝试**不会**删除同名容器（容器名按组织复用，无法凭名字区分代际）
 - 供应队列：`provision.workers` 并发。部署失败后会执行清理：**清理成功 → 删除 `ServerGroup` 行并释放端口；清理失败 → 行保留为 `failed` 状态**。保留的行会被 `PendingOrgIDs` 排除，对账 reconciler（2 分钟周期）**不会**重新入队——清理失败的部署必须人工处理（残留容器、行、端口）
 - **启动端口探测**：启动日志 `provision port range is free` 表示范围内（已预留块除外）没有外部占用；`provision port range has externally occupied ports` 会列出 `端口/协议`，表示面板外进程占用了可分配端口——调整 `provision.portStart/portEnd` 或停止占用进程。探测绑定本机 IPv4 通配地址、只告警不阻断启动；**IPv6-only 监听不在探测范围**；`DOCKER_HOST` 指向远端时本机探测不适用
-- **部署前预检**：每次 provision 在 `docker run` 前检查本块 5 个 TCP 端口 + 主端口 UDP；冲突时返回 `host port already in use: <port>/<协议>` 并**释放本次分配**（不产生失败行）。reconciler 会周期性重试；**若外占长期存在，每次重试仍可能按端口池顺序选中同一块**——启动告警给出根因，处置方式是调整端口范围或停止占用进程
+- **部署前预检**：每次 provision 在 `docker run` 前检查本块 5 个 TCP 端口 + 主端口 UDP；冲突时**释放该块并在本次尝试中跳过**，继续尝试后续可用块（默认端口池有 200 块）。**只有当范围内每一块都因宿主端口冲突被跳过**时才返回 `host port already in use: <port>/<协议>`（不产生失败行）；若耗尽同时包含数据库已分配的块，则保留 `no free hbbs/hbbr port pair in the configured range`，避免把「端口池用完」误报成宿主占用。启动告警给出根因。若**释放**冲突块本身失败（数据库故障），该行会保留为 `failed` 并同样返回错误——这是人工恢复状态，需按上条清理后再重试
 - ⚠️ **端口规划前提**：`PortPool` 只按 DB `server_groups` 判重，不感知面板外占用；预检只是提前诊断，探测与 `docker run` 之间仍有竞态。规划端口池时确保范围独占；相关可观测/控制缺口跟踪于 [#46](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/46)
 - 下线：`Deprovision` 删除容器 → 删行 → `Unwatch` 采集器；失败时行保留（failed 状态），端口继续被占用，且不会由 reconciler 自动重试
 - `provision.dataDir/org-<orgId>/` 含容器运行时数据（`dataDir` 可配置，默认根目录为 `./data/servergroups`）：**备份范围必须包含它**。服务端密钥对由 panel 每次部署时生成并覆盖，恢复后客户端需按 `ServerGroup.pub_key` 重新配对
@@ -148,10 +161,11 @@
 |---|---|---|
 | 关系数据（用户/组织/设备/审计/日志事件/供应状态） | `panel.db` 或外部 DB | 每日；审计行是安全证据，保留期越长越好 |
 | 各组织 hbbs/hbbr 密钥与数据 | `provision.dataDir`（默认 `./data/servergroups`，组织子目录为 `org-<orgId>/`） | 每日（与 DB 同步点） |
+| 审计归档文件（已清理行的唯一副本） | `audit.archiveDir`（默认 `./data/audit-archive`，组织子目录为 `org-<orgId>/`） | 每日（与 DB 同步点；保留期清理会删除 DB 行） |
 
 恢复：恢复 DB + 数据目录 → **恢复对应的 Docker 容器状态**（reconciler 会跳过已有 `ServerGroup` 行的组织，不会重建缺失的容器）——容器状态不可恢复时，须对每个已恢复的组织执行并验证容器重建 → 启动 panel → AutoMigrate 幂等。
 
-**审计完整性巡检**：按组织检查 audit 序列号连续性（断号 = 行被删/篡改）。
+**审计完整性巡检**：按组织检查 audit 序列号连续性。**保留期清理会产生预期断号**——先排除已成功归档并由 `audit.retention.purge` 清理的区间（用归档文件 JSONL + `.sha256` 与 `audit.retention.archive` / `audit.retention.purge` 审计交叉核对），只对**保留窗口内（未归档范围）**的非预期断号按"行被删/篡改"告警（见 §3）。
 
 ---
 
@@ -181,4 +195,4 @@ Prometheus 指标端点属后续硬化项（见 #31 描述遗留清单）。
 | 地址簿整本推送 409 | `ab_conflict`：content hash 与服务器不一致，先 `GET /api/ab` 取最新 |
 | 500 `ab` 相关 | 历史 compat 写入缺校验导致唯一索引冲突——v0.3.0 已修；仍出现请带请求样本反馈 |
 | panel 启动即退出 | 启动序列某步 Fatal：看日志第一行（配置/DB/邮件校验，见部署指南 §4.1） |
-| 审计序列断号 | 立即排查（§3），确认 DB 访问面 |
+| 审计序列断号 | 先确认是否落在已归档清理区间（`audit.retention.archive`/`audit.retention.purge` + 归档 JSONL/`.sha256` 交叉核对，§3）；保留窗口内的非预期断号立即排查，确认 DB 访问权限是否受控（应用账号以外的写入途径、是否有直连改表） |

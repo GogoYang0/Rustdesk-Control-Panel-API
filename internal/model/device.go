@@ -30,8 +30,14 @@ type Device struct {
 	// under an earlier binding can never drive the device again.
 	BindingGeneration uint64     `gorm:"not null;default:0" json:"-"`
 	LastSeenAt        *time.Time `json:"last_seen_at"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
+	// Disabled stops the device: its compat sessions are revoked on the
+	// transition, new client claims and compat logins are refused, heartbeats
+	// are dropped and ticket redemption is a conflict. History stays.
+	Disabled   bool       `gorm:"not null;default:false" json:"disabled"`
+	DisabledAt *time.Time `json:"disabled_at,omitempty"`
+	DisabledBy uint       `gorm:"not null;default:0" json:"disabled_by,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
 // OnlineWindow is how fresh a heartbeat must be for the device to count as

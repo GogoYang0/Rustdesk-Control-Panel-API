@@ -61,6 +61,7 @@ func addMember(t *testing.T, h *harness, orgID int64, user model.User, role stri
 	require.NoError(t, h.db.DB.Create(&model.Membership{
 		OrganizationID: uint(orgID),
 		UserID:         user.ID,
+		RoleID:         h.roleID(t, uint(orgID), role),
 		Role:           role,
 	}).Error)
 }

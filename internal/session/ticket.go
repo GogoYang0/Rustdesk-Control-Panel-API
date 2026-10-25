@@ -26,6 +26,7 @@ import (
 var (
 	ErrInvalidInput   = errors.New("invalid ticket input")
 	ErrDeviceNotFound = errors.New("device not found")
+	ErrDeviceDisabled = errors.New("device is disabled")
 	ErrTicketNotFound = errors.New("ticket not found")
 	ErrOutsideWindow  = errors.New("outside the allowed connection window")
 	ErrConflict       = errors.New("ticket cannot be redeemed")
@@ -323,9 +324,19 @@ func (s *Service) Redeem(ctx context.Context, orgID, actorID, ticketID uint, tok
 			return ErrConflict
 		}
 
-		dev, err := s.loadDevice(tx, orgID, ticket.DeviceID)
+		// Read the device under a row lock so a concurrent disable cannot land
+		// between the check below and the session insert: SetDisabled takes the
+		// same device row lock, so the two writers serialise and either the
+		// session is refused or it is created before the disable commits.
+		dev, err := s.loadDeviceForUpdate(tx, orgID, ticket.DeviceID)
 		if err != nil {
 			return err
+		}
+		// The device must still be usable at redemption time: a ticket issued
+		// before an administrator disabled it must not open a session. The
+		// error rolls back the claim above, so the ticket stays unused.
+		if dev.Disabled {
+			return ErrDeviceDisabled
 		}
 		policyID, err := s.attributedPolicyID(tx, orgID)
 		if err != nil {
@@ -442,6 +453,26 @@ func (s *Service) attributedPolicyID(tx *gorm.DB, orgID uint) (*uint, error) {
 func (s *Service) loadDevice(tx *gorm.DB, orgID, deviceID uint) (*model.Device, error) {
 	var dev model.Device
 	err := store.ScopedByOrg(tx, orgID).Where("id = ?", deviceID).First(&dev).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrDeviceNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &dev, nil
+}
+
+// loadDeviceForUpdate is loadDevice under the device row lock that SetDisabled
+// uses, so redemption and disabling serialise on the same row. SQLite has no
+// row locks and serialises writers itself, so the clause is skipped there (the
+// same convention as device.RegisterTx and the membership locks).
+func (s *Service) loadDeviceForUpdate(tx *gorm.DB, orgID, deviceID uint) (*model.Device, error) {
+	q := store.ScopedByOrg(tx, orgID)
+	if tx.Name() != "sqlite" {
+		q = q.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	var dev model.Device
+	err := q.Where("id = ?", deviceID).First(&dev).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrDeviceNotFound
 	}

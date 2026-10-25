@@ -59,7 +59,6 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 	// The quota is checked inside the transaction with the user row locked.
 	// Reading the count outside would let two concurrent requests both pass the
 	// check and create an organization each (CWE-770, TOCTOU).
-	domainRecorded := false
 	err := a.deps.DB.Transaction(func(tx *gorm.DB) error {
 		if a.deps.OrgsPerUser > 0 {
 			if err := a.lockUserRow(tx, uid); err != nil {
@@ -68,7 +67,8 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 			var owned int64
 			if err := store.WithoutTenantScope(tx).
 				Model(&model.Membership{}).
-				Where("user_id = ? AND role = ?", uid, model.RoleOwner).
+				Joins("JOIN roles ON roles.id = memberships.role_id AND roles.organization_id = memberships.organization_id").
+				Where("memberships.user_id = ? AND roles.kind = ?", uid, model.RoleKindOwner).
 				Count(&owned).Error; err != nil {
 				return err
 			}
@@ -79,33 +79,47 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 		if err := tx.Create(&org).Error; err != nil {
 			return err
 		}
+		if err := a.deps.Roles.EnsureBuiltinsTx(tx, org.ID); err != nil {
+			return err
+		}
+		ownerRole, err := authz.RoleByKindTx(tx, org.ID, model.RoleKindOwner)
+		if err != nil {
+			return err
+		}
 		if err := store.ScopedByOrg(tx, org.ID).Create(&model.Membership{
 			OrganizationID: org.ID,
 			UserID:         uid,
-			Role:           model.RoleOwner,
+			RoleID:         ownerRole.ID,
+			Role:           ownerRole.Name,
 		}).Error; err != nil {
 			return err
 		}
 		// Record the audit entry on the same transaction (issue #19): the
 		// organization and its audit trail commit or roll back together.
-		if tr, ok := a.deps.Auditor.(audit.TxRecorder); ok {
-			if err := tr.RecordTx(tx, audit.Entry{
-				OrganizationID: org.ID,
-				ActorUserID:    uid,
-				Action:         "organization.create",
-				TargetType:     "organization",
-				TargetID:       fmt.Sprint(org.ID),
-				Detail:         map[string]any{"name": org.Name},
-			}); err != nil {
-				return err
-			}
-			domainRecorded = true
+		// Tenant creation is a security-relevant event: without a transactional
+		// auditor the organization must not be created at all (fail closed).
+		tr, ok := a.deps.Auditor.(audit.TxRecorder)
+		if !ok {
+			return errAuditUnavailable
+		}
+		if err := tr.RecordTx(tx, audit.Entry{
+			OrganizationID: org.ID,
+			ActorUserID:    uid,
+			Action:         "organization.create",
+			TargetType:     "organization",
+			TargetID:       fmt.Sprint(org.ID),
+			Detail:         map[string]any{"name": org.Name},
+		}); err != nil {
+			return err
 		}
 		return nil
 	})
 	switch {
 	case errors.Is(err, errOrgQuotaReached):
 		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "organization quota reached")
+		return
+	case errors.Is(err, errAuditUnavailable):
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "audit unavailable")
 		return
 	case err != nil:
 		a.deps.Logger.Error("create org failed")
@@ -115,13 +129,7 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 
 	// The domain audit record committed with the transaction; skip the
 	// middleware fallback for this request (issue #19).
-	if domainRecorded {
-		c.Set(contextAuditRecorded, true)
-	} else {
-		// Tenant creation is a security-relevant event and must appear in
-		// the trail through the middleware fallback.
-		c.Set(contextOrgID, org.ID)
-	}
+	c.Set(contextAuditRecorded, true)
 
 	// Provisioning is slow (container start), so it runs on a bounded worker
 	// queue after the response. Enqueue failures are recoverable: the
@@ -217,13 +225,25 @@ func (a *AdminAPI) ListMembers(c *gin.Context, orgId int64) {
 		}
 	}
 
+	roleIdx, err := a.roleIndex(uint(orgId))
+	if err != nil {
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not list members")
+		return
+	}
 	out := make([]gen.Member, 0, len(memberships))
 	for _, m := range memberships {
+		name := roleNameOf(roleIdx, m.RoleID)
+		if name == "" {
+			name = m.Role
+		}
 		out = append(out, gen.Member{
 			Id:        int64(m.ID),
 			UserId:    int64(m.UserID),
 			Email:     openapi_types.Email(emails[m.UserID]),
-			Role:      gen.MemberRole(m.Role),
+			Role:      name,
+			RoleId:    int64(m.RoleID),
+			RoleName:  name,
+			Disabled:  m.Disabled,
 			CreatedAt: m.CreatedAt,
 		})
 	}
@@ -351,7 +371,6 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 	var member model.Membership
 	var joined model.User
 	needVerify := false
-	domainRecorded := false
 	err = a.deps.DB.Transaction(func(tx *gorm.DB) error {
 		var user model.User
 		err := tx.Where("email = ?", inv.Email).First(&user).Error
@@ -382,25 +401,37 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 		// Remember the account for the post-commit mail step.
 		joined = user
 
-		member = model.Membership{OrganizationID: inv.OrganizationID, UserID: user.ID, Role: inv.Role}
+		joinerRole, rerr := authz.RoleByNameTx(tx, inv.OrganizationID, inv.Role)
+		if rerr != nil {
+			return rerr
+		}
+		member = model.Membership{
+			OrganizationID: inv.OrganizationID,
+			UserID:         user.ID,
+			RoleID:         joinerRole.ID,
+			Role:           joinerRole.Name,
+		}
 		if err := store.ScopedByOrg(tx, inv.OrganizationID).Create(&member).Error; err != nil {
 			return err
 		}
 
 		// Record the audit entry on the same transaction (issue #19): the
 		// membership and its audit trail commit or roll back together.
-		if tr, ok := a.deps.Auditor.(audit.TxRecorder); ok {
-			if err := tr.RecordTx(tx, audit.Entry{
-				OrganizationID: inv.OrganizationID,
-				ActorUserID:    user.ID,
-				Action:         "invitation.accept",
-				TargetType:     "membership",
-				TargetID:       fmt.Sprint(member.ID),
-				Detail:         map[string]any{"role": inv.Role, "invitation_id": inv.ID},
-			}); err != nil {
-				return err
-			}
-			domainRecorded = true
+		// Joining a tenant grants a role, so an unrecorded join must not commit
+		// (fail closed when the auditor is not transactional).
+		tr, ok := a.deps.Auditor.(audit.TxRecorder)
+		if !ok {
+			return errAuditUnavailable
+		}
+		if err := tr.RecordTx(tx, audit.Entry{
+			OrganizationID: inv.OrganizationID,
+			ActorUserID:    user.ID,
+			Action:         "invitation.accept",
+			TargetType:     "membership",
+			TargetID:       fmt.Sprint(member.ID),
+			Detail:         map[string]any{"role": inv.Role, "invitation_id": inv.ID},
+		}); err != nil {
+			return err
 		}
 
 		now := a.deps.Now()
@@ -412,6 +443,10 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 	if errors.Is(err, errInvitationCredentials) {
 		a.guard.RecordFailure(inv.Email, ip)
 		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "invalid credentials for this email")
+		return
+	}
+	if errors.Is(err, errAuditUnavailable) {
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "audit unavailable")
 		return
 	}
 	if err != nil {
@@ -431,14 +466,7 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 
 	// The domain audit record committed with the transaction; skip the
 	// middleware fallback for this request (issue #19).
-	if domainRecorded {
-		c.Set(contextAuditRecorded, true)
-	} else {
-		// Record the org and the accepted user in the audit trail: joining a
-		// tenant grants a role and must be traceable to both sides.
-		c.Set(contextOrgID, inv.OrganizationID)
-		c.Set(auth.ContextUserID, member.UserID)
-	}
+	c.Set(contextAuditRecorded, true)
 
 	c.JSON(http.StatusOK, gen.MemberResponse{
 		Code:    gen.ErrorCodeOk,
@@ -447,7 +475,10 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 			Id:        int64(member.ID),
 			UserId:    int64(member.UserID),
 			Email:     openapi_types.Email(inv.Email),
-			Role:      gen.MemberRole(member.Role),
+			Role:      member.Role,
+			RoleId:    int64(member.RoleID),
+			RoleName:  member.Role,
+			Disabled:  false,
 			CreatedAt: member.CreatedAt,
 		},
 	})

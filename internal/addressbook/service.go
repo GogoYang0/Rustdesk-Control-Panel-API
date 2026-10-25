@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -126,12 +127,12 @@ func (s *Service) getBook(userID, orgID, bookID uint) (*model.AddressBook, error
 }
 
 // canWrite reports whether the user may modify the book: personal — owner
-// only; shared — roles holding the addressbook write permission.
-func canWrite(book *model.AddressBook, userID uint, role string) bool {
+// only; shared — callers holding the addressbook write permission.
+func canWrite(book *model.AddressBook, userID uint, perms []string) bool {
 	if book.Scope == model.AddressBookScopePersonal {
 		return book.OwnerID != nil && *book.OwnerID == userID
 	}
-	return authz.Can(role, authz.PermAddressBook)
+	return authz.Has(perms, authz.PermAddressBook)
 }
 
 // Get returns the book together with its peers and tags.
@@ -143,7 +144,7 @@ func (s *Service) Get(userID, orgID, bookID uint) (*model.AddressBook, []model.A
 
 	var peers []model.AddressBookPeer
 	if err := store.ScopedByOrg(s.db, orgID).
-		Where("book_id = ?", book.ID).Order("id").Find(&peers).Error; err != nil {
+		Where("book_id = ? AND deleted_at IS NULL", book.ID).Order("id").Find(&peers).Error; err != nil {
 		return nil, nil, nil, err
 	}
 	var tags []model.AddressBookTag
@@ -160,12 +161,16 @@ func (s *Service) Get(userID, orgID, bookID uint) (*model.AddressBook, []model.A
 // concurrent Create could insert the target name between the check and the
 // write and produce two same-named shared books (NULL owner is not
 // deduplicated by the unique index).
-func (s *Service) Update(userID uint, role string, orgID, bookID uint, name string) (*model.AddressBook, error) {
+func (s *Service) Update(userID uint, perms []string, orgID, bookID uint, name string) (*model.AddressBook, error) {
 	book, err := s.getBook(userID, orgID, bookID)
 	if err != nil {
 		return nil, err
 	}
-	if !canWrite(book, userID, role) {
+	access, err := s.accessFor(userID, orgID, book, perms)
+	if err != nil {
+		return nil, err
+	}
+	if !AtLeast(access, AccessFull) {
 		return nil, ErrForbidden
 	}
 	err = s.db.Transaction(func(tx *gorm.DB) error {
@@ -262,15 +267,19 @@ func bumpRevision(tx *gorm.DB, orgID, bookID uint) error {
 	return nil
 }
 
-// Delete removes the book together with its peers and tags. The book row is
-// locked first so a concurrent replace cannot re-insert children after the
-// cascading deletes.
-func (s *Service) Delete(userID uint, role string, orgID, bookID uint) (*model.AddressBook, error) {
+// Delete removes the book together with its peers, tags and access grants. The
+// book row is locked first so a concurrent replace cannot re-insert children
+// after the cascading deletes.
+func (s *Service) Delete(userID uint, perms []string, orgID, bookID uint) (*model.AddressBook, error) {
 	book, err := s.getBook(userID, orgID, bookID)
 	if err != nil {
 		return nil, err
 	}
-	if !canWrite(book, userID, role) {
+	access, err := s.accessFor(userID, orgID, book, perms)
+	if err != nil {
+		return nil, err
+	}
+	if !AtLeast(access, AccessFull) {
 		return nil, ErrForbidden
 	}
 	err = s.db.Transaction(func(tx *gorm.DB) error {
@@ -285,6 +294,12 @@ func (s *Service) Delete(userID uint, role string, orgID, bookID uint) (*model.A
 			Where("book_id = ?", book.ID).Delete(&model.AddressBookTag{}).Error; err != nil {
 			return err
 		}
+		// Grants are keyed by (book, subject) with no foreign key: leaving them
+		// behind would leak access onto a future book that reuses the id.
+		if err := store.ScopedByOrg(tx, orgID).
+			Where("book_id = ?", book.ID).Delete(&model.AddressBookGrant{}).Error; err != nil {
+			return err
+		}
 		return store.ScopedByOrg(tx, orgID).Delete(book).Error
 	})
 	if err != nil {
@@ -297,12 +312,16 @@ func (s *Service) Delete(userID uint, role string, orgID, bookID uint) (*model.A
 // book revision. The book row is locked for the whole transaction so two
 // concurrent replaces serialise instead of merging their lists, and the
 // refreshed row is read before commit (no post-commit reload race).
-func (s *Service) ReplacePeers(userID uint, role string, orgID, bookID uint, peers []PeerInput) (*model.AddressBook, error) {
+func (s *Service) ReplacePeers(userID uint, perms []string, orgID, bookID uint, peers []PeerInput) (*model.AddressBook, error) {
 	book, err := s.getBook(userID, orgID, bookID)
 	if err != nil {
 		return nil, err
 	}
-	if !canWrite(book, userID, role) {
+	access, err := s.accessFor(userID, orgID, book, perms)
+	if err != nil {
+		return nil, err
+	}
+	if !AtLeast(access, AccessWrite) {
 		return nil, ErrForbidden
 	}
 
@@ -312,40 +331,21 @@ func (s *Service) ReplacePeers(userID uint, role string, orgID, bookID uint, pee
 			return err
 		}
 		// The management contract does not carry the compat layer's opaque
-		// Hash/Note fields (the client's unattended-access password hash and
-		// its note). Preserve them across the delete-and-recreate cycle for
-		// every peer id that survives the replace.
-		var current []model.AddressBookPeer
-		if err := store.ScopedByOrg(tx, orgID).
-			Where("book_id = ?", book.ID).Find(&current).Error; err != nil {
-			return err
-		}
-		opaque := make(map[string]model.AddressBookPeer, len(current))
-		for _, row := range current {
-			opaque[row.PeerID] = row
-		}
-		if err := store.ScopedByOrg(tx, orgID).
-			Where("book_id = ?", book.ID).Delete(&model.AddressBookPeer{}).Error; err != nil {
-			return err
-		}
+		// Hash/Note fields; replacePeersTx preserves them for surviving ids and
+		// restores peers that were previously recycled.
+		rows := make([]peerWrite, 0, len(peers))
 		for _, p := range peers {
-			row := model.AddressBookPeer{
-				OrganizationID: orgID,
-				BookID:         book.ID,
-				PeerID:         p.PeerID,
-				Alias:          p.Alias,
-				Username:       p.Username,
-				Hostname:       p.Hostname,
-				Platform:       p.Platform,
-				TagsJSON:       TagsJSON(p.Tags),
-			}
-			if old, ok := opaque[p.PeerID]; ok {
-				row.Hash = old.Hash
-				row.Note = old.Note
-			}
-			if err := store.ScopedByOrg(tx, orgID).Create(&row).Error; err != nil {
-				return err
-			}
+			rows = append(rows, peerWrite{
+				PeerID:   p.PeerID,
+				Alias:    p.Alias,
+				Username: p.Username,
+				Hostname: p.Hostname,
+				Platform: p.Platform,
+				TagsJSON: TagsJSON(p.Tags),
+			})
+		}
+		if err := replacePeersTx(tx, orgID, book.ID, userID, rows, time.Now().UTC()); err != nil {
+			return err
 		}
 		if err := bumpRevision(tx, orgID, book.ID); err != nil {
 			return err
@@ -360,12 +360,16 @@ func (s *Service) ReplacePeers(userID uint, role string, orgID, bookID uint, pee
 
 // ReplaceTags swaps the full tag list inside a transaction and bumps the
 // book revision, under the same row lock as ReplacePeers.
-func (s *Service) ReplaceTags(userID uint, role string, orgID, bookID uint, tags []TagInput) (*model.AddressBook, error) {
+func (s *Service) ReplaceTags(userID uint, perms []string, orgID, bookID uint, tags []TagInput) (*model.AddressBook, error) {
 	book, err := s.getBook(userID, orgID, bookID)
 	if err != nil {
 		return nil, err
 	}
-	if !canWrite(book, userID, role) {
+	access, err := s.accessFor(userID, orgID, book, perms)
+	if err != nil {
+		return nil, err
+	}
+	if !AtLeast(access, AccessWrite) {
 		return nil, ErrForbidden
 	}
 

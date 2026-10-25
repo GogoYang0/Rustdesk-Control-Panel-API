@@ -32,6 +32,7 @@ import (
 	"gorm.io/gorm/logger"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
@@ -148,7 +149,7 @@ func runSeed(dbPath string) error {
 
 	if err := db.AutoMigrate(
 		&model.User{}, &model.RefreshToken{},
-		&model.Organization{}, &model.Membership{}, &model.Invitation{},
+		&model.Organization{}, &model.Membership{}, &model.Role{}, &model.Invitation{},
 		&model.AuditLog{}, &model.Device{}, &model.DeviceHeartbeat{},
 		&model.AddressBook{}, &model.AddressBookPeer{},
 		&model.AddressBookTag{}, &model.SyncCursor{}, &model.VerificationToken{},
@@ -158,6 +159,12 @@ func runSeed(dbPath string) error {
 		&model.SessionEvent{}, &model.Approval{}, &model.Alert{},
 	); err != nil {
 		return fmt.Errorf("auto migrate: %w", err)
+	}
+	// Seed the builtin roles and backfill role_id for memberships of an older
+	// fixture: a membership with role_id 0 is rejected by membershipFor, which
+	// would turn every organization-scoped flows request into a 403.
+	if err := authz.MigrateRoles(db); err != nil {
+		return fmt.Errorf("migrate roles: %w", err)
 	}
 
 	// Owner user (verified): login must succeed, so the password is hashed with
@@ -241,7 +248,15 @@ func ensureMembership(db *gorm.DB, orgID, userID uint) error {
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return fmt.Errorf("lookup membership: %w", err)
 	}
-	row := model.Membership{OrganizationID: orgID, UserID: userID, Role: model.RoleOwner}
+	svc := authz.NewRoleService(db)
+	if err := svc.EnsureBuiltins(orgID); err != nil {
+		return fmt.Errorf("seed builtin roles: %w", err)
+	}
+	ownerRole, err := authz.RoleByNameTx(db, orgID, model.RoleOwner)
+	if err != nil {
+		return fmt.Errorf("load owner role: %w", err)
+	}
+	row := model.Membership{OrganizationID: orgID, UserID: userID, RoleID: ownerRole.ID, Role: ownerRole.Name}
 	if err := db.Create(&row).Error; err != nil {
 		return fmt.Errorf("create membership: %w", err)
 	}
@@ -434,8 +449,11 @@ func (h *harness) runFlows() int {
 	// Setup (not a numbered check): drop any harness policy left by a previous
 	// run so the flow starts from the contract's "no policy = unrestricted"
 	// state. Without this, a second run would begin with require_approval=true
-	// and every issuance in check 3 would be blocked.
-	h.setupStalePolicies()
+	// and every issuance in check 3 would be blocked. A failure here is a
+	// warning only: the numbered checks report the real outcome.
+	if err := h.setupStalePolicies(); err != nil {
+		fmt.Printf("[setup] warning: stale harness policies not cleared: %v\n", err)
+	}
 
 	h.run(2, "org-device-ready", true, h.checkOrgDevice)
 	h.run(3, "ticket-success-path", true, h.checkTicketSuccess)
@@ -449,6 +467,13 @@ func (h *harness) runFlows() int {
 	h.run(11, "audit-trail", true, h.checkAudit)
 	h.run(12, "session-detail", true, h.checkSessionDetail)
 
+	// Teardown (not a numbered check): remove the harness policies this run
+	// created, so a shared database returns to the contract's "no enabled
+	// policy = unrestricted" baseline instead of leaking into later tooling.
+	// Unlike the startup sweep this failure is reported: a silent failure would
+	// hand the next run a dirty policy baseline.
+	teardownErr := h.setupStalePolicies()
+
 	pass, fail, skip := 0, 0, 0
 	for _, r := range h.results {
 		switch r.Verdict {
@@ -461,40 +486,68 @@ func (h *harness) runFlows() int {
 		}
 	}
 	fmt.Printf("\n=== summary: PASS %d / FAIL %d / SKIP %d ===\n", pass, fail, skip)
+	if teardownErr != nil {
+		fmt.Printf("teardown: harness policies could not be cleared: %v\n", teardownErr)
+		return 1
+	}
 	if fail > 0 {
 		return 1
 	}
 	return 0
 }
 
-// setupStalePolicies deletes any harness policy left over from a previous run,
-// so the flow always starts from the contract's "no enabled policy =
-// unrestricted" baseline. It is setup, not a numbered check: a leftover
-// require_approval policy would otherwise block every issuance in check 3.
-func (h *harness) setupStalePolicies() {
+// harnessPolicyNames are the only policy names this harness manages. Both the
+// startup sweep and the teardown delete exactly these names, never the
+// "harness-" prefix: the organization is shared infrastructure, not this
+// tool's namespace, and a prefix match could delete an operator's policy.
+//
+// The names are reserved for this tool: neither sweep can tell who created a
+// same-named policy, so two instances running against the same organization
+// would delete each other's policies, and an operator policy bearing one of
+// these names would be swept. Per-run names are not used because a run that
+// crashes before teardown must still leave a policy the next run can find by
+// name; the runbook therefore forbids concurrent runs and same-named operator
+// policies instead.
+var harnessPolicyNames = map[string]struct{}{
+	"harness-concurrency": {},
+	"harness-approval":    {},
+}
+
+// setupStalePolicies deletes the policies a previous run left behind, so the
+// flow starts (and ends) at the contract's "no enabled policy = unrestricted"
+// baseline. It is setup, not a numbered check: a leftover require_approval
+// policy would otherwise block every issuance in check 3. Failures are
+// returned so the teardown can refuse to hide a dirty state.
+func (h *harness) setupStalePolicies() error {
 	if h.token == "" {
-		return
+		return nil
 	}
 	r := h.do(&evidence{}, "list-policies-setup", http.MethodGet,
 		fmt.Sprintf("/api/v1/orgs/%d/policies", h.orgID), nil)
 	if r.Status != 200 {
-		return
+		return fmt.Errorf("list policies: status %d", r.Status)
 	}
 	var policies []struct {
 		Id   int64  `json:"id"`
 		Name string `json:"name"`
 	}
 	if err := json.Unmarshal(r.Data, &policies); err != nil {
-		return
+		return fmt.Errorf("parse policies: %w", err)
 	}
 	for _, p := range policies {
-		if !strings.HasPrefix(p.Name, "harness-") {
+		if _, ok := harnessPolicyNames[p.Name]; !ok {
 			continue
 		}
 		del := h.do(&evidence{}, "delete-policy-setup", http.MethodDelete,
 			fmt.Sprintf("/api/v1/orgs/%d/policies/%d", h.orgID, p.Id), nil)
-		fmt.Printf("[setup] deleted stale policy %q (id=%d) -> %d\n", p.Name, p.Id, del.Status)
+		// A transport error yields status -1, which must not pass: only 2xx
+		// means the policy is gone, and teardown has to report anything else.
+		if del.Status < 200 || del.Status >= 300 {
+			return fmt.Errorf("delete policy %q (id=%d): status %d", p.Name, p.Id, del.Status)
+		}
+		fmt.Printf("[setup] deleted harness policy %q (id=%d) -> %d\n", p.Name, p.Id, del.Status)
 	}
+	return nil
 }
 
 // run executes one check, isolating it with recover so a panic or failure can

@@ -45,10 +45,29 @@ func NewPortPool(db *gorm.DB, start, end uint16) *PortPool {
 	return &PortPool{db: db, start: start, end: end}
 }
 
+// blockCount reports how many five-port blocks the configured range contains;
+// it mirrors the walk allocate performs, so callers can tell "every block was
+// skipped" from "the pool ran out".
+func (p *PortPool) blockCount() int {
+	if p.start == 0 || p.end < p.start+PortBlockSize-1 {
+		return 0
+	}
+	return int((uint32(p.end) - uint32(p.start) + 1) / PortBlockSize)
+}
+
 // Allocate reserves a port pair for the organization and returns the pending
 // row. The caller either finalises it after a successful deploy or deletes it to
 // release the ports.
 func (p *PortPool) Allocate(orgID uint) (*model.ServerGroup, error) {
+	return p.allocate(orgID, nil)
+}
+
+// allocate reserves the next free block, skipping the bases the caller already
+// found unusable on the host. Without the skip list a block whose host ports
+// are held by an outside process would be released and immediately re-selected
+// by the next attempt, so a single occupied block could strand the
+// organization forever (issue #72).
+func (p *PortPool) allocate(orgID uint, skip func(base uint16) bool) (*model.ServerGroup, error) {
 	if err := store.RequireOrgID(orgID); err != nil {
 		return nil, err
 	}
@@ -72,6 +91,10 @@ func (p *PortPool) Allocate(orgID uint) (*model.ServerGroup, error) {
 
 	var lastErr error
 	for base := uint32(p.start); base+PortBlockSize-1 <= uint32(p.end); base += PortBlockSize {
+		if skip != nil && skip(uint16(base)) {
+			lastErr = fmt.Errorf("block %d-%d skipped after a host port conflict", base, base+PortBlockSize-1)
+			continue
+		}
 		overlap, err := p.blockOverlaps(uint16(base))
 		if err != nil {
 			return nil, err
