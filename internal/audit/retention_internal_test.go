@@ -178,8 +178,9 @@ func TestRetention_SyncFailureKeepsRowsAndRetryResyncs(t *testing.T) {
 		CreatedAt: time.Now().UTC().AddDate(0, 0, -40),
 	}).Error)
 
+	base := t.TempDir()
 	// Multi-level archive root that does not exist yet.
-	root := filepath.Join(t.TempDir(), "a", "b", "c")
+	root := filepath.Join(base, "a", "b", "c")
 	svc := NewRetentionService(st.DB, root, NewGormAuditor(st.DB), nil)
 	ctx := context.Background()
 	require.NoError(t, svc.SetDays(ctx, org.ID, 30))
@@ -230,7 +231,8 @@ func TestRetention_SyncFailureKeepsRowsAndRetryResyncs(t *testing.T) {
 	require.EqualValues(t, 2, remaining, "only the archive/purge audit rows remain")
 
 	volumeRoot := filepath.VolumeName(root) + string(os.PathSeparator)
-	require.Contains(t, synced, volumeRoot, "the chain must reach the filesystem root")
+	require.NotContains(t, synced, volumeRoot, "the filesystem root must not be flushed: service accounts cannot open it for write")
+	require.Contains(t, synced, base, "every level above the archive root is still re-synced")
 
 	files, err := filepath.Glob(filepath.Join(root, fmt.Sprintf("org-%d", org.ID), "audit-*.jsonl"))
 	require.NoError(t, err)
