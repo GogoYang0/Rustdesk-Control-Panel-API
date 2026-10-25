@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -21,6 +22,7 @@ type geetestProvider struct {
 	key       string
 	endpoint  string
 	client    *http.Client
+	used      *usedStore
 }
 
 func newGeetestProvider(captchaID, key, endpoint string, client *http.Client) *geetestProvider {
@@ -29,6 +31,7 @@ func newGeetestProvider(captchaID, key, endpoint string, client *http.Client) *g
 		key:       key,
 		endpoint:  strings.TrimSuffix(endpoint, "/"),
 		client:    client,
+		used:      newUsedStore(maxUsedChallenges, nil),
 	}
 }
 
@@ -50,7 +53,7 @@ type geetestResponse struct {
 	Result string `json:"result"`
 }
 
-func (p *geetestProvider) Verify(ctx context.Context, proof Proof) error {
+func (p *geetestProvider) Verify(ctx context.Context, proof Proof) (err error) {
 	lotNumber := proof.Response["lot_number"]
 	captchaOutput := proof.Response["captcha_output"]
 	passToken := proof.Response["pass_token"]
@@ -58,6 +61,19 @@ func (p *geetestProvider) Verify(ctx context.Context, proof Proof) error {
 	if lotNumber == "" || captchaOutput == "" || passToken == "" || genTime == "" {
 		return ErrInvalid
 	}
+	// The provider may accept the same lot_number more than once within its
+	// validity window; the panel consumes it locally so one solution cannot
+	// authorise repeated attempts.
+	if !p.used.Reserve(lotNumber, singleUseTTL) {
+		return ErrInvalid
+	}
+	// A transport or provider fault is not a verdict; free the reservation so
+	// the same solution can be retried once the provider recovers.
+	defer func() {
+		if errors.Is(err, ErrUnavailable) {
+			p.used.Release(lotNumber)
+		}
+	}()
 
 	mac := hmac.New(sha256.New, []byte(p.key))
 	mac.Write([]byte(lotNumber))

@@ -60,6 +60,11 @@ func Build(opts Options) (*Service, error) {
 		if opts.AltchaKey == "" {
 			return nil, errors.New("captcha: PANEL_CAPTCHA_ALTCHA_KEY is required for the altcha provider")
 		}
+		// A weak HMAC key lets an attacker forge a challenge/signature pair from
+		// a single observation, which removes the proof of work.
+		if len(opts.AltchaKey) < 32 {
+			return nil, errors.New("captcha: PANEL_CAPTCHA_ALTCHA_KEY must be at least 32 bytes")
+		}
 		provider = newAltchaProvider(opts.AltchaKey, maxNumber, ttl, now)
 	case "geetest":
 		if opts.GeetestKey == "" {

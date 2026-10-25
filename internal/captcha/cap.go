@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 )
@@ -15,6 +16,7 @@ type capProvider struct {
 	siteKey     string
 	secret      string
 	client      *http.Client
+	used        *usedStore
 }
 
 func newCapProvider(instanceURL, siteKey, secret string, client *http.Client) *capProvider {
@@ -23,6 +25,7 @@ func newCapProvider(instanceURL, siteKey, secret string, client *http.Client) *c
 		siteKey:     siteKey,
 		secret:      secret,
 		client:      client,
+		used:        newUsedStore(maxUsedChallenges, nil),
 	}
 }
 
@@ -32,17 +35,28 @@ func (p *capProvider) Challenge(context.Context) (Challenge, error) {
 	return Challenge{
 		Provider: p.Name(),
 		Params: map[string]any{
-			"api_endpoint": p.instanceURL + "/" + p.siteKey,
+			// Cap's widget appends challenge/redeem to this endpoint.
+			"api_endpoint": p.instanceURL + "/" + p.siteKey + "/",
 			"site_key":     p.siteKey,
 		},
 	}, nil
 }
 
-func (p *capProvider) Verify(ctx context.Context, proof Proof) error {
+func (p *capProvider) Verify(ctx context.Context, proof Proof) (err error) {
 	token := proof.Response["response"]
 	if token == "" {
 		return ErrRequired
 	}
+	if !p.used.Reserve(token, singleUseTTL) {
+		return ErrInvalid
+	}
+	// A transport or provider fault is not a verdict; free the reservation so
+	// the same token can be retried once the provider recovers.
+	defer func() {
+		if errors.Is(err, ErrUnavailable) {
+			p.used.Release(token)
+		}
+	}()
 	body, err := json.Marshal(map[string]string{"secret": p.secret, "response": token})
 	if err != nil {
 		return ErrUnavailable

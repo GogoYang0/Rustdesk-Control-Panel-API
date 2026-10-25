@@ -55,6 +55,35 @@ func main() {
 		lg.Fatal("auth.secret must be configured")
 	}
 
+	// The captcha is opt-in; when enabled, provider secrets are validated here
+	// so a deployment cannot boot a captcha that never passes. This runs before
+	// any background worker starts: a fatal configuration error must not leave
+	// provisioning or log-tailer children behind.
+	captchaSvc := captcha.Disabled()
+	if cfg.Captcha.Enabled {
+		built, cerr := captcha.Build(captcha.Options{
+			Provider:       cfg.Captcha.Provider,
+			FailMode:       cfg.Captcha.FailMode,
+			ChallengeTTL:   cfg.Captcha.ChallengeTTL,
+			AltchaKey:      cfg.Captcha.Altcha.Key,
+			MaxNumber:      cfg.Captcha.Altcha.MaxNumber,
+			GeetestID:      cfg.Captcha.Geetest.CaptchaID,
+			GeetestKey:     cfg.Captcha.Geetest.Key,
+			CapInstanceURL: cfg.Captcha.Cap.InstanceURL,
+			CapSiteKey:     cfg.Captcha.Cap.SiteKey,
+			CapSecret:      cfg.Captcha.Cap.Secret,
+			Now:            time.Now,
+			Logger:         lg,
+		})
+		if cerr != nil {
+			lg.Fatal("captcha configuration", zap.Error(cerr))
+		}
+		captchaSvc = built
+		lg.Info("captcha enabled",
+			zap.String("provider", cfg.Captcha.Provider),
+			zap.String("failMode", cfg.Captcha.FailMode))
+	}
+
 	st, err := store.Open(cfg.Database)
 	if err != nil {
 		lg.Fatal("open database", zap.Error(err))
@@ -391,33 +420,6 @@ func main() {
 	// The organization row is the durable record of a provisioning intent, so a
 	// sweep re-enqueues anything that never reached a worker (full queue, crash).
 	go provQueue.RunReconciler(rootCtx, 2*time.Minute)
-
-	// The captcha is opt-in; when enabled, provider secrets are validated here
-	// so a deployment cannot boot a captcha that never passes.
-	captchaSvc := captcha.Disabled()
-	if cfg.Captcha.Enabled {
-		built, cerr := captcha.Build(captcha.Options{
-			Provider:       cfg.Captcha.Provider,
-			FailMode:       cfg.Captcha.FailMode,
-			ChallengeTTL:   cfg.Captcha.ChallengeTTL,
-			AltchaKey:      cfg.Captcha.Altcha.Key,
-			MaxNumber:      cfg.Captcha.Altcha.MaxNumber,
-			GeetestID:      cfg.Captcha.Geetest.CaptchaID,
-			GeetestKey:     cfg.Captcha.Geetest.Key,
-			CapInstanceURL: cfg.Captcha.Cap.InstanceURL,
-			CapSiteKey:     cfg.Captcha.Cap.SiteKey,
-			CapSecret:      cfg.Captcha.Cap.Secret,
-			Now:            time.Now,
-			Logger:         lg,
-		})
-		if cerr != nil {
-			lg.Fatal("captcha configuration", zap.Error(cerr))
-		}
-		captchaSvc = built
-		lg.Info("captcha enabled",
-			zap.String("provider", cfg.Captcha.Provider),
-			zap.String("failMode", cfg.Captcha.FailMode))
-	}
 
 	srv := &http.Server{
 		Addr: cfg.Server.Addr,

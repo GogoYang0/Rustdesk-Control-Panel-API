@@ -68,6 +68,19 @@ func TestCap_ChallengeParams(t *testing.T) {
 	ch, err := p.Challenge(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, "cap", ch.Provider)
-	require.Equal(t, "https://cap.example.com/site-key", ch.Params["api_endpoint"])
+	// The Cap widget appends challenge/redeem to the endpoint, so the trailing
+	// slash is required.
+	require.Equal(t, "https://cap.example.com/site-key/", ch.Params["api_endpoint"])
 	require.Equal(t, "site-key", ch.Params["site_key"])
+}
+
+func TestCap_TokenIsSingleUse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer srv.Close()
+
+	p := newCapProvider(srv.URL, "site-key", "cap-secret", srv.Client())
+	require.NoError(t, p.Verify(context.Background(), capProof("token-1")))
+	require.ErrorIs(t, p.Verify(context.Background(), capProof("token-1")), ErrInvalid)
 }

@@ -42,6 +42,11 @@ type Provider interface {
 	Verify(ctx context.Context, proof Proof) error
 }
 
+// singleUseTTL bounds the local replay table for provider-issued tokens: the
+// panel has no way to learn the provider's own validity window, and one
+// solution must never authorise a second attempt through this panel.
+const singleUseTTL = 10 * time.Minute
+
 // ServiceOptions tunes the fail-mode policy around a provider.
 type ServiceOptions struct {
 	// FailMode is "closed" (default) or "open". Open lets a request through

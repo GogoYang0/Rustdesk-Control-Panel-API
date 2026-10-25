@@ -24,7 +24,7 @@ func altchaService(t *testing.T) *captcha.Service {
 	t.Helper()
 	svc, err := captcha.Build(captcha.Options{
 		Provider:  "altcha",
-		AltchaKey: "test-captcha-key",
+		AltchaKey: "0123456789abcdef0123456789abcdef",
 		MaxNumber: 10000,
 	})
 	require.NoError(t, err)
@@ -116,6 +116,17 @@ func freshChallenge(t *testing.T, h *harness) map[string]string {
 	require.NotNil(t, out.Data)
 	require.NotNil(t, out.Data.Challenge)
 	return solveAltchaHTTP(t, out.Data.Challenge.Params)
+}
+
+func TestCaptcha_DisabledEntrancesUnchanged(t *testing.T) {
+	// With the captcha off, the login body has no captcha field and must work
+	// exactly as before v0.10.0.
+	h := newHarness(t)
+	h.seedUser(t, "plain@example.com", "password123")
+	w := h.do(t, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"email": "plain@example.com", "password": "password123",
+	}, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 }
 
 func TestCaptcha_LoginRequiresProof(t *testing.T) {

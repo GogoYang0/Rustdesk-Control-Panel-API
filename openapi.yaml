@@ -155,6 +155,12 @@ paths:
                 $ref: "#/components/schemas/CaptchaChallengeResponse"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: 验证码提供商不可用（构造挑战失败）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /api/v1/auth/refresh:
     post:

@@ -102,6 +102,20 @@ func TestGeeTest_ChallengeParams(t *testing.T) {
 	require.Equal(t, "https://static.geetest.com/v4/gt4.js", ch.Params["script_url"])
 }
 
+func TestGeeTest_LotNumberIsSingleUse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"success","result":"success"}`))
+	}))
+	defer srv.Close()
+
+	p := newGeetestProvider("captcha-id", "secret-key", srv.URL, srv.Client())
+	proof := geetestProof(map[string]string{
+		"lot_number": "lot-1", "captcha_output": "out", "pass_token": "pass", "gen_time": "1",
+	})
+	require.NoError(t, p.Verify(context.Background(), proof))
+	require.ErrorIs(t, p.Verify(context.Background(), proof), ErrInvalid)
+}
+
 func TestGeeTest_ResponseDecodeErrorIsUnavailable(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("not json"))

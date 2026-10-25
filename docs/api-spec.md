@@ -108,7 +108,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 > 管理员 `member.manage` 可重置成员 2FA（丢失设备场景），重置动作写审计 `user.2fa.reset`；该审计失败则整体失败（fail closed）。管理员**不能重置自己**（409）——自服务移除走 `/auth/2fa/disable`（需当前密码 + TOTP/恢复码），否则该端点就成了第二因素的旁路。2FA 是**账号级**状态：目标在本组织是 owner 时只有 owner（`org.admin`）能重置；目标只要**在本组织之外还存在任何会籍**（无论角色、含已停用）就一律 403——清除账号级因素会同时削弱其登录其他组织的保护，这类跨组织用户的账号恢复只能走平台级运维（系统外）。
 
 > **v0.10.0 交互式验证码**：部署启用后，三个公开凭据入口（`/auth/login`、`/auth/2fa/verify`、`/invitations/accept`）都在密码/TOTP 校验**之前**要求 `captcha` 对象：`{response: {<provider 字段>}}`。客户端先调 `GET /auth/captcha` 取挑战。提供商：`altcha`（默认，自托管 proof-of-work，`response.payload` 为 widget 返回的 base64 payload）、`geetest`（v4，`response` 带 `lot_number`/`captcha_output`/`pass_token`/`gen_time`）、`cap`（自托管 Standalone，`response.response` 为 token）。
-> 错误码：缺 `captcha` → `400 captcha_required`；挑战过期/已用/答案错/提供商判定失败 → `400 captcha_invalid`（响应不区分账号是否存在）；提供商不可达且 `failMode=closed` → `503 captcha_unavailable`。**验证码失败不计入登录失败窗口**，只受 IP 桶约束；挑战单次使用，TTL 默认 5 分钟。compat `/api/login` 不接验证码（原生客户端无法解交互式验证码）。
+> 错误码：缺 `captcha` → `400 captcha_required`；挑战过期/已用/答案错/提供商判定失败 → `400 captcha_invalid`（响应不区分账号是否存在）；提供商不可达且 `failMode=closed` → `503 captcha_unavailable`。**验证码失败不计入登录失败窗口**，只受 IP 桶约束；**面板对三家凭据统一做本地单次消费**（Altcha 已用签名 5 分钟窗口；GeeTest `lot_number` 与 Cap token 10 分钟去重窗口，与提供商自身的限制叠加），TTL 默认 5 分钟；提供商不可达属于「无判定」而非「已用」，此时释放本地占用，同一凭据可在服务恢复后重试。compat `/api/login` 不接验证码（原生客户端无法解交互式验证码）。
 
 ### 3.2 组织与成员
 
@@ -324,8 +324,8 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 
 - `enabled=false` 时 `provider` 与 `challenge` 省略，客户端按原流程直接登录。
 - `geetest`：`params={"captcha_id":"...","script_url":"https://static.geetest.com/v4/gt4.js"}`。
-- `cap`：`params={"api_endpoint":"https://cap.example.com/<site_key>","site_key":"..."}`。
-- 挑战只对 `altcha` 携带 `maxNumber`（解题上限）；TTL 与提供商超时由部署配置，见 [部署指南 §3.2](deployment.md)。
+- `cap`：`params={"api_endpoint":"https://cap.example.com/<site_key>/","site_key":"..."}`（尾斜杠必需：widget 会拼接 `challenge`/`redeem`）。
+- 挑战只对 `altcha` 携带 `maxNumber`（解题上限）；挑战 TTL 由部署配置（`1m–10m`），外部提供商校验超时固定 3 秒，见 [部署指南 §3.2](deployment.md)。
 
 ---
 
@@ -405,10 +405,11 @@ compat 地址簿**只服务个人地址簿**（`EnsurePersonalBook`），共享�
 
 ## 6. 版本与变更管理
 
-- 契约版本随 release 演进：v0.1.0（M0）→ v0.2.0（M1）→ v0.3.0（M2）→ v0.4.0（M3，会话治理域）→ v0.5.0（设备管理增量）→ v0.6.0（成员离场）→ v0.7.0（按组织 provisioning 开关）→ v0.8.0（M4：角色模型、审计查询/导出、停用、地址簿授权与回收站、令牌、2FA）→ **v0.9.0（M5：访问控制——用户组/设备组/组规则、peers 过滤与票据准入）**
+- 契约版本随 release 演进：v0.1.0（M0）→ v0.2.0（M1）→ v0.3.0（M2）→ v0.4.0（M3，会话治理域）→ v0.5.0（设备管理增量）→ v0.6.0（成员离场）→ v0.7.0（按组织 provisioning 开关）→ v0.8.0（M4：角色模型、审计查询/导出、停用、地址簿授权与回收站、令牌、2FA）→ v0.9.0（M5：访问控制——用户组/设备组/组规则、peers 过滤与票据准入）→ **v0.10.0（M6 波次 1：交互式验证码——Altcha/GeeTest/Cap、三入口准入）**
 - v0.6.0 为**加性变更**：新增 `DELETE/PATCH /orgs/{orgId}/members/{userId}`（#39 撤销接线）。v0.5.0 的新增设备列表与 rebind 保持不变；仍不提供 `DELETE` 设备
 - v0.7.0 为**加性变更**：新增 `GET/PUT /orgs/{orgId}/provisioning` 与 `ProvisioningStatus.cleanup_pending`；既有端点请求/响应形状与字段不变
 - v0.9.0 为**加性变更**（新增 user-groups/device-groups/access-rules 端点、`access.manage` 权限目录项与 `Device.device_group_id` 字段），但**票据访问语义有变化**：签发/兑换新增访问控制判定（拒绝 `404 not_found`），停用设备的签发由成功变为 `404`（兑换仍为 `409`）；客户端需处理该分支
+- v0.10.0 为**加性变更**：新增 `GET /auth/captcha`、三个公开凭据请求的可选 `captcha` 字段与三个错误码。**行为变化仅在被部署显式启用验证码后生效**（默认关闭）：启用时三个入口新增 400/503 分支，客户端必须先取挑战；compat `/api/login` 不变
 - v0.4.0 的既有端点请求/响应形状与字段零变更，但 **`ErrorCode` 新增了 `approval_required`**（所有响应共用的 `code` 类型）——对穷尽式 `switch` 或严格枚举解码的客户端属于 **breaking**，重新生成类型后必须处理该分支（0.x 阶段按 C10 以 minor 承载，见 §3.6）
 - **契约变更的 PR 必须同步更新本文档 §3/§4 与 `openapi.yaml`**，并保证 `go generate` 零漂移
 - WEB/APP 从 `openapi.yaml` 生成类型：任何字段/形状变更视为 breaking，需在 PR 描述中标注

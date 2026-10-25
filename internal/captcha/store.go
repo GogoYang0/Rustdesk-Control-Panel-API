@@ -41,6 +41,16 @@ func (u *usedStore) Reserve(key string, ttl time.Duration) bool {
 	return true
 }
 
+// Release frees a reservation whose verification never produced a verdict
+// (transport fault or provider error), so an outage does not burn the client's
+// challenge. Releasing is safe for replay protection: the token never passed,
+// so a later attempt is still the first successful local use.
+func (u *usedStore) Release(key string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	delete(u.entries, key)
+}
+
 // evictLocked drops expired entries first, then the entry expiring soonest.
 func (u *usedStore) evictLocked(now time.Time) {
 	var oldestKey string
