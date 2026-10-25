@@ -112,12 +112,28 @@ func (s *Server) touchDevice(c *gin.Context, session *model.CompatSession, rustd
 	return err
 }
 
-// peers lists the devices of the session's organization (issue C14: the
-// client sees exactly its own tenant).
+// peers lists the devices the session's member may reach (issue C14: the
+// client sees exactly its own tenant; D4: and only what the access rules
+// allow). Owners and admins keep the whole organization, ordinary members see
+// the union of their rules, and a disabled device is never a peer (D8) — the
+// management device list stays the place where administrators see it.
 func (s *Server) peers(c *gin.Context) {
-	_, orgID, _ := sessionFrom(c)
+	uid, orgID, _ := sessionFrom(c)
+	all, allowedIDs, err := s.deps.Access.AllowedDeviceIDs(c.Request.Context(), orgID, uid)
+	if err != nil {
+		compatError(c, http.StatusInternalServerError, "could not list peers")
+		return
+	}
+	query := store.ScopedByOrg(s.deps.DB, orgID).Where("disabled = ?", false)
+	if !all {
+		if len(allowedIDs) == 0 {
+			c.JSON(http.StatusOK, gin.H{"peers": []gin.H{}})
+			return
+		}
+		query = query.Where("id IN ?", allowedIDs)
+	}
 	var devices []model.Device
-	if err := store.ScopedByOrg(s.deps.DB, orgID).Order("id").Find(&devices).Error; err != nil {
+	if err := query.Order("id").Find(&devices).Error; err != nil {
 		compatError(c, http.StatusInternalServerError, "could not list peers")
 		return
 	}

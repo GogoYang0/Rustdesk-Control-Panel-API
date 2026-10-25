@@ -17,6 +17,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/compatapi"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
@@ -47,6 +48,10 @@ func newHarness(t *testing.T) *harness {
 		&model.Device{}, &model.DeviceHeartbeat{},
 		&model.CompatSession{},
 		&model.AddressBook{}, &model.AddressBookPeer{}, &model.AddressBookTag{},
+		// Access control: peers filtering resolves the membership's builtin
+		// role and the organization's groups and rules.
+		&model.Role{}, &model.UserGroup{}, &model.UserGroupMember{},
+		&model.DeviceGroup{}, &model.AccessRule{},
 	))
 
 	issuer := auth.NewIssuer("test-secret", time.Minute, time.Hour)
@@ -90,10 +95,22 @@ func (h *harness) seedUser(t *testing.T, email, password string, verified bool) 
 
 func (h *harness) seedMembership(t *testing.T, userID, orgID uint) {
 	t.Helper()
+	h.seedMembershipKind(t, userID, orgID, model.RoleKindOwner)
+}
+
+// seedMembershipKind creates a membership carrying the builtin role row of the
+// given kind, as MigrateRoles does in production: access evaluation resolves
+// the bypass from membership.role_id and fails closed on a zero id.
+func (h *harness) seedMembershipKind(t *testing.T, userID, orgID uint, kind string) {
+	t.Helper()
+	require.NoError(t, authz.NewRoleService(h.db.DB).EnsureBuiltins(orgID))
+	role, err := authz.RoleByKindTx(h.db.DB, orgID, kind)
+	require.NoError(t, err)
 	require.NoError(t, h.db.DB.Create(&model.Membership{
 		OrganizationID: orgID,
 		UserID:         userID,
-		Role:           model.RoleOwner,
+		Role:           kind,
+		RoleID:         role.ID,
 	}).Error)
 }
 
