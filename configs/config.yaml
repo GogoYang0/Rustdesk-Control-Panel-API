@@ -119,3 +119,27 @@ session:
 # Keep this directory on storage included in operator backups.
 audit:
   archiveDir: ./data/audit-archive
+
+# Interactive captcha in front of the management login, /auth/2fa/verify and
+# /invitations/accept. Off by default. Providers:
+#   altcha   - self-hosted proof-of-work (no external service)
+#   geetest  - GeeTest v4 (server-side secondary validation)
+#   cap      - self-hosted Cap Standalone (/siteverify)
+# Provider secrets are injected from the environment and must never be stored
+# here: PANEL_CAPTCHA_ALTCHA_KEY, PANEL_CAPTCHA_GEETEST_KEY,
+# PANEL_CAPTCHA_CAP_SECRET.
+captcha:
+  enabled: false
+  provider: "altcha"
+  # closed: a provider outage blocks the three entrances (503).
+  # open:   a provider outage lets the request through (logged as an error).
+  failMode: "closed"
+  challengeTTL: 5m
+  altcha:
+    # Proof-of-work difficulty; higher costs the client more CPU.
+    maxNumber: 100000
+  geetest:
+    captchaId: ""
+  cap:
+    instanceUrl: ""
+    siteKey: ""

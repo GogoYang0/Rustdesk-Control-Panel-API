@@ -3,6 +3,8 @@ package config
 
 import (
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -21,6 +23,39 @@ type Config struct {
 	Logcollect LogcollectConfig `mapstructure:"logcollect"`
 	Session    SessionConfig    `mapstructure:"session"`
 	Audit      AuditConfig      `mapstructure:"audit"`
+	Captcha    CaptchaConfig    `mapstructure:"captcha"`
+}
+
+// CaptchaConfig enables the interactive captcha in front of the public
+// credential-checking endpoints. Secrets (Altcha HMAC key, GeeTest key, Cap
+// secret) are injected from the environment and never stored here.
+type CaptchaConfig struct {
+	Enabled      bool          `mapstructure:"enabled"`
+	Provider     string        `mapstructure:"provider"`
+	FailMode     string        `mapstructure:"failMode"`
+	ChallengeTTL time.Duration `mapstructure:"challengeTTL"`
+	Altcha       AltchaConfig  `mapstructure:"altcha"`
+	Geetest      GeetestConfig `mapstructure:"geetest"`
+	Cap          CapConfig     `mapstructure:"cap"`
+}
+
+// AltchaConfig tunes the built-in proof-of-work provider.
+type AltchaConfig struct {
+	MaxNumber int64  `mapstructure:"maxNumber"`
+	Key       string `mapstructure:"key"`
+}
+
+// GeetestConfig tunes the GeeTest v4 provider.
+type GeetestConfig struct {
+	CaptchaID string `mapstructure:"captchaId"`
+	Key       string `mapstructure:"key"`
+}
+
+// CapConfig tunes the self-hosted Cap provider.
+type CapConfig struct {
+	InstanceURL string `mapstructure:"instanceUrl"`
+	SiteKey     string `mapstructure:"siteKey"`
+	Secret      string `mapstructure:"secret"`
 }
 
 // AuditConfig tunes audit-log retention archiving.
@@ -153,6 +188,17 @@ func Load(path string) (*Config, error) {
 	if err := v.BindEnv("mail.smtp.password", "PANEL_SMTP_PASSWORD"); err != nil {
 		return nil, fmt.Errorf("bind smtp password env: %w", err)
 	}
+	// Captcha provider secrets follow the same policy: the tracked config file
+	// carries non-secret parameters only.
+	if err := v.BindEnv("captcha.altcha.key", "PANEL_CAPTCHA_ALTCHA_KEY"); err != nil {
+		return nil, fmt.Errorf("bind captcha altcha key: %w", err)
+	}
+	if err := v.BindEnv("captcha.geetest.key", "PANEL_CAPTCHA_GEETEST_KEY"); err != nil {
+		return nil, fmt.Errorf("bind captcha geetest key: %w", err)
+	}
+	if err := v.BindEnv("captcha.cap.secret", "PANEL_CAPTCHA_CAP_SECRET"); err != nil {
+		return nil, fmt.Errorf("bind captcha cap secret: %w", err)
+	}
 	v.SetDefault("mail.devMode", true)
 	v.SetDefault("mail.smtp.port", 587)
 	v.SetDefault("compat.accessTTL", "720h")
@@ -162,6 +208,13 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("logcollect.enabled", false)
 	v.SetDefault("logcollect.containerprefix", "panel-org")
 	v.SetDefault("logcollect.retentionsweepinterval", 6*time.Hour)
+	// Captcha is opt-in; Altcha is the default provider because it needs no
+	// external service.
+	v.SetDefault("captcha.enabled", false)
+	v.SetDefault("captcha.provider", "altcha")
+	v.SetDefault("captcha.failmode", "closed")
+	v.SetDefault("captcha.challengettl", 5*time.Minute)
+	v.SetDefault("captcha.altcha.maxnumber", int64(100000))
 	// Frontend origin for links inside outgoing emails.
 	v.SetDefault("web.baseurl", "http://localhost:5173")
 	if err := v.BindEnv("web.baseurl", "PANEL_WEB_BASE_URL"); err != nil {
@@ -188,8 +241,51 @@ func Load(path string) (*Config, error) {
 	if err := validateLogcollect(cfg.Logcollect); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
+	if err := validateCaptcha(cfg.Captcha); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+	}
 
 	return &cfg, nil
+}
+
+// validateCaptcha checks the structural captcha settings. Provider secrets are
+// validated by the provider builder at startup so a deployment cannot boot
+// with an enabled captcha that can never verify anything.
+func validateCaptcha(cfg CaptchaConfig) error {
+	switch cfg.Provider {
+	case "altcha", "geetest", "cap":
+	default:
+		return fmt.Errorf("captcha.provider must be altcha, geetest or cap, got %q", cfg.Provider)
+	}
+	switch cfg.FailMode {
+	case "closed", "open":
+	default:
+		return fmt.Errorf("captcha.failMode must be closed or open, got %q", cfg.FailMode)
+	}
+	if cfg.ChallengeTTL < time.Minute || cfg.ChallengeTTL > 10*time.Minute {
+		return fmt.Errorf("captcha.challengeTTL must be between 1m and 10m, got %s", cfg.ChallengeTTL)
+	}
+	if cfg.Altcha.MaxNumber < 10000 || cfg.Altcha.MaxNumber > 5000000 {
+		return fmt.Errorf("captcha.altcha.maxNumber must be between 10000 and 5000000, got %d", cfg.Altcha.MaxNumber)
+	}
+	if !cfg.Enabled {
+		return nil
+	}
+	switch cfg.Provider {
+	case "geetest":
+		if strings.TrimSpace(cfg.Geetest.CaptchaID) == "" {
+			return fmt.Errorf("captcha.geetest.captchaId is required when the geetest provider is enabled")
+		}
+	case "cap":
+		u, err := url.Parse(strings.TrimSpace(cfg.Cap.InstanceURL))
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("captcha.cap.instanceUrl must be an http(s) URL when the cap provider is enabled")
+		}
+		if strings.TrimSpace(cfg.Cap.SiteKey) == "" {
+			return fmt.Errorf("captcha.cap.siteKey is required when the cap provider is enabled")
+		}
+	}
+	return nil
 }
 
 // validateLogcollect rejects sweep intervals that would either hammer the

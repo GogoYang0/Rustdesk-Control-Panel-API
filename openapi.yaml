@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Rustdesk-Control-Panel API
-  version: 0.9.0
+  version: 0.10.0
   contact:
     name: Rustdesk-Control-Panel
     url: https://github.com/GogoYang0/Rustdesk-Control-Panel-API
@@ -3423,6 +3423,9 @@ components:
         - rate_limited：触发限流
         - internal：服务端错误
         - email_not_verified：邮箱未验证（登录被拒）
+        - captcha_required：已启用验证码但请求未携带（400）
+        - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+        - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
         - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
       enum:
         - ok
@@ -3436,6 +3439,9 @@ components:
         - email_not_verified
         - approval_required
         - two_factor_required
+        - captcha_required
+        - captcha_invalid
+        - captcha_unavailable
 
     ErrorResponse:
       type: object
@@ -3472,6 +3478,60 @@ components:
           type: string
           minLength: 8
           maxLength: 128
+        captcha:
+          $ref: "#/components/schemas/CaptchaProof"
+
+    CaptchaProof:
+      type: object
+      required:
+        - response
+      properties:
+        response:
+          type: object
+          description: |
+            提供商相关的验证凭据。`altcha` 传 `payload`（widget 返回的 base64
+            payload）；`geetest` 传 `lot_number`、`captcha_output`、`pass_token`、
+            `gen_time`；`cap` 传 `response`。
+          additionalProperties:
+            type: string
+
+    CaptchaChallengePayload:
+      type: object
+      required:
+        - params
+      properties:
+        params:
+          type: object
+          additionalProperties: true
+          description: |
+            提供商公开参数：`altcha` 为挑战 JSON（algorithm/challenge/maxnumber/
+            salt/signature）；`geetest` 为 `captcha_id`/`script_url`；`cap` 为
+            `api_endpoint`/`site_key`。
+
+    CaptchaChallenge:
+      type: object
+      required:
+        - enabled
+      properties:
+        enabled:
+          type: boolean
+        provider:
+          type: string
+        challenge:
+          $ref: "#/components/schemas/CaptchaChallengePayload"
+
+    CaptchaChallengeResponse:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/CaptchaChallenge"
 
     RefreshRequest:
       type: object
@@ -3710,6 +3770,8 @@ components:
         code:
           type: string
           description: TOTP 码或一次性恢复码
+        captcha:
+          $ref: "#/components/schemas/CaptchaProof"
 
     Org:
       type: object
@@ -4645,6 +4707,8 @@ components:
           type: string
           minLength: 8
           maxLength: 128
+        captcha:
+          $ref: "#/components/schemas/CaptchaProof"
 
     Device:
       type: object

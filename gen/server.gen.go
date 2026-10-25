@@ -207,23 +207,32 @@ func (e DeviceStatus) Valid() bool {
 
 // Defines values for ErrorCode.
 const (
-	ErrorCodeApprovalRequired  ErrorCode = "approval_required"
-	ErrorCodeConflict          ErrorCode = "conflict"
-	ErrorCodeEmailNotVerified  ErrorCode = "email_not_verified"
-	ErrorCodeForbidden         ErrorCode = "forbidden"
-	ErrorCodeInternal          ErrorCode = "internal"
-	ErrorCodeInvalidRequest    ErrorCode = "invalid_request"
-	ErrorCodeNotFound          ErrorCode = "not_found"
-	ErrorCodeOk                ErrorCode = "ok"
-	ErrorCodeRateLimited       ErrorCode = "rate_limited"
-	ErrorCodeTwoFactorRequired ErrorCode = "two_factor_required"
-	ErrorCodeUnauthorized      ErrorCode = "unauthorized"
+	ErrorCodeApprovalRequired   ErrorCode = "approval_required"
+	ErrorCodeCaptchaInvalid     ErrorCode = "captcha_invalid"
+	ErrorCodeCaptchaRequired    ErrorCode = "captcha_required"
+	ErrorCodeCaptchaUnavailable ErrorCode = "captcha_unavailable"
+	ErrorCodeConflict           ErrorCode = "conflict"
+	ErrorCodeEmailNotVerified   ErrorCode = "email_not_verified"
+	ErrorCodeForbidden          ErrorCode = "forbidden"
+	ErrorCodeInternal           ErrorCode = "internal"
+	ErrorCodeInvalidRequest     ErrorCode = "invalid_request"
+	ErrorCodeNotFound           ErrorCode = "not_found"
+	ErrorCodeOk                 ErrorCode = "ok"
+	ErrorCodeRateLimited        ErrorCode = "rate_limited"
+	ErrorCodeTwoFactorRequired  ErrorCode = "two_factor_required"
+	ErrorCodeUnauthorized       ErrorCode = "unauthorized"
 )
 
 // Valid indicates whether the value is a known member of the ErrorCode enum.
 func (e ErrorCode) Valid() bool {
 	switch e {
 	case ErrorCodeApprovalRequired:
+		return true
+	case ErrorCodeCaptchaInvalid:
+		return true
+	case ErrorCodeCaptchaRequired:
+		return true
+	case ErrorCodeCaptchaUnavailable:
 		return true
 	case ErrorCodeConflict:
 		return true
@@ -540,6 +549,9 @@ type APITokenListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode  `json:"code"`
 	Data    []APIToken `json:"data"`
@@ -591,6 +603,9 @@ type AccessRuleListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode    `json:"code"`
 	Data    []AccessRule `json:"data"`
@@ -609,6 +624,9 @@ type AccessRuleResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode  `json:"code"`
 	Data    AccessRule `json:"data"`
@@ -683,6 +701,9 @@ type AddressBookGrantListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode          `json:"code"`
 	Data    []AddressBookGrant `json:"data"`
@@ -713,6 +734,9 @@ type AddressBookGrantResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode        `json:"code"`
 	Data    AddressBookGrant `json:"data"`
@@ -731,6 +755,9 @@ type AddressBookListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode     `json:"code"`
 	Data    []AddressBook `json:"data"`
@@ -782,6 +809,9 @@ type AddressBookRecycleBinResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode                   `json:"code"`
 	Data    []AddressBookRecycleBinItem `json:"data"`
@@ -800,6 +830,9 @@ type AddressBookResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode   `json:"code"`
 	Data    AddressBook `json:"data"`
@@ -859,6 +892,9 @@ type AlertListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    AlertPage `json:"data"`
@@ -964,6 +1000,9 @@ type ApprovalListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode    `json:"code"`
 	Data    ApprovalPage `json:"data"`
@@ -990,6 +1029,9 @@ type ApprovalResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    Approval  `json:"data"`
@@ -1034,6 +1076,9 @@ type AuditLogListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode    `json:"code"`
 	Data    AuditLogPage `json:"data"`
@@ -1074,10 +1119,57 @@ type AuditRetentionResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode      `json:"code"`
 	Data    AuditRetention `json:"data"`
 	Message string         `json:"message"`
+}
+
+// CaptchaChallenge defines model for CaptchaChallenge.
+type CaptchaChallenge struct {
+	Challenge *CaptchaChallengePayload `json:"challenge,omitempty"`
+	Enabled   bool                     `json:"enabled"`
+	Provider  *string                  `json:"provider,omitempty"`
+}
+
+// CaptchaChallengePayload defines model for CaptchaChallengePayload.
+type CaptchaChallengePayload struct {
+	// Params 提供商公开参数：`altcha` 为挑战 JSON（algorithm/challenge/maxnumber/
+	// salt/signature）；`geetest` 为 `captcha_id`/`script_url`；`cap` 为
+	// `api_endpoint`/`site_key`。
+	Params map[string]interface{} `json:"params"`
+}
+
+// CaptchaChallengeResponse defines model for CaptchaChallengeResponse.
+type CaptchaChallengeResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode         `json:"code"`
+	Data    *CaptchaChallenge `json:"data,omitempty"`
+	Message string            `json:"message"`
+}
+
+// CaptchaProof defines model for CaptchaProof.
+type CaptchaProof struct {
+	// Response 提供商相关的验证凭据。`altcha` 传 `payload`（widget 返回的 base64
+	// payload）；`geetest` 传 `lot_number`、`captcha_output`、`pass_token`、
+	// `gen_time`；`cap` 传 `response`。
+	Response map[string]string `json:"response"`
 }
 
 // Device defines model for Device.
@@ -1149,6 +1241,9 @@ type DeviceGroupDeleteResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode             `json:"code"`
 	Data    DeviceGroupDeleteData `json:"data"`
@@ -1173,6 +1268,9 @@ type DeviceGroupDevicesResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode                 `json:"code"`
 	Data    DeviceGroupMemberMutation `json:"data"`
@@ -1191,6 +1289,9 @@ type DeviceGroupListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode     `json:"code"`
 	Data    []DeviceGroup `json:"data"`
@@ -1223,6 +1324,9 @@ type DeviceGroupResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode   `json:"code"`
 	Data    DeviceGroup `json:"data"`
@@ -1241,6 +1345,9 @@ type DeviceListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode  `json:"code"`
 	Data    DevicePage `json:"data"`
@@ -1273,6 +1380,9 @@ type DeviceResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    Device    `json:"data"`
@@ -1294,6 +1404,9 @@ type EmailVerificationRequest struct {
 // - rate_limited：触发限流
 // - internal：服务端错误
 // - email_not_verified：邮箱未验证（登录被拒）
+// - captcha_required：已启用验证码但请求未携带（400）
+// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 // - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 type ErrorCode string
 
@@ -1309,6 +1422,9 @@ type ErrorResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code ErrorCode `json:"code"`
 
@@ -1333,8 +1449,9 @@ type InvitationRole string
 
 // InvitationAcceptRequest defines model for InvitationAcceptRequest.
 type InvitationAcceptRequest struct {
-	Password string `json:"password"`
-	Token    string `json:"token"`
+	Captcha  *CaptchaProof `json:"captcha,omitempty"`
+	Password string        `json:"password"`
+	Token    string        `json:"token"`
 }
 
 // InvitationCreateRequest defines model for InvitationCreateRequest.
@@ -1358,6 +1475,9 @@ type InvitationResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode  `json:"code"`
 	Data    Invitation `json:"data"`
@@ -1383,6 +1503,9 @@ type IssuedAPITokenResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode      `json:"code"`
 	Data    IssuedAPIToken `json:"data"`
@@ -1409,6 +1532,9 @@ type IssuedTicketResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode    `json:"code"`
 	Data    IssuedTicket `json:"data"`
@@ -1449,6 +1575,9 @@ type LogEventListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode  `json:"code"`
 	Data    []LogEvent `json:"data"`
@@ -1457,6 +1586,7 @@ type LogEventListResponse struct {
 
 // LoginRequest defines model for LoginRequest.
 type LoginRequest struct {
+	Captcha  *CaptchaProof       `json:"captcha,omitempty"`
 	Email    openapi_types.Email `json:"email"`
 	Password string              `json:"password"`
 }
@@ -1493,6 +1623,9 @@ type MemberListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    []Member  `json:"data"`
@@ -1517,6 +1650,9 @@ type MemberMutationResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode      `json:"code"`
 	Data    MemberMutation `json:"data"`
@@ -1535,6 +1671,9 @@ type MemberResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    Member    `json:"data"`
@@ -1566,6 +1705,9 @@ type OkResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Message string    `json:"message"`
@@ -1595,6 +1737,9 @@ type OrgListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    []Org     `json:"data"`
@@ -1613,6 +1758,9 @@ type OrgResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    Org       `json:"data"`
@@ -1641,6 +1789,9 @@ type PermissionListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode    `json:"code"`
 	Data    []Permission `json:"data"`
@@ -1678,6 +1829,9 @@ type PolicyListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    []Policy  `json:"data"`
@@ -1728,6 +1882,9 @@ type PolicyResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    Policy    `json:"data"`
@@ -1746,6 +1903,9 @@ type ProvisioningResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode          `json:"code"`
 	Data    ProvisioningStatus `json:"data"`
@@ -1834,6 +1994,9 @@ type RoleListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    []Role    `json:"data"`
@@ -1852,6 +2015,9 @@ type RoleResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    Role      `json:"data"`
@@ -2048,6 +2214,9 @@ type SessionDetailResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode     `json:"code"`
 	Data    SessionDetail `json:"data"`
@@ -2077,6 +2246,9 @@ type SessionListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode   `json:"code"`
 	Data    SessionPage `json:"data"`
@@ -2108,6 +2280,9 @@ type SessionResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code ErrorCode `json:"code"`
 
@@ -2199,6 +2374,9 @@ type TOTPRecoveryCodesResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode         `json:"code"`
 	Data    TOTPRecoveryCodes `json:"data"`
@@ -2226,6 +2404,9 @@ type TOTPSetupResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    TOTPSetup `json:"data"`
@@ -2234,7 +2415,8 @@ type TOTPSetupResponse struct {
 
 // TOTPVerifyRequest defines model for TOTPVerifyRequest.
 type TOTPVerifyRequest struct {
-	ChallengeToken string `json:"challenge_token"`
+	Captcha        *CaptchaProof `json:"captcha,omitempty"`
+	ChallengeToken string        `json:"challenge_token"`
 
 	// Code TOTP 码或一次性恢复码
 	Code string `json:"code"`
@@ -2289,6 +2471,9 @@ type TicketResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    Ticket    `json:"data"`
@@ -2330,6 +2515,9 @@ type TokenResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    TokenPair `json:"data"`
@@ -2376,6 +2564,9 @@ type UserGroupDeleteResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode           `json:"code"`
 	Data    UserGroupDeleteData `json:"data"`
@@ -2401,6 +2592,9 @@ type UserGroupListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode   `json:"code"`
 	Data    []UserGroup `json:"data"`
@@ -2434,6 +2628,9 @@ type UserGroupMembersResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode               `json:"code"`
 	Data    UserGroupMemberMutation `json:"data"`
@@ -2457,6 +2654,9 @@ type UserGroupResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    UserGroup `json:"data"`
