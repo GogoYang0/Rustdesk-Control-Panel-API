@@ -113,6 +113,26 @@ func (s *Service) CanAccess(ctx context.Context, orgID, userID, deviceID uint) (
 	return false, nil
 }
 
+// DeviceDisabled reports whether the device exists in the tenant and is
+// disabled. The ticket redemption path uses it to keep the documented conflict
+// response for a ticket issued before an administrator stopped the device,
+// instead of collapsing that state into the opaque access-control 404.
+func (s *Service) DeviceDisabled(ctx context.Context, orgID, deviceID uint) (bool, error) {
+	if orgID == 0 || deviceID == 0 {
+		return false, nil
+	}
+	var device model.Device
+	err := store.ScopedByOrg(s.db.WithContext(ctx), orgID).
+		Select("id", "disabled").First(&device, deviceID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return device.Disabled, nil
+}
+
 // bypassMembership resolves the membership and its role kind. bypass reports
 // whether the member is an owner or admin (D7); active reports whether the
 // membership may evaluate rules at all. A missing row, a disabled membership,
