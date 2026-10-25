@@ -135,9 +135,10 @@ func NewService(db *gorm.DB, recorder audit.TxRecorder, now func() time.Time) *S
 
 // ListUserGroups returns the organization's groups ordered by id, including the
 // reserved everyone group, with their explicit member ids for PUT round-tripping.
-func (s *Service) ListUserGroups(_ context.Context, orgID uint) ([]GroupView, error) {
+func (s *Service) ListUserGroups(ctx context.Context, orgID uint) ([]GroupView, error) {
+	db := s.db.WithContext(ctx)
 	var groups []model.UserGroup
-	if err := store.ScopedByOrg(s.db, orgID).Order("id").Find(&groups).Error; err != nil {
+	if err := store.ScopedByOrg(db, orgID).Order("id").Find(&groups).Error; err != nil {
 		return nil, err
 	}
 	views := make([]GroupView, 0, len(groups))
@@ -149,7 +150,7 @@ func (s *Service) ListUserGroups(_ context.Context, orgID uint) ([]GroupView, er
 		ids = append(ids, g.ID)
 	}
 	var members []model.UserGroupMember
-	if err := store.ScopedByOrg(s.db, orgID).
+	if err := store.ScopedByOrg(db, orgID).
 		Where("group_id IN ?", ids).Find(&members).Error; err != nil {
 		return nil, err
 	}
@@ -170,13 +171,13 @@ func (s *Service) ListUserGroups(_ context.Context, orgID uint) ([]GroupView, er
 // UserGroupView reloads one group with its explicit member ids. Create and
 // rename responses use it so their member_ids stay consistent with the list
 // (a client round-trips that shape into the PUT replacement).
-func (s *Service) UserGroupView(_ context.Context, orgID, groupID uint) (GroupView, error) {
-	group, err := groupByID(s.db, orgID, groupID)
+func (s *Service) UserGroupView(ctx context.Context, orgID, groupID uint) (GroupView, error) {
+	group, err := groupByID(s.db.WithContext(ctx), orgID, groupID)
 	if err != nil {
 		return GroupView{}, err
 	}
 	var members []model.UserGroupMember
-	if err := store.ScopedByOrg(s.db, orgID).
+	if err := store.ScopedByOrg(s.db.WithContext(ctx), orgID).
 		Where("group_id = ?", groupID).Find(&members).Error; err != nil {
 		return GroupView{}, err
 	}
@@ -189,13 +190,13 @@ func (s *Service) UserGroupView(_ context.Context, orgID, groupID uint) (GroupVi
 
 // CreateUserGroup adds a custom group. The reserved name is refused in any
 // casing, and duplicate names are rejected before the insert.
-func (s *Service) CreateUserGroup(_ context.Context, orgID, actorID uint, name string) (*model.UserGroup, error) {
+func (s *Service) CreateUserGroup(ctx context.Context, orgID, actorID uint, name string) (*model.UserGroup, error) {
 	clean, err := cleanGroupName(name)
 	if err != nil {
 		return nil, err
 	}
 	var group model.UserGroup
-	err = s.write(func(tx *gorm.DB) error {
+	err = s.write(ctx, func(tx *gorm.DB) error {
 		if err := lockOrgRow(tx, orgID); err != nil {
 			return err
 		}
@@ -227,13 +228,13 @@ func (s *Service) CreateUserGroup(_ context.Context, orgID, actorID uint, name s
 
 // RenameUserGroup renames a custom group. The everyone group can never be
 // renamed, and the new name follows the same reserved/unique rules as creation.
-func (s *Service) RenameUserGroup(_ context.Context, orgID, actorID, groupID uint, name string) (*model.UserGroup, error) {
+func (s *Service) RenameUserGroup(ctx context.Context, orgID, actorID, groupID uint, name string) (*model.UserGroup, error) {
 	clean, err := cleanGroupName(name)
 	if err != nil {
 		return nil, err
 	}
 	var updated model.UserGroup
-	err = s.write(func(tx *gorm.DB) error {
+	err = s.write(ctx, func(tx *gorm.DB) error {
 		if err := lockOrgRow(tx, orgID); err != nil {
 			return err
 		}
@@ -285,9 +286,9 @@ func (s *Service) RenameUserGroup(_ context.Context, orgID, actorID, groupID uin
 // DeleteUserGroup removes a custom group together with its member rows and the
 // rules whose source is that group. It returns how many rules were cascaded so
 // the handler can report them.
-func (s *Service) DeleteUserGroup(_ context.Context, orgID, actorID, groupID uint) (int, error) {
+func (s *Service) DeleteUserGroup(ctx context.Context, orgID, actorID, groupID uint) (int, error) {
 	cascaded := 0
-	err := s.write(func(tx *gorm.DB) error {
+	err := s.write(ctx, func(tx *gorm.DB) error {
 		if err := lockOrgRow(tx, orgID); err != nil {
 			return err
 		}
@@ -360,9 +361,9 @@ func (s *Service) DeleteUserGroup(_ context.Context, orgID, actorID, groupID uin
 // ReplaceUserGroupMembers replaces the explicit member set of a custom group.
 // Every requested user must hold a membership in the organization; one invalid
 // id rejects the whole request, and an identical set changes nothing.
-func (s *Service) ReplaceUserGroupMembers(_ context.Context, orgID, actorID, groupID uint, userIDs []uint) (removed, added int, err error) {
+func (s *Service) ReplaceUserGroupMembers(ctx context.Context, orgID, actorID, groupID uint, userIDs []uint) (removed, added int, err error) {
 	wanted := dedupeIDs(userIDs)
-	err = s.write(func(tx *gorm.DB) error {
+	err = s.write(ctx, func(tx *gorm.DB) error {
 		if err := lockOrgRow(tx, orgID); err != nil {
 			return err
 		}
@@ -437,11 +438,11 @@ func (s *Service) ReplaceUserGroupMembers(_ context.Context, orgID, actorID, gro
 
 // write runs fn inside one transaction, refusing to start without a
 // transactional recorder so an unaudited group change can never commit.
-func (s *Service) write(fn func(tx *gorm.DB) error) error {
+func (s *Service) write(ctx context.Context, fn func(tx *gorm.DB) error) error {
 	if s.recorder == nil {
 		return ErrAuditUnavailable
 	}
-	return s.db.Transaction(fn)
+	return s.db.WithContext(ctx).Transaction(fn)
 }
 
 // record writes one audit entry on the caller's transaction.
@@ -504,8 +505,18 @@ func validateMembers(tx *gorm.DB, orgID uint, ids []uint) error {
 	if len(ids) == 0 {
 		return nil
 	}
+	query := store.ScopedByOrg(tx, orgID).Model(&model.Membership{})
+	if tx.Name() != "sqlite" {
+		// Lock the validated memberships so a concurrent member removal either
+		// waits for this replacement (and deletes the fresh group rows) or
+		// commits first, in which case this request sees the user gone and
+		// rejects the whole set. Without the lock the rows validated here could
+		// be deleted underneath us and resurrected as stale group grants on
+		// re-invitation.
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
 	var found []uint
-	if err := store.ScopedByOrg(tx, orgID).Model(&model.Membership{}).
+	if err := query.
 		Where("user_id IN ?", ids).Pluck("user_id", &found).Error; err != nil {
 		return err
 	}

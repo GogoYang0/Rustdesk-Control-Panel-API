@@ -203,6 +203,22 @@ func TestAccess_UserGroupCrossTenantNotFound(t *testing.T) {
 	require.Equal(t, "Team B", name, "a cross-tenant request must not touch the other organization's group")
 }
 
+// TestAccess_ContextCancellationStopsQueries pins context propagation: a
+// cancelled request must abort the read/write instead of keeping a database
+// connection busy after the client is gone.
+func TestAccess_ContextCancellationStopsQueries(t *testing.T) {
+	st, svc, org, _ := newGroupFixture(t)
+	_ = st
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := svc.ListUserGroups(ctx, org.ID)
+	require.ErrorIs(t, err, context.Canceled)
+
+	_, err = svc.CreateUserGroup(ctx, org.ID, 1, "Team")
+	require.ErrorIs(t, err, context.Canceled)
+}
+
 // TestAccess_UserGroupWriteFailsClosed pins the audit contract: without a
 // transactional recorder the mutation must not happen at all.
 func TestAccess_UserGroupWriteFailsClosed(t *testing.T) {
