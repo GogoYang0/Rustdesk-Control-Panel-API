@@ -2,6 +2,7 @@ package access_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -73,7 +74,12 @@ func TestAccess_DeviceMoveClearsPreviousGroup(t *testing.T) {
 		Find(&audits).Error)
 	require.Len(t, audits, 1)
 	require.Contains(t, audits[0].Detail, `"moved_from"`)
-	require.Contains(t, audits[0].Detail, `"`+fmt.Sprint(device.ID)+`"`)
+	var detail struct {
+		MovedFrom map[string]uint `json:"moved_from"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(audits[0].Detail), &detail))
+	require.Equal(t, groupA.ID, detail.MovedFrom[fmt.Sprint(device.ID)],
+		"the audit must name the group the device was moved out of")
 }
 
 // TestAccess_DeleteDeviceGroupClearsDevicesAndRules pins deletion: devices
