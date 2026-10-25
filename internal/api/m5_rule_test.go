@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -96,4 +97,21 @@ func TestAccess_AccessRuleEndpoints(t *testing.T) {
 
 	w = h.do(t, http.MethodGet, rulesURL, nil, memberToken)
 	require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+}
+
+// TestAccess_InvalidPathParameterUsesErrorResponse pins the wrapper error
+// handler: a non-integer path parameter must produce the contract's
+// {code,message} body, not gin's generic {"msg":...} envelope.
+func TestAccess_InvalidPathParameterUsesErrorResponse(t *testing.T) {
+	h, _, _, _, _, _, adminToken, _ := m4Org(t)
+
+	w := h.do(t, http.MethodGet, "/api/v1/orgs/not-a-number/access-rules", nil, adminToken)
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+	var resp struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp), w.Body.String())
+	require.Equal(t, "invalid_request", resp.Code)
+	require.NotEmpty(t, resp.Message)
 }
