@@ -388,10 +388,26 @@ func (a *AdminAPI) DisableTOTP(c *gin.Context) {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "password and code are required")
 		return
 	}
+	// Disabling checks a password and a TOTP code, so it is a credential oracle
+	// like the login second step and shares the same account/IP failure budget
+	// (CWE-307). The per-IP rate bucket is deliberately not consumed here: this
+	// path already requires an access JWT and normal 2FA management issues
+	// several requests in a row, so spending the unauthenticated login budget
+	// would lock legitimate users out of their own account settings.
+	ip := c.ClientIP()
+	account := fmt.Sprint(uid)
+	if a.totpGuard.Locked(account, ip) {
+		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "account temporarily locked")
+		return
+	}
 	if err := a.totp.Disable(uid, req.Password, req.Code); err != nil {
+		if errors.Is(err, auth.ErrInvalidTOTP) || errors.Is(err, auth.ErrInvalidPassword) {
+			a.totpGuard.RecordFailure(account, ip)
+		}
 		a.writeTOTPError(c, err, "disable two-factor failed")
 		return
 	}
+	a.totpGuard.Reset(account, ip)
 	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
 }
 
@@ -406,11 +422,24 @@ func (a *AdminAPI) RegenerateRecoveryCodes(c *gin.Context) {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "password and code are required")
 		return
 	}
+	// Same credential-oracle reasoning as DisableTOTP: the password and the
+	// code are verified here, so failures spend the shared account/IP budget.
+	// The unauthenticated per-IP login bucket is not consumed (see DisableTOTP).
+	ip := c.ClientIP()
+	account := fmt.Sprint(uid)
+	if a.totpGuard.Locked(account, ip) {
+		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "account temporarily locked")
+		return
+	}
 	codes, err := a.totp.RegenerateRecovery(uid, req.Password, req.Code)
 	if err != nil {
+		if errors.Is(err, auth.ErrInvalidTOTP) || errors.Is(err, auth.ErrInvalidPassword) {
+			a.totpGuard.RecordFailure(account, ip)
+		}
 		a.writeTOTPError(c, err, "regenerate recovery codes failed")
 		return
 	}
+	a.totpGuard.Reset(account, ip)
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, gen.TOTPRecoveryCodesResponse{
 		Code:    gen.ErrorCodeOk,
@@ -585,7 +614,9 @@ var (
 func (a *AdminAPI) writeTOTPError(c *gin.Context, err error, logMsg string) {
 	switch {
 	case errors.Is(err, auth.ErrInvalidTOTP), errors.Is(err, auth.ErrInvalidPassword):
-		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, err.Error())
+		// One message for both factors: saying which check failed would turn
+		// every caller into a password/TOTP oracle.
+		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "invalid password or code")
 	case errors.Is(err, auth.ErrTOTPNotSetup), errors.Is(err, auth.ErrTOTPAlreadyEnabled):
 		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, err.Error())
 	default:
