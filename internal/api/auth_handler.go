@@ -475,6 +475,11 @@ func (a *AdminAPI) VerifyTOTP(c *gin.Context) {
 		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "account temporarily locked")
 		return
 	}
+	// Same ordering as the password step: the captcha runs before the factor
+	// check, so a wrong proof never reaches the TOTP verification path.
+	if !a.requireCaptcha(c, req.Captcha) {
+		return
+	}
 	if err := a.totp.VerifyLogin(uid, req.Code); err != nil {
 		if errors.Is(err, auth.ErrInvalidTOTP) || errors.Is(err, auth.ErrInvalidPassword) {
 			a.totpGuard.RecordFailure(account, ip)
