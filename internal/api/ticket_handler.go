@@ -103,15 +103,18 @@ func (a *AdminAPI) RedeemTicket(c *gin.Context, orgId int64, ticketId int64) {
 		return
 	}
 
-	// The redeem-side check is judged against the redeemer (D9): a member whose
-	// rules were tightened after issuance cannot consume an old ticket. The
-	// ticket row fixes the device, so loading it here keeps that decision
-	// identical to the issuance gate.
-	ticket, err := a.tickets.Ticket(c.Request.Context(), uint(orgId), uint(ticketId))
+	// Validate the secret and the terminal states without consuming anything
+	// before any access-dependent response: a wrong token must answer the same
+	// 409 for every device, otherwise it could probe whether the device is
+	// disabled (CWE-203). The atomic redemption repeats the check inside its
+	// transaction, so the ticket stays one-shot.
+	ticket, err := a.tickets.ValidateRedeem(c.Request.Context(), uint(orgId), uint(ticketId), req.Token)
 	if err != nil {
 		a.writeTicketError(c, err)
 		return
 	}
+	// The admission decision is judged against the redeemer (D9): a member
+	// whose rules were tightened after issuance cannot consume an old ticket.
 	allowed, err := a.deps.Access.CanAccess(c.Request.Context(), uint(orgId), uid, ticket.DeviceID)
 	if err != nil {
 		a.deps.Logger.Error("ticket access evaluation failed", zap.Error(err))

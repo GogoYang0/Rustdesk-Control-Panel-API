@@ -265,3 +265,65 @@ func TestAccess_RedeemDisabledDeviceKeepsConflictAndAudits(t *testing.T) {
 	require.NoError(t, store.WithoutTenantScope(h.db.DB).First(&ticket, issued.Data.Ticket.Id).Error)
 	require.Nil(t, ticket.UsedAt, "a refused redemption must not consume the ticket")
 }
+
+// TestAccess_RedeemWrongTokenIsUniformConflict pins the CWE-203 fix: the ticket
+// secret is validated before any access-dependent response, so a wrong token
+// answers the same 409 whether the device is enabled or disabled and never
+// writes an access-denial audit.
+func TestAccess_RedeemWrongTokenIsUniformConflict(t *testing.T) {
+	h, orgID, _, _, _, _, _, memberToken := m4Org(t)
+	dev := seedDevice(t, h, orgID, "200000007")
+
+	w := h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgID)+"/tickets",
+		map[string]any{"device_id": dev.ID}, memberToken)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	var issued issuedBody
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &issued))
+
+	require.NoError(t, store.ScopedByOrg(h.db.DB, uint(orgID)).Model(&model.Device{}).
+		Where("id = ?", dev.ID).Update("disabled", true).Error)
+
+	w = h.do(t, http.MethodPost, ticketPath(orgID, issued.Data.Ticket.Id)+"/redeem",
+		map[string]any{"token": "not-the-ticket-token"}, memberToken)
+	require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
+	require.Equal(t, "conflict", decodeErrorCode(t, w.Body.Bytes()))
+	require.Empty(t, auditRowsByAction(t, h, "session.ticket.denied"),
+		"a wrong token must not reach the access-denial audit")
+
+	var ticket model.Ticket
+	require.NoError(t, store.WithoutTenantScope(h.db.DB).First(&ticket, issued.Data.Ticket.Id).Error)
+	require.Nil(t, ticket.UsedAt)
+}
+
+// TestAccess_RedeemTokenCheckedBeforeAccess pins the ordering: even for a
+// member whose rules were removed, a wrong token is the uniform 409 while the
+// correct token reaches the access 404 (which is audited).
+func TestAccess_RedeemTokenCheckedBeforeAccess(t *testing.T) {
+	h, orgID, _, _, member, _, _, memberToken := m4Org(t)
+	svc := m5AccessService(h)
+	clearAccessRules(t, svc, orgID)
+	dev := seedDevice(t, h, orgID, "200000008")
+	grantDeviceToMember(t, svc, orgID, member.ID, dev.ID)
+
+	w := h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgID)+"/tickets",
+		map[string]any{"device_id": dev.ID}, memberToken)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	var issued issuedBody
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &issued))
+
+	clearAccessRules(t, svc, orgID)
+
+	w = h.do(t, http.MethodPost, ticketPath(orgID, issued.Data.Ticket.Id)+"/redeem",
+		map[string]any{"token": "not-the-ticket-token"}, memberToken)
+	require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
+	require.Equal(t, "conflict", decodeErrorCode(t, w.Body.Bytes()))
+	require.Empty(t, auditRowsByAction(t, h, "session.ticket.denied"))
+
+	w = h.do(t, http.MethodPost, ticketPath(orgID, issued.Data.Ticket.Id)+"/redeem",
+		map[string]any{"token": issued.Data.Token}, memberToken)
+	require.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
+	require.Equal(t, "not_found", decodeErrorCode(t, w.Body.Bytes()))
+	denied := auditRowsByAction(t, h, "session.ticket.denied")
+	require.Len(t, denied, 1)
+	require.Contains(t, denied[0].Detail, `"reason":"access_control"`)
+}
