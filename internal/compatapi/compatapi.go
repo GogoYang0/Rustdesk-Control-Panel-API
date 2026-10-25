@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/access"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/addressbook"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
@@ -39,7 +40,11 @@ type Deps struct {
 	Guard   *limit.LoginGuard
 	// Books owns the address book domain; nil falls back to a service on
 	// the same DB.
-	Books     *addressbook.Service
+	Books *addressbook.Service
+	// Access owns device visibility and reachability. The peer list and (in
+	// the ticket task) ticket issue/redemption share this one evaluation; nil
+	// falls back to a read-only service on the same DB.
+	Access    *access.Service
 	Now       func() time.Time
 	AccessTTL time.Duration
 }
@@ -73,6 +78,11 @@ func Mount(r gin.IRouter, d Deps) *Server {
 	}
 	if d.Books == nil && d.DB != nil {
 		d.Books = addressbook.NewService(d.DB)
+	}
+	if d.Access == nil && d.DB != nil {
+		// Evaluation only reads; a nil recorder keeps the service read-only,
+		// which is all the compat endpoints need.
+		d.Access = access.NewService(d.DB, nil, nil)
 	}
 	if d.AccessTTL == 0 {
 		d.AccessTTL = 720 * time.Hour

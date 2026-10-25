@@ -28,4 +28,8 @@ func registerDefaultScopedModels() {
 	RegisterScopedModel(&model.Policy{})
 	RegisterScopedModel(&model.Approval{})
 	RegisterScopedModel(&model.Alert{})
+	RegisterScopedModel(&model.UserGroup{})
+	RegisterScopedModel(&model.UserGroupMember{})
+	RegisterScopedModel(&model.DeviceGroup{})
+	RegisterScopedModel(&model.AccessRule{})
 }

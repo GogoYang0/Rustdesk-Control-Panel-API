@@ -36,8 +36,12 @@ type Device struct {
 	Disabled   bool       `gorm:"not null;default:false" json:"disabled"`
 	DisabledAt *time.Time `json:"disabled_at,omitempty"`
 	DisabledBy uint       `gorm:"not null;default:0" json:"disabled_by,omitempty"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
+	// DeviceGroupID is the single device group this device belongs to. A device
+	// is in at most one group; moving it rewrites this column inside the same
+	// transaction, and deleting its group clears it.
+	DeviceGroupID *uint     `gorm:"index" json:"device_group_id"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // OnlineWindow is how fresh a heartbeat must be for the device to count as

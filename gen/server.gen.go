@@ -13,6 +13,24 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for AccessRuleTargetKind.
+const (
+	AccessRuleTargetKindAllDevices  AccessRuleTargetKind = "all_devices"
+	AccessRuleTargetKindDeviceGroup AccessRuleTargetKind = "device_group"
+)
+
+// Valid indicates whether the value is a known member of the AccessRuleTargetKind enum.
+func (e AccessRuleTargetKind) Valid() bool {
+	switch e {
+	case AccessRuleTargetKindAllDevices:
+		return true
+	case AccessRuleTargetKindDeviceGroup:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AddressBookScope.
 const (
 	AddressBookScopePersonal AddressBookScope = "personal"
@@ -72,16 +90,16 @@ func (e AddressBookGrantAccess) Valid() bool {
 
 // Defines values for AddressBookGrantKind.
 const (
-	Everyone AddressBookGrantKind = "everyone"
-	User     AddressBookGrantKind = "user"
+	AddressBookGrantKindEveryone AddressBookGrantKind = "everyone"
+	AddressBookGrantKindUser     AddressBookGrantKind = "user"
 )
 
 // Valid indicates whether the value is a known member of the AddressBookGrantKind enum.
 func (e AddressBookGrantKind) Valid() bool {
 	switch e {
-	case Everyone:
+	case AddressBookGrantKindEveryone:
 		return true
-	case User:
+	case AddressBookGrantKindUser:
 		return true
 	default:
 		return false
@@ -439,6 +457,24 @@ func (e SessionStatus) Valid() bool {
 	}
 }
 
+// Defines values for UserGroupKind.
+const (
+	UserGroupKindCustom   UserGroupKind = "custom"
+	UserGroupKindEveryone UserGroupKind = "everyone"
+)
+
+// Valid indicates whether the value is a known member of the UserGroupKind enum.
+func (e UserGroupKind) Valid() bool {
+	switch e {
+	case UserGroupKindCustom:
+		return true
+	case UserGroupKindEveryone:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ListLogEventsParamsLevel.
 const (
 	ListLogEventsParamsLevelError ListLogEventsParamsLevel = "error"
@@ -509,6 +545,79 @@ type APITokenListResponse struct {
 	Data    []APIToken `json:"data"`
 	Message string     `json:"message"`
 }
+
+// AccessRule defines model for AccessRule.
+type AccessRule struct {
+	CreatedAt     time.Time `json:"created_at"`
+	Id            int64     `json:"id"`
+	SourceGroupId int64     `json:"source_group_id"`
+
+	// SourceGroupName 源用户组名（含内置 `everyone`）
+	SourceGroupName string `json:"source_group_name"`
+
+	// TargetGroupId 设备组 id；`all_devices` 时为 null
+	TargetGroupId *int64 `json:"target_group_id"`
+
+	// TargetGroupName 设备组名；`all_devices` 时为空字符串
+	TargetGroupName string `json:"target_group_name"`
+
+	// TargetKind - device_group：规则指向一个设备组（`target_group_id` 必填）
+	// - all_devices：规则指向组织内全部设备（`target_group_id` 必须为空）
+	TargetKind AccessRuleTargetKind `json:"target_kind"`
+}
+
+// AccessRuleCreateRequest defines model for AccessRuleCreateRequest.
+type AccessRuleCreateRequest struct {
+	// SourceGroupId 本组织的用户组 id（含 `everyone`）
+	SourceGroupId int64 `json:"source_group_id"`
+
+	// TargetGroupId 设备组 id；`device_group` 时必填，`all_devices` 时不得给出
+	TargetGroupId *int64 `json:"target_group_id,omitempty"`
+
+	// TargetKind - device_group：规则指向一个设备组（`target_group_id` 必填）
+	// - all_devices：规则指向组织内全部设备（`target_group_id` 必须为空）
+	TargetKind AccessRuleTargetKind `json:"target_kind"`
+}
+
+// AccessRuleListResponse defines model for AccessRuleListResponse.
+type AccessRuleListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode    `json:"code"`
+	Data    []AccessRule `json:"data"`
+	Message string       `json:"message"`
+}
+
+// AccessRuleResponse defines model for AccessRuleResponse.
+type AccessRuleResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode  `json:"code"`
+	Data    AccessRule `json:"data"`
+	Message string     `json:"message"`
+}
+
+// AccessRuleTargetKind - device_group：规则指向一个设备组（`target_group_id` 必填）
+// - all_devices：规则指向组织内全部设备（`target_group_id` 必须为空）
+type AccessRuleTargetKind string
 
 // AddressBook defines model for AddressBook.
 type AddressBook struct {
@@ -976,6 +1085,9 @@ type Device struct {
 	// Bound 是否已绑定某个客户端实例（重置绑定后为 false）
 	Bound bool `json:"bound"`
 
+	// DeviceGroupId 设备所属设备组 id；null 表示未分组。一台设备只能属于一个设备组。
+	DeviceGroupId *int64 `json:"device_group_id"`
+
 	// Disabled 设备是否已被停用（停用期间拒绝认领、心跳与票据兑换）
 	Disabled   bool         `json:"disabled"`
 	Id         int64        `json:"id"`
@@ -998,6 +1110,123 @@ type DeviceCreateRequest struct {
 type DeviceDisableRequest struct {
 	// Disabled true 停用设备，false 恢复
 	Disabled bool `json:"disabled"`
+}
+
+// DeviceGroup defines model for DeviceGroup.
+type DeviceGroup struct {
+	CreatedAt time.Time `json:"created_at"`
+
+	// DeviceIds 当前属于该组的设备 id；一台设备只属于一个组
+	DeviceIds []int64   `json:"device_ids"`
+	Id        int64     `json:"id"`
+	Name      string    `json:"name"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// DeviceGroupCreateRequest defines model for DeviceGroupCreateRequest.
+type DeviceGroupCreateRequest struct {
+	Name string `json:"name"`
+}
+
+// DeviceGroupDeleteData defines model for DeviceGroupDeleteData.
+type DeviceGroupDeleteData struct {
+	// RemovedRules 随组级联删除的访问规则数
+	RemovedRules int `json:"removed_rules"`
+
+	// UngroupedDevices 解除分组（device_group_id 置空）的设备数
+	UngroupedDevices int `json:"ungrouped_devices"`
+}
+
+// DeviceGroupDeleteResponse defines model for DeviceGroupDeleteResponse.
+type DeviceGroupDeleteResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode             `json:"code"`
+	Data    DeviceGroupDeleteData `json:"data"`
+	Message string                `json:"message"`
+}
+
+// DeviceGroupDevicesRequest defines model for DeviceGroupDevicesRequest.
+type DeviceGroupDevicesRequest struct {
+	// DeviceIds 全量设备集合；所有 id 必须属于本组织，否则整单 400
+	DeviceIds []int64 `json:"device_ids"`
+}
+
+// DeviceGroupDevicesResponse defines model for DeviceGroupDevicesResponse.
+type DeviceGroupDevicesResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode                 `json:"code"`
+	Data    DeviceGroupMemberMutation `json:"data"`
+	Message string                    `json:"message"`
+}
+
+// DeviceGroupListResponse defines model for DeviceGroupListResponse.
+type DeviceGroupListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode     `json:"code"`
+	Data    []DeviceGroup `json:"data"`
+	Message string        `json:"message"`
+}
+
+// DeviceGroupMemberMutation defines model for DeviceGroupMemberMutation.
+type DeviceGroupMemberMutation struct {
+	// Added 本次移入本组的设备数（含从其他组移入）
+	Added int `json:"added"`
+
+	// Removed 本次从本组释放为未分组的设备数
+	Removed int `json:"removed"`
+}
+
+// DeviceGroupRenameRequest defines model for DeviceGroupRenameRequest.
+type DeviceGroupRenameRequest struct {
+	Name string `json:"name"`
+}
+
+// DeviceGroupResponse defines model for DeviceGroupResponse.
+type DeviceGroupResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode   `json:"code"`
+	Data    DeviceGroup `json:"data"`
+	Message string      `json:"message"`
 }
 
 // DeviceListResponse defines model for DeviceListResponse.
@@ -2107,6 +2336,133 @@ type TokenResponse struct {
 	Message string    `json:"message"`
 }
 
+// UserGroup defines model for UserGroup.
+type UserGroup struct {
+	CreatedAt time.Time `json:"created_at"`
+	Id        int64     `json:"id"`
+
+	// Kind - everyone：每个组织唯一的保留组，成员隐式（全部组织成员），不可改名/删除，
+	//   成员集合不可编辑
+	// - custom：组织自建组，成员由管理面显式维护
+	Kind UserGroupKind `json:"kind"`
+
+	// MemberIds 显式成员 id；everyone 组恒为空
+	MemberIds []int64   `json:"member_ids"`
+	Name      string    `json:"name"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// UserGroupCreateRequest defines model for UserGroupCreateRequest.
+type UserGroupCreateRequest struct {
+	// Name 组名；`everyone` 为保留名（不区分大小写）
+	Name string `json:"name"`
+}
+
+// UserGroupDeleteData defines model for UserGroupDeleteData.
+type UserGroupDeleteData struct {
+	// RemovedRules 随组级联删除的访问规则数
+	RemovedRules int `json:"removed_rules"`
+}
+
+// UserGroupDeleteResponse defines model for UserGroupDeleteResponse.
+type UserGroupDeleteResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode           `json:"code"`
+	Data    UserGroupDeleteData `json:"data"`
+	Message string              `json:"message"`
+}
+
+// UserGroupKind - everyone：每个组织唯一的保留组，成员隐式（全部组织成员），不可改名/删除，
+//
+//	成员集合不可编辑
+//
+// - custom：组织自建组，成员由管理面显式维护
+type UserGroupKind string
+
+// UserGroupListResponse defines model for UserGroupListResponse.
+type UserGroupListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode   `json:"code"`
+	Data    []UserGroup `json:"data"`
+	Message string      `json:"message"`
+}
+
+// UserGroupMemberMutation defines model for UserGroupMemberMutation.
+type UserGroupMemberMutation struct {
+	// Added 本次新增的成员数
+	Added int `json:"added"`
+
+	// Removed 本次移除的成员数
+	Removed int `json:"removed"`
+}
+
+// UserGroupMembersRequest defines model for UserGroupMembersRequest.
+type UserGroupMembersRequest struct {
+	// UserIds 全量成员集合；所有 id 必须属于本组织，否则整单 400
+	UserIds []int64 `json:"user_ids"`
+}
+
+// UserGroupMembersResponse defines model for UserGroupMembersResponse.
+type UserGroupMembersResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode               `json:"code"`
+	Data    UserGroupMemberMutation `json:"data"`
+	Message string                  `json:"message"`
+}
+
+// UserGroupRenameRequest defines model for UserGroupRenameRequest.
+type UserGroupRenameRequest struct {
+	Name string `json:"name"`
+}
+
+// UserGroupResponse defines model for UserGroupResponse.
+type UserGroupResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode `json:"code"`
+	Data    UserGroup `json:"data"`
+	Message string    `json:"message"`
+}
+
 // BadRequest defines model for BadRequest.
 type BadRequest = ErrorResponse
 
@@ -2251,6 +2607,9 @@ type AcceptInvitationJSONRequestBody = InvitationAcceptRequest
 // CreateOrgJSONRequestBody defines body for CreateOrg for application/json ContentType.
 type CreateOrgJSONRequestBody = OrgCreateRequest
 
+// CreateAccessRuleJSONRequestBody defines body for CreateAccessRule for application/json ContentType.
+type CreateAccessRuleJSONRequestBody = AccessRuleCreateRequest
+
 // CreateAddressBookJSONRequestBody defines body for CreateAddressBook for application/json ContentType.
 type CreateAddressBookJSONRequestBody = AddressBookCreateRequest
 
@@ -2274,6 +2633,15 @@ type DecideApprovalJSONRequestBody = ApprovalDecisionRequest
 
 // SetAuditRetentionJSONRequestBody defines body for SetAuditRetention for application/json ContentType.
 type SetAuditRetentionJSONRequestBody = AuditRetentionRequest
+
+// CreateDeviceGroupJSONRequestBody defines body for CreateDeviceGroup for application/json ContentType.
+type CreateDeviceGroupJSONRequestBody = DeviceGroupCreateRequest
+
+// RenameDeviceGroupJSONRequestBody defines body for RenameDeviceGroup for application/json ContentType.
+type RenameDeviceGroupJSONRequestBody = DeviceGroupRenameRequest
+
+// ReplaceDeviceGroupDevicesJSONRequestBody defines body for ReplaceDeviceGroupDevices for application/json ContentType.
+type ReplaceDeviceGroupDevicesJSONRequestBody = DeviceGroupDevicesRequest
 
 // CreateDeviceJSONRequestBody defines body for CreateDevice for application/json ContentType.
 type CreateDeviceJSONRequestBody = DeviceCreateRequest
@@ -2310,6 +2678,15 @@ type IssueTicketJSONRequestBody = TicketCreateRequest
 
 // RedeemTicketJSONRequestBody defines body for RedeemTicket for application/json ContentType.
 type RedeemTicketJSONRequestBody = TicketRedeemRequest
+
+// CreateUserGroupJSONRequestBody defines body for CreateUserGroup for application/json ContentType.
+type CreateUserGroupJSONRequestBody = UserGroupCreateRequest
+
+// RenameUserGroupJSONRequestBody defines body for RenameUserGroup for application/json ContentType.
+type RenameUserGroupJSONRequestBody = UserGroupRenameRequest
+
+// ReplaceUserGroupMembersJSONRequestBody defines body for ReplaceUserGroupMembers for application/json ContentType.
+type ReplaceUserGroupMembersJSONRequestBody = UserGroupMembersRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -2358,6 +2735,15 @@ type ServerInterface interface {
 	// CreateOrg 创建组织
 	// (POST /api/v1/orgs)
 	CreateOrg(c *gin.Context)
+	// ListAccessRules 列出访问规则
+	// (GET /api/v1/orgs/{orgId}/access-rules)
+	ListAccessRules(c *gin.Context, orgId int64)
+	// CreateAccessRule 创建访问规则
+	// (POST /api/v1/orgs/{orgId}/access-rules)
+	CreateAccessRule(c *gin.Context, orgId int64)
+	// DeleteAccessRule 删除访问规则
+	// (DELETE /api/v1/orgs/{orgId}/access-rules/{ruleId})
+	DeleteAccessRule(c *gin.Context, orgId int64, ruleId int64)
 	// ListAddressBooks 列出地址簿
 	// (GET /api/v1/orgs/{orgId}/address-books)
 	ListAddressBooks(c *gin.Context, orgId int64)
@@ -2427,6 +2813,21 @@ type ServerInterface interface {
 	// SetAuditRetention 设置审计保留期
 	// (PUT /api/v1/orgs/{orgId}/audit-retention)
 	SetAuditRetention(c *gin.Context, orgId int64)
+	// ListDeviceGroups 列出设备组
+	// (GET /api/v1/orgs/{orgId}/device-groups)
+	ListDeviceGroups(c *gin.Context, orgId int64)
+	// CreateDeviceGroup 创建设备组
+	// (POST /api/v1/orgs/{orgId}/device-groups)
+	CreateDeviceGroup(c *gin.Context, orgId int64)
+	// DeleteDeviceGroup 删除设备组
+	// (DELETE /api/v1/orgs/{orgId}/device-groups/{deviceGroupId})
+	DeleteDeviceGroup(c *gin.Context, orgId int64, deviceGroupId int64)
+	// RenameDeviceGroup 重命名设备组
+	// (PATCH /api/v1/orgs/{orgId}/device-groups/{deviceGroupId})
+	RenameDeviceGroup(c *gin.Context, orgId int64, deviceGroupId int64)
+	// ReplaceDeviceGroupDevices 全量替换设备组成员
+	// (PUT /api/v1/orgs/{orgId}/device-groups/{deviceGroupId}/devices)
+	ReplaceDeviceGroupDevices(c *gin.Context, orgId int64, deviceGroupId int64)
 	// ListDevices 列出组织设备
 	// (GET /api/v1/orgs/{orgId}/devices)
 	ListDevices(c *gin.Context, orgId int64, params ListDevicesParams)
@@ -2508,6 +2909,21 @@ type ServerInterface interface {
 	// RedeemTicket 兑换连接票据（创建面板会话）
 	// (POST /api/v1/orgs/{orgId}/tickets/{ticketId}/redeem)
 	RedeemTicket(c *gin.Context, orgId int64, ticketId int64)
+	// ListUserGroups 列出用户组
+	// (GET /api/v1/orgs/{orgId}/user-groups)
+	ListUserGroups(c *gin.Context, orgId int64)
+	// CreateUserGroup 创建用户组
+	// (POST /api/v1/orgs/{orgId}/user-groups)
+	CreateUserGroup(c *gin.Context, orgId int64)
+	// DeleteUserGroup 删除用户组
+	// (DELETE /api/v1/orgs/{orgId}/user-groups/{groupId})
+	DeleteUserGroup(c *gin.Context, orgId int64, groupId int64)
+	// RenameUserGroup 重命名用户组
+	// (PATCH /api/v1/orgs/{orgId}/user-groups/{groupId})
+	RenameUserGroup(c *gin.Context, orgId int64, groupId int64)
+	// ReplaceUserGroupMembers 全量替换用户组成员
+	// (PUT /api/v1/orgs/{orgId}/user-groups/{groupId}/members)
+	ReplaceUserGroupMembers(c *gin.Context, orgId int64, groupId int64)
 	// ListPermissions 列出权限目录
 	// (GET /api/v1/permissions)
 	ListPermissions(c *gin.Context)
@@ -2744,6 +3160,90 @@ func (siw *ServerInterfaceWrapper) CreateOrg(c *gin.Context) {
 	}
 
 	siw.Handler.CreateOrg(c)
+}
+
+// ListAccessRules operation middleware
+func (siw *ServerInterfaceWrapper) ListAccessRules(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListAccessRules(c, orgId)
+}
+
+// CreateAccessRule operation middleware
+func (siw *ServerInterfaceWrapper) CreateAccessRule(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateAccessRule(c, orgId)
+}
+
+// DeleteAccessRule operation middleware
+func (siw *ServerInterfaceWrapper) DeleteAccessRule(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "ruleId" -------------
+	var ruleId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "ruleId", c.Param("ruleId"), &ruleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter ruleId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteAccessRule(c, orgId, ruleId)
 }
 
 // ListAddressBooks operation middleware
@@ -3679,6 +4179,158 @@ func (siw *ServerInterfaceWrapper) SetAuditRetention(c *gin.Context) {
 	siw.Handler.SetAuditRetention(c, orgId)
 }
 
+// ListDeviceGroups operation middleware
+func (siw *ServerInterfaceWrapper) ListDeviceGroups(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListDeviceGroups(c, orgId)
+}
+
+// CreateDeviceGroup operation middleware
+func (siw *ServerInterfaceWrapper) CreateDeviceGroup(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateDeviceGroup(c, orgId)
+}
+
+// DeleteDeviceGroup operation middleware
+func (siw *ServerInterfaceWrapper) DeleteDeviceGroup(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "deviceGroupId" -------------
+	var deviceGroupId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "deviceGroupId", c.Param("deviceGroupId"), &deviceGroupId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceGroupId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteDeviceGroup(c, orgId, deviceGroupId)
+}
+
+// RenameDeviceGroup operation middleware
+func (siw *ServerInterfaceWrapper) RenameDeviceGroup(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "deviceGroupId" -------------
+	var deviceGroupId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "deviceGroupId", c.Param("deviceGroupId"), &deviceGroupId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceGroupId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RenameDeviceGroup(c, orgId, deviceGroupId)
+}
+
+// ReplaceDeviceGroupDevices operation middleware
+func (siw *ServerInterfaceWrapper) ReplaceDeviceGroupDevices(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "deviceGroupId" -------------
+	var deviceGroupId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "deviceGroupId", c.Param("deviceGroupId"), &deviceGroupId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceGroupId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ReplaceDeviceGroupDevices(c, orgId, deviceGroupId)
+}
+
 // ListDevices operation middleware
 func (siw *ServerInterfaceWrapper) ListDevices(c *gin.Context) {
 
@@ -4609,6 +5261,158 @@ func (siw *ServerInterfaceWrapper) RedeemTicket(c *gin.Context) {
 	siw.Handler.RedeemTicket(c, orgId, ticketId)
 }
 
+// ListUserGroups operation middleware
+func (siw *ServerInterfaceWrapper) ListUserGroups(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListUserGroups(c, orgId)
+}
+
+// CreateUserGroup operation middleware
+func (siw *ServerInterfaceWrapper) CreateUserGroup(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateUserGroup(c, orgId)
+}
+
+// DeleteUserGroup operation middleware
+func (siw *ServerInterfaceWrapper) DeleteUserGroup(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "groupId" -------------
+	var groupId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "groupId", c.Param("groupId"), &groupId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter groupId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteUserGroup(c, orgId, groupId)
+}
+
+// RenameUserGroup operation middleware
+func (siw *ServerInterfaceWrapper) RenameUserGroup(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "groupId" -------------
+	var groupId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "groupId", c.Param("groupId"), &groupId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter groupId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RenameUserGroup(c, orgId, groupId)
+}
+
+// ReplaceUserGroupMembers operation middleware
+func (siw *ServerInterfaceWrapper) ReplaceUserGroupMembers(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "groupId" -------------
+	var groupId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "groupId", c.Param("groupId"), &groupId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter groupId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ReplaceUserGroupMembers(c, orgId, groupId)
+}
+
 // ListPermissions operation middleware
 func (siw *ServerInterfaceWrapper) ListPermissions(c *gin.Context) {
 
@@ -4685,6 +5489,19 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/roles/:roleId", wrapper.DeleteRole)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/roles/:roleId", wrapper.GetRole)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/roles/:roleId", wrapper.UpdateRole)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/user-groups", wrapper.ListUserGroups)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/user-groups", wrapper.CreateUserGroup)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/user-groups/:groupId", wrapper.DeleteUserGroup)
+	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/user-groups/:groupId", wrapper.RenameUserGroup)
+	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/user-groups/:groupId/members", wrapper.ReplaceUserGroupMembers)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/device-groups", wrapper.ListDeviceGroups)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/device-groups", wrapper.CreateDeviceGroup)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/device-groups/:deviceGroupId", wrapper.DeleteDeviceGroup)
+	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/device-groups/:deviceGroupId", wrapper.RenameDeviceGroup)
+	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/device-groups/:deviceGroupId/devices", wrapper.ReplaceDeviceGroupDevices)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/access-rules", wrapper.ListAccessRules)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/access-rules", wrapper.CreateAccessRule)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/access-rules/:ruleId", wrapper.DeleteAccessRule)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-logs", wrapper.ListAuditLogs)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-logs/export", wrapper.ExportAuditLogs)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-retention", wrapper.GetAuditRetention)

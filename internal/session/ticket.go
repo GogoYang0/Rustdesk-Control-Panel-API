@@ -214,6 +214,40 @@ func (s *Service) Issue(ctx context.Context, in IssueInput) (model.Ticket, strin
 	return ticket, token, nil
 }
 
+// ValidateRedeem verifies the ticket secret and terminal state without
+// consuming anything, and returns the ticket row. Handlers run it before
+// access-dependent responses so a wrong token always answers the same 409 and
+// cannot be used to probe device state (CWE-203). The atomic redemption uses
+// the same helper, so the two checks cannot drift apart.
+func (s *Service) ValidateRedeem(ctx context.Context, orgID, ticketID uint, token string) (*model.Ticket, error) {
+	if orgID == 0 || ticketID == 0 || token == "" {
+		return nil, fmt.Errorf("%w: organization, ticket and token are required", ErrInvalidInput)
+	}
+	return s.redeemableTicket(s.db.WithContext(ctx), orgID, ticketID, token)
+}
+
+// redeemableTicket loads one ticket of the tenant and checks the secret and the
+// terminal states that make it unredeemable. It performs no write.
+func (s *Service) redeemableTicket(db *gorm.DB, orgID, ticketID uint, token string) (*model.Ticket, error) {
+	var ticket model.Ticket
+	if err := store.ScopedByOrg(db, orgID).Where("id = ?", ticketID).First(&ticket).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrTicketNotFound
+		}
+		return nil, err
+	}
+	// Constant-time comparison: a timing oracle here would let a caller
+	// recover the digest byte by byte.
+	if subtle.ConstantTimeCompare([]byte(hashToken(token)), []byte(ticket.TokenHash)) != 1 {
+		return nil, ErrConflict
+	}
+	now := s.now().UTC()
+	if ticket.UsedAt != nil || ticket.RevokedAt != nil || !ticket.ExpiresAt.After(now) {
+		return nil, ErrConflict
+	}
+	return &ticket, nil
+}
+
 // Redeem consumes a ticket and creates the panel session it authorises.
 //
 // This is the only creator of open panel sessions and therefore the real
@@ -260,22 +294,12 @@ func (s *Service) Redeem(ctx context.Context, orgID, actorID, ticketID uint, tok
 		}
 
 		var ticket model.Ticket
-		if err := store.ScopedByOrg(tx, orgID).Where("id = ?", ticketID).First(&ticket).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrTicketNotFound
-			}
+		ticketRow, err := s.redeemableTicket(tx, orgID, ticketID, token)
+		if err != nil {
 			return err
 		}
-
-		// Constant-time comparison: a timing oracle here would let a caller
-		// recover the digest byte by byte.
-		if subtle.ConstantTimeCompare([]byte(hashToken(token)), []byte(ticket.TokenHash)) != 1 {
-			return ErrConflict
-		}
+		ticket = *ticketRow
 		now := s.now().UTC()
-		if ticket.UsedAt != nil || ticket.RevokedAt != nil || !ticket.ExpiresAt.After(now) {
-			return ErrConflict
-		}
 
 		limits, err := s.limits(tx, orgID)
 		if err != nil {

@@ -56,7 +56,15 @@ func NewRouter(d Deps) *gin.Engine {
 	// organization-scoped paths only.
 	mgmt := r.Group("")
 	mgmt.Use(requireAuthUnlessPublic(d.Issuer, d.Tokens))
-	gen.RegisterHandlers(mgmt, NewAdminAPI(d))
+	gen.RegisterHandlersWithOptions(mgmt, NewAdminAPI(d), gen.GinServerOptions{
+		// Path-parameter parse failures happen inside the generated wrapper,
+		// before any handler runs. The default wrapper answers {"msg": ...},
+		// which violates the contract's ErrorResponse; route it through the same
+		// envelope every handler uses.
+		ErrorHandler: func(c *gin.Context, _ error, statusCode int) {
+			abortError(c, statusCode, gen.ErrorCodeInvalidRequest, "invalid path parameter")
+		},
+	})
 
 	// RustDesk compatibility endpoints beside the management API with their
 	// own session authentication: the management JWT middleware must never
@@ -66,6 +74,7 @@ func NewRouter(d Deps) *gin.Engine {
 		DB:        d.DB,
 		Issuer:    d.Issuer,
 		Devices:   d.Devices,
+		Access:    d.Access,
 		Now:       d.Now,
 		AccessTTL: d.CompatTTL,
 	})

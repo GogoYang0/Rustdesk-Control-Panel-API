@@ -3,12 +3,14 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/gen"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/session"
 )
@@ -33,6 +35,21 @@ func (a *AdminAPI) IssueTicket(c *gin.Context, orgId int64) {
 	var req gen.TicketCreateRequest
 	if err := c.ShouldBindJSON(&req); err != nil || req.DeviceId <= 0 {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "device_id is required")
+		return
+	}
+
+	// Access control decides whether this member may reach the device at all;
+	// it runs before any policy, approval or ticket bookkeeping so no refusal
+	// path can leak the device's existence or start an approval flow the member
+	// could never redeem.
+	allowed, err := a.deps.Access.CanAccess(c.Request.Context(), uint(orgId), uid, uint(req.DeviceId))
+	if err != nil {
+		a.deps.Logger.Error("ticket access evaluation failed", zap.Error(err))
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not complete the ticket operation")
+		return
+	}
+	if !allowed {
+		a.denyTicketAccess(c, uint(orgId), uid, uint(req.DeviceId), "issue", nil)
 		return
 	}
 
@@ -86,6 +103,47 @@ func (a *AdminAPI) RedeemTicket(c *gin.Context, orgId int64, ticketId int64) {
 		return
 	}
 
+	// Validate the secret and the terminal states without consuming anything
+	// before any access-dependent response: a wrong token must answer the same
+	// 409 for every device, otherwise it could probe whether the device is
+	// disabled (CWE-203). The atomic redemption repeats the check inside its
+	// transaction, so the ticket stays one-shot.
+	ticket, err := a.tickets.ValidateRedeem(c.Request.Context(), uint(orgId), uint(ticketId), req.Token)
+	if err != nil {
+		a.writeTicketError(c, err)
+		return
+	}
+	// The admission decision is judged against the redeemer (D9): a member
+	// whose rules were tightened after issuance cannot consume an old ticket.
+	allowed, err := a.deps.Access.CanAccess(c.Request.Context(), uint(orgId), uid, ticket.DeviceID)
+	if err != nil {
+		a.deps.Logger.Error("ticket access evaluation failed", zap.Error(err))
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not complete the ticket operation")
+		return
+	}
+	if !allowed {
+		// A device an administrator stopped keeps the documented 409 conflict
+		// from before access control existed (the ticket stays unused). The
+		// message is the opaque conflict text so the response does not echo the
+		// device state; only the code difference is unavoidable while the M4
+		// contract stands. Every other access refusal is the opaque 404.
+		stopped, derr := a.deps.Access.DeviceDisabled(c.Request.Context(), uint(orgId), ticket.DeviceID)
+		if derr != nil {
+			a.deps.Logger.Error("ticket access evaluation failed", zap.Error(derr))
+			abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not complete the ticket operation")
+			return
+		}
+		if stopped {
+			a.recordTicketAccessDenied(c, uint(orgId), uid, ticket.DeviceID, "device_disabled",
+				"redeem", map[string]any{"ticket_id": ticketId})
+			abortError(c, http.StatusConflict, gen.ErrorCodeConflict, session.ErrConflict.Error())
+			return
+		}
+		a.denyTicketAccess(c, uint(orgId), uid, ticket.DeviceID, "redeem",
+			map[string]any{"ticket_id": ticketId})
+		return
+	}
+
 	sess, err := a.tickets.Redeem(c.Request.Context(), uint(orgId), uid, uint(ticketId), req.Token)
 	if err != nil {
 		a.writeTicketError(c, err)
@@ -125,6 +183,46 @@ func (a *AdminAPI) GetTicket(c *gin.Context, orgId int64, ticketId int64) {
 		Message: "ok",
 		Data:    ticketToAPI(*ticket),
 	})
+}
+
+// denyTicketAccess records the refusal and answers the opaque 404. It
+// deliberately does not reuse the session service's recordDenied: that path
+// writes a denied session with end_reason policy_denied and raises an
+// outside_window alert, while an access refusal is a different cause the
+// contract has no enum for. The 404 (instead of 403) keeps the device's
+// existence hidden from a member without a rule.
+func (a *AdminAPI) denyTicketAccess(c *gin.Context, orgID, userID, deviceID uint, stage string, extra map[string]any) {
+	a.recordTicketAccessDenied(c, orgID, userID, deviceID, "access_control", stage, extra)
+	abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, session.ErrDeviceNotFound.Error())
+}
+
+// recordTicketAccessDenied writes one denial row and, only when it committed,
+// marks the context so the middleware does not add its generic fallback row. A
+// failed record leaves the marker unset: the refusal still stands (denying is
+// the safe side), and the fallback row is the only remaining trace.
+func (a *AdminAPI) recordTicketAccessDenied(c *gin.Context, orgID, userID, deviceID uint, reason, stage string, extra map[string]any) {
+	detail := map[string]any{
+		"reason":    reason,
+		"stage":     stage,
+		"device_id": deviceID,
+	}
+	for key, value := range extra {
+		detail[key] = value
+	}
+	entry := audit.Entry{
+		OrganizationID: orgID,
+		ActorUserID:    userID,
+		Action:         "session.ticket.denied",
+		TargetType:     "device",
+		TargetID:       fmt.Sprint(deviceID),
+		Detail:         detail,
+	}
+	if err := a.deps.Auditor.Record(c.Request.Context(), entry); err != nil {
+		a.deps.Logger.Error("audit record failed",
+			zap.String("action", entry.Action), zap.Error(err))
+		return
+	}
+	c.Set(contextAuditRecorded, true)
 }
 
 // writeTicketError maps domain errors onto the contract's status codes.
