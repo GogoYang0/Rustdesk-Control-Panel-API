@@ -49,6 +49,13 @@ func Migrate(db *gorm.DB) error {
 // caller's transaction, so organization creation commits its defaults
 // atomically.
 func EnsureDefaultsTx(tx *gorm.DB, orgID uint) error {
+	// Serialize the bootstrap across instances and take a current read: under
+	// MySQL REPEATABLE READ the transaction snapshot may predate the winner's
+	// commit, so an unlocked reload of the everyone group could still report
+	// "not found" and abort startup.
+	if err := lockOrgRow(tx, orgID); err != nil {
+		return err
+	}
 	group, created, err := everyoneGroupTx(tx, orgID)
 	if err != nil {
 		return err
@@ -74,8 +81,13 @@ func EnsureDefaultsTx(tx *gorm.DB, orgID uint) error {
 // winner's rule in place.
 func everyoneGroupTx(tx *gorm.DB, orgID uint) (*model.UserGroup, bool, error) {
 	var group model.UserGroup
-	err := store.ScopedByOrg(tx, orgID).
-		Where("kind = ?", model.UserGroupKindEveryone).First(&group).Error
+	query := store.ScopedByOrg(tx, orgID)
+	if tx.Name() != "sqlite" {
+		// Current read: the outer Migrate already opened a snapshot, so only a
+		// locking read is guaranteed to see the winner's committed row.
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	err := query.Where("kind = ?", model.UserGroupKindEveryone).First(&group).Error
 	if err == nil {
 		return &group, false, nil
 	}
