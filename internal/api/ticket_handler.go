@@ -49,7 +49,7 @@ func (a *AdminAPI) IssueTicket(c *gin.Context, orgId int64) {
 		return
 	}
 	if !allowed {
-		a.ticketAccessDenied(c, uint(orgId), uid, uint(req.DeviceId), "issue", nil)
+		a.denyTicketAccess(c, uint(orgId), uid, uint(req.DeviceId), "issue", nil)
 		return
 	}
 
@@ -119,10 +119,11 @@ func (a *AdminAPI) RedeemTicket(c *gin.Context, orgId int64, ticketId int64) {
 		return
 	}
 	if !allowed {
-		// A device an administrator stopped is refused with the same 409 the
-		// redemption service produced before access control existed: the ticket
-		// stays unused and the caller cannot tell an expired/used ticket from a
-		// stopped device. Every other access refusal is the opaque 404.
+		// A device an administrator stopped keeps the documented 409 conflict
+		// from before access control existed (the ticket stays unused). The
+		// message is the opaque conflict text so the response does not echo the
+		// device state; only the code difference is unavoidable while the M4
+		// contract stands. Every other access refusal is the opaque 404.
 		stopped, derr := a.deps.Access.DeviceDisabled(c.Request.Context(), uint(orgId), ticket.DeviceID)
 		if derr != nil {
 			a.deps.Logger.Error("ticket access evaluation failed", zap.Error(derr))
@@ -130,10 +131,12 @@ func (a *AdminAPI) RedeemTicket(c *gin.Context, orgId int64, ticketId int64) {
 			return
 		}
 		if stopped {
-			abortError(c, http.StatusConflict, gen.ErrorCodeConflict, session.ErrDeviceDisabled.Error())
+			a.recordTicketAccessDenied(c, uint(orgId), uid, ticket.DeviceID, "device_disabled",
+				"redeem", map[string]any{"ticket_id": ticketId})
+			abortError(c, http.StatusConflict, gen.ErrorCodeConflict, session.ErrConflict.Error())
 			return
 		}
-		a.ticketAccessDenied(c, uint(orgId), uid, ticket.DeviceID, "redeem",
+		a.denyTicketAccess(c, uint(orgId), uid, ticket.DeviceID, "redeem",
 			map[string]any{"ticket_id": ticketId})
 		return
 	}
@@ -179,15 +182,24 @@ func (a *AdminAPI) GetTicket(c *gin.Context, orgId int64, ticketId int64) {
 	})
 }
 
-// ticketAccessDenied answers an access-controlled ticket operation with 404 and
-// records the refusal as its own audit action. It deliberately does not reuse
-// the session service's recordDenied: that path writes a denied session with
-// end_reason policy_denied and raises an outside_window alert, while an access
-// refusal is a different cause the contract has no enum for. The 404 (instead
-// of 403) keeps the device's existence hidden from a member without a rule.
-func (a *AdminAPI) ticketAccessDenied(c *gin.Context, orgID, userID, deviceID uint, stage string, extra map[string]any) {
+// denyTicketAccess records the refusal and answers the opaque 404. It
+// deliberately does not reuse the session service's recordDenied: that path
+// writes a denied session with end_reason policy_denied and raises an
+// outside_window alert, while an access refusal is a different cause the
+// contract has no enum for. The 404 (instead of 403) keeps the device's
+// existence hidden from a member without a rule.
+func (a *AdminAPI) denyTicketAccess(c *gin.Context, orgID, userID, deviceID uint, stage string, extra map[string]any) {
+	a.recordTicketAccessDenied(c, orgID, userID, deviceID, "access_control", stage, extra)
+	abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, session.ErrDeviceNotFound.Error())
+}
+
+// recordTicketAccessDenied writes one denial row and, only when it committed,
+// marks the context so the middleware does not add its generic fallback row. A
+// failed record leaves the marker unset: the refusal still stands (denying is
+// the safe side), and the fallback row is the only remaining trace.
+func (a *AdminAPI) recordTicketAccessDenied(c *gin.Context, orgID, userID, deviceID uint, reason, stage string, extra map[string]any) {
 	detail := map[string]any{
-		"reason":    "access_control",
+		"reason":    reason,
 		"stage":     stage,
 		"device_id": deviceID,
 	}
@@ -203,15 +215,11 @@ func (a *AdminAPI) ticketAccessDenied(c *gin.Context, orgID, userID, deviceID ui
 		Detail:         detail,
 	}
 	if err := a.deps.Auditor.Record(c.Request.Context(), entry); err != nil {
-		// The refusal stands even when the record fails: denying is the safe
-		// side, and the operator still gets the operational log line.
 		a.deps.Logger.Error("audit record failed",
 			zap.String("action", entry.Action), zap.Error(err))
+		return
 	}
-	// The handler wrote the domain row already; without this marker the
-	// middleware would add a second, generic HTTP audit row.
 	c.Set(contextAuditRecorded, true)
-	abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, session.ErrDeviceNotFound.Error())
 }
 
 // writeTicketError maps domain errors onto the contract's status codes.

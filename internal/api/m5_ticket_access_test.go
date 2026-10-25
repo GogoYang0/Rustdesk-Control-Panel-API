@@ -102,6 +102,14 @@ func TestAccess_IssueTicketDeniedByRules(t *testing.T) {
 	require.NoError(t, store.WithoutTenantScope(h.db.DB).Model(&model.AuditLog{}).
 		Where("action = ?", "POST /api/v1/orgs/:orgId/tickets").Count(&fallback).Error)
 	require.Zero(t, fallback, "the domain denial row must replace the http fallback row")
+
+	// The refusal must not manufacture the side effects of a policy denial: no
+	// denied session and no outside_window alert.
+	var sessions, alerts int64
+	require.NoError(t, store.WithoutTenantScope(h.db.DB).Model(&model.Session{}).Count(&sessions).Error)
+	require.NoError(t, store.WithoutTenantScope(h.db.DB).Model(&model.Alert{}).Count(&alerts).Error)
+	require.Zero(t, sessions)
+	require.Zero(t, alerts)
 }
 
 // TestAccess_AdminIssuesAnyDevice pins the D7 bypass on the ticket path: an
@@ -147,9 +155,18 @@ func TestAccess_RedeemRejectsAfterRuleRemoved(t *testing.T) {
 
 	denied := auditRowsByAction(t, h, "session.ticket.denied")
 	require.Len(t, denied, 1)
+	require.Equal(t, member.ID, denied[0].ActorUserID)
+	require.Equal(t, orgID, int64(denied[0].OrganizationID))
+	require.Equal(t, "device", denied[0].TargetType)
+	require.Equal(t, fmt.Sprint(dev.ID), denied[0].TargetID)
 	require.Contains(t, denied[0].Detail, `"reason":"access_control"`)
 	require.Contains(t, denied[0].Detail, `"stage":"redeem"`)
 	require.Contains(t, denied[0].Detail, fmt.Sprintf(`"ticket_id":%d`, issued.Data.Ticket.Id))
+
+	var fallback int64
+	require.NoError(t, store.WithoutTenantScope(h.db.DB).Model(&model.AuditLog{}).
+		Where("action = ?", "POST /api/v1/orgs/:orgId/tickets/:ticketId/redeem").Count(&fallback).Error)
+	require.Zero(t, fallback, "the domain denial row must replace the http fallback row")
 
 	var sessions int64
 	require.NoError(t, store.WithoutTenantScope(h.db.DB).Model(&model.Session{}).Count(&sessions).Error)
@@ -208,4 +225,43 @@ func TestAccess_PreApprovalCannotBypassRules(t *testing.T) {
 	var approvals int64
 	require.NoError(t, store.WithoutTenantScope(h.db.DB).Model(&model.Approval{}).Count(&approvals).Error)
 	require.Zero(t, approvals, "the access gate must run before the approval flow")
+}
+
+// TestAccess_RedeemDisabledDeviceKeepsConflictAndAudits pins the branch that
+// preserves the M4 contract: a ticket issued before an administrator stopped
+// the device is refused as a 409 with the opaque conflict message, the refusal
+// is audited as device_disabled (not access_control), and the ticket is unused.
+func TestAccess_RedeemDisabledDeviceKeepsConflictAndAudits(t *testing.T) {
+	h, orgID, _, _, member, _, _, memberToken := m4Org(t)
+	dev := seedDevice(t, h, orgID, "200000006")
+
+	w := h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgID)+"/tickets",
+		map[string]any{"device_id": dev.ID}, memberToken)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	var issued issuedBody
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &issued))
+
+	require.NoError(t, store.ScopedByOrg(h.db.DB, uint(orgID)).Model(&model.Device{}).
+		Where("id = ?", dev.ID).Update("disabled", true).Error)
+
+	w = h.do(t, http.MethodPost, ticketPath(orgID, issued.Data.Ticket.Id)+"/redeem",
+		map[string]any{"token": issued.Data.Token}, memberToken)
+	require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
+	require.Equal(t, "conflict", decodeErrorCode(t, w.Body.Bytes()))
+	require.NotContains(t, w.Body.String(), "disabled", "the refusal must not echo the device state")
+
+	denied := auditRowsByAction(t, h, "session.ticket.denied")
+	require.Len(t, denied, 1)
+	require.Equal(t, member.ID, denied[0].ActorUserID)
+	require.Contains(t, denied[0].Detail, `"reason":"device_disabled"`)
+	require.Contains(t, denied[0].Detail, `"stage":"redeem"`)
+	require.Contains(t, denied[0].Detail, fmt.Sprintf(`"ticket_id":%d`, issued.Data.Ticket.Id))
+
+	var sessions int64
+	require.NoError(t, store.WithoutTenantScope(h.db.DB).Model(&model.Session{}).Count(&sessions).Error)
+	require.Zero(t, sessions)
+
+	var ticket model.Ticket
+	require.NoError(t, store.WithoutTenantScope(h.db.DB).First(&ticket, issued.Data.Ticket.Id).Error)
+	require.Nil(t, ticket.UsedAt, "a refused redemption must not consume the ticket")
 }
