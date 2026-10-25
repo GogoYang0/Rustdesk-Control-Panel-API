@@ -106,6 +106,10 @@ var (
 	ErrDeviceGroupNameTaken   = errors.New("device group name already in use")
 	ErrInvalidDeviceGroupName = errors.New("invalid device group name")
 	ErrInvalidDevice          = errors.New("invalid device")
+
+	ErrRuleNotFound = errors.New("access rule not found")
+	ErrRuleExists   = errors.New("access rule already exists")
+	ErrInvalidRule  = errors.New("invalid access rule")
 )
 
 // maxGroupNameLen matches the size:64 column of model.UserGroup.
@@ -124,6 +128,14 @@ type GroupView struct {
 type DeviceGroupView struct {
 	Group     model.DeviceGroup
 	DeviceIDs []uint
+}
+
+// RuleView is one access rule with the display names the contract shows. The
+// target name is empty for all_devices rules, which carry no target group.
+type RuleView struct {
+	Rule            model.AccessRule
+	SourceGroupName string
+	TargetGroupName string
 }
 
 // Service owns the access-control writes: groups, memberships (device groups
@@ -762,6 +774,164 @@ func (s *Service) ReplaceDeviceGroupDevices(ctx context.Context, orgID, actorID,
 	return added, removed, nil
 }
 
+// ListAccessRules returns the organization's allow rules ordered by id, with
+// the source group name and (for device_group targets) the target group name.
+func (s *Service) ListAccessRules(ctx context.Context, orgID uint) ([]RuleView, error) {
+	db := s.db.WithContext(ctx)
+	var rules []model.AccessRule
+	if err := store.ScopedByOrg(db, orgID).Order("id").Find(&rules).Error; err != nil {
+		return nil, err
+	}
+	views := make([]RuleView, 0, len(rules))
+	if len(rules) == 0 {
+		return views, nil
+	}
+	sourceIDs := make([]uint, 0, len(rules))
+	targetIDs := make([]uint, 0, len(rules))
+	for _, rule := range rules {
+		sourceIDs = append(sourceIDs, rule.SourceGroupID)
+		if rule.TargetKind == model.AccessTargetKindDeviceGroup && rule.TargetGroupID != 0 {
+			targetIDs = append(targetIDs, rule.TargetGroupID)
+		}
+	}
+	var userGroups []model.UserGroup
+	if err := store.ScopedByOrg(db, orgID).Where("id IN ?", sourceIDs).Find(&userGroups).Error; err != nil {
+		return nil, err
+	}
+	sourceNames := make(map[uint]string, len(userGroups))
+	for _, group := range userGroups {
+		sourceNames[group.ID] = group.Name
+	}
+	targetNames := make(map[uint]string, len(targetIDs))
+	if len(targetIDs) > 0 {
+		var deviceGroups []model.DeviceGroup
+		if err := store.ScopedByOrg(db, orgID).Where("id IN ?", targetIDs).Find(&deviceGroups).Error; err != nil {
+			return nil, err
+		}
+		for _, group := range deviceGroups {
+			targetNames[group.ID] = group.Name
+		}
+	}
+	for _, rule := range rules {
+		views = append(views, RuleView{
+			Rule:            rule,
+			SourceGroupName: sourceNames[rule.SourceGroupID],
+			TargetGroupName: targetNames[rule.TargetGroupID],
+		})
+	}
+	return views, nil
+}
+
+// CreateAccessRule adds one allow rule. The source user group and, for
+// device_group targets, the target device group must belong to the caller's
+// organization. The whole check runs under the organization row lock so a
+// concurrent device-group deletion cannot slip between validation and insert.
+func (s *Service) CreateAccessRule(ctx context.Context, orgID, actorID, sourceGroupID uint, targetKind string, targetGroupID uint) (*model.AccessRule, error) {
+	if sourceGroupID == 0 {
+		return nil, ErrInvalidRule
+	}
+	switch targetKind {
+	case model.AccessTargetKindAllDevices:
+		if targetGroupID != 0 {
+			return nil, ErrInvalidRule
+		}
+	case model.AccessTargetKindDeviceGroup:
+		if targetGroupID == 0 {
+			return nil, ErrInvalidRule
+		}
+	default:
+		return nil, ErrInvalidRule
+	}
+	var rule model.AccessRule
+	err := s.write(ctx, func(tx *gorm.DB) error {
+		if err := lockOrgRow(tx, orgID); err != nil {
+			return err
+		}
+		if _, err := groupByID(tx, orgID, sourceGroupID); err != nil {
+			if errors.Is(err, ErrGroupNotFound) {
+				return ErrInvalidRule
+			}
+			return err
+		}
+		if targetKind == model.AccessTargetKindDeviceGroup {
+			if _, err := deviceGroupByID(tx, orgID, targetGroupID); err != nil {
+				if errors.Is(err, ErrDeviceGroupNotFound) {
+					return ErrInvalidRule
+				}
+				return err
+			}
+		}
+		var count int64
+		if err := store.ScopedByOrg(tx, orgID).Model(&model.AccessRule{}).
+			Where("source_group_id = ? AND target_kind = ? AND target_group_id = ?",
+				sourceGroupID, targetKind, targetGroupID).
+			Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			return ErrRuleExists
+		}
+		rule = model.AccessRule{
+			OrganizationID: orgID,
+			SourceGroupID:  sourceGroupID,
+			TargetKind:     targetKind,
+			TargetGroupID:  targetGroupID,
+		}
+		if err := store.ScopedByOrg(tx, orgID).Create(&rule).Error; err != nil {
+			return mapRuleConflict(err)
+		}
+		return s.record(tx, audit.Entry{
+			OrganizationID: orgID,
+			ActorUserID:    actorID,
+			Action:         "access.rule.create",
+			TargetType:     "access_rule",
+			TargetID:       fmt.Sprint(rule.ID),
+			Detail: map[string]any{
+				"source_group_id": rule.SourceGroupID,
+				"target_kind":     rule.TargetKind,
+				"target_group_id": rule.TargetGroupID,
+			},
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &rule, nil
+}
+
+// DeleteAccessRule removes one rule. Deleting the seeded everyone -> all_devices
+// rule is how an organization tightens access to explicit group rules.
+func (s *Service) DeleteAccessRule(ctx context.Context, orgID, actorID, ruleID uint) error {
+	return s.write(ctx, func(tx *gorm.DB) error {
+		if err := lockOrgRow(tx, orgID); err != nil {
+			return err
+		}
+		rule, err := ruleByID(tx, orgID, ruleID)
+		if err != nil {
+			return err
+		}
+		res := store.ScopedByOrg(tx, orgID).Delete(&model.AccessRule{}, rule.ID)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return ErrRuleNotFound
+		}
+		return s.record(tx, audit.Entry{
+			OrganizationID: orgID,
+			ActorUserID:    actorID,
+			Action:         "access.rule.delete",
+			TargetType:     "access_rule",
+			TargetID:       fmt.Sprint(rule.ID),
+			Detail: map[string]any{
+				"source_group_id": rule.SourceGroupID,
+				"target_kind":     rule.TargetKind,
+				"target_group_id": rule.TargetGroupID,
+			},
+		})
+	})
+}
+
 // write runs fn inside one transaction, refusing to start without a
 // transactional recorder so an unaudited group change can never commit.
 func (s *Service) write(ctx context.Context, fn func(tx *gorm.DB) error) error {
@@ -961,6 +1131,31 @@ func mapDeviceGroupNameConflict(err error) error {
 	lower := strings.ToLower(err.Error())
 	if strings.Contains(lower, "unique") || strings.Contains(lower, "duplicate") {
 		return ErrDeviceGroupNameTaken
+	}
+	return err
+}
+
+// ruleByID loads one access rule of the tenant or reports ErrRuleNotFound.
+func ruleByID(db *gorm.DB, orgID, ruleID uint) (*model.AccessRule, error) {
+	var rule model.AccessRule
+	if err := store.ScopedByOrg(db, orgID).First(&rule, ruleID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrRuleNotFound
+		}
+		return nil, err
+	}
+	return &rule, nil
+}
+
+// mapRuleConflict translates a unique-index violation on the rule tuple into
+// ErrRuleExists, with a string fallback for the SQLite driver.
+func mapRuleConflict(err error) error {
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return ErrRuleExists
+	}
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "unique") || strings.Contains(lower, "duplicate") {
+		return ErrRuleExists
 	}
 	return err
 }

@@ -1212,6 +1212,113 @@ paths:
         "409":
           $ref: "#/components/responses/Conflict"
 
+  /api/v1/orgs/{orgId}/access-rules:
+    get:
+      operationId: listAccessRules
+      summary: 列出访问规则
+      description: |
+        返回组织的 allow 规则（含源组名与设备组目标名；`all_devices` 无目标组名）。
+        需要 `access.manage`。多规则按并集生效。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 访问规则列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccessRuleListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      operationId: createAccessRule
+      summary: 创建访问规则
+      description: |
+        需要 `access.manage`。只支持 allow：`target_kind=device_group` 时必须给出
+        同组织的设备组 id；`target_kind=all_devices` 时不得给出目标组。源用户组必须
+        属于本组织。相同四元组重复创建返回 409。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccessRuleCreateRequest"
+      responses:
+        "201":
+          description: 已创建的规则
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccessRuleResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/access-rules/{ruleId}:
+    delete:
+      operationId: deleteAccessRule
+      summary: 删除访问规则
+      description: |
+        需要 `access.manage`。默认规则 `everyone → all_devices` 也是普通可删除行：
+        删除后成员只保留精确组规则带来的访问（即收紧）。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: ruleId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/v1/orgs/{orgId}/audit-logs:
     get:
       operationId: listAuditLogs
@@ -4209,6 +4316,99 @@ components:
           type: string
         data:
           $ref: "#/components/schemas/DeviceGroupDeleteData"
+
+    AccessRuleTargetKind:
+      type: string
+      description: |
+        - device_group：规则指向一个设备组（`target_group_id` 必填）
+        - all_devices：规则指向组织内全部设备（`target_group_id` 必须为空）
+      enum:
+        - device_group
+        - all_devices
+
+    AccessRule:
+      type: object
+      required:
+        - id
+        - source_group_id
+        - source_group_name
+        - target_kind
+        - target_group_id
+        - target_group_name
+        - created_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        source_group_id:
+          type: integer
+          format: int64
+        source_group_name:
+          type: string
+          description: 源用户组名（含内置 `everyone`）
+        target_kind:
+          $ref: "#/components/schemas/AccessRuleTargetKind"
+        target_group_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: 设备组 id；`all_devices` 时为 null
+        target_group_name:
+          type: string
+          description: 设备组名；`all_devices` 时为空字符串
+        created_at:
+          type: string
+          format: date-time
+
+    AccessRuleListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AccessRule"
+
+    AccessRuleCreateRequest:
+      type: object
+      required:
+        - source_group_id
+        - target_kind
+      properties:
+        source_group_id:
+          type: integer
+          format: int64
+          description: 本组织的用户组 id（含 `everyone`）
+        target_kind:
+          $ref: "#/components/schemas/AccessRuleTargetKind"
+        target_group_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: 设备组 id；`device_group` 时必填，`all_devices` 时不得给出
+
+    AccessRuleResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/AccessRule"
 
     AuditLog:
       type: object

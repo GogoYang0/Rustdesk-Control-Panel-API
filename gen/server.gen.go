@@ -13,6 +13,24 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for AccessRuleTargetKind.
+const (
+	AccessRuleTargetKindAllDevices  AccessRuleTargetKind = "all_devices"
+	AccessRuleTargetKindDeviceGroup AccessRuleTargetKind = "device_group"
+)
+
+// Valid indicates whether the value is a known member of the AccessRuleTargetKind enum.
+func (e AccessRuleTargetKind) Valid() bool {
+	switch e {
+	case AccessRuleTargetKindAllDevices:
+		return true
+	case AccessRuleTargetKindDeviceGroup:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AddressBookScope.
 const (
 	AddressBookScopePersonal AddressBookScope = "personal"
@@ -527,6 +545,79 @@ type APITokenListResponse struct {
 	Data    []APIToken `json:"data"`
 	Message string     `json:"message"`
 }
+
+// AccessRule defines model for AccessRule.
+type AccessRule struct {
+	CreatedAt     time.Time `json:"created_at"`
+	Id            int64     `json:"id"`
+	SourceGroupId int64     `json:"source_group_id"`
+
+	// SourceGroupName 源用户组名（含内置 `everyone`）
+	SourceGroupName string `json:"source_group_name"`
+
+	// TargetGroupId 设备组 id；`all_devices` 时为 null
+	TargetGroupId *int64 `json:"target_group_id"`
+
+	// TargetGroupName 设备组名；`all_devices` 时为空字符串
+	TargetGroupName string `json:"target_group_name"`
+
+	// TargetKind - device_group：规则指向一个设备组（`target_group_id` 必填）
+	// - all_devices：规则指向组织内全部设备（`target_group_id` 必须为空）
+	TargetKind AccessRuleTargetKind `json:"target_kind"`
+}
+
+// AccessRuleCreateRequest defines model for AccessRuleCreateRequest.
+type AccessRuleCreateRequest struct {
+	// SourceGroupId 本组织的用户组 id（含 `everyone`）
+	SourceGroupId int64 `json:"source_group_id"`
+
+	// TargetGroupId 设备组 id；`device_group` 时必填，`all_devices` 时不得给出
+	TargetGroupId *int64 `json:"target_group_id,omitempty"`
+
+	// TargetKind - device_group：规则指向一个设备组（`target_group_id` 必填）
+	// - all_devices：规则指向组织内全部设备（`target_group_id` 必须为空）
+	TargetKind AccessRuleTargetKind `json:"target_kind"`
+}
+
+// AccessRuleListResponse defines model for AccessRuleListResponse.
+type AccessRuleListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode    `json:"code"`
+	Data    []AccessRule `json:"data"`
+	Message string       `json:"message"`
+}
+
+// AccessRuleResponse defines model for AccessRuleResponse.
+type AccessRuleResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode  `json:"code"`
+	Data    AccessRule `json:"data"`
+	Message string     `json:"message"`
+}
+
+// AccessRuleTargetKind - device_group：规则指向一个设备组（`target_group_id` 必填）
+// - all_devices：规则指向组织内全部设备（`target_group_id` 必须为空）
+type AccessRuleTargetKind string
 
 // AddressBook defines model for AddressBook.
 type AddressBook struct {
@@ -2516,6 +2607,9 @@ type AcceptInvitationJSONRequestBody = InvitationAcceptRequest
 // CreateOrgJSONRequestBody defines body for CreateOrg for application/json ContentType.
 type CreateOrgJSONRequestBody = OrgCreateRequest
 
+// CreateAccessRuleJSONRequestBody defines body for CreateAccessRule for application/json ContentType.
+type CreateAccessRuleJSONRequestBody = AccessRuleCreateRequest
+
 // CreateAddressBookJSONRequestBody defines body for CreateAddressBook for application/json ContentType.
 type CreateAddressBookJSONRequestBody = AddressBookCreateRequest
 
@@ -2641,6 +2735,15 @@ type ServerInterface interface {
 	// CreateOrg 创建组织
 	// (POST /api/v1/orgs)
 	CreateOrg(c *gin.Context)
+	// ListAccessRules 列出访问规则
+	// (GET /api/v1/orgs/{orgId}/access-rules)
+	ListAccessRules(c *gin.Context, orgId int64)
+	// CreateAccessRule 创建访问规则
+	// (POST /api/v1/orgs/{orgId}/access-rules)
+	CreateAccessRule(c *gin.Context, orgId int64)
+	// DeleteAccessRule 删除访问规则
+	// (DELETE /api/v1/orgs/{orgId}/access-rules/{ruleId})
+	DeleteAccessRule(c *gin.Context, orgId int64, ruleId int64)
 	// ListAddressBooks 列出地址簿
 	// (GET /api/v1/orgs/{orgId}/address-books)
 	ListAddressBooks(c *gin.Context, orgId int64)
@@ -3057,6 +3160,90 @@ func (siw *ServerInterfaceWrapper) CreateOrg(c *gin.Context) {
 	}
 
 	siw.Handler.CreateOrg(c)
+}
+
+// ListAccessRules operation middleware
+func (siw *ServerInterfaceWrapper) ListAccessRules(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListAccessRules(c, orgId)
+}
+
+// CreateAccessRule operation middleware
+func (siw *ServerInterfaceWrapper) CreateAccessRule(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateAccessRule(c, orgId)
+}
+
+// DeleteAccessRule operation middleware
+func (siw *ServerInterfaceWrapper) DeleteAccessRule(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "ruleId" -------------
+	var ruleId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "ruleId", c.Param("ruleId"), &ruleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter ruleId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteAccessRule(c, orgId, ruleId)
 }
 
 // ListAddressBooks operation middleware
@@ -5312,6 +5499,9 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/device-groups/:deviceGroupId", wrapper.DeleteDeviceGroup)
 	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/device-groups/:deviceGroupId", wrapper.RenameDeviceGroup)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/device-groups/:deviceGroupId/devices", wrapper.ReplaceDeviceGroupDevices)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/access-rules", wrapper.ListAccessRules)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/access-rules", wrapper.CreateAccessRule)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/access-rules/:ruleId", wrapper.DeleteAccessRule)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-logs", wrapper.ListAuditLogs)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-logs/export", wrapper.ExportAuditLogs)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-retention", wrapper.GetAuditRetention)
