@@ -161,6 +161,15 @@ func (a *AdminAPI) RemoveMember(c *gin.Context, orgId int64, userId int64) {
 			return gorm.ErrRecordNotFound
 		}
 
+		// Group membership is derived from organization membership: the group
+		// rows must go with the membership, or re-inviting the user would
+		// silently restore every old group's access.
+		if err := store.ScopedByOrg(tx, uint(orgId)).
+			Where("user_id = ?", target.UserID).
+			Delete(&model.UserGroupMember{}).Error; err != nil {
+			return err
+		}
+
 		n, err := compatapi.RevokeOrgSessions(c.Request.Context(), tx, uint(orgId), target.UserID, a.deps.Now())
 		if err != nil {
 			return fmt.Errorf("revoke compat sessions: %w", err)
