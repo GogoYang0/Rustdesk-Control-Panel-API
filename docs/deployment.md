@@ -1,6 +1,6 @@
 # 部署指南（Deployment Guide）
 
-> 适用版本：v0.8.0（M4：角色模型、审计查询/导出与保留归档、成员/设备停用、地址簿授权与回收站、个人令牌、管理面 2FA；上一基线 v0.7.0）。本文档随版本演进持续更新——每次发布前必须复核一遍。
+> 适用版本：v0.9.0（M5：访问控制——用户组/设备组/组规则、compat peers 过滤与票据准入；上一基线 v0.8.0）。本文档随版本演进持续更新——每次发布前必须复核一遍。
 > 配套文档：[运维指南](operations.md) · [后端 API 规范](api-spec.md)
 
 ---
@@ -83,7 +83,7 @@ go build -o panel ./cmd/server
 2. 校验 `PANEL_AUTH_SECRET` → 打开数据库
 3. **AutoMigrate** 全部模型（GORM 自动建表/加列）
 4. **一次性回填**：`email_verified` 历史数据回填，成功后写迁移标记（MigrationMark）；已有标记则跳过
-5. **角色与访问控制收敛**：`MigrateRoles` 把旧 `role` 字符串一次性回填为 `role_id`（有标记则跳过）；`MigrateAccessPermission` 与 `access.Migrate` **每次启动**按组织幂等收敛——把 `access.manage` 补进内置 owner/admin 角色行；缺 `everyone` 用户组的组织补建该组与默认规则（组已存在但默认规则被删除时**不会**重建）
+5. **角色与访问控制收敛**：`MigrateRoles` 把旧 `role` 字符串一次性回填为 `role_id`（有标记则跳过）；`MigrateAccessPermission` 每次启动按当前内置权限目录**重写**内置 owner/admin 角色的整个权限集（owner 为全集、admin 为内置集合，因此都包含 `access.manage`；自定义角色不动）；`access.Migrate` 每次启动按组织幂等收敛——缺 `everyone` 用户组的组织补建该组与默认规则（组已存在但默认规则被删除时**不会**重建）
 6. 校验邮件配置（`mail.devMode=false` 时的三项检查）
 7. 启动后台 worker（日志采集 tailer、provision 队列、**worker 调度器**（保留期清扫等周期任务）、对账 reconciler）
 8. 监听
@@ -95,7 +95,7 @@ go build -o panel ./cmd/server
 - 升级前备份 `panel.db`（或数据库快照）与 `data/servergroups/`
 - **v0.9.0（访问控制）升级要点**：
   - 新增表 `user_groups` / `user_group_members` / `device_groups` / `access_rules` 与列 `devices.device_group_id`，由 AutoMigrate 建表/加列/建索引。
-  - 内置 owner/admin 角色自动获得 `access.manage`；该权限**不可委派**，自定义角色在任何情况下都无法获得（不是“需要授权”，而是被目录禁止）。**v0.9.0 之前签发的个人 API Token 权限集不含 `access.manage`**，必须重建令牌后才能在令牌身份下管理访问控制（令牌权限是申请集 ∩ 当前角色权限集的硬上限）。
+  - 启动收敛会按当前内置权限目录**重写**内置 owner/admin 角色的权限集（因此包含 `access.manage`；是整套重写而非单纯追加，自定义角色不受影响）。该权限**不可委派**，自定义角色在任何情况下都无法获得（不是“需要授权”，而是被目录禁止）。**v0.9.0 之前签发的个人 API Token 权限集不含 `access.manage`**，必须重建令牌后才能在令牌身份下管理访问控制（令牌权限是申请集 ∩ 当前角色权限集的硬上限）。
   - 存量组织自动生成 `everyone` 用户组与 `everyone → 全部设备` 默认规则，升级后普通成员的可见设备集合不变；删除默认规则后重启不会复活，按运维指南 §2.3 收紧。
   - 多实例并行启动仍按 §4.2 的既有约束（角色回填是一次性标记，先由单实例完成）。
 

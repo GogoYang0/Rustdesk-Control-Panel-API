@@ -153,7 +153,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 > 可追溯。停用与恢复是幂等的，重复设置同值不产生审计。
 >
 > **v0.9.0 `Device.device_group_id`**：设备所属设备组（nullable，未分组为 `null`）。只由
-> `PUT .../device-groups/{deviceGroupId}/devices` 全量替换维护（一设备一组，换组即从原组移出），
+> `PUT .../device-groups/{deviceGroupId}/devices` 全量替换维护（每台设备最多属于一个设备组，换组即从原组移出），
 > 管理面设备列表对该字段只读，语义见 §3.10。
 
 ### 3.4 地址簿
@@ -294,7 +294,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `PUT .../user-groups/{groupId}/members` | `access.manage` | **全量替换**成员；任一 id 非本组织成员 → 400 整单拒绝 |
 | `GET/POST .../device-groups` | `access.manage` | 列表（含 `device_ids`）/ 创建 |
 | `PATCH/DELETE .../device-groups/{deviceGroupId}` | `access.manage` | 改名 / 删除（设备回到未分组，指向该组的规则同事务级联删除） |
-| `PUT .../device-groups/{deviceGroupId}/devices` | `access.manage` | **全量替换**设备；目标设备从原组移入本组（一设备一组） |
+| `PUT .../device-groups/{deviceGroupId}/devices` | `access.manage` | **全量替换**设备；目标设备从原组移入本组（每台设备最多属于一个设备组） |
 | `GET/POST .../access-rules` | `access.manage` | 列表（源组名 + 目标类型/组名）/ 创建（`target_kind`=`device_group`/`all_devices`） |
 | `DELETE .../access-rules/{ruleId}` | `access.manage` | 删除规则 |
 
@@ -306,7 +306,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 - **默认规则可删除**：组织创建（及存量组织启动收敛）时生成 `everyone → all_devices`；它是普通可删除行，删除后重启不会复活，再建精确规则即完成收紧。
 - **管理员绕过**：会籍角色 `owner`/`admin`（按 `role_id` 解析）不受组规则限制，管理面设备列表与票据签发/兑换均为全量；绕过不看是否持有 `access.manage`。
 - **停用优先**：停用的设备与停用/无角色的会籍一律不可达，先于规则判定。
-- **两处执行点**：compat `GET /api/peers`（§4.1）只返回判定允许且未停用的设备；票据签发（按签发人）与兑换（按兑换人）各判一次，拒绝 404（见 §3.6）。已建立的连接不因规则变更中断。
+- **两处执行点**：compat `GET /api/peers`（§4.1）只返回判定允许且未停用的设备；票据签发（按签发人）与兑换（按兑换人）各判一次——**一般访问拒绝返回 `404`**，但兑换一张有效票据且目标设备已停用时返回 `409 conflict` 并记 `device_disabled` 审计（见 §3.6）。已建立的连接不因规则变更中断。
 - **审计**：组/规则写操作为 `access.user_group.*` / `access.device_group.*` / `access.rule.*`；票据访问拒绝为 `session.ticket.denied`，`Detail` 含 `reason`（`access_control`|`device_disabled`）、`stage`（`issue`|`redeem`）、`device_id`（兑换含 `ticket_id`）。签发阶段遇到停用设备也记 `access_control`（判定层先于管理员绕过拒绝）。
 
 ---
