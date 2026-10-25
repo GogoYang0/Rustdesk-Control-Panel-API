@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/access"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/addressbook"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
@@ -57,6 +58,10 @@ type Deps struct {
 	// Roles resolves and seeds organization roles. NewAdminAPI derives it from
 	// DB when nil.
 	Roles *authz.RoleService
+
+	// Access owns user groups, device groups and access rules. NewAdminAPI
+	// derives it from DB and the transactional auditor when nil.
+	Access *access.Service
 
 	// Tokens mints and validates personal API tokens. NewRouter derives it from
 	// DB when nil so tests and the entrypoint share the same wiring.
@@ -131,6 +136,13 @@ func NewAdminAPI(d Deps) *AdminAPI {
 	}
 	if d.Roles == nil {
 		d.Roles = authz.NewRoleService(d.DB)
+	}
+	if d.Access == nil {
+		// The service refuses every write without a transactional recorder; a
+		// non-transactional auditor therefore leaves the endpoints read-only
+		// instead of silently dropping audit entries.
+		recorder, _ := d.Auditor.(audit.TxRecorder)
+		d.Access = access.NewService(d.DB, recorder, d.Now)
 	}
 	if d.TOTP == nil {
 		d.TOTP = auth.NewTOTPService(d.DB, d.AuthSecret, d.Now)

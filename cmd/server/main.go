@@ -409,6 +409,7 @@ func main() {
 			OrgsPerUser:    cfg.Provision.MaxOrgsPerUser,
 			Issuer:         issuer,
 			Auditor:        auditor,
+			Access:         access.NewService(st.DB, auditor, nil),
 			Logger:         lg,
 			Mailer:         mailer,
 			Tickets:        sessionSvc,

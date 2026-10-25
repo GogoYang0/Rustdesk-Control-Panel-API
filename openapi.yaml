@@ -808,6 +808,208 @@ paths:
         "409":
           $ref: "#/components/responses/Conflict"
 
+  /api/v1/orgs/{orgId}/user-groups:
+    get:
+      operationId: listUserGroups
+      summary: 列出用户组
+      description: |
+        返回组织的用户组，含内置 `everyone`（`kind=everyone`；成员隐式，`member_ids`
+        恒为空）。自定义组返回显式成员 id，供 PUT 全量替换回填。需要 `access.manage`。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 用户组列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserGroupListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      operationId: createUserGroup
+      summary: 创建用户组
+      description: |
+        需要 `access.manage`。名称为去首尾空白后的 1–64 个字符；`everyone` 为保留名
+        （不区分大小写），保留名或与已有组重名均返回 409。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserGroupCreateRequest"
+      responses:
+        "201":
+          description: 已创建的用户组
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserGroupResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/user-groups/{groupId}:
+    patch:
+      operationId: renameUserGroup
+      summary: 重命名用户组
+      description: |
+        需要 `access.manage`。`everyone` 组不可重命名（409）；名称规则与创建相同。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserGroupRenameRequest"
+      responses:
+        "200":
+          description: 重命名后的用户组
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserGroupResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      operationId: deleteUserGroup
+      summary: 删除用户组
+      description: |
+        需要 `access.manage`。`everyone` 组不可删除（409）。同一事务内级联删除成员行与
+        以该组为来源的访问规则，并逐条记录 `access.rule.delete` 审计。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已删除，返回级联删除的规则数
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserGroupDeleteResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/user-groups/{groupId}/members:
+    put:
+      operationId: replaceUserGroupMembers
+      summary: 全量替换用户组成员
+      description: |
+        需要 `access.manage`。请求中的用户必须全部是本组织成员，任一越界或不存在的
+        id 都整单拒绝（400），不静默跳过。`everyone` 组成员不可编辑（409）。提交与
+        现状相同的集合不产生变更（added=removed=0）。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: groupId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserGroupMembersRequest"
+      responses:
+        "200":
+          description: 已替换，返回新增与移除数量
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserGroupMembersResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
   /api/v1/orgs/{orgId}/audit-logs:
     get:
       operationId: listAuditLogs
@@ -3509,6 +3711,159 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Role"
+
+    UserGroupKind:
+      type: string
+      description: |
+        - everyone：每个组织唯一的保留组，成员隐式（全部组织成员），不可改名/删除，
+          成员集合不可编辑
+        - custom：组织自建组，成员由管理面显式维护
+      enum:
+        - everyone
+        - custom
+
+    UserGroup:
+      type: object
+      required:
+        - id
+        - name
+        - kind
+        - member_ids
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        kind:
+          $ref: "#/components/schemas/UserGroupKind"
+        member_ids:
+          type: array
+          items:
+            type: integer
+            format: int64
+          description: 显式成员 id；everyone 组恒为空
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    UserGroupListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/UserGroup"
+
+    UserGroupResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/UserGroup"
+
+    UserGroupCreateRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: 组名；`everyone` 为保留名（不区分大小写）
+
+    UserGroupRenameRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+
+    UserGroupMembersRequest:
+      type: object
+      required:
+        - user_ids
+      properties:
+        user_ids:
+          type: array
+          items:
+            type: integer
+            format: int64
+          description: 全量成员集合；所有 id 必须属于本组织，否则整单 400
+
+    UserGroupMemberMutation:
+      type: object
+      required:
+        - added
+        - removed
+      properties:
+        added:
+          type: integer
+          description: 本次新增的成员数
+        removed:
+          type: integer
+          description: 本次移除的成员数
+
+    UserGroupMembersResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/UserGroupMemberMutation"
+
+    UserGroupDeleteData:
+      type: object
+      required:
+        - removed_rules
+      properties:
+        removed_rules:
+          type: integer
+          description: 随组级联删除的访问规则数
+
+    UserGroupDeleteResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/UserGroupDeleteData"
 
     AuditLog:
       type: object

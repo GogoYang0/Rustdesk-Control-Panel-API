@@ -72,16 +72,16 @@ func (e AddressBookGrantAccess) Valid() bool {
 
 // Defines values for AddressBookGrantKind.
 const (
-	Everyone AddressBookGrantKind = "everyone"
-	User     AddressBookGrantKind = "user"
+	AddressBookGrantKindEveryone AddressBookGrantKind = "everyone"
+	AddressBookGrantKindUser     AddressBookGrantKind = "user"
 )
 
 // Valid indicates whether the value is a known member of the AddressBookGrantKind enum.
 func (e AddressBookGrantKind) Valid() bool {
 	switch e {
-	case Everyone:
+	case AddressBookGrantKindEveryone:
 		return true
-	case User:
+	case AddressBookGrantKindUser:
 		return true
 	default:
 		return false
@@ -433,6 +433,24 @@ func (e SessionStatus) Valid() bool {
 	case SessionStatusDenied:
 		return true
 	case SessionStatusOpen:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for UserGroupKind.
+const (
+	UserGroupKindCustom   UserGroupKind = "custom"
+	UserGroupKindEveryone UserGroupKind = "everyone"
+)
+
+// Valid indicates whether the value is a known member of the UserGroupKind enum.
+func (e UserGroupKind) Valid() bool {
+	switch e {
+	case UserGroupKindCustom:
+		return true
+	case UserGroupKindEveryone:
 		return true
 	default:
 		return false
@@ -2110,6 +2128,133 @@ type TokenResponse struct {
 	Message string    `json:"message"`
 }
 
+// UserGroup defines model for UserGroup.
+type UserGroup struct {
+	CreatedAt time.Time `json:"created_at"`
+	Id        int64     `json:"id"`
+
+	// Kind - everyone：每个组织唯一的保留组，成员隐式（全部组织成员），不可改名/删除，
+	//   成员集合不可编辑
+	// - custom：组织自建组，成员由管理面显式维护
+	Kind UserGroupKind `json:"kind"`
+
+	// MemberIds 显式成员 id；everyone 组恒为空
+	MemberIds []int64   `json:"member_ids"`
+	Name      string    `json:"name"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// UserGroupCreateRequest defines model for UserGroupCreateRequest.
+type UserGroupCreateRequest struct {
+	// Name 组名；`everyone` 为保留名（不区分大小写）
+	Name string `json:"name"`
+}
+
+// UserGroupDeleteData defines model for UserGroupDeleteData.
+type UserGroupDeleteData struct {
+	// RemovedRules 随组级联删除的访问规则数
+	RemovedRules int `json:"removed_rules"`
+}
+
+// UserGroupDeleteResponse defines model for UserGroupDeleteResponse.
+type UserGroupDeleteResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode           `json:"code"`
+	Data    UserGroupDeleteData `json:"data"`
+	Message string              `json:"message"`
+}
+
+// UserGroupKind - everyone：每个组织唯一的保留组，成员隐式（全部组织成员），不可改名/删除，
+//
+//	成员集合不可编辑
+//
+// - custom：组织自建组，成员由管理面显式维护
+type UserGroupKind string
+
+// UserGroupListResponse defines model for UserGroupListResponse.
+type UserGroupListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode   `json:"code"`
+	Data    []UserGroup `json:"data"`
+	Message string      `json:"message"`
+}
+
+// UserGroupMemberMutation defines model for UserGroupMemberMutation.
+type UserGroupMemberMutation struct {
+	// Added 本次新增的成员数
+	Added int `json:"added"`
+
+	// Removed 本次移除的成员数
+	Removed int `json:"removed"`
+}
+
+// UserGroupMembersRequest defines model for UserGroupMembersRequest.
+type UserGroupMembersRequest struct {
+	// UserIds 全量成员集合；所有 id 必须属于本组织，否则整单 400
+	UserIds []int64 `json:"user_ids"`
+}
+
+// UserGroupMembersResponse defines model for UserGroupMembersResponse.
+type UserGroupMembersResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode               `json:"code"`
+	Data    UserGroupMemberMutation `json:"data"`
+	Message string                  `json:"message"`
+}
+
+// UserGroupRenameRequest defines model for UserGroupRenameRequest.
+type UserGroupRenameRequest struct {
+	Name string `json:"name"`
+}
+
+// UserGroupResponse defines model for UserGroupResponse.
+type UserGroupResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode `json:"code"`
+	Data    UserGroup `json:"data"`
+	Message string    `json:"message"`
+}
+
 // BadRequest defines model for BadRequest.
 type BadRequest = ErrorResponse
 
@@ -2314,6 +2459,15 @@ type IssueTicketJSONRequestBody = TicketCreateRequest
 // RedeemTicketJSONRequestBody defines body for RedeemTicket for application/json ContentType.
 type RedeemTicketJSONRequestBody = TicketRedeemRequest
 
+// CreateUserGroupJSONRequestBody defines body for CreateUserGroup for application/json ContentType.
+type CreateUserGroupJSONRequestBody = UserGroupCreateRequest
+
+// RenameUserGroupJSONRequestBody defines body for RenameUserGroup for application/json ContentType.
+type RenameUserGroupJSONRequestBody = UserGroupRenameRequest
+
+// ReplaceUserGroupMembersJSONRequestBody defines body for ReplaceUserGroupMembers for application/json ContentType.
+type ReplaceUserGroupMembersJSONRequestBody = UserGroupMembersRequest
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// DisableTOTP 关闭 TOTP 两步验证
@@ -2511,6 +2665,21 @@ type ServerInterface interface {
 	// RedeemTicket 兑换连接票据（创建面板会话）
 	// (POST /api/v1/orgs/{orgId}/tickets/{ticketId}/redeem)
 	RedeemTicket(c *gin.Context, orgId int64, ticketId int64)
+	// ListUserGroups 列出用户组
+	// (GET /api/v1/orgs/{orgId}/user-groups)
+	ListUserGroups(c *gin.Context, orgId int64)
+	// CreateUserGroup 创建用户组
+	// (POST /api/v1/orgs/{orgId}/user-groups)
+	CreateUserGroup(c *gin.Context, orgId int64)
+	// DeleteUserGroup 删除用户组
+	// (DELETE /api/v1/orgs/{orgId}/user-groups/{groupId})
+	DeleteUserGroup(c *gin.Context, orgId int64, groupId int64)
+	// RenameUserGroup 重命名用户组
+	// (PATCH /api/v1/orgs/{orgId}/user-groups/{groupId})
+	RenameUserGroup(c *gin.Context, orgId int64, groupId int64)
+	// ReplaceUserGroupMembers 全量替换用户组成员
+	// (PUT /api/v1/orgs/{orgId}/user-groups/{groupId}/members)
+	ReplaceUserGroupMembers(c *gin.Context, orgId int64, groupId int64)
 	// ListPermissions 列出权限目录
 	// (GET /api/v1/permissions)
 	ListPermissions(c *gin.Context)
@@ -4612,6 +4781,158 @@ func (siw *ServerInterfaceWrapper) RedeemTicket(c *gin.Context) {
 	siw.Handler.RedeemTicket(c, orgId, ticketId)
 }
 
+// ListUserGroups operation middleware
+func (siw *ServerInterfaceWrapper) ListUserGroups(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListUserGroups(c, orgId)
+}
+
+// CreateUserGroup operation middleware
+func (siw *ServerInterfaceWrapper) CreateUserGroup(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateUserGroup(c, orgId)
+}
+
+// DeleteUserGroup operation middleware
+func (siw *ServerInterfaceWrapper) DeleteUserGroup(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "groupId" -------------
+	var groupId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "groupId", c.Param("groupId"), &groupId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter groupId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteUserGroup(c, orgId, groupId)
+}
+
+// RenameUserGroup operation middleware
+func (siw *ServerInterfaceWrapper) RenameUserGroup(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "groupId" -------------
+	var groupId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "groupId", c.Param("groupId"), &groupId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter groupId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RenameUserGroup(c, orgId, groupId)
+}
+
+// ReplaceUserGroupMembers operation middleware
+func (siw *ServerInterfaceWrapper) ReplaceUserGroupMembers(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "groupId" -------------
+	var groupId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "groupId", c.Param("groupId"), &groupId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter groupId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ReplaceUserGroupMembers(c, orgId, groupId)
+}
+
 // ListPermissions operation middleware
 func (siw *ServerInterfaceWrapper) ListPermissions(c *gin.Context) {
 
@@ -4688,6 +5009,11 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/roles/:roleId", wrapper.DeleteRole)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/roles/:roleId", wrapper.GetRole)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/roles/:roleId", wrapper.UpdateRole)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/user-groups", wrapper.ListUserGroups)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/user-groups", wrapper.CreateUserGroup)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/user-groups/:groupId", wrapper.DeleteUserGroup)
+	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/user-groups/:groupId", wrapper.RenameUserGroup)
+	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/user-groups/:groupId/members", wrapper.ReplaceUserGroupMembers)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-logs", wrapper.ListAuditLogs)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-logs/export", wrapper.ExportAuditLogs)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-retention", wrapper.GetAuditRetention)
