@@ -74,6 +74,7 @@ func NewRouter(d Deps) *gin.Engine {
 		DB:        d.DB,
 		Issuer:    d.Issuer,
 		Devices:   d.Devices,
+		Access:    d.Access,
 		Now:       d.Now,
 		AccessTTL: d.CompatTTL,
 	})
