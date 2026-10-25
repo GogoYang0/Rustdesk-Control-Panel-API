@@ -9,6 +9,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/gen"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/access"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 )
 
 // userGroupToAPI maps one group view onto the contract shape.
@@ -203,12 +204,17 @@ func (a *AdminAPI) writeAccessError(c *gin.Context, err error, logMessage string
 		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "user group not found")
 	case errors.Is(err, access.ErrDeviceGroupNotFound):
 		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "device group not found")
+	case errors.Is(err, access.ErrRuleExists):
+		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "access rule already exists")
 	case errors.Is(err, access.ErrReservedGroup), errors.Is(err, access.ErrGroupNameTaken),
 		errors.Is(err, access.ErrDeviceGroupNameTaken):
 		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "group conflict")
 	case errors.Is(err, access.ErrInvalidGroupName), errors.Is(err, access.ErrInvalidMember),
-		errors.Is(err, access.ErrInvalidDeviceGroupName), errors.Is(err, access.ErrInvalidDevice):
+		errors.Is(err, access.ErrInvalidDeviceGroupName), errors.Is(err, access.ErrInvalidDevice),
+		errors.Is(err, access.ErrInvalidRule):
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid group request")
+	case errors.Is(err, access.ErrRuleNotFound):
+		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "access rule not found")
 	case errors.Is(err, access.ErrAuditUnavailable):
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "audit unavailable")
 	default:
@@ -402,4 +408,121 @@ func (a *AdminAPI) ReplaceDeviceGroupDevices(c *gin.Context, orgId int64, device
 		Message: "ok",
 		Data:    gen.DeviceGroupMemberMutation{Added: added, Removed: removed},
 	})
+}
+
+// accessRuleToAPI maps one rule view onto the contract shape. all_devices rules
+// carry a null target id and an empty target name.
+func accessRuleToAPI(view access.RuleView) gen.AccessRule {
+	var targetID *int64
+	if view.Rule.TargetKind == model.AccessTargetKindDeviceGroup {
+		id := int64(view.Rule.TargetGroupID)
+		targetID = &id
+	}
+	return gen.AccessRule{
+		Id:              int64(view.Rule.ID),
+		SourceGroupId:   int64(view.Rule.SourceGroupID),
+		SourceGroupName: view.SourceGroupName,
+		TargetKind:      gen.AccessRuleTargetKind(view.Rule.TargetKind),
+		TargetGroupId:   targetID,
+		TargetGroupName: view.TargetGroupName,
+		CreatedAt:       view.Rule.CreatedAt,
+	}
+}
+
+// ListAccessRules lists the organization's allow rules.
+func (a *AdminAPI) ListAccessRules(c *gin.Context, orgId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid organization id")
+		return
+	}
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermAccessManage) {
+		return
+	}
+	views, err := a.deps.Access.ListAccessRules(c.Request.Context(), uint(orgId))
+	if err != nil {
+		a.deps.Logger.Error("list access rules failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not list access rules")
+		return
+	}
+	out := make([]gen.AccessRule, 0, len(views))
+	for _, view := range views {
+		out = append(out, accessRuleToAPI(view))
+	}
+	c.JSON(http.StatusOK, gen.AccessRuleListResponse{Code: gen.ErrorCodeOk, Message: "ok", Data: out})
+}
+
+// CreateAccessRule adds one allow rule.
+func (a *AdminAPI) CreateAccessRule(c *gin.Context, orgId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid organization id")
+		return
+	}
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermAccessManage) {
+		return
+	}
+	var req gen.AccessRuleCreateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid access rule body")
+		return
+	}
+	if req.SourceGroupId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid source group id")
+		return
+	}
+	var targetGroupID uint
+	if req.TargetGroupId != nil {
+		if *req.TargetGroupId <= 0 {
+			abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid target group id")
+			return
+		}
+		targetGroupID = uint(*req.TargetGroupId)
+	}
+	rule, err := a.deps.Access.CreateAccessRule(c.Request.Context(), uint(orgId), uid,
+		uint(req.SourceGroupId), string(req.TargetKind), targetGroupID)
+	if err != nil {
+		a.writeAccessError(c, err, "create access rule failed")
+		return
+	}
+	// The write already committed with its audit entry; mark it before the
+	// reload so a reload failure cannot produce a second audit row.
+	c.Set(contextAuditRecorded, true)
+	view, err := a.deps.Access.RuleViewByID(c.Request.Context(), uint(orgId), rule.ID)
+	if err != nil {
+		a.writeAccessError(c, err, "reload created access rule failed")
+		return
+	}
+	c.JSON(http.StatusCreated, gen.AccessRuleResponse{
+		Code:    gen.ErrorCodeOk,
+		Message: "ok",
+		Data:    accessRuleToAPI(view),
+	})
+}
+
+// DeleteAccessRule removes one rule.
+func (a *AdminAPI) DeleteAccessRule(c *gin.Context, orgId int64, ruleId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 || ruleId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid id")
+		return
+	}
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermAccessManage) {
+		return
+	}
+	if err := a.deps.Access.DeleteAccessRule(c.Request.Context(), uint(orgId), uid, uint(ruleId)); err != nil {
+		a.writeAccessError(c, err, "delete access rule failed")
+		return
+	}
+	c.Set(contextAuditRecorded, true)
+	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
 }
