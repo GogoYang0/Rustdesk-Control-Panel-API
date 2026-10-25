@@ -163,7 +163,7 @@ func (s *Service) ListUserGroups(ctx context.Context, orgID uint) ([]GroupView, 
 	}
 	var members []model.UserGroupMember
 	if err := store.ScopedByOrg(db, orgID).
-		Where("group_id IN ?", ids).Find(&members).Error; err != nil {
+		Where("group_id IN ?", ids).Order("id").Find(&members).Error; err != nil {
 		return nil, err
 	}
 	byGroup := make(map[uint][]uint, len(groups))
@@ -190,7 +190,7 @@ func (s *Service) UserGroupView(ctx context.Context, orgID, groupID uint) (Group
 	}
 	var members []model.UserGroupMember
 	if err := store.ScopedByOrg(s.db.WithContext(ctx), orgID).
-		Where("group_id = ?", groupID).Find(&members).Error; err != nil {
+		Where("group_id = ?", groupID).Order("id").Find(&members).Error; err != nil {
 		return GroupView{}, err
 	}
 	ids := make([]uint, 0, len(members))
@@ -270,11 +270,9 @@ func (s *Service) RenameUserGroup(ctx context.Context, orgID, actorID, groupID u
 		if res.Error != nil {
 			return mapGroupNameConflict(res.Error)
 		}
-		if res.RowsAffected == 0 {
-			// The row stopped being a custom group between the read and the
-			// update; audited success would claim a rename that never happened.
-			return ErrGroupNotFound
-		}
+		// MySQL reports 0 affected rows when the collation considers the new name
+		// unchanged; the reload, not RowsAffected, decides whether the row still
+		// exists.
 		reloaded, err := groupByID(tx, orgID, group.ID)
 		if err != nil {
 			return err
@@ -466,7 +464,7 @@ func (s *Service) ListDeviceGroups(ctx context.Context, orgID uint) ([]DeviceGro
 	}
 	var devices []model.Device
 	if err := store.ScopedByOrg(db, orgID).
-		Where("device_group_id IN ?", ids).Find(&devices).Error; err != nil {
+		Where("device_group_id IN ?", ids).Order("id").Find(&devices).Error; err != nil {
 		return nil, err
 	}
 	byGroup := make(map[uint][]uint, len(groups))
@@ -496,7 +494,7 @@ func (s *Service) DeviceGroupViewByID(ctx context.Context, orgID, groupID uint) 
 	}
 	var devices []model.Device
 	if err := store.ScopedByOrg(db, orgID).
-		Where("device_group_id = ?", groupID).Find(&devices).Error; err != nil {
+		Where("device_group_id = ?", groupID).Order("id").Find(&devices).Error; err != nil {
 		return DeviceGroupView{}, err
 	}
 	ids := make([]uint, 0, len(devices))
@@ -568,9 +566,8 @@ func (s *Service) RenameDeviceGroup(ctx context.Context, orgID, actorID, groupID
 		if res.Error != nil {
 			return mapDeviceGroupNameConflict(res.Error)
 		}
-		if res.RowsAffected == 0 {
-			return ErrDeviceGroupNotFound
-		}
+		// MySQL reports 0 affected rows when the collation considers the new name
+		// unchanged; the reload decides whether the group still exists.
 		reloaded, err := deviceGroupByID(tx, orgID, group.ID)
 		if err != nil {
 			return err

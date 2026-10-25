@@ -34,6 +34,25 @@ func TestAccess_DeviceGroupAdminFlow(t *testing.T) {
 	require.Equal(t, "Servers", servers.Name)
 	require.Empty(t, servers.DeviceIds)
 
+	// A domain-audited write must suppress the middleware's fallback row.
+	var httpRows int64
+	require.NoError(t, store.WithoutTenantScope(h.db.DB).Model(&model.AuditLog{}).
+		Where("action = ?", "POST /api/v1/orgs/:orgId/device-groups").Count(&httpRows).Error)
+	require.Zero(t, httpRows, "the domain audit entry must replace the http fallback")
+	var domainRows int64
+	require.NoError(t, store.WithoutTenantScope(h.db.DB).Model(&model.AuditLog{}).
+		Where("action = ?", "access.device_group.create").Count(&domainRows).Error)
+	require.EqualValues(t, 1, domainRows)
+
+	// Validation: empty name is 400, a case-insensitive duplicate is 409, and a
+	// missing group id is 404.
+	w = h.do(t, http.MethodPost, base, map[string]string{"name": "   "}, adminToken)
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+	w = h.do(t, http.MethodPost, base, map[string]string{"name": "servers"}, adminToken)
+	require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
+	w = h.do(t, http.MethodPatch, base+"/999999", map[string]string{"name": "x"}, adminToken)
+	require.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
+
 	w = h.do(t, http.MethodPut, base+"/"+itoa(servers.Id)+"/devices",
 		map[string][]int64{"device_ids": {int64(device.ID)}}, adminToken)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())

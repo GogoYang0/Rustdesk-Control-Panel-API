@@ -81,6 +81,7 @@ func (a *AdminAPI) CreateUserGroup(c *gin.Context, orgId int64) {
 		a.writeAccessError(c, err, "reload created user group failed")
 		return
 	}
+	c.Set(contextAuditRecorded, true)
 	c.JSON(http.StatusCreated, gen.UserGroupResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
@@ -116,6 +117,7 @@ func (a *AdminAPI) RenameUserGroup(c *gin.Context, orgId int64, groupId int64) {
 		a.writeAccessError(c, err, "reload renamed user group failed")
 		return
 	}
+	c.Set(contextAuditRecorded, true)
 	c.JSON(http.StatusOK, gen.UserGroupResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
@@ -141,6 +143,7 @@ func (a *AdminAPI) DeleteUserGroup(c *gin.Context, orgId int64, groupId int64) {
 		a.writeAccessError(c, err, "delete user group failed")
 		return
 	}
+	c.Set(contextAuditRecorded, true)
 	c.JSON(http.StatusOK, gen.UserGroupDeleteResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
@@ -185,6 +188,7 @@ func (a *AdminAPI) ReplaceUserGroupMembers(c *gin.Context, orgId int64, groupId 
 		a.writeAccessError(c, err, "replace user group members failed")
 		return
 	}
+	c.Set(contextAuditRecorded, true)
 	c.JSON(http.StatusOK, gen.UserGroupMembersResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
@@ -282,6 +286,7 @@ func (a *AdminAPI) CreateDeviceGroup(c *gin.Context, orgId int64) {
 		a.writeAccessError(c, err, "reload created device group failed")
 		return
 	}
+	c.Set(contextAuditRecorded, true)
 	c.JSON(http.StatusCreated, gen.DeviceGroupResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
@@ -317,6 +322,7 @@ func (a *AdminAPI) RenameDeviceGroup(c *gin.Context, orgId int64, deviceGroupId 
 		a.writeAccessError(c, err, "reload renamed device group failed")
 		return
 	}
+	c.Set(contextAuditRecorded, true)
 	c.JSON(http.StatusOK, gen.DeviceGroupResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
@@ -342,6 +348,7 @@ func (a *AdminAPI) DeleteDeviceGroup(c *gin.Context, orgId int64, deviceGroupId 
 		a.writeAccessError(c, err, "delete device group failed")
 		return
 	}
+	c.Set(contextAuditRecorded, true)
 	c.JSON(http.StatusOK, gen.DeviceGroupDeleteResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
@@ -389,6 +396,7 @@ func (a *AdminAPI) ReplaceDeviceGroupDevices(c *gin.Context, orgId int64, device
 		a.writeAccessError(c, err, "replace device group devices failed")
 		return
 	}
+	c.Set(contextAuditRecorded, true)
 	c.JSON(http.StatusOK, gen.DeviceGroupDevicesResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
