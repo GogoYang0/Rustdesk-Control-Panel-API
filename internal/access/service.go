@@ -715,7 +715,22 @@ func (s *Service) ReplaceDeviceGroupDevices(ctx context.Context, orgID, actorID,
 				return err
 			}
 		}
+		movedFrom := make(map[uint]uint)
 		if len(toAdd) > 0 {
+			// Capture the previous group of every device being moved: the
+			// UPDATE below overwrites the only reference, so the audit entry is
+			// the only trace left of where the device came from.
+			var moved []model.Device
+			if err := store.ScopedByOrg(tx, orgID).
+				Where("id IN ? AND device_group_id IS NOT NULL", toAdd).
+				Find(&moved).Error; err != nil {
+				return err
+			}
+			for _, device := range moved {
+				if device.DeviceGroupID != nil {
+					movedFrom[device.ID] = *device.DeviceGroupID
+				}
+			}
 			// This single UPDATE also detaches the devices from any previous
 			// group, which is what enforces "one device belongs to one group".
 			if err := store.ScopedByOrg(tx, orgID).Model(&model.Device{}).
@@ -728,13 +743,17 @@ func (s *Service) ReplaceDeviceGroupDevices(ctx context.Context, orgID, actorID,
 		if added == 0 && removed == 0 {
 			return nil
 		}
+		detail := map[string]any{"device_ids": wanted, "added": added, "removed": removed}
+		if len(movedFrom) > 0 {
+			detail["moved_from"] = movedFrom
+		}
 		return s.record(tx, audit.Entry{
 			OrganizationID: orgID,
 			ActorUserID:    actorID,
 			Action:         "access.device_group.devices",
 			TargetType:     "device_group",
 			TargetID:       fmt.Sprint(group.ID),
-			Detail:         map[string]any{"device_ids": wanted, "added": added, "removed": removed},
+			Detail:         detail,
 		})
 	})
 	if err != nil {

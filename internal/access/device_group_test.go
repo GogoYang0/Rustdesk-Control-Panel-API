@@ -2,6 +2,7 @@ package access_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -63,6 +64,16 @@ func TestAccess_DeviceMoveClearsPreviousGroup(t *testing.T) {
 	}
 	require.Empty(t, byID[groupA.ID].DeviceIDs, "moving the device must clear the previous group")
 	require.Equal(t, []uint{device.ID}, byID[groupB.ID].DeviceIDs)
+
+	// The move audit must record where each device came from: the previous
+	// reference is the only surviving trace once it has been overwritten.
+	var audits []model.AuditLog
+	require.NoError(t, store.WithoutTenantScope(st.DB).Model(&model.AuditLog{}).
+		Where("action = ? AND target_id = ?", "access.device_group.devices", fmt.Sprint(groupB.ID)).
+		Find(&audits).Error)
+	require.Len(t, audits, 1)
+	require.Contains(t, audits[0].Detail, `"moved_from"`)
+	require.Contains(t, audits[0].Detail, `"`+fmt.Sprint(device.ID)+`"`)
 }
 
 // TestAccess_DeleteDeviceGroupClearsDevicesAndRules pins deletion: devices
