@@ -19,13 +19,15 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
 
-// Migrate converges the access-control defaults for every organization: the
-// reserved everyone group and its all-devices rule. It runs on every startup
-// and is idempotent per organization rather than guarded by a one-shot marker
-// — an organization that appears after a previous run (a harness fixture, a
-// restored database) must still get its defaults, or its ordinary members
-// would see an empty device list forever. A failure aborts startup so the next
-// boot retries from the same state.
+// Migrate converges the access-control bootstrap for every organization. An
+// organization with no reserved everyone group yet gets that group and the
+// default all-devices rule, atomically; an organization that already has the
+// group gets nothing re-created.
+//
+// Only the bootstrap is convergent. The default rule is a normal deletable row
+// (D5): re-inserting it on every boot would silently hand every member the
+// whole device list back after an administrator deliberately deleted it.
+// A failure aborts startup so the next boot retries from the same state.
 func Migrate(db *gorm.DB) error {
 	return db.Transaction(func(tx *gorm.DB) error {
 		var orgIDs []uint
@@ -41,13 +43,18 @@ func Migrate(db *gorm.DB) error {
 	})
 }
 
-// EnsureDefaultsTx makes sure the organization has its everyone group and the
-// everyone -> all_devices rule. It is idempotent and runs inside the caller's
-// transaction, so organization creation commits its defaults atomically.
+// EnsureDefaultsTx bootstraps the organization's access-control defaults: the
+// reserved everyone group and, only when that group was created by this call,
+// the everyone -> all_devices rule. It is idempotent and runs inside the
+// caller's transaction, so organization creation commits its defaults
+// atomically.
 func EnsureDefaultsTx(tx *gorm.DB, orgID uint) error {
-	group, err := everyoneGroupTx(tx, orgID)
+	group, created, err := everyoneGroupTx(tx, orgID)
 	if err != nil {
 		return err
+	}
+	if !created {
+		return nil
 	}
 	if err := store.ScopedByOrg(tx, orgID).Clauses(clause.OnConflict{DoNothing: true}).
 		Create(&model.AccessRule{
@@ -61,17 +68,19 @@ func EnsureDefaultsTx(tx *gorm.DB, orgID uint) error {
 	return nil
 }
 
-// everyoneGroupTx returns the reserved everyone group, creating it when the
-// organization predates the access-control migration.
-func everyoneGroupTx(tx *gorm.DB, orgID uint) (*model.UserGroup, error) {
+// everyoneGroupTx returns the reserved everyone group and whether this call
+// created it. The creator of the group also seeds the default rule in the same
+// transaction; a loser of the insert race sees created=false and leaves the
+// winner's rule in place.
+func everyoneGroupTx(tx *gorm.DB, orgID uint) (*model.UserGroup, bool, error) {
 	var group model.UserGroup
 	err := store.ScopedByOrg(tx, orgID).
 		Where("kind = ?", model.UserGroupKindEveryone).First(&group).Error
 	if err == nil {
-		return &group, nil
+		return &group, false, nil
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, fmt.Errorf("load everyone group: %w", err)
+		return nil, false, fmt.Errorf("load everyone group: %w", err)
 	}
 	group = model.UserGroup{
 		OrganizationID: orgID,
@@ -80,15 +89,16 @@ func everyoneGroupTx(tx *gorm.DB, orgID uint) (*model.UserGroup, error) {
 	}
 	// Two concurrent writers converge on one row: the unique
 	// (organization_id, name) index decides and the loser re-reads.
-	if err := store.ScopedByOrg(tx, orgID).Clauses(clause.OnConflict{DoNothing: true}).
-		Create(&group).Error; err != nil {
-		return nil, fmt.Errorf("create everyone group: %w", err)
+	res := store.ScopedByOrg(tx, orgID).Clauses(clause.OnConflict{DoNothing: true}).
+		Create(&group)
+	if res.Error != nil {
+		return nil, false, fmt.Errorf("create everyone group: %w", res.Error)
 	}
 	if err := store.ScopedByOrg(tx, orgID).
 		Where("kind = ?", model.UserGroupKindEveryone).First(&group).Error; err != nil {
-		return nil, fmt.Errorf("reload everyone group: %w", err)
+		return nil, false, fmt.Errorf("reload everyone group: %w", err)
 	}
-	return &group, nil
+	return &group, res.RowsAffected > 0, nil
 }
 
 // Service-level errors mapped to HTTP statuses by the handler.
@@ -820,6 +830,30 @@ func (s *Service) ListAccessRules(ctx context.Context, orgID uint) ([]RuleView, 
 		})
 	}
 	return views, nil
+}
+
+// RuleViewByID reloads one rule with its resolved group names. Handlers use it
+// after a write so the response shape matches GET without a full list scan.
+func (s *Service) RuleViewByID(ctx context.Context, orgID, ruleID uint) (RuleView, error) {
+	db := s.db.WithContext(ctx)
+	rule, err := ruleByID(db, orgID, ruleID)
+	if err != nil {
+		return RuleView{}, err
+	}
+	view := RuleView{Rule: *rule}
+	if group, err := groupByID(db, orgID, rule.SourceGroupID); err == nil {
+		view.SourceGroupName = group.Name
+	} else if !errors.Is(err, ErrGroupNotFound) {
+		return RuleView{}, err
+	}
+	if rule.TargetKind == model.AccessTargetKindDeviceGroup && rule.TargetGroupID != 0 {
+		if group, err := deviceGroupByID(db, orgID, rule.TargetGroupID); err == nil {
+			view.TargetGroupName = group.Name
+		} else if !errors.Is(err, ErrDeviceGroupNotFound) {
+			return RuleView{}, err
+		}
+	}
+	return view, nil
 }
 
 // CreateAccessRule adds one allow rule. The source user group and, for

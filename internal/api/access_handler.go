@@ -204,8 +204,10 @@ func (a *AdminAPI) writeAccessError(c *gin.Context, err error, logMessage string
 		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "user group not found")
 	case errors.Is(err, access.ErrDeviceGroupNotFound):
 		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "device group not found")
+	case errors.Is(err, access.ErrRuleExists):
+		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "access rule already exists")
 	case errors.Is(err, access.ErrReservedGroup), errors.Is(err, access.ErrGroupNameTaken),
-		errors.Is(err, access.ErrDeviceGroupNameTaken), errors.Is(err, access.ErrRuleExists):
+		errors.Is(err, access.ErrDeviceGroupNameTaken):
 		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "group conflict")
 	case errors.Is(err, access.ErrInvalidGroupName), errors.Is(err, access.ErrInvalidMember),
 		errors.Is(err, access.ErrInvalidDeviceGroupName), errors.Is(err, access.ErrInvalidDevice),
@@ -489,25 +491,19 @@ func (a *AdminAPI) CreateAccessRule(c *gin.Context, orgId int64) {
 		a.writeAccessError(c, err, "create access rule failed")
 		return
 	}
-	// Reload through the list so the response carries the same names as GET.
-	views, err := a.deps.Access.ListAccessRules(c.Request.Context(), uint(orgId))
+	// The write already committed with its audit entry; mark it before the
+	// reload so a reload failure cannot produce a second audit row.
+	c.Set(contextAuditRecorded, true)
+	view, err := a.deps.Access.RuleViewByID(c.Request.Context(), uint(orgId), rule.ID)
 	if err != nil {
 		a.writeAccessError(c, err, "reload created access rule failed")
 		return
 	}
-	for _, view := range views {
-		if view.Rule.ID == rule.ID {
-			c.Set(contextAuditRecorded, true)
-			c.JSON(http.StatusCreated, gen.AccessRuleResponse{
-				Code:    gen.ErrorCodeOk,
-				Message: "ok",
-				Data:    accessRuleToAPI(view),
-			})
-			return
-		}
-	}
-	a.deps.Logger.Error("created access rule vanished")
-	abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not load created access rule")
+	c.JSON(http.StatusCreated, gen.AccessRuleResponse{
+		Code:    gen.ErrorCodeOk,
+		Message: "ok",
+		Data:    accessRuleToAPI(view),
+	})
 }
 
 // DeleteAccessRule removes one rule.

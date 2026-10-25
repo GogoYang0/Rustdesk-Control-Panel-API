@@ -125,6 +125,32 @@ func TestAccess_RuleListViewNames(t *testing.T) {
 	require.Equal(t, "Servers", byKind[model.AccessTargetKindDeviceGroup].TargetGroupName)
 }
 
+// TestAccess_DefaultRuleDeletionSurvivesRestart pins the tightening contract:
+// deleting the seeded everyone -> all_devices rule must survive process
+// restarts. Re-seeding it on boot would silently hand every member the whole
+// device list back, with no audit entry the administrator could notice.
+func TestAccess_DefaultRuleDeletionSurvivesRestart(t *testing.T) {
+	ctx := context.Background()
+	st, svc, org, _, _ := ruleFixture(t)
+
+	views, err := svc.ListAccessRules(ctx, org.ID)
+	require.NoError(t, err)
+	require.Len(t, views, 1)
+
+	require.NoError(t, svc.DeleteAccessRule(ctx, org.ID, 1, views[0].Rule.ID))
+
+	// A restart runs the same convergence entrypoint the server uses.
+	require.NoError(t, access.Migrate(st.DB))
+
+	views, err = svc.ListAccessRules(ctx, org.ID)
+	require.NoError(t, err)
+	require.Empty(t, views, "the deleted default rule must not be re-seeded on restart")
+
+	// The everyone group itself is still there (it is never deletable).
+	everyone := everyoneGroup(t, st, org.ID)
+	require.Equal(t, model.UserGroupKindEveryone, everyone.Kind)
+}
+
 // TestAccess_RuleWriteFailsClosed pins the audit contract for rules.
 func TestAccess_RuleWriteFailsClosed(t *testing.T) {
 	ctx := context.Background()
