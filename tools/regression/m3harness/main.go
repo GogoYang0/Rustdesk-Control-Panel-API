@@ -169,14 +169,6 @@ func runSeed(dbPath string) error {
 	if err := authz.MigrateRoles(db); err != nil {
 		return fmt.Errorf("migrate roles: %w", err)
 	}
-	if err := authz.MigrateAccessPermission(db); err != nil {
-		return fmt.Errorf("migrate access permission: %w", err)
-	}
-	// The everyone defaults keep the seeded organization's peers list
-	// non-empty once the M5 visibility filter is in place.
-	if err := access.Migrate(db); err != nil {
-		return fmt.Errorf("migrate access defaults: %w", err)
-	}
 
 	// Owner user (verified): login must succeed, so the password is hashed with
 	// the project's own Argon2id implementation.
@@ -188,6 +180,13 @@ func runSeed(dbPath string) error {
 	org, err := findOrCreateOrg(db)
 	if err != nil {
 		return err
+	}
+	// The fixture creates its organization directly, outside the API's
+	// creation transaction, so it must seed the access defaults itself; the
+	// panel's startup convergence then keeps them and upgrades the builtin
+	// permission sets.
+	if err := access.EnsureDefaultsTx(db, org.ID); err != nil {
+		return fmt.Errorf("seed access defaults: %w", err)
 	}
 
 	if err := ensureMembership(db, org.ID, user.ID); err != nil {

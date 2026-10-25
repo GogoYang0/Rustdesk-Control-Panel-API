@@ -64,3 +64,29 @@ func TestAccess_MigrateSeedsEveryone(t *testing.T) {
 		require.Zero(t, members, "everyone is an implicit user group and stores no member rows")
 	}
 }
+
+// TestAccess_MigrateSeedsOrganizationCreatedAfterRun pins the convergence
+// property: an organization that appears after a previous run (a harness
+// fixture, a restored database, an import) still gets its defaults on the next
+// run. A one-shot marker would skip it forever, and its ordinary members would
+// then see an empty device list.
+func TestAccess_MigrateSeedsOrganizationCreatedAfterRun(t *testing.T) {
+	st := accessTestStore(t)
+	first := model.Organization{Name: "first"}
+	require.NoError(t, st.DB.Create(&first).Error)
+	require.NoError(t, access.Migrate(st.DB))
+
+	late := model.Organization{Name: "late"}
+	require.NoError(t, st.DB.Create(&late).Error)
+	require.NoError(t, access.Migrate(st.DB))
+
+	var groups []model.UserGroup
+	require.NoError(t, store.ScopedByOrg(st.DB, late.ID).
+		Where("kind = ?", model.UserGroupKindEveryone).Find(&groups).Error)
+	require.Len(t, groups, 1, "a later organization must still get its everyone group")
+
+	var rules []model.AccessRule
+	require.NoError(t, store.ScopedByOrg(st.DB, late.ID).Find(&rules).Error)
+	require.Len(t, rules, 1, "a later organization must still get the all-devices rule")
+	require.Equal(t, groups[0].ID, rules[0].SourceGroupID)
+}

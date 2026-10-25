@@ -7,7 +7,6 @@ package access
 import (
 	"errors"
 	"fmt"
-	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -16,23 +15,14 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
 
-// migrationName is the one-shot marker of the access-control seed.
-const migrationName = "2026-10-25-m5-access-seed"
-
-// Migrate seeds the reserved everyone group and its default all-devices rule
-// for every existing organization. The marker makes it one-shot: without the
-// seed, members of an upgraded organization would see an empty device list.
-// A failed run leaves the marker unwritten so the next startup retries.
+// Migrate converges the access-control defaults for every organization: the
+// reserved everyone group and its all-devices rule. It runs on every startup
+// and is idempotent per organization rather than guarded by a one-shot marker
+// — an organization that appears after a previous run (a harness fixture, a
+// restored database) must still get its defaults, or its ordinary members
+// would see an empty device list forever. A failure aborts startup so the next
+// boot retries from the same state.
 func Migrate(db *gorm.DB) error {
-	var mark model.MigrationMark
-	err := db.Where("name = ?", migrationName).First(&mark).Error
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return fmt.Errorf("look up access migration mark: %w", err)
-	}
-
 	return db.Transaction(func(tx *gorm.DB) error {
 		var orgIDs []uint
 		if err := tx.Model(&model.Organization{}).Order("id").Pluck("id", &orgIDs).Error; err != nil {
@@ -43,10 +33,7 @@ func Migrate(db *gorm.DB) error {
 				return fmt.Errorf("seed access defaults for organization %d: %w", orgID, err)
 			}
 		}
-		return tx.Create(&model.MigrationMark{
-			Name:      migrationName,
-			AppliedAt: time.Now().UTC(),
-		}).Error
+		return nil
 	})
 }
 

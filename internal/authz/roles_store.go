@@ -194,26 +194,17 @@ func MigrateRoles(db *gorm.DB) error {
 // builtin role.
 var ErrUnknownLegacyRole = errors.New("unknown legacy role")
 
-// accessPermMigrationName is the one-shot marker of the access.manage backfill.
-const accessPermMigrationName = "2026-10-25-m5-access-perm"
-
 // MigrateAccessPermission rewrites the builtin owner/admin permission sets of
-// every organization to the current catalog.
+// every organization to the current catalog on every startup.
 //
 // Permission sets are stored as JSON in roles.permissions, so extending the
 // catalog alone leaves existing rows behind: every established admin would get
-// 403 from the access-control endpoints. The rewrite is fail closed — any error
-// rolls back and leaves the marker unwritten, so the next startup retries.
+// 403 from the access-control endpoints. The rewrite is convergent rather than
+// one-shot — an organization whose rows were written before access.manage
+// existed (a restored database, an import) is upgraded on the next run instead
+// of being skipped by a marker forever. Custom roles are never touched, and a
+// failure aborts startup with the transaction rolled back.
 func MigrateAccessPermission(db *gorm.DB) error {
-	var mark model.MigrationMark
-	err := db.Where("name = ?", accessPermMigrationName).First(&mark).Error
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return fmt.Errorf("look up access permission migration mark: %w", err)
-	}
-
 	return db.Transaction(func(tx *gorm.DB) error {
 		var orgIDs []uint
 		if err := tx.Model(&model.Organization{}).Order("id").Pluck("id", &orgIDs).Error; err != nil {
@@ -236,10 +227,7 @@ func MigrateAccessPermission(db *gorm.DB) error {
 				}
 			}
 		}
-		return tx.Create(&model.MigrationMark{
-			Name:      accessPermMigrationName,
-			AppliedAt: time.Now().UTC(),
-		}).Error
+		return nil
 	})
 }
 
