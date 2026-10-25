@@ -213,13 +213,16 @@ func (s *RetentionService) writeArchive(orgID uint, rows []model.AuditLog) (path
 		}
 	}
 	path = filepath.Join(dir, fmt.Sprintf("audit-%d-%d.jsonl", minID, maxID))
-	tmp := path + ".tmp"
-	shaTmp := path + ".sha256.tmp"
 
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
+	// Temp names are unique per attempt: two instances may archive the same
+	// batch concurrently, and they must never write into each other's temp
+	// file. They share the published path on purpose (same rows, atomic
+	// rename), and a failure cleanup only removes this attempt's temp files.
+	f, err := os.CreateTemp(dir, "audit-*.tmp")
 	if err != nil {
 		return "", "", fmt.Errorf("create audit archive: %w", err)
 	}
+	tmp := f.Name()
 	hash := sha256.New()
 	enc := json.NewEncoder(io.MultiWriter(f, hash))
 	writeErr := func() error {
@@ -242,14 +245,28 @@ func (s *RetentionService) writeArchive(orgID uint, rows []model.AuditLog) (path
 	sum = hex.EncodeToString(hash.Sum(nil))
 
 	line := sum + "  " + filepath.Base(path) + "\n"
-	if err := os.WriteFile(shaTmp, []byte(line), 0o640); err != nil {
+	shaFile, err := os.CreateTemp(dir, "audit-*.sha256.tmp")
+	if err != nil {
 		_ = os.Remove(tmp)
+		return "", "", fmt.Errorf("create audit archive checksum: %w", err)
+	}
+	shaTmp := shaFile.Name()
+	if _, err := shaFile.WriteString(line); err != nil {
+		_ = shaFile.Close()
+		_ = os.Remove(tmp)
+		_ = os.Remove(shaTmp)
 		return "", "", fmt.Errorf("write audit archive checksum: %w", err)
 	}
-	if err := syncFile(shaTmp); err != nil {
+	if err := shaFile.Sync(); err != nil {
+		_ = shaFile.Close()
 		_ = os.Remove(tmp)
 		_ = os.Remove(shaTmp)
 		return "", "", fmt.Errorf("sync audit archive checksum: %w", err)
+	}
+	if err := shaFile.Close(); err != nil {
+		_ = os.Remove(tmp)
+		_ = os.Remove(shaTmp)
+		return "", "", fmt.Errorf("close audit archive checksum: %w", err)
 	}
 	if err := renameDurable(tmp, path); err != nil {
 		_ = os.Remove(tmp)
@@ -257,17 +274,18 @@ func (s *RetentionService) writeArchive(orgID uint, rows []model.AuditLog) (path
 		return "", "", fmt.Errorf("publish audit archive: %w", err)
 	}
 	if err := renameDurable(shaTmp, path+".sha256"); err != nil {
-		_ = os.Remove(path)
+		// The data file is already published and another attempt may share this
+		// path; leave it in place instead of deleting a file this call may not
+		// own. The batch is aborted, so the rows stay.
 		_ = os.Remove(shaTmp)
 		return "", "", fmt.Errorf("publish audit archive checksum: %w", err)
 	}
 	// The published names must be durable before the database rows are deleted:
 	// otherwise a crash can leave a committed deletion whose archive is only
 	// present as an unreachable inode. Windows renames are write-through and the
-	// directory flush below covers the entry as well.
+	// directory flush below covers the entry as well. A flush failure keeps the
+	// files too: they are valid, the rows stay, and a retry overwrites them.
 	if err := syncDirectory(dir); err != nil {
-		_ = os.Remove(path)
-		_ = os.Remove(path + ".sha256")
 		return "", "", fmt.Errorf("sync audit archive directory: %w", err)
 	}
 	return path, sum, nil
@@ -307,17 +325,6 @@ func ensureArchiveDir(dir string) error {
 		p = parent
 	}
 	return nil
-}
-
-// syncFile flushes one file's contents to stable storage. The handle is opened
-// for writing because Windows cannot flush a read-only handle.
-func syncFile(path string) error {
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = f.Close() }()
-	return f.Sync()
 }
 
 // verifyArchive re-reads the archive and confirms both its line count and its

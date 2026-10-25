@@ -180,3 +180,118 @@ func TestRetention_SyncFailureKeepsRowsAndRetryResyncs(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, files, 1)
 }
+
+// A sync failure after the archive is published must keep the published files:
+// they are valid on disk, the rows stay, and deleting them would risk removing
+// an archive another concurrent attempt shares. The retry overwrites them.
+func TestRetention_PostPublishSyncFailureKeepsArchive(t *testing.T) {
+	dsn := fmt.Sprintf("file:retention_publish_%d?mode=memory&cache=shared", time.Now().UnixNano())
+	st, err := store.Open(config.DatabaseConfig{Driver: "sqlite", DSN: dsn})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	require.NoError(t, st.DB.AutoMigrate(&model.Organization{}, &model.AuditLog{}))
+
+	org := model.Organization{Name: "post-publish-org"}
+	require.NoError(t, st.DB.Create(&org).Error)
+	require.NoError(t, st.DB.Create(&model.AuditLog{
+		OrganizationID: org.ID, Seq: 1, Action: "test.action",
+		TargetType: "device", TargetID: "1",
+		CreatedAt: time.Now().UTC().AddDate(0, 0, -40),
+	}).Error)
+
+	root := filepath.Join(t.TempDir(), "archives")
+	leaf := filepath.Join(root, fmt.Sprintf("org-%d", org.ID))
+	svc := NewRetentionService(st.DB, root, NewGormAuditor(st.DB), nil)
+	ctx := context.Background()
+	require.NoError(t, svc.SetDays(ctx, org.ID, 30))
+
+	// The first leaf sync happens while creating the directory chain; the second
+	// one follows the publication of both files.
+	leafSyncs := 0
+	syncDirHook = func(dir string) error {
+		if dir == leaf {
+			leafSyncs++
+			if leafSyncs == 2 {
+				return errors.New("post-publish sync down")
+			}
+		}
+		return nil
+	}
+	t.Cleanup(func() { syncDirHook = nil })
+
+	archived, purged, err := svc.RunOnce(ctx)
+	require.Error(t, err)
+	require.Zero(t, archived)
+	require.Zero(t, purged)
+
+	files, gerr := filepath.Glob(filepath.Join(leaf, "audit-*.jsonl"))
+	require.NoError(t, gerr)
+	require.Len(t, files, 1, "the published archive survives a failed directory sync")
+	_, statErr := os.Stat(files[0] + ".sha256")
+	require.NoError(t, statErr, "the checksum file is published too")
+	tmps, gerr := filepath.Glob(filepath.Join(leaf, "audit-*.tmp"))
+	require.NoError(t, gerr)
+	require.Empty(t, tmps, "this attempt's temp files are cleaned up")
+
+	var remaining int64
+	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).
+		Model(&model.AuditLog{}).Count(&remaining).Error)
+	require.EqualValues(t, 1, remaining, "rows survive an unflushed archive")
+
+	syncDirHook = nil
+	archived, purged, err = svc.RunOnce(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, archived)
+	require.EqualValues(t, 1, purged)
+	files, gerr = filepath.Glob(filepath.Join(leaf, "audit-*.jsonl"))
+	require.NoError(t, gerr)
+	require.Len(t, files, 1, "the retry overwrites the same published path")
+}
+
+// A failed checksum publication must not delete the already published data
+// file: a concurrent attempt may have published that exact path.
+func TestRetention_ChecksumPublishFailureKeepsDataFile(t *testing.T) {
+	dsn := fmt.Sprintf("file:retention_checksum_%d?mode=memory&cache=shared", time.Now().UnixNano())
+	st, err := store.Open(config.DatabaseConfig{Driver: "sqlite", DSN: dsn})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+	require.NoError(t, st.DB.AutoMigrate(&model.Organization{}, &model.AuditLog{}))
+
+	org := model.Organization{Name: "checksum-org"}
+	require.NoError(t, st.DB.Create(&org).Error)
+	row := model.AuditLog{
+		OrganizationID: org.ID, Seq: 1, Action: "test.action",
+		TargetType: "device", TargetID: "1",
+		CreatedAt: time.Now().UTC().AddDate(0, 0, -40),
+	}
+	require.NoError(t, st.DB.Create(&row).Error)
+
+	root := filepath.Join(t.TempDir(), "archives")
+	leaf := filepath.Join(root, fmt.Sprintf("org-%d", org.ID))
+	require.NoError(t, os.MkdirAll(leaf, 0o750))
+	// Renaming onto an existing directory fails on every platform, so the
+	// checksum publication errors after the data file is already in place.
+	blocked := filepath.Join(leaf, fmt.Sprintf("audit-%d-%d.jsonl.sha256", row.ID, row.ID))
+	require.NoError(t, os.Mkdir(blocked, 0o750))
+
+	svc := NewRetentionService(st.DB, root, NewGormAuditor(st.DB), nil)
+	ctx := context.Background()
+	require.NoError(t, svc.SetDays(ctx, org.ID, 30))
+
+	archived, purged, err := svc.RunOnce(ctx)
+	require.Error(t, err)
+	require.Zero(t, archived)
+	require.Zero(t, purged)
+
+	dataFile := filepath.Join(leaf, fmt.Sprintf("audit-%d-%d.jsonl", row.ID, row.ID))
+	_, statErr := os.Stat(dataFile)
+	require.NoError(t, statErr, "the published data file is never deleted by a failed attempt")
+	tmps, gerr := filepath.Glob(filepath.Join(leaf, "audit-*.tmp"))
+	require.NoError(t, gerr)
+	require.Empty(t, tmps, "this attempt's temp files are cleaned up")
+
+	var remaining int64
+	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).
+		Model(&model.AuditLog{}).Count(&remaining).Error)
+	require.EqualValues(t, 1, remaining)
+}
