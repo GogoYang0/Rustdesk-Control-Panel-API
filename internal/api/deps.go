@@ -14,6 +14,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/captcha"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/provision"
@@ -77,6 +78,11 @@ type Deps struct {
 	// Retention archives and purges audit rows. NewRouter derives it from DB,
 	// Auditor and Now when nil.
 	Retention *audit.RetentionService
+
+	// Captcha gates the public credential-checking endpoints. NewAdminAPI
+	// substitutes a disabled service when nil, so tests and deployments that
+	// do not enable it keep today's behavior.
+	Captcha *captcha.Service
 }
 
 // Provisioner schedules asynchronous server provisioning.
@@ -107,6 +113,10 @@ type AdminAPI struct {
 	tickets         *session.Service
 	totp            *auth.TOTPService
 	retention       *audit.RetentionService
+	captcha         *captcha.Service
+	// captchaGuard bounds challenge issuance per IP without spending the
+	// login attempt budget.
+	captchaGuard *loginGuard
 }
 
 // NewAdminAPI builds the handler set.
@@ -151,6 +161,11 @@ func NewAdminAPI(d Deps) *AdminAPI {
 		recorder, _ := d.Auditor.(audit.TxRecorder)
 		d.Retention = audit.NewRetentionService(d.DB, "./data/audit-archive", recorder, d.Now)
 	}
+	if d.Captcha == nil {
+		// Disabled by default: the captcha is opt-in and must not change any
+		// existing login behavior when a deployment leaves it off.
+		d.Captcha = captcha.Disabled()
+	}
 	tickets := d.Tickets
 	if tickets == nil {
 		// The service fails closed without a recorder, and governance
@@ -177,5 +192,7 @@ func NewAdminAPI(d Deps) *AdminAPI {
 		tickets:         tickets,
 		totp:            d.TOTP,
 		retention:       d.Retention,
+		captcha:         d.Captcha,
+		captchaGuard:    newLoginGuard(),
 	}
 }

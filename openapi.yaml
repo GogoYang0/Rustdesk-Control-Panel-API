@@ -133,6 +133,29 @@ paths:
         "429":
           $ref: "#/components/responses/TooManyRequests"
 
+  /api/v1/auth/captcha:
+    get:
+      operationId: getCaptchaChallenge
+      summary: 获取交互式验证码挑战
+      description: |
+        未认证。返回当前启用的验证码提供商与客户端所需参数：
+        `altcha` 返回挑战 JSON（algorithm/challenge/maxNumber/salt/signature）；
+        `geetest` 返回 `captcha_id` 与 widget 脚本地址；`cap` 返回
+        `api_endpoint` 与 `site_key`。未启用时 `enabled=false` 且不含
+        provider/challenge。受独立 IP 限流（429）。
+      tags:
+        - auth
+      security: []
+      responses:
+        "200":
+          description: 当前验证码配置与挑战
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CaptchaChallengeResponse"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
   /api/v1/auth/refresh:
     post:
       operationId: refreshTokens

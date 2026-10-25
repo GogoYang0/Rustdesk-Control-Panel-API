@@ -2905,6 +2905,9 @@ type ServerInterface interface {
 	// VerifyTOTP 登录第二步校验
 	// (POST /api/v1/auth/2fa/verify)
 	VerifyTOTP(c *gin.Context)
+	// GetCaptchaChallenge 获取交互式验证码挑战
+	// (GET /api/v1/auth/captcha)
+	GetCaptchaChallenge(c *gin.Context)
 	// Login 邮箱密码登录
 	// (POST /api/v1/auth/login)
 	Login(c *gin.Context)
@@ -3204,6 +3207,19 @@ func (siw *ServerInterfaceWrapper) VerifyTOTP(c *gin.Context) {
 	}
 
 	siw.Handler.VerifyTOTP(c)
+}
+
+// GetCaptchaChallenge operation middleware
+func (siw *ServerInterfaceWrapper) GetCaptchaChallenge(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetCaptchaChallenge(c)
 }
 
 // Login operation middleware
@@ -5668,6 +5684,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 
 	router.GET(options.BaseURL+"/healthz", wrapper.GetHealthz)
 	router.POST(options.BaseURL+"/api/v1/auth/login", wrapper.Login)
+	router.GET(options.BaseURL+"/api/v1/auth/captcha", wrapper.GetCaptchaChallenge)
 	router.POST(options.BaseURL+"/api/v1/auth/refresh", wrapper.RefreshTokens)
 	router.GET(options.BaseURL+"/api/v1/auth/tokens", wrapper.ListTokens)
 	router.POST(options.BaseURL+"/api/v1/auth/tokens", wrapper.CreateToken)
