@@ -197,14 +197,201 @@ func (a *AdminAPI) writeAccessError(c *gin.Context, err error, logMessage string
 	switch {
 	case errors.Is(err, access.ErrGroupNotFound):
 		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "user group not found")
-	case errors.Is(err, access.ErrReservedGroup), errors.Is(err, access.ErrGroupNameTaken):
-		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "user group conflict")
-	case errors.Is(err, access.ErrInvalidGroupName), errors.Is(err, access.ErrInvalidMember):
-		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid user group request")
+	case errors.Is(err, access.ErrDeviceGroupNotFound):
+		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "device group not found")
+	case errors.Is(err, access.ErrReservedGroup), errors.Is(err, access.ErrGroupNameTaken),
+		errors.Is(err, access.ErrDeviceGroupNameTaken):
+		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "group conflict")
+	case errors.Is(err, access.ErrInvalidGroupName), errors.Is(err, access.ErrInvalidMember),
+		errors.Is(err, access.ErrInvalidDeviceGroupName), errors.Is(err, access.ErrInvalidDevice):
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid group request")
 	case errors.Is(err, access.ErrAuditUnavailable):
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "audit unavailable")
 	default:
 		a.deps.Logger.Error(logMessage)
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "access operation failed")
 	}
+}
+
+// deviceGroupToAPI maps one device group view onto the contract shape.
+func deviceGroupToAPI(view access.DeviceGroupView) gen.DeviceGroup {
+	ids := make([]int64, 0, len(view.DeviceIDs))
+	for _, id := range view.DeviceIDs {
+		ids = append(ids, int64(id))
+	}
+	return gen.DeviceGroup{
+		Id:        int64(view.Group.ID),
+		Name:      view.Group.Name,
+		DeviceIds: ids,
+		CreatedAt: view.Group.CreatedAt,
+		UpdatedAt: view.Group.UpdatedAt,
+	}
+}
+
+// ListDeviceGroups lists the organization's device groups.
+func (a *AdminAPI) ListDeviceGroups(c *gin.Context, orgId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid organization id")
+		return
+	}
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermAccessManage) {
+		return
+	}
+	views, err := a.deps.Access.ListDeviceGroups(c.Request.Context(), uint(orgId))
+	if err != nil {
+		a.deps.Logger.Error("list device groups failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not list device groups")
+		return
+	}
+	out := make([]gen.DeviceGroup, 0, len(views))
+	for _, view := range views {
+		out = append(out, deviceGroupToAPI(view))
+	}
+	c.JSON(http.StatusOK, gen.DeviceGroupListResponse{Code: gen.ErrorCodeOk, Message: "ok", Data: out})
+}
+
+// CreateDeviceGroup adds a device group.
+func (a *AdminAPI) CreateDeviceGroup(c *gin.Context, orgId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid organization id")
+		return
+	}
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermAccessManage) {
+		return
+	}
+	var req gen.DeviceGroupCreateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid device group body")
+		return
+	}
+	group, err := a.deps.Access.CreateDeviceGroup(c.Request.Context(), uint(orgId), uid, req.Name)
+	if err != nil {
+		a.writeAccessError(c, err, "create device group failed")
+		return
+	}
+	view, err := a.deps.Access.DeviceGroupViewByID(c.Request.Context(), uint(orgId), group.ID)
+	if err != nil {
+		a.writeAccessError(c, err, "reload created device group failed")
+		return
+	}
+	c.JSON(http.StatusCreated, gen.DeviceGroupResponse{
+		Code:    gen.ErrorCodeOk,
+		Message: "ok",
+		Data:    deviceGroupToAPI(view),
+	})
+}
+
+// RenameDeviceGroup renames a device group.
+func (a *AdminAPI) RenameDeviceGroup(c *gin.Context, orgId int64, deviceGroupId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 || deviceGroupId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid id")
+		return
+	}
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermAccessManage) {
+		return
+	}
+	var req gen.DeviceGroupRenameRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid device group body")
+		return
+	}
+	group, err := a.deps.Access.RenameDeviceGroup(c.Request.Context(), uint(orgId), uid, uint(deviceGroupId), req.Name)
+	if err != nil {
+		a.writeAccessError(c, err, "rename device group failed")
+		return
+	}
+	view, err := a.deps.Access.DeviceGroupViewByID(c.Request.Context(), uint(orgId), group.ID)
+	if err != nil {
+		a.writeAccessError(c, err, "reload renamed device group failed")
+		return
+	}
+	c.JSON(http.StatusOK, gen.DeviceGroupResponse{
+		Code:    gen.ErrorCodeOk,
+		Message: "ok",
+		Data:    deviceGroupToAPI(view),
+	})
+}
+
+// DeleteDeviceGroup removes a device group and reports the cascade effects.
+func (a *AdminAPI) DeleteDeviceGroup(c *gin.Context, orgId int64, deviceGroupId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 || deviceGroupId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid id")
+		return
+	}
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermAccessManage) {
+		return
+	}
+	removedRules, ungrouped, err := a.deps.Access.DeleteDeviceGroup(c.Request.Context(), uint(orgId), uid, uint(deviceGroupId))
+	if err != nil {
+		a.writeAccessError(c, err, "delete device group failed")
+		return
+	}
+	c.JSON(http.StatusOK, gen.DeviceGroupDeleteResponse{
+		Code:    gen.ErrorCodeOk,
+		Message: "ok",
+		Data: gen.DeviceGroupDeleteData{
+			RemovedRules:     removedRules,
+			UngroupedDevices: ungrouped,
+		},
+	})
+}
+
+// ReplaceDeviceGroupDevices replaces the device set of a group.
+func (a *AdminAPI) ReplaceDeviceGroupDevices(c *gin.Context, orgId int64, deviceGroupId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 || deviceGroupId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid id")
+		return
+	}
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermAccessManage) {
+		return
+	}
+	var req gen.DeviceGroupDevicesRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid device group devices body")
+		return
+	}
+	// device_ids is required: a missing field must not be read as "release every
+	// device from the group".
+	if req.DeviceIds == nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "device_ids is required")
+		return
+	}
+	ids := make([]uint, 0, len(req.DeviceIds))
+	for _, id := range req.DeviceIds {
+		if id <= 0 {
+			abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid device id")
+			return
+		}
+		ids = append(ids, uint(id))
+	}
+	added, removed, err := a.deps.Access.ReplaceDeviceGroupDevices(c.Request.Context(), uint(orgId), uid, uint(deviceGroupId), ids)
+	if err != nil {
+		a.writeAccessError(c, err, "replace device group devices failed")
+		return
+	}
+	c.JSON(http.StatusOK, gen.DeviceGroupDevicesResponse{
+		Code:    gen.ErrorCodeOk,
+		Message: "ok",
+		Data:    gen.DeviceGroupMemberMutation{Added: added, Removed: removed},
+	})
 }
