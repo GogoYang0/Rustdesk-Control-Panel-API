@@ -141,7 +141,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `POST /api/v1/orgs/{orgId}/devices` | 注册设备（`device.write` 权限） |
 | `POST .../devices/{deviceId}/heartbeat` | 管理端手动心跳（`source=api`，30s 窗口合并） |
 | `POST .../devices/{deviceId}/rebind` | 重置绑定（`device.write`；`reason` 必填 1..500） |
-| `PATCH .../devices/{deviceId}` | 停用/恢复设备（v0.8.0，`device.write`）：`{disabled}`，停用在同一事务撤销该设备的活跃 compat 会话并写 `device.disable` 审计（恢复写 `device.enable`）；重复设置同一状态为 200 no-op。停用期间该设备拒绝客户端认领、compat 登录、心跳与系统信息（后者静默丢弃），票据兑换返回 409 |
+| `PATCH .../devices/{deviceId}` | 停用/恢复设备（v0.8.0，`device.write`）：`{disabled}`，停用在同一事务撤销该设备的活跃 compat 会话并写 `device.disable` 审计（恢复写 `device.enable`）；重复设置同一状态为 200 no-op。停用期间该设备拒绝客户端认领、compat 登录、心跳与系统信息（后者静默丢弃），票据兑换返回 409；v0.9.0 起签发停用设备的票据返回 404，且 compat `GET /api/peers` 不返回停用设备（见 §3.10） |
 
 > **v0.5.0 起设备换机/重装的恢复流程有管理面入口**：管理员列出设备 → 调 `rebind` 填理由 →
 > 客户端重新登录自动重新认领。**仍不提供 `DELETE` 设备**（硬删除会留下心跳/会话/审计悬空引用；
@@ -209,9 +209,9 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `GET .../approvals/{approvalId}` | 成员 | 审批详情（深链） |
 | `POST .../approvals` | 成员 | 提交审批（`kind` 决定 `device_id` 还是 `session_id`；按 kind 复用：事前审批看 actor+设备 pending，追认看会话 pending/approved，复用返回 200） |
 | `POST .../approvals/{approvalId}/decision` | owner/admin | approve/deny；只有 `pending` 可决策，否则 409 |
-| `POST .../tickets` | 成员 | 签发一次性票据（`ttl_seconds` 30–900，默认 300）；评估**时段 + 审批要求**（并发不在这里判） |
+| `POST .../tickets` | 成员 | 签发一次性票据（`ttl_seconds` 30–900，默认 300）；先过**访问控制**（§3.10，不通过 → 404），再评估**时段 + 审批要求**（并发不在这里判） |
 | `GET .../tickets/{ticketId}` | 成员 | 票据记账状态（不返回明文 token） |
-| `POST .../tickets/{ticketId}/redeem` | 成员 | 兑换票据 → **复查并发/时段** → 创建 open panel 会话（同一事务） |
+| `POST .../tickets/{ticketId}/redeem` | 成员 | 兑换票据 → 先**无副作用**校验 token 与终态 → 按兑换人复判访问控制（不通过 → 404；停用设备 → 409）→ **复查并发/时段** → 创建 open panel 会话（同一事务） |
 | `GET .../alerts` | 成员 | 违规告警（`severity`/`kind`/`since` 过滤 + 分页） |
 
 会话生命周期（契约语义，v0.4.0 实现语义）：
@@ -235,7 +235,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 - **多策略同时生效**：所有 `enabled` 策略参与评估，各维度取最严——并发/时长取最小值、时段取交集（按模 1440 求交，跨零点窗口先展开成区间，**交集为空 = 该时段完全禁止**）、任一条要求审批即需审批；组织没有策略等于不限。`Session.policy_id` 记 id 最小的生效策略（多策略各管不同维度时无法唯一归因，具体约束以交集为准）。
 - **审批分两类**：`pre_approval` 放行**一次**签发（审批本身不出票，客户端重试 `POST .../tickets` 才拿到 token，**签发即消费审批**并回填 `ticket_id`；票据过期不退还审批，需重新申请）；`ratification` 是对**已发生**的原生直连违规会话补追认——请求必须给 `session_id`（会话须属本组织且 `origin=native`，`device_id` 由服务端派生），决策通过即"已追认"，只改状态 + 落审计，不产生票据、不消费额度、`ticket_id` 恒为 null。
 - **`approval_required` 是 409 + 业务码**（不是新 HTTP 状态）：`data.approval_id` 指向新建或复用的待审批请求。
-- **票据不外泄、只用一次**：明文 `token` 只在签发响应出现一次，服务端只存摘要；`used_at` 非 null 即不可再用；重复/过期/撤销兑换一律 `409`（不区分原因，避免探测）。
+- **票据不外泄、只用一次**：明文 `token` 只在签发响应出现一次，服务端只存摘要；`used_at` 非 null 即不可再用。兑换先做**无副作用**的 token/终态校验：错误 token、重复、过期、撤销一律 `409`（不区分原因，避免探测，且不会因设备状态产生差异）。**通过校验后**才按兑换人做访问判定：没有规则覆盖 → `404`（§3.10）；停用设备 → `409`。拒绝路径不消耗票据、不建会话，并写 `session.ticket.denied` 审计（理由 `access_control` / `device_disabled`）。
 
 其它易错点：
 
@@ -279,6 +279,32 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 - **系统动作也审计**：归档与清理分别写 `audit.retention.archive`（含行数、路径、摘要、阈值）与 `audit.retention.purge`；actor 为 0（系统）。
 - **删除与归档同事务**：两条系统审计与按 id 精确删除在同一事务提交；无事务审计器时整轮拒绝删除。
 
+### 3.10 访问控制（v0.9.0）
+
+> 契约 v0.9.0：用户组、设备组与「只有 allow」的组规则。语义与 RustDesk Server Pro 的 Access Control 对齐：**规则只决定能否连接**；连上后的动作权限（Control Role）与客户端策略下发（Strategy）不在本版本。
+
+| 端点 | 权限 | 说明 |
+|---|---|---|
+| `GET/POST .../user-groups` | `access.manage` | 列表（含内置 `everyone`，带 `kind` 与 `member_ids`）/ 创建自定义组 |
+| `PATCH/DELETE .../user-groups/{groupId}` | `access.manage` | 改名 / 删除（`everyone` 409；删除级联成员与以该组为源的规则，逐条审计） |
+| `PUT .../user-groups/{groupId}/members` | `access.manage` | **全量替换**成员；任一 id 非本组织成员 → 400 整单拒绝 |
+| `GET/POST .../device-groups` | `access.manage` | 列表（含 `device_ids`）/ 创建 |
+| `PATCH/DELETE .../device-groups/{deviceGroupId}` | `access.manage` | 改名 / 删除（设备回到未分组，指向该组的规则同事务级联删除） |
+| `PUT .../device-groups/{deviceGroupId}/devices` | `access.manage` | **全量替换**设备；目标设备从原组移入本组（一设备一组） |
+| `GET/POST .../access-rules` | `access.manage` | 列表（源组名 + 目标类型/组名）/ 创建（`target_kind`=`device_group`/`all_devices`） |
+| `DELETE .../access-rules/{ruleId}` | `access.manage` | 删除规则 |
+
+判定语义：
+
+- **只有 allow，多条并集**：成员通过显式所属的用户组 ∪ 内置 `everyone` 组获得规则；目标为设备组或全部设备，多条同时命中取**并集**（不是首个命中）。
+- **设备只属于一个设备组**：`devices.device_group_id` 由设备组全量替换维护；未分组设备（`null`）只被 `all_devices` 规则覆盖。
+- **`everyone` 是保留名 + 隐式成员**：每个组织恰有一个，不可改名/删除，成员不可编辑；`all_devices` 规则存 `target_group_id=0` 哨兵，契约层映射为 `null`。
+- **默认规则可删除**：组织创建（及存量组织启动收敛）时生成 `everyone → all_devices`；它是普通可删除行，删除后重启不会复活，再建精确规则即完成收紧。
+- **管理员绕过**：会籍角色 `owner`/`admin`（按 `role_id` 解析）不受组规则限制，管理面设备列表与票据签发/兑换均为全量；绕过不看是否持有 `access.manage`。
+- **停用优先**：停用的设备与停用/无角色的会籍一律不可达，先于规则判定。
+- **两处执行点**：compat `GET /api/peers`（§4.1）只返回判定允许且未停用的设备；票据签发（按签发人）与兑换（按兑换人）各判一次，拒绝 404（见 §3.6）。已建立的连接不因规则变更中断。
+- **审计**：组/规则写操作为 `access.user_group.*` / `access.device_group.*` / `access.rule.*`；票据访问拒绝为 `session.ticket.denied`（`reason`=`access_control`|`device_disabled`）。
+
 ---
 
 ## 4. compat 层（RustDesk 原生客户端）
@@ -293,6 +319,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `GET /api/login-options` | 登录能力协商（当前返回空列表） |
 | `POST /api/logout` | 撤销当前 compat 会话 |
 | `POST /api/currentUser` | 当前用户信息（需 Bearer） |
+| `GET /api/peers` | 设备列表（需 Bearer）：会话所属组织内、访问规则允许且未停用的设备；owner/admin 返回全量（v0.9.0，见 §3.10） |
 
 **设备认领语义**（重要，v0.4.0 事务化 + 绑定代数，v0.5.0 增加重置入口）：
 
@@ -302,7 +329,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 - **绑定代数**：每次绑定变更（首次认领、管理员改绑）使 `binding_generation` +1；登录会话快照当时的代数，`heartbeat`/`sysinfo` 校验会话代数与设备当前代数一致——**旧代数会话的活动被丢弃**（不落库、不推进 `last_seen_at`）。绑定的所有权语义因此不依赖 uuid 的保密性
 - uuid 非秘密且登录时不校验归属——这正是心跳必须按 `(uuid, device_id)` 双条件解析会话的原因
 - `id` ≤ 64 字符、`uuid` ≤ 128 字符，超长直接 400（防止「绑定成功但会话建不出来」的死锁状态）
-- **设备停用（v0.8.0）**：`disabled=true` 的设备拒绝 compat 登录（403，提示联系管理员恢复；停用时的活跃会话已在同一事务撤销），心跳与系统信息静默丢弃（不刷新 `last_seen_at`），票据兑换返回 409。恢复后保持原绑定，同 uuid 客户端可直接登录。
+- **设备停用（v0.8.0）**：`disabled=true` 的设备拒绝 compat 登录（403，提示联系管理员恢复；停用时的活跃会话已在同一事务撤销），心跳与系统信息静默丢弃（不刷新 `last_seen_at`），票据兑换返回 409。恢复后保持原绑定，同 uuid 客户端可直接登录。v0.9.0 起 `GET /api/peers` 不返回停用设备（对 owner/admin 也一样），签发停用设备的票据返回 404。
 - **成员失去组织访问时**（v0.6.0 已接线：`DELETE .../members/{userId}` 与 admin→member 降级；v0.8.0 起也包括会籍停用）在**同一事务**内调用 `compatapi.RevokeOrgSessions` 撤销该用户在该组织的全部活跃 compat 会话（#39）；撤销失败整体回滚、请求 500，绝不返回成功。撤销后该用户的 compat 请求 401、免凭据心跳不再生效。停用的会籍对 compat 登录不可见：该组织不参与 `email#orgID` 选择，单会籍用户登录返回 403（提示会籍已停用）。
 - **会话有效 ≠ 会籍有效（v0.8.0 起）**：所有 compat 消费者在会话有效后**复核当前 membership**——`requireSession`（Bearer 端点）与免凭据 heartbeat/sysinfo 的 `activeSessionByUUID` 都要求 `(user_id, organization_id)` 仍存在且未停用（v0.8.0 增加 `disabled=false` 条件）。这样即使登录与成员移除/停用并发、会话在撤销之后才落库，后续请求也会 401，免凭据心跳也不会再刷新设备。membership 查询失败按“非成员”处理（fail closed）。
 
@@ -356,9 +383,10 @@ compat 地址簿**只服务个人地址簿**（`EnsurePersonalBook`），共享�
 
 ## 6. 版本与变更管理
 
-- 契约版本随 release 演进：v0.1.0（M0）→ v0.2.0（M1）→ v0.3.0（M2）→ v0.4.0（M3，会话治理域）→ v0.5.0（设备管理增量）→ v0.6.0（成员离场）→ v0.7.0（按组织 provisioning 开关）→ **v0.8.0（M4：角色模型、审计查询/导出、停用、地址簿授权与回收站、令牌、2FA）**
+- 契约版本随 release 演进：v0.1.0（M0）→ v0.2.0（M1）→ v0.3.0（M2）→ v0.4.0（M3，会话治理域）→ v0.5.0（设备管理增量）→ v0.6.0（成员离场）→ v0.7.0（按组织 provisioning 开关）→ v0.8.0（M4：角色模型、审计查询/导出、停用、地址簿授权与回收站、令牌、2FA）→ **v0.9.0（M5：访问控制——用户组/设备组/组规则、peers 过滤与票据准入）**
 - v0.6.0 为**加性变更**：新增 `DELETE/PATCH /orgs/{orgId}/members/{userId}`（#39 撤销接线）。v0.5.0 的新增设备列表与 rebind 保持不变；仍不提供 `DELETE` 设备
 - v0.7.0 为**加性变更**：新增 `GET/PUT /orgs/{orgId}/provisioning` 与 `ProvisioningStatus.cleanup_pending`；既有端点请求/响应形状与字段不变
+- v0.9.0 为**加性变更**（新增 user-groups/device-groups/access-rules 端点、`access.manage` 权限枚举与 `Device.device_group_id` 字段），但**票据访问语义有变化**：签发/兑换新增访问控制判定（拒绝 `404 not_found`），停用设备的签发由成功变为 `404`（兑换仍为 `409`）；客户端需处理该分支
 - v0.4.0 的既有端点请求/响应形状与字段零变更，但 **`ErrorCode` 新增了 `approval_required`**（所有响应共用的 `code` 类型）——对穷尽式 `switch` 或严格枚举解码的客户端属于 **breaking**，重新生成类型后必须处理该分支（0.x 阶段按 C10 以 minor 承载，见 §3.6）
 - **契约变更的 PR 必须同步更新本文档 §3/§4 与 `openapi.yaml`**，并保证 `go generate` 零漂移
 - WEB/APP 从 `openapi.yaml` 生成类型：任何字段/形状变更视为 breaking，需在 PR 描述中标注

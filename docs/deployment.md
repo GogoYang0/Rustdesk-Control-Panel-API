@@ -83,15 +83,21 @@ go build -o panel ./cmd/server
 2. 校验 `PANEL_AUTH_SECRET` → 打开数据库
 3. **AutoMigrate** 全部模型（GORM 自动建表/加列）
 4. **一次性回填**：`email_verified` 历史数据回填，成功后写迁移标记（MigrationMark）；已有标记则跳过
-5. 校验邮件配置（`mail.devMode=false` 时的三项检查）
-6. 启动后台 worker（日志采集 tailer、provision 队列、**worker 调度器**（保留期清扫等周期任务）、对账 reconciler）
-7. 监听
+5. **角色与访问控制收敛**：`MigrateRoles` 把旧 `role` 字符串一次性回填为 `role_id`（有标记则跳过）；`MigrateAccessPermission` 与 `access.Migrate` **每次启动**按组织幂等收敛——把 `access.manage` 补进内置 owner/admin 角色行，缺 `everyone` 用户组或默认规则的组织补建（已删除的默认规则不会复活）
+6. 校验邮件配置（`mail.devMode=false` 时的三项检查）
+7. 启动后台 worker（日志采集 tailer、provision 队列、**worker 调度器**（保留期清扫等周期任务）、对账 reconciler）
+8. 监听
 
 ### 4.2 升级
 
 - 新版本新增列时 AutoMigrate 自动处理（**含新增索引**——已有大表的 MySQL/PostgreSQL 上首次启动会执行建索引 DDL，可能短暂持写锁，请避开业务高峰）；**删除列/收窄列不会自动执行**（如 `Device.BoundUUID` 保持 255 的原因）
 - **升级期间禁止并行启动实例**：回填会把当前所有未验证账户标为已验证——若另一实例在回填完成前启动并创建了新的未验证账户，该账户也会被误标为已验证，**绕过邮箱验证边界**。正确流程：先停止或隔离其他实例 → 启动一个实例完成回填并写入迁移标记 → 再启动其余实例
 - 升级前备份 `panel.db`（或数据库快照）与 `data/servergroups/`
+- **v0.9.0（访问控制）升级要点**：
+  - 新增表 `user_groups` / `user_group_members` / `device_groups` / `access_rules` 与列 `devices.device_group_id`，由 AutoMigrate 建表/加列/建索引。
+  - 内置 owner/admin 角色自动获得 `access.manage`；**自定义角色不会自动获得**，需要 owner 显式授予。**v0.9.0 之前签发的个人 API Token 权限集不含 `access.manage`**，必须重建令牌后才能管理访问控制（令牌权限是申请集 ∩ 当前角色权限集的硬上限）。
+  - 存量组织自动生成 `everyone` 用户组与 `everyone → 全部设备` 默认规则，升级后普通成员的可见设备集合不变；删除默认规则后重启不会复活，按运维指南 §2.3 收紧。
+  - 多实例并行启动仍按 §4.2 的既有约束（角色回填是一次性标记，先由单实例完成）。
 
 ### 4.3 选择生产数据库
 
@@ -204,6 +210,7 @@ server {
 - [ ] 数据库口令、`data/servergroups/`（含各组织密钥）权限已收紧
 - [ ] **禁止直接挂载 rootful Docker 的原始 socket**（`/var/run/docker.sock`）：拿到它即可控制宿主机。生产环境使用 rootless Docker，或经由受限的 docker socket proxy（按需白名单 API）授予 panel 访问
 - [ ] 审计表与 `panel.db` 的备份策略已建立（审计是安全证据，见运维指南 §7）
+- [ ] 已按需收紧默认 `everyone → 全部设备` 访问规则（v0.9.0，步骤见运维指南 §2.3）；内置 owner/admin 角色已确认持有 `access.manage`
 
 ---
 
