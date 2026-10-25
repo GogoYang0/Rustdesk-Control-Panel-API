@@ -152,8 +152,9 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 > （同 uuid）可直接重新登录；要换机仍走 `rebind`。停用不清理历史心跳/会话/审计，这些记录保持
 > 可追溯。停用与恢复是幂等的，重复设置同值不产生审计。
 >
-> **v0.9.0 `Device.device_group_id`**：设备所属设备组（nullable，未分组为 `null`）。只由
-> `PUT .../device-groups/{deviceGroupId}/devices` 全量替换维护（每台设备最多属于一个设备组，换组即从原组移出），
+> **v0.9.0 `Device.device_group_id`**：设备所属设备组（nullable，未分组为 `null`）。由
+> `PUT .../device-groups/{deviceGroupId}/devices` 全量替换维护；**删除设备组时系统会把关联设备的
+> `device_group_id` 置为 `null`**（每台设备最多属于一个设备组，换组即从原组移出）；
 > 管理面设备列表对该字段只读，语义见 §3.10。
 
 ### 3.4 地址簿
