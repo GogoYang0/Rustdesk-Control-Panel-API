@@ -272,3 +272,27 @@ func TestRecycle_CompatDeletePeersSoftDeletes(t *testing.T) {
 	require.Len(t, bin, 1)
 	require.Equal(t, "2", bin[0].PeerID)
 }
+
+// A compat client that updates a peer sitting in the recycle bin must see the
+// change take effect: the row is restored in place, not silently updated while
+// it stays hidden from the live list the client reads back.
+func TestRecycle_CompatUpdatePeerRestoresRecycledRow(t *testing.T) {
+	svc, orgID, ownerID, _ := newGrantFixture(t)
+	book, err := svc.EnsurePersonalBook(ownerID, orgID)
+	require.NoError(t, err)
+	_, err = svc.ReplaceBookContent(ownerID, orgID, book.ID, "", []LegacyPeer{
+		{ID: "1"}, {ID: "2"},
+	}, nil)
+	require.NoError(t, err)
+	require.NoError(t, svc.DeletePeers(ownerID, orgID, book.ID, []string{"2"}))
+
+	require.NoError(t, svc.UpdatePeer(ownerID, orgID, book.ID, "2", map[string]any{"alias": "restored"}))
+	_, peers, _, err := svc.Get(ownerID, orgID, book.ID)
+	require.NoError(t, err)
+	aliases := map[string]string{}
+	for _, p := range peers {
+		aliases[p.PeerID] = p.Alias
+	}
+	require.Len(t, peers, 2, "the update must restore the recycled peer")
+	require.Equal(t, "restored", aliases["2"])
+}

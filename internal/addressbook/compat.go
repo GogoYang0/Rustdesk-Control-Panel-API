@@ -375,6 +375,17 @@ func (s *Service) UpdatePeer(userID uint, orgID, bookID uint, peerID string, fie
 				updates["tags_json"] = TagsJSON(tags)
 			}
 		}
+		// The client considers a peer it updates to be live. Writing into a
+		// recycled row would return success while the change stays invisible to
+		// the client's next read, so restore the row in place (and respect the
+		// per-book limit the same way AddPeer does).
+		if row.DeletedAt != nil && len(updates) > 0 {
+			if err := ensurePeerCapacity(tx, orgID, book.ID); err != nil {
+				return err
+			}
+			updates["deleted_at"] = nil
+			updates["deleted_by"] = uint(0)
+		}
 		if len(updates) == 0 {
 			return nil
 		}
