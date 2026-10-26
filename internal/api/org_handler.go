@@ -374,6 +374,12 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "account temporarily locked")
 		return
 	}
+	// Accepting an invitation verifies a password for an existing account, so
+	// it is behind the same captcha as the login endpoint. The invitation is
+	// not touched before this point: a missing proof leaves it redeemable.
+	if !a.requireCaptcha(c, req.Captcha) {
+		return
+	}
 
 	var member model.Membership
 	var joined model.User

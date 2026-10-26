@@ -132,3 +132,77 @@ func TestLoad_RetentionSweepDefault(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 6*time.Hour, cfg.Logcollect.RetentionSweepInterval)
 }
+
+// TestCaptchaConfigValidation exercises the captcha section through Load
+// (this file is an external test package, so the unexported validator is
+// out of reach). Secrets stay out of the file: the altcha/geetest/cap
+// credentials are checked by the provider builder, not by config.Load.
+func TestCaptchaConfigValidation(t *testing.T) {
+	t.Setenv("PANEL_AUTH_SECRET", "test-secret-test-secret-test-secret")
+	t.Setenv("PANEL_CAPTCHA_ALTCHA_KEY", "")
+	t.Setenv("PANEL_CAPTCHA_GEETEST_KEY", "")
+	t.Setenv("PANEL_CAPTCHA_CAP_SECRET", "")
+
+	dir := t.TempDir()
+	write := func(name, captcha string) string {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte(`
+server: {addr: ":8080"}
+auth: {secret: "", accessTTL: 15m, refreshTTL: 168h}
+captcha:
+`+captcha), 0o644))
+		return path
+	}
+
+	t.Run("disabled defaults pass", func(t *testing.T) {
+		cfg, err := config.Load(write("disabled.yaml", "  enabled: false\n"))
+		require.NoError(t, err)
+		require.False(t, cfg.Captcha.Enabled)
+		require.Equal(t, "altcha", cfg.Captcha.Provider)
+		require.Equal(t, "closed", cfg.Captcha.FailMode)
+		require.Equal(t, 5*time.Minute, cfg.Captcha.ChallengeTTL)
+		require.Equal(t, int64(100000), cfg.Captcha.Altcha.MaxNumber)
+	})
+
+	t.Run("unknown provider", func(t *testing.T) {
+		_, err := config.Load(write("provider.yaml", "  enabled: true\n  provider: bogus\n"))
+		require.ErrorContains(t, err, "captcha.provider")
+	})
+
+	t.Run("altcha without secret stays config-valid", func(t *testing.T) {
+		// The HMAC key is a deployment secret: the provider builder rejects a
+		// missing key at startup, config.Load only checks the structure.
+		_, err := config.Load(write("altcha.yaml", "  enabled: true\n  provider: altcha\n"))
+		require.NoError(t, err)
+	})
+
+	t.Run("geetest needs captchaId", func(t *testing.T) {
+		_, err := config.Load(write("geetest.yaml", "  enabled: true\n  provider: geetest\n"))
+		require.ErrorContains(t, err, "captcha.geetest.captchaId")
+	})
+
+	t.Run("cap needs http instance url", func(t *testing.T) {
+		_, err := config.Load(write("cap.yaml", "  enabled: true\n  provider: cap\n  cap:\n    instanceUrl: \"ftp://cap\"\n    siteKey: site\n"))
+		require.ErrorContains(t, err, "captcha.cap.instanceUrl")
+	})
+
+	t.Run("cap needs site key", func(t *testing.T) {
+		_, err := config.Load(write("cap-site.yaml", "  enabled: true\n  provider: cap\n  cap:\n    instanceUrl: \"https://cap.example.com\"\n"))
+		require.ErrorContains(t, err, "captcha.cap.siteKey")
+	})
+
+	t.Run("ttl out of range", func(t *testing.T) {
+		_, err := config.Load(write("ttl.yaml", "  enabled: true\n  challengeTTL: 30s\n"))
+		require.ErrorContains(t, err, "captcha.challengeTTL")
+	})
+
+	t.Run("fail mode enum", func(t *testing.T) {
+		_, err := config.Load(write("failmode.yaml", "  enabled: true\n  failMode: maybe\n"))
+		require.ErrorContains(t, err, "captcha.failMode")
+	})
+
+	t.Run("max number range", func(t *testing.T) {
+		_, err := config.Load(write("maxnumber.yaml", "  enabled: true\n  altcha:\n    maxNumber: 1000\n"))
+		require.ErrorContains(t, err, "captcha.altcha.maxNumber")
+	})
+}

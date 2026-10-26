@@ -1,6 +1,6 @@
 # 部署指南（Deployment Guide）
 
-> 适用版本：v0.9.0（M5：访问控制——用户组/设备组/组规则、compat peers 过滤与票据准入；上一基线 v0.8.0）。本文档随版本演进持续更新——每次发布前必须复核一遍。
+> 适用版本：v0.10.0（M6 波次 1：交互式验证码；上一基线 v0.9.0）。本文档随版本演进持续更新——每次发布前必须复核一遍。
 > 配套文档：[运维指南](operations.md) · [后端 API 规范](api-spec.md)
 
 ---
@@ -36,7 +36,7 @@ go build -o panel ./cmd/server
 
 ## 3. 配置全表
 
-三个敏感项只从环境变量注入：
+下表六个敏感项只从环境变量注入，禁止写入配置文件：
 
 ### 3.1 环境变量（敏感项，禁止写入配置文件）
 
@@ -45,6 +45,9 @@ go build -o panel ./cmd/server
 | `PANEL_AUTH_SECRET` | 是 | JWT 签名密钥。未设置时进程拒绝启动（`auth.secret must be configured`）。用 `openssl rand -base64 48` 生成；**泄漏等于任何人可伪造令牌** |
 | `PANEL_SMTP_PASSWORD` | 条件 | `mail.devMode=false` 且设置了 `mail.smtp.username` 时必须；否则启动即失败 |
 | `PANEL_WEB_BASE_URL` | 条件 | 覆盖 `web.baseURL`；`devMode=false` 时必须是公网 https origin，否则启动失败（验证码/邀请链接会嵌入此地址） |
+| `PANEL_CAPTCHA_ALTCHA_KEY` | 条件 | `captcha.enabled=true` 且 `provider=altcha` 时必须，且**长度 ≥32 字节**（建议用 `openssl rand -base64 48` 生成）；缺失或过短均启动失败 |
+| `PANEL_CAPTCHA_GEETEST_KEY` | 条件 | `captcha.enabled=true` 且 `provider=geetest` 时必须 |
+| `PANEL_CAPTCHA_CAP_SECRET` | 条件 | `captcha.enabled=true` 且 `provider=cap` 时必须 |
 
 ### 3.2 配置节
 
@@ -70,6 +73,13 @@ go build -o panel ./cmd/server
 | `compat.accessTTL` | | `720h` | compat 会话（RustDesk 客户端令牌）的有效期；成员失去组织访问时应通过会话撤销立即失效（见运维指南 §2.1/#39） |
 | `session.idleTimeout` | | `10m` | 会话空闲超时：open 会话超过该时长无活动（无活动记录则回退 `started_at`）由空闲清扫任务置 `closed`（`end_reason=idle_timeout`）；契约的"部署可配置"项。**必须为正**：`0`/负值不是禁用清扫，而是记 warning 并回退默认 `10m` |
 | `audit.archiveDir` | | `./data/audit-archive` | 按组织归档审计文件的根目录（`org-<orgId>/audit-<minId>.jsonl` + `.sha256`）。组织设置 `audit_retention_days > 0` 时每小时先归档校验、后删除；**备份范围必须包含该目录**（见运维指南 §3、§7） |
+| `captcha.enabled` | | `false` | 公开凭据入口（登录 / 2FA 校验 / 邀请接受）的交互式验证码总开关（v0.10.0，见运维指南 §2.4） |
+| `captcha.provider` | | `altcha` | `altcha`（自托管 proof-of-work，无外部依赖）\| `geetest` \| `cap` |
+| `captcha.failMode` | | `closed` | `closed`：提供商不可达 → `503`；`open`：放行并打 error 日志，**仅限临时运维窗口**（提供商判定失败永不因该值放行） |
+| `captcha.challengeTTL` | | `5m` | 挑战有效期，必须在 `1m–10m` 之间 |
+| `captcha.altcha.maxNumber` | | `100000` | PoW 解题上限（`10000–5000000`）：越高越难被批量爆破，也越考验低端客户端 CPU |
+| `captcha.geetest.captchaId` | | — | GeeTest v4 的 captcha id（启用且选择 geetest 时必填） |
+| `captcha.cap.instanceUrl` / `siteKey` | | — | 自托管 Cap Standalone 的地址与 site key（启用且选择 cap 时必填） |
 
 ---
 
@@ -98,6 +108,14 @@ go build -o panel ./cmd/server
   - 启动收敛会按当前内置权限目录**重写**内置 owner/admin 角色的权限集（因此包含 `access.manage`；是整套重写而非单纯追加，自定义角色不受影响）。该权限**不可委派**，自定义角色在任何情况下都无法获得（不是“需要授权”，而是被目录禁止）。**v0.9.0 之前签发的个人 API Token 权限集不含 `access.manage`**，必须重建令牌后才能在令牌身份下管理访问控制（令牌权限是申请集 ∩ 当前角色权限集的硬上限）。
   - 存量组织自动生成 `everyone` 用户组与 `everyone → 全部设备` 默认规则，**未停用设备**的访问范围不变；停用设备从 v0.9.0 起不再出现在客户端设备列表（管理面仍可见）。删除默认规则后重启不会复活，按运维指南 §2.3 收紧。
   - 多实例并行启动仍按 §4.2 的既有约束（角色回填是一次性标记，先由单实例完成）。
+- **v0.10.0（交互式验证码）升级要点**：
+  - 无数据库结构变化；`captcha.enabled` 默认 `false`，升级后行为与 v0.9.0 完全一致。
+  - 启用前必须选定提供商并注入对应秘密（见 §3.1）；启用后**所有**管理面登录、2FA 校验与邀请接受都需要验证码，脚本化登录应改用个人 API Token（v0.8.0）。
+  - 验证码**挑战本身无状态（签名可在任意实例校验）**，但「已消耗凭据」与登录限流都在**进程内存**。两者是**不同**的约束，不要混为一谈：
+    - **单次消费**的键是凭据标识、**与客户端 IP 无关**，按 IP 粘性路由**不能**提供跨实例的全局单次消费保证——攻击者从不同源 IP 重放同一凭据就可能命中未记录该凭据的实例并再次进入密码/TOTP 校验。需要该保证时必须**单副本**部署，或改用共享消费存储（本版本未提供，属后续扩展）。
+    - **登录限流**（每 IP 每分钟桶、账号+IP 失败计数）按 IP 计费，粘性路由对它是有效的。
+  - 进程重启同样会清空消费表：重启窗口内的重放只能靠提供商的自身限制与 IP 桶约束。
+  - `provider=cap` 需要单独部署并运维 Cap Standalone；`closed` 模式下 Cap 不可用等于三个入口不可登录。`provider=geetest` 依赖境外服务，部署前确认网络可达。
 
 ### 4.3 选择生产数据库
 
@@ -211,6 +229,7 @@ server {
 - [ ] **禁止直接挂载 rootful Docker 的原始 socket**（`/var/run/docker.sock`）：拿到它即可控制宿主机。生产环境使用 rootless Docker，或经由受限的 docker socket proxy（按需白名单 API）授予 panel 访问
 - [ ] 审计表与 `panel.db` 的备份策略已建立（审计是安全证据，见运维指南 §7）
 - [ ] 已按需收紧默认 `everyone → 全部设备` 访问规则（v0.9.0，步骤见运维指南 §2.3）；内置 owner/admin 角色已确认持有 `access.manage`
+- [ ] 如需启用验证码（v0.10.0）：已选定提供商、注入对应秘密、**单副本部署**（或已接入共享消费存储，本版本未提供；粘性路由只能辅助登录限流，不能保证验证码单次消费），并在上线前用真实客户端走通一次登录（见运维指南 §2.4）
 
 ---
 

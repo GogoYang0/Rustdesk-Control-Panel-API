@@ -25,6 +25,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/captcha"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logcollect"
@@ -52,6 +53,35 @@ func main() {
 
 	if cfg.Auth.Secret == "" {
 		lg.Fatal("auth.secret must be configured")
+	}
+
+	// The captcha is opt-in; when enabled, provider secrets are validated here
+	// so a deployment cannot boot a captcha that never passes. This runs before
+	// any background worker starts: a fatal configuration error must not leave
+	// provisioning or log-tailer children behind.
+	captchaSvc := captcha.Disabled()
+	if cfg.Captcha.Enabled {
+		built, cerr := captcha.Build(captcha.Options{
+			Provider:       cfg.Captcha.Provider,
+			FailMode:       cfg.Captcha.FailMode,
+			ChallengeTTL:   cfg.Captcha.ChallengeTTL,
+			AltchaKey:      cfg.Captcha.Altcha.Key,
+			MaxNumber:      cfg.Captcha.Altcha.MaxNumber,
+			GeetestID:      cfg.Captcha.Geetest.CaptchaID,
+			GeetestKey:     cfg.Captcha.Geetest.Key,
+			CapInstanceURL: cfg.Captcha.Cap.InstanceURL,
+			CapSiteKey:     cfg.Captcha.Cap.SiteKey,
+			CapSecret:      cfg.Captcha.Cap.Secret,
+			Now:            time.Now,
+			Logger:         lg,
+		})
+		if cerr != nil {
+			lg.Fatal("captcha configuration", zap.Error(cerr))
+		}
+		captchaSvc = built
+		lg.Info("captcha enabled",
+			zap.String("provider", cfg.Captcha.Provider),
+			zap.String("failMode", cfg.Captcha.FailMode))
 	}
 
 	st, err := store.Open(cfg.Database)
@@ -420,6 +450,7 @@ func main() {
 			CompatTTL:      cfg.Compat.AccessTTL,
 			AuthSecret:     cfg.Auth.Secret,
 			Retention:      retentionSvc,
+			Captcha:        captchaSvc,
 		}),
 	}
 

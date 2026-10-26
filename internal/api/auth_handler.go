@@ -39,6 +39,13 @@ func (a *AdminAPI) Login(c *gin.Context) {
 		return
 	}
 
+	// The captcha runs before any credential work: an automated caller without
+	// a solution never reaches the password hash, and a captcha failure is not
+	// a credential failure (it does not feed the lockout window).
+	if !a.requireCaptcha(c, req.Captcha) {
+		return
+	}
+
 	// Always run one Argon2id verification so the response time does not reveal
 	// whether the email exists (CWE-208).
 	dummyHash := dummyPasswordHash()
@@ -466,6 +473,11 @@ func (a *AdminAPI) VerifyTOTP(c *gin.Context) {
 	account := fmt.Sprint(uid)
 	if a.totpGuard.Locked(account, ip) {
 		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "account temporarily locked")
+		return
+	}
+	// Same ordering as the password step: the captcha runs before the factor
+	// check, so a wrong proof never reaches the TOTP verification path.
+	if !a.requireCaptcha(c, req.Captcha) {
 		return
 	}
 	if err := a.totp.VerifyLogin(uid, req.Code); err != nil {
