@@ -256,6 +256,7 @@ func (a *AdminAPI) ListMembers(c *gin.Context, orgId int64) {
 			RoleId:        int64(m.RoleID),
 			RoleName:      name,
 			ControlRoleId: controlRoleIDOf(m),
+			StrategyId:    strategyIDToAPI(m.StrategyID),
 			Disabled:      m.Disabled,
 			CreatedAt:     m.CreatedAt,
 		})
@@ -504,6 +505,7 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 			RoleId:        int64(member.RoleID),
 			RoleName:      joinedName,
 			ControlRoleId: controlRoleIDOf(member),
+			StrategyId:    strategyIDToAPI(member.StrategyID),
 			Disabled:      false,
 			CreatedAt:     member.CreatedAt,
 		},

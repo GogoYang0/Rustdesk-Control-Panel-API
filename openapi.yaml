@@ -55,6 +55,11 @@ info:
     设备组）。普通成员的 `GET /api/peers` 只返回规则允许的设备，票据签发与
     兑换按同一判定拒绝（返回 404，不泄露设备存在性）。`Permission` 新增
     `access.manage`（owner 拥有；admin 由内置集合授予；不可委派）。
+
+    0.10.0 新增**客户端策略下发与心跳断连**：`/orgs/{orgId}/strategies` 系列端点
+    维护 `config_options`（20 个白名单键），策略按「设备 > 设备组 > 成员」三层
+    生效，经 `POST /api/heartbeat` 响应下发给客户端；`Permission` 新增
+    `strategy.manage`、`device.disconnect`（均不可委派）。
 servers:
   - url: http://localhost:8080
     description: 本地开发
@@ -1056,6 +1061,256 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v1/orgs/{orgId}/strategies:
+    get:
+      operationId: listStrategies
+      summary: 列出客户端策略
+      description: |
+        返回组织的策略，按名称升序。任何组织成员可读（控制台渲染分配需要列表）。
+
+        **Strategy 是配置下发，不是授权**：它改被控端客户端选项（音频、剪贴板、
+        文件传输等），与「能否连接」（访问控制）和「连上后能做什么」（控制角色）
+        是三件不同的事。下发经客户端 30 秒一次的 `POST /api/heartbeat` 完成。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 策略列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StrategyListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+    post:
+      operationId: createStrategy
+      summary: 创建客户端策略
+      description: |
+        需要 `strategy.manage`（owner 全量、admin 由内置集合授予，不可委派）。
+        名称去首尾空白后 1–64 字符，组织内**不区分大小写**唯一（CLI 按名解析，
+        `Ops` 与 `ops` 并存会让解析歧义），重名返回 409。
+
+        `config_options` 只接受白名单键（见 `Strategy.config_options` 说明）；
+        未知键、超过 50 个键、值超过 256 字符或含控制字符均整单 400——客户端
+        对收到的键**没有自己的白名单**，漏一个网络类键（如 `api-server`）就等于
+        把设备交给别人。`version` 取自组织内单调的下发代次（首个策略为 1，此后递增，跨策略不重复）；`enabled=true`。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StrategyCreateRequest"
+      responses:
+        "201":
+          description: 已创建的策略
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StrategyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/strategies/{strategyId}:
+    get:
+      operationId: getStrategy
+      summary: 读取单个客户端策略
+      description: |
+        返回一个策略的完整定义（含 `version` 与 `cleared_keys`）。任何组织成员可读；
+        跨组织 id 与不存在都返回 404。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: strategyId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 策略
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StrategyResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateStrategy
+      summary: 更新客户端策略
+      description: |
+        需要 `strategy.manage`。按字段更新（`name` / `config_options` /
+        `enabled`），至少给出一项。
+
+        `version` **只在 `config_options` 实际变化时 +1**：它是客户端判断「是否
+        重新套用」的依据，改名或空转的 PATCH 不应触发一次全量下发。
+        `enabled=false` 是停用开关——保留行与分配，但心跳不再下发；重新启用
+        也不改写版本（客户端手上的选项没变）。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: strategyId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StrategyUpdateRequest"
+      responses:
+        "200":
+          description: 更新后的策略
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StrategyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+    delete:
+      operationId: deleteStrategy
+      summary: 删除客户端策略
+      description: |
+        需要 `strategy.manage`。同一事务内清空设备、设备组与会籍上指向该策略的
+        分配（悬空 id 会读作「已分配」却解析不到任何行），并写审计。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: strategyId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/members/{userId}/strategy:
+    put:
+      operationId: assignMemberStrategy
+      summary: 分配成员的默认客户端策略
+      description: |
+        需要 `strategy.manage`。作用于该成员**拥有**（`owner_user_id`）且没有设备层、
+        组层分配的设备。`null` 清除。成员必须是本组织会籍，否则 404。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StrategyAssignmentRequest"
+      responses:
+        "200":
+          description: 已分配
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/v1/orgs/{orgId}/user-groups:
     get:
       operationId: listUserGroups
@@ -1410,6 +1665,52 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/device-groups/{deviceGroupId}/strategy:
+    put:
+      operationId: assignDeviceGroupStrategy
+      summary: 分配设备组的客户端策略
+      description: |
+        需要 `strategy.manage`。作用于组内所有**没有设备层分配**的设备。
+        `null` 清除组层分配。写入与审计同事务。
+      tags:
+        - devices
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: deviceGroupId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StrategyAssignmentRequest"
+      responses:
+        "200":
+          description: 已分配
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /api/v1/orgs/{orgId}/device-groups/{deviceGroupId}/devices:
     put:
@@ -3096,6 +3397,112 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v1/orgs/{orgId}/devices/{deviceId}/disconnect:
+    post:
+      operationId: requestDeviceDisconnect
+      summary: 请求断开设备的当前连接
+      description: |
+        需要 `device.disconnect`（owner 全量、admin 由内置集合授予，不可委派）。
+        `reason` 必填（去首尾空白后 1–255 字符），随审计留存。
+
+        **面板不直接断连**：它不在信令链路（设计 D10）。本端点只记录一次请求，
+        由客户端下一次 `POST /api/heartbeat` 的响应 `disconnect` 字段执行——
+        客户端把请求里自报的**活跃连接编号**断开。因此：
+
+        - 生效延迟最长一个心跳周期（30 秒）加上客户端处理时间；
+        - 客户端当时没有活跃连接（`conns` 为空）时请求**保持 pending**，不消耗；
+        - 同一设备已有 pending 请求时返回 `409`（避免堆积重复断连）；
+        - 15 分钟未被消费则标记 `expired` 并写系统审计。
+
+        设备不存在或不属于本组织均返回 `404`。
+      tags:
+        - devices
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: deviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceDisconnectRequest"
+      responses:
+        "201":
+          description: 已记录的断连请求
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceDisconnectResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/devices/{deviceId}/strategy:
+    put:
+      operationId: assignDeviceStrategy
+      summary: 分配设备的客户端策略
+      description: |
+        需要 `strategy.manage`。`strategy_id` 显式给 `null` 表示清除设备层分配，
+        回落到设备组层。设备层优先级最高（设计 D1：设备 > 设备组 > 成员）。
+        策略必须属于本组织，跨组织 id 与不存在的设备一律 404。写入与审计同事务。
+      tags:
+        - devices
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: deviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StrategyAssignmentRequest"
+      responses:
+        "200":
+          description: 已分配
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/v1/orgs/{orgId}/devices/{deviceId}:
     patch:
       operationId: updateDevice
@@ -4406,6 +4813,12 @@ components:
           description: |
             成员的控制角色 id（v0.10.0）；`null` 表示未分配、回退组织内置 `default`。
             角色名称由 `GET /control-roles` 的列表解析（避免成员列表逐行 JOIN）。
+        strategy_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: 成员默认策略 id（v0.10.0）；作用于其拥有且无设备/组层分配的设备
         disabled:
           type: boolean
           description: 会籍是否已停用；停用后不能登录或访问该组织
@@ -4769,6 +5182,208 @@ components:
           format: int64
           description: 目标控制角色 id；`null` 表示回到组织内置 default 角色
 
+    Strategy:
+      type: object
+      required:
+        - id
+        - name
+        - config_options
+        - version
+        - enabled
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          maxLength: 64
+        config_options:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            下发给客户端的选项键值。**只允许以下 20 个键**（大小写与空格敏感，
+            必须逐字匹配）：
+
+            `enable-audio`、`enable-clipboard`、`enable-file-transfer`、
+            `enable-file-copy-paste`、`enable-camera`、`enable-terminal`、
+            `enable-tunnel`、`enable-remote-restart`、`enable-record-session`、
+            `enable-block-input`、`enable-privacy-mode`、`enable-remote-modify`、
+            `enable-remote-printer`、`enable-check-update`、`disable-change-id`、
+            `disable-settings`、`disable-installation`、`disable-unlock-pin`、
+            `disable-tcp-listen`、`disable-ab`。
+
+            值按客户端原样字符串下发：开关类用 `Y`/`N`；**空值**表示清除该键、
+            回到客户端内置默认。客户端会把下发的键标记为「固定」，用户无法在
+            本机改回。
+
+            网络类键（`api-server`、`custom-rendezvous-server`、`relay-server`、
+            `key`、`whitelist` 等）一律拒绝：它们能改设备指向的服务器或密钥，
+            等于设备接管。
+        version:
+          type: integer
+          format: int64
+          description: 下发版本；作为心跳响应的 `modified_at` 交给客户端比对
+        cleared_keys:
+          type: array
+          items:
+            type: string
+          description: |
+            已从 `config_options` 移除、仍以空值随下发回传的键（v0.10.0）。
+            客户端只写收到的键，删除键必须显式清除，否则旧值会一直保留。
+        enabled:
+          type: boolean
+          description: false 表示停用（保留行与分配，但心跳不下发）
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    StrategyAssignmentRequest:
+      type: object
+      required:
+        - strategy_id
+      properties:
+        strategy_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: 目标策略 id；`null` 表示清除该层分配
+
+    StrategyCreateRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        config_options:
+          type: object
+          additionalProperties:
+            type: string
+          description: 省略或空对象表示「不下发任何选项」（占位策略）
+
+    StrategyUpdateRequest:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        config_options:
+          type: object
+          additionalProperties:
+            type: string
+        enabled:
+          type: boolean
+
+    StrategyListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Strategy"
+
+    StrategyResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/Strategy"
+
+    DeviceDisconnectRequest:
+      type: object
+      required:
+        - reason
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: 断连原因；写入审计，供事后追溯
+
+    DeviceDisconnect:
+      type: object
+      required:
+        - id
+        - device_id
+        - reason
+        - status
+        - requested_at
+        - expires_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        device_id:
+          type: integer
+          format: int64
+        reason:
+          type: string
+          maxLength: 255
+        status:
+          type: string
+          description: |
+            - `pending`：已记录，等待客户端心跳消费
+            - `fulfilled`：某次心跳带回了活跃连接，`disconnect` 已下发
+            - `expired`：15 分钟内没有可断开的连接，请求作废
+          enum:
+            - pending
+            - fulfilled
+            - expired
+        requested_at:
+          type: string
+          format: date-time
+        fulfilled_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        conn_count:
+          type: integer
+          description: 消费该请求的那次心跳里客户端报告的连接数
+
+    DeviceDisconnectResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/DeviceDisconnect"
+
     UserGroupKind:
       type: string
       description: |
@@ -4946,6 +5561,12 @@ components:
             type: integer
             format: int64
           description: 当前属于该组的设备 id；一台设备只属于一个组
+        strategy_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: 组层策略 id（v0.10.0）；设备层分配优先
         created_at:
           type: string
           format: date-time
@@ -5618,6 +6239,12 @@ components:
             - "null"
           format: int64
           description: 设备所属设备组 id；null 表示未分组。一台设备只能属于一个设备组。
+        strategy_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: 设备层策略 id（v0.10.0）；`null` 表示回落到设备组或成员层
         owner_user_id:
           type:
             - integer

@@ -4,10 +4,14 @@ import "time"
 
 // Organization is the tenant root. Every business row carries its ID.
 type Organization struct {
-	ID        uint      `gorm:"primaryKey" json:"id"`
-	Name      string    `gorm:"size:128;not null" json:"name"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	// StrategyVersionSeq is the organization-wide monotonic counter behind
+	// strategies.version. See model.Strategy.Version for why versions must not
+	// repeat across strategies.
+	StrategyVersionSeq int64     `gorm:"not null;default:0" json:"-"`
+	ID                 uint      `gorm:"primaryKey" json:"id"`
+	Name               string    `gorm:"size:128;not null" json:"name"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 
 	// ProvisioningDisabled records an explicit deprovision. Without it the
 	// reconciler would see an organization without a server group and deploy
@@ -42,6 +46,9 @@ type Membership struct {
 	OrganizationID uint `gorm:"uniqueIndex:idx_membership_org_user;not null" json:"organization_id"`
 	UserID         uint `gorm:"uniqueIndex:idx_membership_org_user;not null" json:"user_id"`
 	RoleID         uint `gorm:"not null;default:0;index" json:"role_id"`
+	// StrategyID is the member-level default for devices they own; nil falls
+	// through to no strategy when the device carries none (design D1).
+	StrategyID *uint `gorm:"index" json:"strategy_id"`
 	// ControlRoleID is the member's control role; nil means the organization's
 	// built-in default role applies. Assignment is per membership, not per user
 	// (the same person may be a stricter role in one organization).

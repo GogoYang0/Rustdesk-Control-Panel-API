@@ -37,6 +37,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/provision"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/session"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/strategy"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/worker"
 )
 
@@ -439,6 +440,20 @@ func main() {
 		},
 	}); err != nil {
 		lg.Fatal("register compat 2fa sweep", zap.Error(err))
+	}
+
+	// Pending disconnect requests expire after 15 minutes: a request nobody
+	// consumed (the client had no live connection) must not tear down an
+	// unrelated session days later. Five-minute sweeps keep the delay bounded.
+	if err := sched.Register(worker.Task{
+		Name:       "disconnect-expiry",
+		Interval:   5 * time.Minute,
+		RunOnStart: true,
+		Run: func(ctx context.Context) (int64, error) {
+			return strategy.NewService(st.DB, auditor, time.Now).ExpireStale(ctx, time.Now())
+		},
+	}); err != nil {
+		lg.Fatal("register disconnect expiry sweep", zap.Error(err))
 	}
 
 	// Client connection/file logs follow the organization's audit retention

@@ -132,6 +132,15 @@ go build -o panel ./cmd/server
   - compat 登录 2FA 依赖 `auth.secret`：**未配置或不一致时 2FA 操作 fail closed**；轮换 `auth.secret` 会让既有 TOTP 秘密无法解密，须先重置用户 2FA。多实例共享同一 `auth.secret`，否则挑战与 TOTP 校验会随机失败。
   - `compat_login_challenges` 与 `audit_nonces` 都有内置清扫：过期挑战由 `compat-2fa-sweep` 每小时清理（保留 1 小时余量），nonce 由 `audit-nonce-sweep` 每 10 分钟清理。两项都无需人工干预。
 
+- **v0.10.0（客户端策略下发与心跳断连）升级要点**：
+  - **无新增配置键**：策略内容存库，下发搭在客户端已有的 `POST /api/heartbeat` 上（客户端只要连得到 API server 就能拿到）。升级后行为与波次 3 一致。
+  - 新增表 `strategies` / `device_disconnects` 与新列 `devices.strategy_id`、`device_groups.strategy_id`、`memberships.strategy_id`、`device_heartbeats.conn_ids`，全部由 AutoMigrate 建表/加列/建索引（`devices`/`device_groups`/`memberships` 会各加一个索引，大表首启请避开业务高峰）。另给 `device_heartbeats` —— **最高写入量的表** —— 加一列 `conn_ids`，MySQL 上是 instant DDL，PostgreSQL 上是元数据变更，但请按大表操作安排窗口。
+  - **没有默认策略、不回填**：升级后所有设备「无策略」，行为与升级前完全一致；需要下发的组织自行创建并分配。
+  - 新增权限 `strategy.manage`、`device.disconnect`（均不可委派，owner 全量、admin 由内置集合授予）。内置集合每次启动重写，存量组织自动获得。
+  - 新增 worker `disconnect-expiry`（每 5 分钟）清理超时未消费的断连请求。策略没有后台任务。
+  - **`--assign strategy_name` 由拒绝改为支持**（波次 2 的 D5 反转）：客户端可用策略名分配，大小写不敏感，未知名字 404。
+  - **生效边界**：策略只在客户端下次心跳后生效（≤30 秒），断连最长同样等一个心跳周期；面板不在信令链路，不保证即时。详见 API 规范 §3.14/§3.15、运维指南 §2.7。
+
 ### 4.3 选择生产数据库
 
 SQLite 的 `occurred_at` 等时间列按**文本比较**（UTC 格式化），行为已与 MySQL/PostgreSQL 对齐测试（`test-db` CI）。生产选 PostgreSQL：

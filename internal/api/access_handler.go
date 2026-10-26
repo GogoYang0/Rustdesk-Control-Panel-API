@@ -231,11 +231,12 @@ func deviceGroupToAPI(view access.DeviceGroupView) gen.DeviceGroup {
 		ids = append(ids, int64(id))
 	}
 	return gen.DeviceGroup{
-		Id:        int64(view.Group.ID),
-		Name:      view.Group.Name,
-		DeviceIds: ids,
-		CreatedAt: view.Group.CreatedAt,
-		UpdatedAt: view.Group.UpdatedAt,
+		Id:         int64(view.Group.ID),
+		Name:       view.Group.Name,
+		DeviceIds:  ids,
+		StrategyId: strategyIDToAPI(view.Group.StrategyID),
+		CreatedAt:  view.Group.CreatedAt,
+		UpdatedAt:  view.Group.UpdatedAt,
 	}
 }
 

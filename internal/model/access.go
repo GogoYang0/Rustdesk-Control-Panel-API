@@ -44,11 +44,14 @@ type UserGroupMember struct {
 // DeviceGroup is an organization-scoped set of devices. A device belongs to at
 // most one device group; Device.DeviceGroupID carries the membership.
 type DeviceGroup struct {
-	ID             uint      `gorm:"primaryKey" json:"id"`
-	OrganizationID uint      `gorm:"not null;uniqueIndex:idx_device_group_org_name,priority:1" json:"organization_id"`
-	Name           string    `gorm:"size:64;not null;uniqueIndex:idx_device_group_org_name,priority:2" json:"name"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID             uint   `gorm:"primaryKey" json:"id"`
+	OrganizationID uint   `gorm:"not null;uniqueIndex:idx_device_group_org_name,priority:1" json:"organization_id"`
+	Name           string `gorm:"size:64;not null;uniqueIndex:idx_device_group_org_name,priority:2" json:"name"`
+	// StrategyID applies to every device in the group unless the device itself
+	// carries one (design D1).
+	StrategyID *uint     `gorm:"index" json:"strategy_id"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // AccessRule grants a user group access to a device group, to a user group's
