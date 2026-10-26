@@ -23,7 +23,12 @@ type Strategy struct {
 	// Version is delivered as the heartbeat response's modified_at.
 	Version int64 `gorm:"not null;default:1" json:"version"`
 	// Enabled=false keeps the assignment but stops delivery (kill switch).
-	Enabled   bool      `gorm:"not null;default:true" json:"enabled"`
+	//
+	// No `default:true` tag on purpose: GORM omits a zero-value field that has
+	// a default, so inserting a strategy with Enabled=false would silently
+	// store true — the kill switch would not stick. Every writer sets the
+	// field explicitly instead.
+	Enabled   bool      `gorm:"not null" json:"enabled"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
