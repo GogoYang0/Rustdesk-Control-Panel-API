@@ -187,9 +187,9 @@ func TestPrune_RespectsPerOrgRetention(t *testing.T) {
 	require.EqualValues(t, 2, removed)
 
 	var conns []model.ConnectionLog
-	require.NoError(t, store.WithoutTenantScope(f.db).Find(&conns).Error)
+	require.NoError(t, store.ScopedByOrg(f.db, f.org.ID).Find(&conns).Error)
 	require.Len(t, conns, 1, fmt.Sprintf("only the fresh connection log must remain: %+v", conns))
 	var files []model.FileLog
-	require.NoError(t, store.WithoutTenantScope(f.db).Find(&files).Error)
+	require.NoError(t, store.ScopedByOrg(f.db, f.org.ID).Find(&files).Error)
 	require.Len(t, files, 1)
 }

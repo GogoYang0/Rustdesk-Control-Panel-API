@@ -95,7 +95,7 @@ func (f *fixture) connPayload(action, nonce string) logquery.ConnPayload {
 func (f *fixture) connLogs(t *testing.T) []model.ConnectionLog {
 	t.Helper()
 	var rows []model.ConnectionLog
-	require.NoError(t, store.WithoutTenantScope(f.db).Order("id").Find(&rows).Error)
+	require.NoError(t, store.ScopedByOrg(f.db, f.org.ID).Order("id").Find(&rows).Error)
 	return rows
 }
 
@@ -216,7 +216,7 @@ func TestFile_StoresDirectionAndInfo(t *testing.T) {
 	require.False(t, dedup)
 
 	var rows []model.FileLog
-	require.NoError(t, store.WithoutTenantScope(f.db).Find(&rows).Error)
+	require.NoError(t, store.ScopedByOrg(f.db, f.org.ID).Find(&rows).Error)
 	require.Len(t, rows, 1)
 	require.Equal(t, "send", rows[0].Direction)
 	require.Equal(t, 2, rows[0].FileCount)
@@ -230,7 +230,7 @@ func TestFile_StoresDirectionAndInfo(t *testing.T) {
 	})
 	require.NoError(t, ferr)
 	rows = nil
-	require.NoError(t, store.WithoutTenantScope(f.db).Order("id").Find(&rows).Error)
+	require.NoError(t, store.ScopedByOrg(f.db, f.org.ID).Order("id").Find(&rows).Error)
 	require.Equal(t, "receive", rows[1].Direction)
 }
 
@@ -244,7 +244,7 @@ func TestAlarm_WritesAuditRow(t *testing.T) {
 	require.False(t, dedup)
 
 	var rows []model.AuditLog
-	require.NoError(t, store.WithoutTenantScope(f.db).Find(&rows).Error)
+	require.NoError(t, store.ScopedByOrg(f.db, f.org.ID).Find(&rows).Error)
 	require.Len(t, rows, 1)
 	require.Equal(t, f.org.ID, rows[0].OrganizationID)
 	require.Equal(t, "client.alarm.session_scope_violation", rows[0].Action)
@@ -269,7 +269,7 @@ func TestSweepNonces_DropsOnlyExpired(t *testing.T) {
 	require.EqualValues(t, 1, removed)
 
 	var rows []model.AuditNonce
-	require.NoError(t, store.WithoutTenantScope(f.db).Find(&rows).Error)
+	require.NoError(t, store.ScopedByOrg(f.db, f.org.ID).Find(&rows).Error)
 	require.Len(t, rows, 1)
 	require.Equal(t, "fresh", rows[0].Nonce)
 }
