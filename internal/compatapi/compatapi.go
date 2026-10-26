@@ -58,7 +58,10 @@ type Deps struct {
 	// back to a service on the same DB with a GORM auditor.
 	AuditIngest *logquery.Ingest
 	// Auditor records client alarms; nil falls back to a GORM auditor.
-	Auditor   audit.Auditor
+	Auditor audit.Auditor
+	// TOTP verifies the second factor for accounts that enabled it; nil falls
+	// back to a service on the same DB (with an empty key, which fails closed).
+	TOTP      *auth.TOTPService
 	Now       func() time.Time
 	AccessTTL time.Duration
 }
@@ -106,6 +109,9 @@ func Mount(r gin.IRouter, d Deps) *Server {
 	}
 	if d.AccessTTL == 0 {
 		d.AccessTTL = 720 * time.Hour
+	}
+	if d.TOTP == nil && d.DB != nil {
+		d.TOTP = auth.NewTOTPService(d.DB, "", d.Now)
 	}
 	if d.AuditIngest == nil && d.DB != nil {
 		auditor := d.Auditor

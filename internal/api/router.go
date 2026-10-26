@@ -77,6 +77,7 @@ func NewRouter(d Deps) *gin.Engine {
 		Devices:   d.Devices,
 		Access:    d.Access,
 		Auditor:   d.Auditor,
+		TOTP:      d.TOTP,
 		Now:       d.Now,
 		AccessTTL: d.CompatTTL,
 	})

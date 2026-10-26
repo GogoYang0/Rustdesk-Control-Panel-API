@@ -45,8 +45,8 @@ func newCLIHarness(t *testing.T) *cliHarness {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.DB.AutoMigrate(
-		&model.User{}, &model.Organization{}, &model.Membership{}, &model.Role{},
-		&model.AuditLog{}, &model.APIToken{},
+		&model.User{}, &model.UserTOTP{}, &model.Organization{}, &model.Membership{}, &model.Role{},
+		&model.AuditLog{}, &model.APIToken{}, &model.CompatLoginChallenge{},
 		&model.Device{}, &model.DeviceHeartbeat{}, &model.CompatSession{},
 		&model.UserGroup{}, &model.UserGroupMember{}, &model.DeviceGroup{}, &model.AccessRule{},
 	))
