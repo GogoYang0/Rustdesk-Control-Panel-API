@@ -195,25 +195,25 @@ func (e ApprovalStatus) Valid() bool {
 
 // Defines values for ClientBuildCapabilitiesPlatforms.
 const (
-	AndroidArm64 ClientBuildCapabilitiesPlatforms = "android-arm64"
-	LinuxX64     ClientBuildCapabilitiesPlatforms = "linux-x64"
-	MacosArm64   ClientBuildCapabilitiesPlatforms = "macos-arm64"
-	MacosX64     ClientBuildCapabilitiesPlatforms = "macos-x64"
-	WindowsX64   ClientBuildCapabilitiesPlatforms = "windows-x64"
+	ClientBuildCapabilitiesPlatformsAndroidArm64 ClientBuildCapabilitiesPlatforms = "android-arm64"
+	ClientBuildCapabilitiesPlatformsLinuxX64     ClientBuildCapabilitiesPlatforms = "linux-x64"
+	ClientBuildCapabilitiesPlatformsMacosArm64   ClientBuildCapabilitiesPlatforms = "macos-arm64"
+	ClientBuildCapabilitiesPlatformsMacosX64     ClientBuildCapabilitiesPlatforms = "macos-x64"
+	ClientBuildCapabilitiesPlatformsWindowsX64   ClientBuildCapabilitiesPlatforms = "windows-x64"
 )
 
 // Valid indicates whether the value is a known member of the ClientBuildCapabilitiesPlatforms enum.
 func (e ClientBuildCapabilitiesPlatforms) Valid() bool {
 	switch e {
-	case AndroidArm64:
+	case ClientBuildCapabilitiesPlatformsAndroidArm64:
 		return true
-	case LinuxX64:
+	case ClientBuildCapabilitiesPlatformsLinuxX64:
 		return true
-	case MacosArm64:
+	case ClientBuildCapabilitiesPlatformsMacosArm64:
 		return true
-	case MacosX64:
+	case ClientBuildCapabilitiesPlatformsMacosX64:
 		return true
-	case WindowsX64:
+	case ClientBuildCapabilitiesPlatformsWindowsX64:
 		return true
 	default:
 		return false
@@ -241,6 +241,159 @@ func (e ClientBuildCapabilitiesProvisioningState) Valid() bool {
 	case ClientBuildCapabilitiesProvisioningStateMissing:
 		return true
 	case ClientBuildCapabilitiesProvisioningStateProvisioning:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ClientBuildCreateRequestPlatforms.
+const (
+	ClientBuildCreateRequestPlatformsAndroidArm64 ClientBuildCreateRequestPlatforms = "android-arm64"
+	ClientBuildCreateRequestPlatformsLinuxX64     ClientBuildCreateRequestPlatforms = "linux-x64"
+	ClientBuildCreateRequestPlatformsMacosArm64   ClientBuildCreateRequestPlatforms = "macos-arm64"
+	ClientBuildCreateRequestPlatformsMacosX64     ClientBuildCreateRequestPlatforms = "macos-x64"
+	ClientBuildCreateRequestPlatformsWindowsX64   ClientBuildCreateRequestPlatforms = "windows-x64"
+)
+
+// Valid indicates whether the value is a known member of the ClientBuildCreateRequestPlatforms enum.
+func (e ClientBuildCreateRequestPlatforms) Valid() bool {
+	switch e {
+	case ClientBuildCreateRequestPlatformsAndroidArm64:
+		return true
+	case ClientBuildCreateRequestPlatformsLinuxX64:
+		return true
+	case ClientBuildCreateRequestPlatformsMacosArm64:
+		return true
+	case ClientBuildCreateRequestPlatformsMacosX64:
+		return true
+	case ClientBuildCreateRequestPlatformsWindowsX64:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ClientBuildDetailPlatforms.
+const (
+	ClientBuildDetailPlatformsAndroidArm64 ClientBuildDetailPlatforms = "android-arm64"
+	ClientBuildDetailPlatformsLinuxX64     ClientBuildDetailPlatforms = "linux-x64"
+	ClientBuildDetailPlatformsMacosArm64   ClientBuildDetailPlatforms = "macos-arm64"
+	ClientBuildDetailPlatformsMacosX64     ClientBuildDetailPlatforms = "macos-x64"
+	ClientBuildDetailPlatformsWindowsX64   ClientBuildDetailPlatforms = "windows-x64"
+)
+
+// Valid indicates whether the value is a known member of the ClientBuildDetailPlatforms enum.
+func (e ClientBuildDetailPlatforms) Valid() bool {
+	switch e {
+	case ClientBuildDetailPlatformsAndroidArm64:
+		return true
+	case ClientBuildDetailPlatformsLinuxX64:
+		return true
+	case ClientBuildDetailPlatformsMacosArm64:
+		return true
+	case ClientBuildDetailPlatformsMacosX64:
+		return true
+	case ClientBuildDetailPlatformsWindowsX64:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ClientBuildDetailStatus.
+const (
+	ClientBuildDetailStatusCancelled   ClientBuildDetailStatus = "cancelled"
+	ClientBuildDetailStatusDispatched  ClientBuildDetailStatus = "dispatched"
+	ClientBuildDetailStatusDispatching ClientBuildDetailStatus = "dispatching"
+	ClientBuildDetailStatusFailed      ClientBuildDetailStatus = "failed"
+	ClientBuildDetailStatusIngesting   ClientBuildDetailStatus = "ingesting"
+	ClientBuildDetailStatusPending     ClientBuildDetailStatus = "pending"
+	ClientBuildDetailStatusRunning     ClientBuildDetailStatus = "running"
+	ClientBuildDetailStatusSucceeded   ClientBuildDetailStatus = "succeeded"
+)
+
+// Valid indicates whether the value is a known member of the ClientBuildDetailStatus enum.
+func (e ClientBuildDetailStatus) Valid() bool {
+	switch e {
+	case ClientBuildDetailStatusCancelled:
+		return true
+	case ClientBuildDetailStatusDispatched:
+		return true
+	case ClientBuildDetailStatusDispatching:
+		return true
+	case ClientBuildDetailStatusFailed:
+		return true
+	case ClientBuildDetailStatusIngesting:
+		return true
+	case ClientBuildDetailStatusPending:
+		return true
+	case ClientBuildDetailStatusRunning:
+		return true
+	case ClientBuildDetailStatusSucceeded:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ClientBuildSummaryPlatforms.
+const (
+	ClientBuildSummaryPlatformsAndroidArm64 ClientBuildSummaryPlatforms = "android-arm64"
+	ClientBuildSummaryPlatformsLinuxX64     ClientBuildSummaryPlatforms = "linux-x64"
+	ClientBuildSummaryPlatformsMacosArm64   ClientBuildSummaryPlatforms = "macos-arm64"
+	ClientBuildSummaryPlatformsMacosX64     ClientBuildSummaryPlatforms = "macos-x64"
+	ClientBuildSummaryPlatformsWindowsX64   ClientBuildSummaryPlatforms = "windows-x64"
+)
+
+// Valid indicates whether the value is a known member of the ClientBuildSummaryPlatforms enum.
+func (e ClientBuildSummaryPlatforms) Valid() bool {
+	switch e {
+	case ClientBuildSummaryPlatformsAndroidArm64:
+		return true
+	case ClientBuildSummaryPlatformsLinuxX64:
+		return true
+	case ClientBuildSummaryPlatformsMacosArm64:
+		return true
+	case ClientBuildSummaryPlatformsMacosX64:
+		return true
+	case ClientBuildSummaryPlatformsWindowsX64:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ClientBuildSummaryStatus.
+const (
+	ClientBuildSummaryStatusCancelled   ClientBuildSummaryStatus = "cancelled"
+	ClientBuildSummaryStatusDispatched  ClientBuildSummaryStatus = "dispatched"
+	ClientBuildSummaryStatusDispatching ClientBuildSummaryStatus = "dispatching"
+	ClientBuildSummaryStatusFailed      ClientBuildSummaryStatus = "failed"
+	ClientBuildSummaryStatusIngesting   ClientBuildSummaryStatus = "ingesting"
+	ClientBuildSummaryStatusPending     ClientBuildSummaryStatus = "pending"
+	ClientBuildSummaryStatusRunning     ClientBuildSummaryStatus = "running"
+	ClientBuildSummaryStatusSucceeded   ClientBuildSummaryStatus = "succeeded"
+)
+
+// Valid indicates whether the value is a known member of the ClientBuildSummaryStatus enum.
+func (e ClientBuildSummaryStatus) Valid() bool {
+	switch e {
+	case ClientBuildSummaryStatusCancelled:
+		return true
+	case ClientBuildSummaryStatusDispatched:
+		return true
+	case ClientBuildSummaryStatusDispatching:
+		return true
+	case ClientBuildSummaryStatusFailed:
+		return true
+	case ClientBuildSummaryStatusIngesting:
+		return true
+	case ClientBuildSummaryStatusPending:
+		return true
+	case ClientBuildSummaryStatusRunning:
+		return true
+	case ClientBuildSummaryStatusSucceeded:
 		return true
 	default:
 		return false
@@ -634,6 +787,42 @@ func (e UserGroupKind) Valid() bool {
 	case UserGroupKindCustom:
 		return true
 	case UserGroupKindEveryone:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListClientBuildsParamsStatus.
+const (
+	ListClientBuildsParamsStatusCancelled   ListClientBuildsParamsStatus = "cancelled"
+	ListClientBuildsParamsStatusDispatched  ListClientBuildsParamsStatus = "dispatched"
+	ListClientBuildsParamsStatusDispatching ListClientBuildsParamsStatus = "dispatching"
+	ListClientBuildsParamsStatusFailed      ListClientBuildsParamsStatus = "failed"
+	ListClientBuildsParamsStatusIngesting   ListClientBuildsParamsStatus = "ingesting"
+	ListClientBuildsParamsStatusPending     ListClientBuildsParamsStatus = "pending"
+	ListClientBuildsParamsStatusRunning     ListClientBuildsParamsStatus = "running"
+	ListClientBuildsParamsStatusSucceeded   ListClientBuildsParamsStatus = "succeeded"
+)
+
+// Valid indicates whether the value is a known member of the ListClientBuildsParamsStatus enum.
+func (e ListClientBuildsParamsStatus) Valid() bool {
+	switch e {
+	case ListClientBuildsParamsStatusCancelled:
+		return true
+	case ListClientBuildsParamsStatusDispatched:
+		return true
+	case ListClientBuildsParamsStatusDispatching:
+		return true
+	case ListClientBuildsParamsStatusFailed:
+		return true
+	case ListClientBuildsParamsStatusIngesting:
+		return true
+	case ListClientBuildsParamsStatusPending:
+		return true
+	case ListClientBuildsParamsStatusRunning:
+		return true
+	case ListClientBuildsParamsStatusSucceeded:
 		return true
 	default:
 		return false
@@ -1343,6 +1532,16 @@ type CaptchaProof struct {
 	Response map[string]string `json:"response"`
 }
 
+// ClientBuildArtifact defines model for ClientBuildArtifact.
+type ClientBuildArtifact struct {
+	CreatedAt time.Time `json:"created_at"`
+	FileName  string    `json:"file_name"`
+	Id        int64     `json:"id"`
+	Platform  string    `json:"platform"`
+	Sha256    string    `json:"sha256"`
+	SizeBytes int64     `json:"size_bytes"`
+}
+
 // ClientBuildCapabilities defines model for ClientBuildCapabilities.
 type ClientBuildCapabilities struct {
 	Defaults          *ClientBuildDefaults                     `json:"defaults,omitempty"`
@@ -1379,12 +1578,48 @@ type ClientBuildCapabilitiesResponse struct {
 	Message string                  `json:"message"`
 }
 
+// ClientBuildCreateRequest defines model for ClientBuildCreateRequest.
+type ClientBuildCreateRequest struct {
+	Platforms []ClientBuildCreateRequestPlatforms `json:"platforms"`
+	ProfileId int64                               `json:"profile_id"`
+}
+
+// ClientBuildCreateRequestPlatforms defines model for ClientBuildCreateRequest.Platforms.
+type ClientBuildCreateRequestPlatforms string
+
 // ClientBuildDefaults defines model for ClientBuildDefaults.
 type ClientBuildDefaults struct {
 	ApiServer string `json:"api_server"`
 	Server    string `json:"server"`
 	ServerKey string `json:"server_key"`
 }
+
+// ClientBuildDetail defines model for ClientBuildDetail.
+type ClientBuildDetail struct {
+	AppName         string                       `json:"app_name"`
+	ArtifactCount   int                          `json:"artifact_count"`
+	Artifacts       []ClientBuildArtifact        `json:"artifacts"`
+	ArtifactsPurged bool                         `json:"artifacts_purged"`
+	CreatedAt       time.Time                    `json:"created_at"`
+	DispatchedAt    *time.Time                   `json:"dispatched_at,omitempty"`
+	ErrorMessage    *string                      `json:"error_message,omitempty"`
+	FinishedAt      *time.Time                   `json:"finished_at,omitempty"`
+	GithubRunId     *int64                       `json:"github_run_id,omitempty"`
+	GithubRunUrl    *string                      `json:"github_run_url,omitempty"`
+	Id              int64                        `json:"id"`
+	Manifest        ClientBuildManifest          `json:"manifest"`
+	Platforms       []ClientBuildDetailPlatforms `json:"platforms"`
+	ProfileId       int64                        `json:"profile_id"`
+	ProfileName     string                       `json:"profile_name"`
+	Status          ClientBuildDetailStatus      `json:"status"`
+	UpstreamVersion string                       `json:"upstream_version"`
+}
+
+// ClientBuildDetailPlatforms defines model for ClientBuildDetail.Platforms.
+type ClientBuildDetailPlatforms string
+
+// ClientBuildDetailStatus defines model for ClientBuildDetail.Status.
+type ClientBuildDetailStatus string
 
 // ClientBuildLimits defines model for ClientBuildLimits.
 type ClientBuildLimits struct {
@@ -1395,9 +1630,58 @@ type ClientBuildLimits struct {
 	MaxProfilesPerOrg     int   `json:"max_profiles_per_org"`
 }
 
+// ClientBuildListResponse defines model for ClientBuildListResponse.
+type ClientBuildListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode       `json:"code"`
+	Data    ClientBuildPage `json:"data"`
+	Message string          `json:"message"`
+}
+
 // ClientBuildLogoUploadRequest defines model for ClientBuildLogoUploadRequest.
 type ClientBuildLogoUploadRequest struct {
 	PngBase64 string `json:"png_base64"`
+}
+
+// ClientBuildManifest defines model for ClientBuildManifest.
+type ClientBuildManifest struct {
+	ApiServer       string                   `json:"api_server"`
+	AppName         string                   `json:"app_name"`
+	BuildId         int64                    `json:"build_id"`
+	Logo            *ClientBuildManifestLogo `json:"logo,omitempty"`
+	Platforms       []string                 `json:"platforms"`
+	SchemaVersion   int                      `json:"schema_version"`
+	Server          string                   `json:"server"`
+	ServerKey       string                   `json:"server_key"`
+	UpstreamVersion string                   `json:"upstream_version"`
+}
+
+// ClientBuildManifestLogo defines model for ClientBuildManifestLogo.
+type ClientBuildManifestLogo struct {
+	Height int    `json:"height"`
+	Sha256 string `json:"sha256"`
+	Width  int    `json:"width"`
+}
+
+// ClientBuildPage defines model for ClientBuildPage.
+type ClientBuildPage struct {
+	Items    []ClientBuildSummary `json:"items"`
+	Page     int                  `json:"page"`
+	PageSize int64                `json:"page_size"`
+	Total    int64                `json:"total"`
 }
 
 // ClientBuildProfile defines model for ClientBuildProfile.
@@ -1474,6 +1758,52 @@ type ClientBuildProfileUpdateRequest struct {
 	AppName *string `json:"app_name,omitempty"`
 	Name    *string `json:"name,omitempty"`
 }
+
+// ClientBuildResponse defines model for ClientBuildResponse.
+type ClientBuildResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode         `json:"code"`
+	Data    ClientBuildDetail `json:"data"`
+	Message string            `json:"message"`
+}
+
+// ClientBuildSummary defines model for ClientBuildSummary.
+type ClientBuildSummary struct {
+	AppName         string                        `json:"app_name"`
+	ArtifactCount   int                           `json:"artifact_count"`
+	ArtifactsPurged bool                          `json:"artifacts_purged"`
+	CreatedAt       time.Time                     `json:"created_at"`
+	DispatchedAt    *time.Time                    `json:"dispatched_at,omitempty"`
+	ErrorMessage    *string                       `json:"error_message,omitempty"`
+	FinishedAt      *time.Time                    `json:"finished_at,omitempty"`
+	GithubRunId     *int64                        `json:"github_run_id,omitempty"`
+	GithubRunUrl    *string                       `json:"github_run_url,omitempty"`
+	Id              int64                         `json:"id"`
+	Platforms       []ClientBuildSummaryPlatforms `json:"platforms"`
+	ProfileId       int64                         `json:"profile_id"`
+	ProfileName     string                        `json:"profile_name"`
+	Status          ClientBuildSummaryStatus      `json:"status"`
+	UpstreamVersion string                        `json:"upstream_version"`
+}
+
+// ClientBuildSummaryPlatforms defines model for ClientBuildSummary.Platforms.
+type ClientBuildSummaryPlatforms string
+
+// ClientBuildSummaryStatus defines model for ClientBuildSummary.Status.
+type ClientBuildSummaryStatus string
 
 // ConnectionLog 客户端上报的一条连接记录（`POST /api/audit/conn`）。`new` 建行、`close` 关闭；
 // 与面板签发的 session 是两套记录，后者见 `Session`。
@@ -3403,6 +3733,12 @@ type ListTokensParams struct {
 	OrganizationId int64 `form:"organizationId" json:"organizationId"`
 }
 
+// DownloadClientBuildBundleParams defines parameters for DownloadClientBuildBundle.
+type DownloadClientBuildBundleParams struct {
+	// Token 必填；缺失时由 handler 返回 401（生成器会先拒绝空的必填 query）
+	Token *string `form:"token,omitempty" json:"token,omitempty"`
+}
+
 // ListAlertsParams defines parameters for ListAlerts.
 type ListAlertsParams struct {
 	Severity *AlertSeverity `form:"severity,omitempty" json:"severity,omitempty"`
@@ -3453,6 +3789,17 @@ type ListClientBuildProfilesParams struct {
 	Page     *int `form:"page,omitempty" json:"page,omitempty"`
 	PageSize *int `form:"pageSize,omitempty" json:"pageSize,omitempty"`
 }
+
+// ListClientBuildsParams defines parameters for ListClientBuilds.
+type ListClientBuildsParams struct {
+	Status    *ListClientBuildsParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+	ProfileId *int64                        `form:"profileId,omitempty" json:"profileId,omitempty"`
+	Page      *int                          `form:"page,omitempty" json:"page,omitempty"`
+	PageSize  *int                          `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
+// ListClientBuildsParamsStatus defines parameters for ListClientBuilds.
+type ListClientBuildsParamsStatus string
 
 // ListConnectionLogsParams defines parameters for ListConnectionLogs.
 type ListConnectionLogsParams struct {
@@ -3607,6 +3954,9 @@ type UpdateClientBuildProfileJSONRequestBody = ClientBuildProfileUpdateRequest
 // PutClientBuildProfileLogoJSONRequestBody defines body for PutClientBuildProfileLogo for application/json ContentType.
 type PutClientBuildProfileLogoJSONRequestBody = ClientBuildLogoUploadRequest
 
+// CreateClientBuildJSONRequestBody defines body for CreateClientBuild for application/json ContentType.
+type CreateClientBuildJSONRequestBody = ClientBuildCreateRequest
+
 // CreateControlRoleJSONRequestBody defines body for CreateControlRole for application/json ContentType.
 type CreateControlRoleJSONRequestBody = ControlRoleCreateRequest
 
@@ -3729,6 +4079,9 @@ type ServerInterface interface {
 	// VerifyEmail 邮箱验证
 	// (POST /api/v1/auth/verify-email)
 	VerifyEmail(c *gin.Context)
+	// DownloadClientBuildBundle 下载构建 bundle（构建 runner 使用）
+	// (GET /api/v1/client-builds/{buildId}/bundle)
+	DownloadClientBuildBundle(c *gin.Context, buildId int64, params DownloadClientBuildBundleParams)
 	// AcceptInvitation 接受邀请
 	// (POST /api/v1/invitations/accept)
 	AcceptInvitation(c *gin.Context)
@@ -3843,6 +4196,21 @@ type ServerInterface interface {
 	// GetClientBuildCapabilities 读取自定义客户端构建能力
 	// (GET /api/v1/orgs/{orgId}/client-build/capabilities)
 	GetClientBuildCapabilities(c *gin.Context, orgId int64)
+	// ListClientBuilds 列出客户端构建
+	// (GET /api/v1/orgs/{orgId}/client-builds)
+	ListClientBuilds(c *gin.Context, orgId int64, params ListClientBuildsParams)
+	// CreateClientBuild 发起客户端构建
+	// (POST /api/v1/orgs/{orgId}/client-builds)
+	CreateClientBuild(c *gin.Context, orgId int64)
+	// GetClientBuild 读取客户端构建
+	// (GET /api/v1/orgs/{orgId}/client-builds/{buildId})
+	GetClientBuild(c *gin.Context, orgId int64, buildId int64)
+	// DownloadClientBuildArtifact 下载构建产物
+	// (GET /api/v1/orgs/{orgId}/client-builds/{buildId}/artifacts/{artifactId})
+	DownloadClientBuildArtifact(c *gin.Context, orgId int64, buildId int64, artifactId int64)
+	// CancelClientBuild 取消客户端构建
+	// (POST /api/v1/orgs/{orgId}/client-builds/{buildId}/cancel)
+	CancelClientBuild(c *gin.Context, orgId int64, buildId int64)
 	// ListConnectionLogs 查询客户端连接日志
 	// (GET /api/v1/orgs/{orgId}/connection-logs)
 	ListConnectionLogs(c *gin.Context, orgId int64, params ListConnectionLogsParams)
@@ -4218,6 +4586,42 @@ func (siw *ServerInterfaceWrapper) VerifyEmail(c *gin.Context) {
 	}
 
 	siw.Handler.VerifyEmail(c)
+}
+
+// DownloadClientBuildBundle operation middleware
+func (siw *ServerInterfaceWrapper) DownloadClientBuildBundle(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "buildId" -------------
+	var buildId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "buildId", c.Param("buildId"), &buildId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter buildId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DownloadClientBuildBundleParams
+
+	// ------------- Optional query parameter "token" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "token", c.Request.URL.Query(), &params.Token, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter token: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DownloadClientBuildBundle(c, buildId, params)
 }
 
 // AcceptInvitation operation middleware
@@ -5572,6 +5976,202 @@ func (siw *ServerInterfaceWrapper) GetClientBuildCapabilities(c *gin.Context) {
 	}
 
 	siw.Handler.GetClientBuildCapabilities(c, orgId)
+}
+
+// ListClientBuilds operation middleware
+func (siw *ServerInterfaceWrapper) ListClientBuilds(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListClientBuildsParams
+
+	// ------------- Optional query parameter "status" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "status", c.Request.URL.Query(), &params.Status, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter status: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "profileId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "profileId", c.Request.URL.Query(), &params.ProfileId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter profileId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "page" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "page", c.Request.URL.Query(), &params.Page, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter page: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "pageSize" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "pageSize", c.Request.URL.Query(), &params.PageSize, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter pageSize: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListClientBuilds(c, orgId, params)
+}
+
+// CreateClientBuild operation middleware
+func (siw *ServerInterfaceWrapper) CreateClientBuild(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateClientBuild(c, orgId)
+}
+
+// GetClientBuild operation middleware
+func (siw *ServerInterfaceWrapper) GetClientBuild(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "buildId" -------------
+	var buildId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "buildId", c.Param("buildId"), &buildId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter buildId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetClientBuild(c, orgId, buildId)
+}
+
+// DownloadClientBuildArtifact operation middleware
+func (siw *ServerInterfaceWrapper) DownloadClientBuildArtifact(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "buildId" -------------
+	var buildId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "buildId", c.Param("buildId"), &buildId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter buildId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "artifactId" -------------
+	var artifactId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "artifactId", c.Param("artifactId"), &artifactId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter artifactId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DownloadClientBuildArtifact(c, orgId, buildId, artifactId)
+}
+
+// CancelClientBuild operation middleware
+func (siw *ServerInterfaceWrapper) CancelClientBuild(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "buildId" -------------
+	var buildId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "buildId", c.Param("buildId"), &buildId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter buildId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CancelClientBuild(c, orgId, buildId)
 }
 
 // ListConnectionLogs operation middleware
@@ -7681,4 +8281,10 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/client-build-profiles/:profileId/logo", wrapper.DeleteClientBuildProfileLogo)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/client-build-profiles/:profileId/logo", wrapper.GetClientBuildProfileLogo)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/client-build-profiles/:profileId/logo", wrapper.PutClientBuildProfileLogo)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/client-builds", wrapper.ListClientBuilds)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/client-builds", wrapper.CreateClientBuild)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/client-builds/:buildId", wrapper.GetClientBuild)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/client-builds/:buildId/cancel", wrapper.CancelClientBuild)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/client-builds/:buildId/artifacts/:artifactId", wrapper.DownloadClientBuildArtifact)
+	router.GET(options.BaseURL+"/api/v1/client-builds/:buildId/bundle", wrapper.DownloadClientBuildBundle)
 }

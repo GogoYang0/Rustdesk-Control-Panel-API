@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/base64"
 	"errors"
+	"mime"
 	"net/http"
 	"time"
 
@@ -326,4 +327,211 @@ func (a *AdminAPI) DeleteClientBuildProfileLogo(c *gin.Context, orgId, profileId
 	}
 	c.Set(contextAuditRecorded, true)
 	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
+}
+
+func (a *AdminAPI) ListClientBuilds(c *gin.Context, orgId int64, params gen.ListClientBuildsParams) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid organization id")
+		return
+	}
+	if _, ok := a.membershipFor(c, uid, uint(orgId)); !ok {
+		return
+	}
+	c.Set(contextAuditRecorded, true)
+	svc, ok := a.clientBuildService(c)
+	if !ok {
+		return
+	}
+	filter := clientbuild.BuildFilter{}
+	if params.Status != nil {
+		filter.Status = string(*params.Status)
+	}
+	if params.ProfileId != nil {
+		profileID := uint(*params.ProfileId)
+		filter.ProfileID = &profileID
+	}
+	if params.Page != nil {
+		filter.Page = *params.Page
+	}
+	if params.PageSize != nil {
+		filter.PageSize = *params.PageSize
+	}
+	page, err := svc.ListBuilds(c.Request.Context(), uint(orgId), filter)
+	if err != nil {
+		a.writeClientBuildError(c, err, "list client builds failed")
+		return
+	}
+	data, err := clientBuildPageToAPI(page)
+	if err != nil {
+		a.deps.Logger.Error("map client build page failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "stored build is unreadable")
+		return
+	}
+	c.JSON(http.StatusOK, gen.ClientBuildListResponse{Code: gen.ErrorCodeOk, Message: "ok", Data: data})
+}
+
+func (a *AdminAPI) CreateClientBuild(c *gin.Context, orgId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid organization id")
+		return
+	}
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermClientBuildManage) {
+		return
+	}
+	svc, ok := a.clientBuildService(c)
+	if !ok {
+		return
+	}
+	var req gen.ClientBuildCreateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid build payload")
+		return
+	}
+	platforms := make([]string, 0, len(req.Platforms))
+	for _, platform := range req.Platforms {
+		platforms = append(platforms, string(platform))
+	}
+	detail, err := svc.CreateBuild(c.Request.Context(), uint(orgId), uid, uint(req.ProfileId), platforms)
+	if err != nil {
+		a.writeClientBuildError(c, err, "create client build failed")
+		return
+	}
+	out, err := clientBuildDetailToAPI(detail)
+	if err != nil {
+		a.deps.Logger.Error("map created client build failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "stored build is unreadable")
+		return
+	}
+	c.Set(contextAuditRecorded, true)
+	c.JSON(http.StatusAccepted, gen.ClientBuildResponse{Code: gen.ErrorCodeOk, Message: "ok", Data: out})
+}
+
+func (a *AdminAPI) GetClientBuild(c *gin.Context, orgId, buildId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 || buildId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid organization or build id")
+		return
+	}
+	if _, ok := a.membershipFor(c, uid, uint(orgId)); !ok {
+		return
+	}
+	c.Set(contextAuditRecorded, true)
+	svc, ok := a.clientBuildService(c)
+	if !ok {
+		return
+	}
+	detail, err := svc.GetBuild(c.Request.Context(), uint(orgId), uint(buildId))
+	if err != nil {
+		a.writeClientBuildError(c, err, "get client build failed")
+		return
+	}
+	out, err := clientBuildDetailToAPI(detail)
+	if err != nil {
+		a.deps.Logger.Error("map client build failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "stored build is unreadable")
+		return
+	}
+	c.JSON(http.StatusOK, gen.ClientBuildResponse{Code: gen.ErrorCodeOk, Message: "ok", Data: out})
+}
+
+func (a *AdminAPI) CancelClientBuild(c *gin.Context, orgId, buildId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 || buildId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid organization or build id")
+		return
+	}
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermClientBuildManage) {
+		return
+	}
+	svc, ok := a.clientBuildService(c)
+	if !ok {
+		return
+	}
+	detail, err := svc.CancelBuild(c.Request.Context(), uint(orgId), uid, uint(buildId))
+	if err != nil {
+		a.writeClientBuildError(c, err, "cancel client build failed")
+		return
+	}
+	out, err := clientBuildDetailToAPI(detail)
+	if err != nil {
+		a.deps.Logger.Error("map cancelled client build failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "stored build is unreadable")
+		return
+	}
+	c.Set(contextAuditRecorded, true)
+	c.JSON(http.StatusAccepted, gen.ClientBuildResponse{Code: gen.ErrorCodeOk, Message: "ok", Data: out})
+}
+
+func (a *AdminAPI) DownloadClientBuildArtifact(c *gin.Context, orgId, buildId, artifactId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 || buildId <= 0 || artifactId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid artifact id")
+		return
+	}
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermClientBuildManage) {
+		return
+	}
+	svc, ok := a.clientBuildService(c)
+	if !ok {
+		return
+	}
+	file, err := svc.OpenArtifact(c.Request.Context(), uint(orgId), uint(buildId), uint(artifactId), uid)
+	if err != nil {
+		a.writeClientBuildError(c, err, "open client build artifact failed")
+		return
+	}
+	defer file.File.Close()
+	c.Set(contextAuditRecorded, true)
+	c.Header("Content-Type", "application/octet-stream")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Content-Disposition", mime.FormatMediaType("attachment",
+		map[string]string{"filename": file.Artifact.FileName}))
+	http.ServeContent(c.Writer, c.Request, file.Artifact.FileName, file.Artifact.CreatedAt, file.File)
+}
+
+func (a *AdminAPI) DownloadClientBuildBundle(c *gin.Context, buildId int64, params gen.DownloadClientBuildBundleParams) {
+	if buildId <= 0 || params.Token == nil || *params.Token == "" {
+		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "invalid or expired bundle token")
+		return
+	}
+	svc, ok := a.clientBuildService(c)
+	if !ok {
+		return
+	}
+	file, err := svc.ServeBundle(c.Request.Context(), uint(buildId), *params.Token)
+	if err != nil {
+		switch {
+		case errors.Is(err, clientbuild.ErrTokenInvalid):
+			abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "invalid or expired bundle token")
+		case errors.Is(err, clientbuild.ErrArtifactUnavailable), errors.Is(err, clientbuild.ErrNotFound):
+			abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "bundle not found")
+		default:
+			a.deps.Logger.Error("serve client build bundle failed")
+			abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not serve bundle")
+		}
+		return
+	}
+	defer file.Close()
+	c.Set(contextAuditRecorded, true)
+	c.Header("Content-Type", "application/gzip")
+	c.Header("Cache-Control", "no-store")
+	c.Header("Content-Disposition", `inline; filename="bundle.tar.gz"`)
+	http.ServeContent(c.Writer, c.Request, "bundle.tar.gz", time.Time{}, file)
 }
