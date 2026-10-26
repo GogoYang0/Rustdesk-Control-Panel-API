@@ -158,4 +158,4 @@ gofmt -l internal cmd                          → 无输出
 - 第二步：`type=="email_code"` → 校验 `secret`（SHA-256 存库）、TTL 5 分钟、单次消费、设备 id+uuid 常量时间比对、失败 5 次作废；验证码走 TOTP（`LastStep` 防重放），成功后与密码路径共用 `finishLogin`。
 - 失败计入 `Guard` 锁定计数；未启用 TOTP 的账号走 `email_code` 一律 401。
 - 变异验证 1（设备绑定）：移除 DeviceID/UUID 常量时间比对 → `TestLogin_2FAChallengeBoundToDevice` 转红。变异验证 2（`if false &&`）不转红，因为 UUID 分支仍拦截——说明两个条件都需要，已记录。
-- 测试基建：compat/C LI/rebind 三个脚手架补 `UserTOTP` 与 `CompatibilityLoginChallenge` 表；harness 时钟保持**本地时基**（改 UTC 会让既有 `expires_at > time.Now()` 的字符串比较失真，revoke 用例转红）。
+- 测试基建：compat / CLI / rebind 三个脚手架补 `UserTOTP` 与 `CompatLoginChallenge` 表；harness 时钟保持**本地时基**（改 UTC 会让既有 `expires_at > time.Now()` 的字符串比较失真，revoke 用例转红）。
