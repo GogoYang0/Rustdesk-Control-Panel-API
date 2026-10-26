@@ -340,6 +340,14 @@ func (s *Service) EffectiveForTx(db *gorm.DB, orgID, userID uint) (Permissions, 
 
 	if roleID == 0 {
 		def, err := defaultRole(scoped)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// The seed normally guarantees this row. If an operator deleted it
+			// by hand, degrade to "override nothing" instead of failing ticket
+			// issuance: a control role never decides whether a connection is
+			// allowed, so the safe answer is an empty override, not a 500.
+			perms := DefaultPermissions()
+			return perms, perms.Mask(), nil, nil
+		}
 		if err != nil {
 			return nil, 0, nil, err
 		}
@@ -351,6 +359,10 @@ func (s *Service) EffectiveForTx(db *gorm.DB, orgID, userID uint) (Permissions, 
 	if err := scoped.First(&role, roleID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			def, derr := defaultRole(scoped)
+			if errors.Is(derr, gorm.ErrRecordNotFound) {
+				perms := DefaultPermissions()
+				return perms, perms.Mask(), nil, nil
+			}
 			if derr != nil {
 				return nil, 0, nil, derr
 			}

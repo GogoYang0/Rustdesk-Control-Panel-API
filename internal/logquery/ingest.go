@@ -175,7 +175,10 @@ func (i *Ingest) Conn(ctx context.Context, p ConnPayload) (bool, error) {
 				CreatedAt:      now,
 				UpdatedAt:      now,
 			}
-			return store.WithoutTenantScope(tx).Create(&row).Error
+			// Two concurrent closes both see zero open rows; the unique
+			// identity index turns the loser into a no-op instead of a 500.
+			return store.WithoutTenantScope(tx).
+				Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error
 		}
 	})
 }

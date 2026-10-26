@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -219,4 +220,90 @@ func TestLogin_2FAUsernameMustMatchChallenge(t *testing.T) {
 		"type": "email_code", "tfaCode": code, "secret": challenge["secret"],
 	}, "")
 	require.Equal(t, http.StatusUnauthorized, w.Code, w.Body.String())
+}
+
+// TestLogin_2FAChallengeConcurrentRedemption: two requests racing on the same
+// challenge must produce exactly one token. The used_at conditional update is
+// what makes this hold; a read-then-write would let both win.
+func TestLogin_2FAChallengeConcurrentRedemption(t *testing.T) {
+	h := newHarness(t)
+	_, _, secret := seed2FAUser(t, h)
+
+	w := h.do(t, http.MethodPost, "/api/login", h.loginBody("600004", "uuid-2fa"), "")
+	challenge := decodeCompatBody(t, w)
+	code := compatTOTPCode(t, secret, h.now)
+	payload := map[string]any{
+		"username": "twofa@example.com", "id": "600004", "uuid": "uuid-2fa",
+		"type": "email_code", "tfaCode": code, "secret": challenge["secret"],
+	}
+
+	codes := make(chan int, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			codes <- h.do(t, http.MethodPost, "/api/login", payload, "").Code
+		}()
+	}
+	wg.Wait()
+	close(codes)
+
+	okCount, rejectCount := 0, 0
+	for c := range codes {
+		switch c {
+		case http.StatusOK:
+			okCount++
+		case http.StatusUnauthorized:
+			rejectCount++
+		}
+	}
+	require.Equal(t, 1, okCount, "exactly one request may redeem the challenge")
+	require.Equal(t, 1, rejectCount, "the loser must be rejected with 401")
+
+	var sessions int64
+	require.NoError(t, store.WithoutTenantScope(h.db.DB).Model(&model.CompatSession{}).
+		Where("device_id = ?", "600004").Count(&sessions).Error)
+	require.EqualValues(t, 1, sessions, "one challenge must mint at most one session")
+}
+
+// TestLogin_2FAAttemptCapRejectsCorrectCode: the 5-attempt cap is enforced by an
+// atomic claim, so a correct code after five failures is refused.
+func TestLogin_2FAAttemptCapRejectsCorrectCode(t *testing.T) {
+	h := newHarness(t)
+	_, _, secret := seed2FAUser(t, h)
+
+	w := h.do(t, http.MethodPost, "/api/login", h.loginBody("600005", "uuid-2fa"), "")
+	challenge := decodeCompatBody(t, w)
+
+	good := compatTOTPCode(t, secret, h.now)
+	bad := "111111"
+	if bad == good {
+		bad = "222222"
+	}
+	for i := 0; i < 5; i++ {
+		w = h.do(t, http.MethodPost, "/api/login", map[string]any{
+			"username": "twofa@example.com", "id": "600005", "uuid": "uuid-2fa",
+			"type": "email_code", "tfaCode": bad, "secret": challenge["secret"],
+		}, "")
+		// Wrong codes are rejected; once the guard's failure threshold is hit
+		// the answer becomes 429 instead of 401.
+		require.NotEqual(t, http.StatusOK, w.Code, w.Body.String())
+		require.Contains(t, []int{http.StatusUnauthorized, http.StatusTooManyRequests}, w.Code)
+	}
+
+	w = h.do(t, http.MethodPost, "/api/login", map[string]any{
+		"username": "twofa@example.com", "id": "600005", "uuid": "uuid-2fa",
+		"type": "email_code", "tfaCode": good, "secret": challenge["secret"],
+	}, "")
+	// The fifth failure also trips the account lockout, so the request is
+	// rejected either by the attempt cap (401) or by the guard (429); what
+	// matters is that a correct code no longer mints a session.
+	require.NotEqual(t, http.StatusOK, w.Code, "the cap must hold even for a correct code")
+	require.Contains(t, []int{http.StatusUnauthorized, http.StatusTooManyRequests}, w.Code)
+
+	var sessions int64
+	require.NoError(t, store.WithoutTenantScope(h.db.DB).Model(&model.CompatSession{}).
+		Where("device_id = ?", "600005").Count(&sessions).Error)
+	require.Zero(t, sessions)
 }

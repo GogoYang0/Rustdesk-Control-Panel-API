@@ -84,13 +84,21 @@ func (s *Server) loadChallenge(ctx context.Context, secret, deviceID, uuid strin
 	return &row, nil
 }
 
-// failChallenge counts one wrong code. The attempt counter is the only brake on
-// guessing six digits inside one challenge's lifetime.
-func (s *Server) failChallenge(ctx context.Context, id uint) error {
-	return store.WithoutTenantScope(s.deps.DB.WithContext(ctx)).
+// claimAttempt reserves one verification attempt before the code is checked.
+// The read-then-increment shape it replaces let concurrent requests all observe
+// attempts < 5 and each get a guess, so the cap was advisory. The conditional
+// update makes the cap exact: the (N+1)th request changes no rows and is
+// rejected without touching the code.
+func (s *Server) claimAttempt(ctx context.Context, id uint) (bool, error) {
+	res := store.WithoutTenantScope(s.deps.DB.WithContext(ctx)).
 		Model(&model.CompatLoginChallenge{}).
-		Where("id = ?", id).
-		UpdateColumn("attempts", gorm.Expr("attempts + 1")).Error
+		Where("id = ? AND used_at IS NULL AND expires_at > ? AND attempts < ?",
+			id, s.deps.Now(), compatChallengeAttempts).
+		UpdateColumn("attempts", gorm.Expr("attempts + 1"))
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected == 1, nil
 }
 
 // consumeChallenge marks the challenge used. A false result means a concurrent

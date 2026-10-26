@@ -2,7 +2,6 @@ package compatapi
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -213,13 +212,18 @@ func (s *Server) loginSecondStep(c *gin.Context, req loginRequest, ip, lockKey s
 		compatError(c, http.StatusUnauthorized, "invalid or expired verification request")
 		return
 	}
-	// Failures are counted against the challenge's account, never the caller's
-	// spelling of it: a password-only attacker must not be able to dodge the
-	// lockout by inventing usernames.
-	accountKey := fmt.Sprintf("compat-user-%d", user.ID)
+	// The username above was verified to be this account's email, so lockKey is
+	// the same key login() checks with Guard.Locked: failures here must feed
+	// that counter, not a separate bucket.
+	// Reserve the attempt atomically before checking the code: N concurrent
+	// requests must not all slip past the 5-attempt cap.
+	claimed, cerr := s.claimAttempt(c.Request.Context(), challenge.ID)
+	if cerr != nil || !claimed {
+		compatError(c, http.StatusUnauthorized, "invalid or expired verification request")
+		return
+	}
 	if err := s.deps.TOTP.VerifyLogin(challenge.UserID, code); err != nil {
-		_ = s.failChallenge(c.Request.Context(), challenge.ID)
-		s.deps.Guard.RecordFailure(accountKey, ip)
+		s.deps.Guard.RecordFailure(lockKey, ip)
 		compatError(c, http.StatusUnauthorized, "invalid authentication code")
 		return
 	}

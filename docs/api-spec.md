@@ -442,14 +442,15 @@ compat 地址簿**只服务个人地址簿**（`EnsurePersonalBook`），共享�
 
 | 端点 | 载荷要点 |
 |---|---|
-| `POST /api/audit/conn` | `{id, uuid, action:"new"|"close", ip, conn_id, session_id, nonce, conn_audit_ref?}`；`new` 建行、`close` 只关闭同一 `(id, conn_id, session_id)` 的 open 行，找不到则写一行已关闭的 orphan 行（证据不丢） |
+| `POST /api/audit/conn` | `{id, uuid, action:"new"\|"close", ip, conn_id, session_id, nonce, conn_audit_ref?}`；`new` 建行、`close` 只关闭同一 `(id, conn_id, session_id)` 的 open 行，找不到则写一行已关闭的 orphan 行（证据不丢） |
 | `POST /api/audit/conn`（备注） | 客户端的「发送备注」只发 `{id, session_id, note}`（无 uuid/action/nonce），服务端追加到该会话最近一条 open 行（≤512 字符） |
-| `POST /api/audit/file` | `{id, uuid, peer_id, conn_id, type:0|1, path, is_file, info, nonce}`；`type` 0=send、1=receive，`info` 是 JSON 字符串（ip/name/num/files） |
+| `POST /api/audit/file` | `{id, uuid, peer_id, conn_id, type:0\|1, path, is_file, info, nonce}`；`type` 0=send、1=receive，`info` 是 JSON 字符串（ip/name/num/files） |
 | `POST /api/audit/alarm` | `{id, uuid, typ, info, conn_id, nonce, conn_audit_ref?}`；落 `audit_logs`，动作 `client.alarm.<类型>`（未知类型保留编号，不丢弃） |
 
 - 校验顺序：字段缺失/超长 → `400`；`id` 在本组织查不到设备或 `uuid` 与绑定不符（含空绑定）→ `403`。
 - `nonce` 去重窗口 **5 分钟**（上游注释：api server only remembers a nonce for five minutes；客户端重试上限 120 秒）。重复 nonce 返回 **200** 幂等，不重复落行。去重标记由 `audit-nonce-sweep` 每 10 分钟清理。
 - 风险边界：知道 `(id, uuid)` 的人可以伪造记录——uuid 不随请求加密，这与免凭据 heartbeat 同一信任级；不要在事故调查中把这两张表当作不可抵赖证据。
+- **备注路径更弱**：客户端「发送备注」只带 `{id, session_id, note}`，没有 uuid。服务端要求该 `id` 在全平台唯一命中一台设备（0 或 >1 台一律 403），并用命中的组织 + `device_id` 收敛写入范围，因此不会跨租户；但同一组织内，知道正在进行的 rustdesk id 与会话编号的人仍可追加文本。备注只是标注，不承担证据强度。
 
 ---
 

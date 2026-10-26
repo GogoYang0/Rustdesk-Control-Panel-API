@@ -130,7 +130,7 @@ go build -o panel ./cmd/server
   - 启动时为每个组织补齐内置 `default` 控制角色（幂等，按 `(organization_id, name)` 唯一索引兜底并发启动）；**新组织在创建事务里同步播种**，不存在「重启前没有回退角色」的窗口。
   - **控制角色不约束原生客户端会话**：权限位图由 hbbs 注入，面板不在信令链路。升级后可以在管理面配置并拿到票据快照，但不要向业务方承诺客户端已强制执行（详见 API 规范 §3.12、运维指南 §2.5）。
   - compat 登录 2FA 依赖 `auth.secret`：**未配置或不一致时 2FA 操作 fail closed**；轮换 `auth.secret` 会让既有 TOTP 秘密无法解密，须先重置用户 2FA。多实例共享同一 `auth.secret`，否则挑战与 TOTP 校验会随机失败。
-  - `compat_login_challenges` 的过期行不影响登录，可按维护窗口清理；`audit_nonces` 由内置 worker 每 10 分钟自清。
+  - `compat_login_challenges` 与 `audit_nonces` 都有内置清扫：过期挑战由 `compat-2fa-sweep` 每小时清理（保留 1 小时余量），nonce 由 `audit-nonce-sweep` 每 10 分钟清理。两项都无需人工干预。
 
 ### 4.3 选择生产数据库
 
