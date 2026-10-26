@@ -1181,12 +1181,22 @@ type Device struct {
 	DeviceGroupId *int64 `json:"device_group_id"`
 
 	// Disabled 设备是否已被停用（停用期间拒绝认领、心跳与票据兑换）
-	Disabled   bool         `json:"disabled"`
-	Id         int64        `json:"id"`
-	LastSeenAt *time.Time   `json:"last_seen_at"`
-	Name       string       `json:"name"`
-	RustdeskId string       `json:"rustdesk_id"`
-	Status     DeviceStatus `json:"status"`
+	Disabled   bool       `json:"disabled"`
+	Id         int64      `json:"id"`
+	LastSeenAt *time.Time `json:"last_seen_at"`
+	Name       string     `json:"name"`
+
+	// Note 运维备注（管理面或客户端 --assign 写入）
+	Note *string `json:"note,omitempty"`
+
+	// OwnerEmail 归属人邮箱（只读展示用）；未归属或用户已不存在时为 null
+	OwnerEmail *string `json:"owner_email,omitempty"`
+
+	// OwnerUserId 设备归属的用户 id；null 表示未归属。归属人始终能在客户端看到并连接该设备
+	// （设备停用或会籍停用时除外），组→组规则也按归属展开。
+	OwnerUserId *int64       `json:"owner_user_id,omitempty"`
+	RustdeskId  string       `json:"rustdesk_id"`
+	Status      DeviceStatus `json:"status"`
 }
 
 // DeviceStatus defines model for Device.Status.
@@ -1196,12 +1206,6 @@ type DeviceStatus string
 type DeviceCreateRequest struct {
 	Name       string `json:"name"`
 	RustdeskId string `json:"rustdesk_id"`
-}
-
-// DeviceDisableRequest defines model for DeviceDisableRequest.
-type DeviceDisableRequest struct {
-	// Disabled true 停用设备，false 恢复
-	Disabled bool `json:"disabled"`
 }
 
 // DeviceGroup defines model for DeviceGroup.
@@ -1387,6 +1391,20 @@ type DeviceResponse struct {
 	Code    ErrorCode `json:"code"`
 	Data    Device    `json:"data"`
 	Message string    `json:"message"`
+}
+
+// DeviceUpdateRequest 按字段更新设备，至少一个字段。`disabled` 与两个归属字段可同时出现，
+// 各自校验并各自写一条审计。
+type DeviceUpdateRequest struct {
+	// Disabled true 停用设备，false 恢复
+	Disabled *bool `json:"disabled,omitempty"`
+
+	// Note 运维备注；`null` 视作清空
+	Note *string `json:"note,omitempty"`
+
+	// OwnerUserId 归属人 id；`null` 清空归属，`0` 非法。目标必须是本组织的有效成员，
+	// 否则 404。
+	OwnerUserId *int64 `json:"owner_user_id,omitempty"`
 }
 
 // EmailVerificationRequest defines model for EmailVerificationRequest.
@@ -2846,8 +2864,8 @@ type ReplaceDeviceGroupDevicesJSONRequestBody = DeviceGroupDevicesRequest
 // CreateDeviceJSONRequestBody defines body for CreateDevice for application/json ContentType.
 type CreateDeviceJSONRequestBody = DeviceCreateRequest
 
-// SetDeviceDisabledJSONRequestBody defines body for SetDeviceDisabled for application/json ContentType.
-type SetDeviceDisabledJSONRequestBody = DeviceDisableRequest
+// UpdateDeviceJSONRequestBody defines body for UpdateDevice for application/json ContentType.
+type UpdateDeviceJSONRequestBody = DeviceUpdateRequest
 
 // ResetDeviceBindingJSONRequestBody defines body for ResetDeviceBinding for application/json ContentType.
 type ResetDeviceBindingJSONRequestBody = DeviceRebindRequest
@@ -3037,9 +3055,9 @@ type ServerInterface interface {
 	// CreateDevice 注册设备
 	// (POST /api/v1/orgs/{orgId}/devices)
 	CreateDevice(c *gin.Context, orgId int64)
-	// SetDeviceDisabled 停用或恢复设备
+	// UpdateDevice 更新设备（停用/恢复、归属、备注）
 	// (PATCH /api/v1/orgs/{orgId}/devices/{deviceId})
-	SetDeviceDisabled(c *gin.Context, orgId int64, deviceId int64)
+	UpdateDevice(c *gin.Context, orgId int64, deviceId int64)
 	// DeviceHeartbeat 设备心跳
 	// (POST /api/v1/orgs/{orgId}/devices/{deviceId}/heartbeat)
 	DeviceHeartbeat(c *gin.Context, orgId int64, deviceId int64)
@@ -4632,8 +4650,8 @@ func (siw *ServerInterfaceWrapper) CreateDevice(c *gin.Context) {
 	siw.Handler.CreateDevice(c, orgId)
 }
 
-// SetDeviceDisabled operation middleware
-func (siw *ServerInterfaceWrapper) SetDeviceDisabled(c *gin.Context) {
+// UpdateDevice operation middleware
+func (siw *ServerInterfaceWrapper) UpdateDevice(c *gin.Context) {
 
 	var err error
 	_ = err
@@ -4663,7 +4681,7 @@ func (siw *ServerInterfaceWrapper) SetDeviceDisabled(c *gin.Context) {
 		}
 	}
 
-	siw.Handler.SetDeviceDisabled(c, orgId, deviceId)
+	siw.Handler.UpdateDevice(c, orgId, deviceId)
 }
 
 // DeviceHeartbeat operation middleware
@@ -5748,7 +5766,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/auth/resend-verification", wrapper.ResendVerification)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/heartbeat", wrapper.DeviceHeartbeat)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/rebind", wrapper.ResetDeviceBinding)
-	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId", wrapper.SetDeviceDisabled)
+	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId", wrapper.UpdateDevice)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/sessions", wrapper.ListSessions)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/sessions/:sessionId", wrapper.GetSession)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/policies", wrapper.ListPolicies)

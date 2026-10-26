@@ -1,16 +1,20 @@
 package api
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/gen"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
 
 // maxDeviceQueryLen mirrors the contract's q maxLength (runes).
@@ -53,7 +57,7 @@ func (a *AdminAPI) CreateDevice(c *gin.Context, orgId int64) {
 	c.JSON(http.StatusCreated, gen.DeviceResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
-		Data:    a.deviceToAPI(dev),
+		Data:    a.deviceToAPI(dev, a.ownerEmailsFor(dev)),
 	})
 }
 
@@ -88,7 +92,7 @@ func (a *AdminAPI) DeviceHeartbeat(c *gin.Context, orgId int64, deviceId int64) 
 	c.JSON(http.StatusOK, gen.DeviceResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
-		Data:    a.deviceToAPI(dev),
+		Data:    a.deviceToAPI(dev, a.ownerEmailsFor(dev)),
 	})
 }
 
@@ -135,8 +139,9 @@ func (a *AdminAPI) ListDevices(c *gin.Context, orgId int64, params gen.ListDevic
 	}
 
 	views := make([]gen.Device, 0, len(items))
+	emails := a.ownerEmails(items)
 	for i := range items {
-		views = append(views, a.deviceToAPI(&items[i]))
+		views = append(views, a.deviceToAPI(&items[i], emails))
 	}
 	page, pageSize := filter.NormalisedPagination()
 
@@ -194,14 +199,16 @@ func (a *AdminAPI) ResetDeviceBinding(c *gin.Context, orgId int64, deviceId int6
 	c.JSON(http.StatusOK, gen.DeviceResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
-		Data:    a.deviceToAPI(dev),
+		Data:    a.deviceToAPI(dev, a.ownerEmailsFor(dev)),
 	})
 }
 
-// SetDeviceDisabled stops or restores a device. The service revokes the
-// device's active compat sessions and records the audit entry in one
-// transaction, so one call produces exactly one audit row.
-func (a *AdminAPI) SetDeviceDisabled(c *gin.Context, orgId int64, deviceId int64) {
+// UpdateDevice applies the requested fields of a device update — disabled,
+// owner_user_id and note — in one call to the service, which commits every
+// change together with its audit rows. A request that names several fields
+// either takes effect in full or not at all, so a client is never told the
+// request failed while part of it was applied.
+func (a *AdminAPI) UpdateDevice(c *gin.Context, orgId int64, deviceId int64) {
 	uid, ok := requireUserID(c)
 	if !ok {
 		return
@@ -214,38 +221,107 @@ func (a *AdminAPI) SetDeviceDisabled(c *gin.Context, orgId int64, deviceId int64
 		return
 	}
 
-	var req gen.DeviceDisableRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "disabled is required")
+	var body map[string]json.RawMessage
+	if err := c.ShouldBindJSON(&body); err != nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid request body")
+		return
+	}
+	in, err := parseDeviceUpdate(body)
+	if err != nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
 		return
 	}
 
-	dev, err := a.deps.Devices.SetDisabled(c.Request.Context(), uint(orgId), uint(deviceId), uid, req.Disabled)
+	dev, err := a.deps.Devices.Update(c.Request.Context(), uint(orgId), uint(deviceId), uid, in)
 	switch {
 	case errors.Is(err, device.ErrDeviceNotFound):
 		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "device not found")
+		return
+	case errors.Is(err, device.ErrOwnerNotMember):
+		// 404, not 400: the answer must not confirm whether the id names a
+		// user outside this organization at all.
+		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "owner is not an active member")
 		return
 	case errors.Is(err, device.ErrInvalidInput):
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
 		return
 	case err != nil:
-		a.deps.Logger.Error("set device disabled failed")
+		a.deps.Logger.Error("update device failed")
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not update device")
 		return
 	}
 
+	// The domain entries committed with the changes; suppress the
+	// request-level fallback so one request never adds a second row.
 	c.Set(contextAuditRecorded, true)
 	c.JSON(http.StatusOK, gen.DeviceResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
-		Data:    a.deviceToAPI(dev),
+		Data:    a.deviceToAPI(dev, a.ownerEmailsFor(dev)),
 	})
 }
 
-// deviceToAPI maps a stored device to the contract representation.
-func (a *AdminAPI) deviceToAPI(d *model.Device) gen.Device {
+// parseDeviceUpdate reads the PATCH body into a service input. Presence is
+// tracked separately from the value: JSON null clears a nullable field, an
+// absent key leaves it alone, and a pointer field alone cannot tell the two
+// apart. At least one updatable field is required — an empty object, a body of
+// unknown keys and a missing body are all rejected instead of passing as a
+// successful no-op.
+func parseDeviceUpdate(body map[string]json.RawMessage) (device.UpdateInput, error) {
+	var in device.UpdateInput
+	recognised := false
+	for key, raw := range body {
+		switch key {
+		case "disabled":
+			recognised = true
+			var disabled bool
+			if err := json.Unmarshal(raw, &disabled); err != nil {
+				return in, errors.New("disabled must be a boolean")
+			}
+			in.Disabled = &disabled
+		case "owner_user_id":
+			recognised = true
+			owner := uint(0)
+			if !isJSONNull(raw) {
+				var id int64
+				if err := json.Unmarshal(raw, &id); err != nil {
+					return in, errors.New("owner_user_id must be a user id or null")
+				}
+				if id <= 0 {
+					return in, errors.New("owner_user_id must be a positive user id or null")
+				}
+				owner = uint(id)
+			}
+			in.OwnerUserID = &owner
+		case "note":
+			recognised = true
+			note := ""
+			if !isJSONNull(raw) {
+				if err := json.Unmarshal(raw, &note); err != nil {
+					return in, errors.New("note must be a string or null")
+				}
+			}
+			in.Note = &note
+		}
+	}
+	if !recognised {
+		return in, errors.New("at least one of disabled, owner_user_id or note is required")
+	}
+	return in, nil
+}
+
+// isJSONNull reports whether a raw JSON fragment is the null literal.
+func isJSONNull(raw json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+}
+
+// deviceToAPI maps a stored device to the contract representation. ownerEmails
+// resolves the owner address for display; a device without an owner — or whose
+// owner row is gone — reports null.
+func (a *AdminAPI) deviceToAPI(d *model.Device, ownerEmails map[uint]string) gen.Device {
 	status := device.Status(d, a.deps.Now())
-	return gen.Device{
+	note := d.Note
+	view := gen.Device{
 		Id:            int64(d.ID),
 		Name:          d.Name,
 		RustdeskId:    d.RustdeskID,
@@ -254,7 +330,65 @@ func (a *AdminAPI) deviceToAPI(d *model.Device) gen.Device {
 		Bound:         d.BoundUUID != "",
 		Disabled:      d.Disabled,
 		DeviceGroupId: deviceGroupIDToAPI(d.DeviceGroupID),
+		Note:          &note,
 	}
+	if d.OwnerUserID != nil {
+		ownerID := int64(*d.OwnerUserID)
+		view.OwnerUserId = &ownerID
+		if email, ok := ownerEmails[*d.OwnerUserID]; ok {
+			view.OwnerEmail = &email
+		}
+	}
+	return view
+}
+
+// ownerEmails batch-resolves the owners of a device page in one query, so a
+// listing never issues a lookup per row. A failed resolution leaves the
+// addresses null instead of failing the page.
+func (a *AdminAPI) ownerEmails(devices []model.Device) map[uint]string {
+	ids := make([]uint, 0, len(devices))
+	seen := make(map[uint]bool, len(devices))
+	for i := range devices {
+		owner := devices[i].OwnerUserID
+		if owner == nil || seen[*owner] {
+			continue
+		}
+		seen[*owner] = true
+		ids = append(ids, *owner)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	var users []model.User
+	if err := store.WithoutTenantScope(a.deps.DB).Where("id IN ?", ids).Find(&users).Error; err != nil {
+		a.deps.Logger.Error("load device owners failed")
+		return nil
+	}
+	emails := make(map[uint]string, len(users))
+	for i := range users {
+		emails[users[i].ID] = users[i].Email
+	}
+	return emails
+}
+
+// ownerEmailsFor resolves the owner address of one device for the single-device
+// responses.
+func (a *AdminAPI) ownerEmailsFor(d *model.Device) map[uint]string {
+	if d == nil || d.OwnerUserID == nil {
+		return nil
+	}
+	var user model.User
+	err := store.WithoutTenantScope(a.deps.DB).First(&user, *d.OwnerUserID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		// The owner row is gone: the reference stays as history, the address
+		// reports null.
+		return nil
+	}
+	if err != nil {
+		a.deps.Logger.Error("load device owner failed")
+		return nil
+	}
+	return map[uint]string{*d.OwnerUserID: user.Email}
 }
 
 // deviceGroupIDToAPI maps the nullable group reference onto the contract's

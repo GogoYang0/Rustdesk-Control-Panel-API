@@ -2621,13 +2621,26 @@ paths:
 
   /api/v1/orgs/{orgId}/devices/{deviceId}:
     patch:
-      operationId: setDeviceDisabled
-      summary: 停用或恢复设备
+      operationId: updateDevice
+      summary: 更新设备（停用/恢复、归属、备注）
       description: |
-        停用设备（v0.8.0，`device.write`）：拒绝该设备的新客户端认领、compat 登录、
-        心跳与系统信息上报，并在同一事务撤销该设备在本组织的活跃 compat 会话；
-        票据兑换被拒绝（409）。恢复后设备重新可被认领与连接。设备历史（心跳、会话、
-        审计）保留。重复设置同一状态为 200 no-op。设备不属于本组织或不存在返回 404。
+        按字段更新设备（`device.write`）。请求体至少包含一个字段，同一请求中的多个字段
+        要么全部生效、要么全部不生效；每个实际发生变化的字段各写一条审计
+        （`device.disable` / `device.enable`、`device.assign`、`device.note`），
+        未变化的字段不写审计。
+
+        `disabled`（v0.8.0）：停用设备后拒绝该设备的新客户端认领、compat 登录、心跳与
+        系统信息上报，并在同一事务撤销该设备在本组织的活跃 compat 会话；票据兑换被拒绝
+        （409）。恢复后设备重新可被认领与连接。设备历史（心跳、会话、审计）保留。重复
+        设置同一状态为 200 no-op。
+
+        `owner_user_id`：设置设备归属人，值必须是本组织的有效成员（执行成员，会籍未停用），
+        否则 404；`null` 清空归属；`0` 或负数非法（400）。归属人始终能在客户端看到并连接
+        自己的设备（设备停用或会籍停用时除外）。
+
+        `note`：运维备注，最长 255 字符，`null` 或空串清空。
+
+        设备不属于本组织或不存在返回 404。
       tags:
         - devices
       security:
@@ -2650,7 +2663,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/DeviceDisableRequest"
+              $ref: "#/components/schemas/DeviceUpdateRequest"
       responses:
         "200":
           description: 更新后的设备
@@ -4800,6 +4813,23 @@ components:
             - "null"
           format: int64
           description: 设备所属设备组 id；null 表示未分组。一台设备只能属于一个设备组。
+        owner_user_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: |
+            设备归属的用户 id；null 表示未归属。归属人始终能在客户端看到并连接该设备
+            （设备停用或会籍停用时除外），组→组规则也按归属展开。
+        owner_email:
+          type:
+            - string
+            - "null"
+          description: 归属人邮箱（只读展示用）；未归属或用户已不存在时为 null
+        note:
+          type: string
+          maxLength: 255
+          description: 运维备注（管理面或客户端 --assign 写入）
 
     DeviceCreateRequest:
       type: object
@@ -4841,14 +4871,30 @@ components:
           minLength: 1
           maxLength: 500
 
-    DeviceDisableRequest:
+    DeviceUpdateRequest:
       type: object
-      required:
-        - disabled
+      minProperties: 1
+      description: |
+        按字段更新设备，至少一个字段。`disabled` 与两个归属字段可同时出现，
+        各自校验并各自写一条审计。
       properties:
         disabled:
           type: boolean
           description: true 停用设备，false 恢复
+        owner_user_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: |
+            归属人 id；`null` 清空归属，`0` 非法。目标必须是本组织的有效成员，
+            否则 404。
+        note:
+          type:
+            - string
+            - "null"
+          maxLength: 255
+          description: 运维备注；`null` 视作清空
 
     DevicePage:
       type: object
