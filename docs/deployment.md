@@ -284,3 +284,53 @@ server {
 详细协议见 [API 规范 §4](api-spec.md)。
 
 > 跟踪：[#65](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/65)。本文档先给出「显式配置 API 服务器」的运维口径；由面板在 provision/接入信息里**下发** API 服务器地址（免手填）属于契约变更，尚未实现。
+
+---
+
+## 10. 自定义客户端生成器（v0.10.0 波次 5a）
+
+组织可以通过面板生成指向本组织服务器的品牌安装包。构建在部署方自建的私有 GitHub 仓库中执行，面板只负责发起、轮询和回收产物。
+
+### 10.1 配置
+
+```yaml
+clientbuild:
+  enabled: true
+  publicBaseURL: "https://panel.example.com"   # 面板 origin；同时是生成客户端的 API server
+  assetDir: "./data/client-builds"
+  rustdeskVersion: "1.5.0"
+  github:
+    repo: "acme/rustdesk-client-build"
+    workflow: "build-client.yml"
+    ref: "main"
+  bundle:
+    ttl: 24h
+```
+
+| 环境变量 | 说明 |
+|---|---|
+| `PANEL_CLIENTBUILD_GITHUB_TOKEN` | fine-grained PAT，仅构建仓库 `Actions: RW` + `Metadata: R` |
+| `PANEL_CLIENTBUILD_BUNDLE_KEY` | bundle URL 的 HMAC key，至少 32 字节 |
+
+`enabled=true` 时启动会校验 `publicBaseURL`、仓库/workflow/ref、token、bundle key、平台白名单与 artifact 主机白名单；缺项直接 Fatal，不静默降级。`enabled=false` 时 profile 仍可预配置，发起构建返回 503。
+
+### 10.2 部署前提
+
+- 面板必须能被 GitHub 托管 runner 以 **HTTPS** 访问（或改用自建 runner）。`publicBaseURL` 同时是客户端 API server，必须指向面板 compat 入口（`https://<面板域名>`，反代终止 TLS）。
+- 构建仓库模板在 `docs/client-build/`（`workflow.yml`、`prepare_source.py`、`README.md`）。按 README 创建私有构建仓库、PAT、固定 Android debug keystore。
+- 平台：Windows x64、Linux x64、macOS arm64/x64、Android arm64。5a 不签名；Android 使用非生产 debug key。
+- 产物保留 30 天、单次 ≤2 GiB；每组织 10 个 profile、2 个非终态构建，全局 4 个已领取/运行中构建。
+
+### 10.3 生成包行为
+
+- 客户端内编译的服务器地址/公钥来自该组织已部署的 `ServerGroup` + `provision.relayHost`，API server 来自 `clientbuild.publicBaseURL`；用户不能自定义这些值。
+- 安装身份沿用上游，会替换同机官方 RustDesk；5a 不支持共存。
+- 非 `RustDesk` 应用名会关闭官方更新检查；升级需重新构建并手动覆盖安装。
+- RustDesk 为 AGPL-3.0；对外分发时部署方需按 AGPL 提供对应源码与许可证。
+
+### 10.4 运维
+
+- 构建详情里的 `error_message` 只给操作者可读原因（GitHub conclusion、缺平台、校验失败类别），不含 token/URL。
+- 取消是尽力而为：已进入产物回收后返回 409；`dispatching` 状态下取消可能需要一个轮询周期。
+- 审计：组织管理员可在审计查询中看到 `client_build.*`；成功/失败/取消由后台 actor=0 写入。
+- 保留期清理由 `client-build-sweep` 每小时执行；短保留期验收可把 `artifactRetention` 临时设为 1m 并重启面板。
