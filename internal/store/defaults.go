@@ -35,4 +35,6 @@ func registerDefaultScopedModels() {
 	RegisterScopedModel(&model.ControlRole{})
 	RegisterScopedModel(&model.ConnectionLog{})
 	RegisterScopedModel(&model.FileLog{})
+	RegisterScopedModel(&model.Strategy{})
+	RegisterScopedModel(&model.DeviceDisconnect{})
 }

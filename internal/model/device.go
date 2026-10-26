@@ -14,6 +14,9 @@ type Device struct {
 	// device up by rustdesk id alone (the id is unique per organization, not
 	// globally) before it knows the tenant.
 	RustdeskID string `gorm:"uniqueIndex:idx_device_org_rustdesk;index;size:64;not null" json:"rustdesk_id"`
+	// StrategyID is the device-level assignment; nil falls back to the device
+	// group and then to the owner's membership (design D1).
+	StrategyID *uint  `gorm:"index" json:"strategy_id"`
 	Name       string `gorm:"size:128;not null" json:"name"`
 	// BoundUUID records the client instance uuid that first presented this
 	// rustdesk id (empty until a compat login claims it). The client
@@ -86,4 +89,7 @@ type DeviceHeartbeat struct {
 	DeviceID       uint      `gorm:"index;not null" json:"device_id"`
 	At             time.Time `gorm:"not null" json:"at"`
 	Source         string    `gorm:"size:32" json:"source"`
+	// ConnIDs is the JSON array of connection ids the client reported on this
+	// heartbeat. Only these ids may be sent back in a disconnect field.
+	ConnIDs string `gorm:"type:text" json:"conn_ids"`
 }

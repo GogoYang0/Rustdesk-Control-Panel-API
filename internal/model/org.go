@@ -42,6 +42,9 @@ type Membership struct {
 	OrganizationID uint `gorm:"uniqueIndex:idx_membership_org_user;not null" json:"organization_id"`
 	UserID         uint `gorm:"uniqueIndex:idx_membership_org_user;not null" json:"user_id"`
 	RoleID         uint `gorm:"not null;default:0;index" json:"role_id"`
+	// StrategyID is the member-level default for devices they own; nil falls
+	// through to no strategy when the device carries none (design D1).
+	StrategyID *uint `gorm:"index" json:"strategy_id"`
 	// ControlRoleID is the member's control role; nil means the organization's
 	// built-in default role applies. Assignment is per membership, not per user
 	// (the same person may be a stricter role in one organization).
