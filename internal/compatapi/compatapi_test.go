@@ -58,6 +58,8 @@ func newHarness(t *testing.T) *harness {
 		&model.DeviceGroup{}, &model.AccessRule{},
 		// Client audit ingest: connection/file rows plus the nonce dedupe table.
 		&model.ConnectionLog{}, &model.FileLog{}, &model.AuditNonce{},
+		// Client strategies are delivered on the heartbeat response.
+		&model.Strategy{}, &model.DeviceDisconnect{},
 		&model.CompatLoginChallenge{},
 	))
 

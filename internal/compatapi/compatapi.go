@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/access"
@@ -19,6 +20,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/limit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logquery"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/strategy"
 )
 
 // Context keys for the authenticated compat session.
@@ -35,7 +37,10 @@ const (
 
 // Deps carries everything the compat endpoints need.
 type Deps struct {
-	DB     *gorm.DB
+	DB *gorm.DB
+	// Logger receives delivery failures; nil falls back to a no-op logger so
+	// the endpoint stays silent in tests.
+	Logger *zap.Logger
 	Issuer *auth.Issuer
 	// Devices persists devices and heartbeats; nil falls back to a service
 	// on the same DB.
@@ -48,6 +53,9 @@ type Deps struct {
 	// the ticket task) ticket issue/redemption share this one evaluation; nil
 	// falls back to a read-only service on the same DB.
 	Access *access.Service
+	// Strategies resolves and delivers client strategies on the heartbeat
+	// response; nil falls back to a read-only service on the same DB.
+	Strategies *strategy.Service
 	// Tokens authenticates the personal token the client's `--assign` call
 	// carries; nil falls back to a service on the same DB.
 	Tokens *auth.TokenService
@@ -87,6 +95,9 @@ func Mount(r gin.IRouter, d Deps) *Server {
 	if d.Now == nil {
 		d.Now = time.Now
 	}
+	if d.Logger == nil {
+		d.Logger = zap.NewNop()
+	}
 	if d.Guard == nil {
 		d.Guard = limit.NewLoginGuard()
 	}
@@ -112,6 +123,9 @@ func Mount(r gin.IRouter, d Deps) *Server {
 	}
 	if d.TOTP == nil && d.DB != nil {
 		d.TOTP = auth.NewTOTPService(d.DB, "", d.Now)
+	}
+	if d.Strategies == nil && d.DB != nil {
+		d.Strategies = strategy.NewService(d.DB, nil, d.Now)
 	}
 	if d.AuditIngest == nil && d.DB != nil {
 		auditor := d.Auditor

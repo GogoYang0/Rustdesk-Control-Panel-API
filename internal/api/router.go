@@ -72,14 +72,16 @@ func NewRouter(d Deps) *gin.Engine {
 	// cover /api/* compat paths (two token families stay interchangeable-
 	// proof, and the client's unauthenticated heartbeat still lands).
 	compatapi.Mount(r, compatapi.Deps{
-		DB:        d.DB,
-		Issuer:    d.Issuer,
-		Devices:   d.Devices,
-		Access:    d.Access,
-		Auditor:   d.Auditor,
-		TOTP:      d.TOTP,
-		Now:       d.Now,
-		AccessTTL: d.CompatTTL,
+		DB:         d.DB,
+		Issuer:     d.Issuer,
+		Devices:    d.Devices,
+		Access:     d.Access,
+		Auditor:    d.Auditor,
+		TOTP:       d.TOTP,
+		Strategies: d.Strategies,
+		Logger:     d.Logger,
+		Now:        d.Now,
+		AccessTTL:  d.CompatTTL,
 	})
 	return r
 }
