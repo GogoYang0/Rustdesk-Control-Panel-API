@@ -1,11 +1,13 @@
 package addressbook
 
 import (
+	"database/sql"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
@@ -273,6 +275,62 @@ func TestUpsertGrant_UserGroupSubject(t *testing.T) {
 		model.GrantSubjectUserGroup, model.GrantAccessRead, perms)
 	require.ErrorIs(t, err, ErrInvalidGrant)
 	require.Contains(t, err.Error(), "subject_kind=everyone")
+}
+
+// TestUpsertGrant_ChecksPermissionBeforeSubjectExistence pins the order of the
+// checks: an unauthorized caller learns nothing about stored subjects, so the
+// grant-management permission must be resolved before any subject lookup.
+func TestUpsertGrant_ChecksPermissionBeforeSubjectExistence(t *testing.T) {
+	svc, orgID, ownerID, memberID := newGrantFixture(t)
+	book, err := svc.Create(ownerID, orgID, model.AddressBookScopeShared, "team")
+	require.NoError(t, err)
+
+	// The plain member reads shared books but manages no grants.
+	_, _, err = svc.UpsertGrant(memberID, orgID, book.ID, 0, 424242,
+		model.GrantSubjectUserGroup, model.GrantAccessRead, nil)
+	require.ErrorIs(t, err, ErrForbidden, "a missing group must not be distinguishable from a forbidden call")
+
+	_, _, err = svc.UpsertGrant(memberID, orgID, book.ID, 424242, 0,
+		model.GrantSubjectUser, model.GrantAccessRead, nil)
+	require.ErrorIs(t, err, ErrForbidden, "a missing member must not be distinguishable from a forbidden call")
+}
+
+// TestUpsertGrant_ValidatesSubjectInsideTheWriteTransaction pins where the
+// subject lookup runs: on the same transaction as the grant insert, after the
+// organization row lock DeleteUserGroup takes. A lookup outside the transaction
+// leaves a window in which the deletion commits first and the grant outlives
+// the group it points at (CWE-367): the orphan row would silently come back to
+// life if a new group ever reused that id, which is precisely what the delete
+// cascade exists to prevent.
+func TestUpsertGrant_ValidatesSubjectInsideTheWriteTransaction(t *testing.T) {
+	svc, orgID, ownerID, _ := newGrantFixture(t)
+	book, err := svc.Create(ownerID, orgID, model.AddressBookScopeShared, "team")
+	require.NoError(t, err)
+	perms := []string{authz.PermAddressBook}
+	group := model.UserGroup{OrganizationID: orgID, Name: "ops", Kind: model.UserGroupKindCustom}
+	require.NoError(t, svc.db.Create(&group).Error)
+
+	// Test-only probe: GORM runs the query callbacks with the statement the
+	// caller issued, so the connection type tells whether the subject lookup
+	// rode the transaction.
+	var seen, insideTx bool
+	require.NoError(t, svc.db.Callback().Query().After("gorm:query").
+		Register("test:probe_user_group_lookup", func(db *gorm.DB) {
+			if db.Statement.Table != "user_groups" {
+				return
+			}
+			seen = true
+			_, isTx := db.Statement.ConnPool.(*sql.Tx)
+			insideTx = isTx
+		}))
+	t.Cleanup(func() { _ = svc.db.Callback().Query().Remove("test:probe_user_group_lookup") })
+
+	_, _, err = svc.UpsertGrant(ownerID, orgID, book.ID, 0, group.ID,
+		model.GrantSubjectUserGroup, model.GrantAccessRead, perms)
+	require.NoError(t, err)
+	require.True(t, seen, "the subject lookup must run at all")
+	require.True(t, insideTx,
+		"the subject must be validated on the grant transaction, not on a bare connection")
 }
 
 // TestGrants_UserGroupReachesItsMembers walks the group grant through the

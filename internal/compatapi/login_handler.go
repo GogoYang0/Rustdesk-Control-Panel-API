@@ -222,11 +222,12 @@ var errDeviceDisabled = errors.New("device is disabled")
 // through POST /api/v1/orgs/{orgId}/devices/{deviceId}/rebind, which clears the
 // binding and advances the generation in one audited transaction.
 //
-// A successful claim also auto-assigns an owner (D3): the device is attached to
-// the logging-in user if nobody owns it yet. The conditional UPDATE means a
-// device an administrator reassigned is never stolen back by the next login,
-// and the ownership change rides the login transaction (no separate audit: the
-// login path has none to begin with).
+// A successful claim also auto-assigns an owner (D3): a device nobody owns is
+// attached to the logging-in user, but only when the login proved the device's
+// identity by presenting the uuid stored in its binding. The conditional UPDATE
+// means a device an administrator reassigned is never stolen back by the next
+// login, and the ownership change rides the login transaction (no separate
+// audit: the login path has none to begin with).
 func (s *Server) claimDeviceTx(tx *gorm.DB, orgID, userID uint, rustdeskID, uuid string) (uint64, error) {
 	var dev model.Device
 	err := store.ScopedByOrg(tx, orgID).
@@ -306,12 +307,20 @@ func (s *Server) claimDeviceTx(tx *gorm.DB, orgID, userID uint, rustdeskID, uuid
 	if final.Disabled {
 		return 0, errDeviceDisabled
 	}
-	if final.OwnerUserID == nil && userID != 0 {
+	if uuid != "" && final.BoundUUID == uuid && final.OwnerUserID == nil && userID != 0 {
+		// Proof of identity precedes ownership: the uuid must match the stored
+		// binding. A login that omits it (an accepted legacy shape) claims no
+		// owner, because owning a device is a persistent authorization — it
+		// grants peer visibility and passes the device-access gate — and must
+		// not be obtainable by merely naming a rustdesk id (CWE-863).
+		//
 		// Conditional on the column still being NULL: an administrator who
 		// reassigned the device between the read and this write keeps the new
-		// owner instead of having the login overwrite it.
+		// owner instead of having the login overwrite it. Conditional on the
+		// binding too: a rebind that committed in between invalidated the
+		// identity this login proved.
 		if err := store.ScopedByOrg(tx, orgID).Model(&model.Device{}).
-			Where("id = ? AND owner_user_id IS NULL", final.ID).
+			Where("id = ? AND owner_user_id IS NULL AND bound_uuid = ?", final.ID, uuid).
 			Update("owner_user_id", userID).Error; err != nil {
 			return 0, err
 		}

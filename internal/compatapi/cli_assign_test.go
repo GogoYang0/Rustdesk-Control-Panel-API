@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/access"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
@@ -328,6 +329,31 @@ func TestCLIAssign_UnknownOwnerOrGroupIsNotFound(t *testing.T) {
 	require.Nil(t, stored.DeviceGroupID)
 }
 
+// TestCLIAssign_UnknownAndForeignEmailsAreIndistinguishable pins the response
+// shape of user_name: the caller may not learn whether an email belongs to a
+// user registered anywhere on the platform. An unknown address and an address
+// registered to somebody outside this tenant must answer identically, otherwise
+// a personal token with device.write is a global account oracle.
+func TestCLIAssign_UnknownAndForeignEmailsAreIndistinguishable(t *testing.T) {
+	h := newCLIHarness(t)
+	h.seedDevice(t, "cli-9101", "")
+	token := h.seedToken(t, h.owner.ID, []string{authz.PermDeviceWrite})
+	// Registered globally, member of no organization of this tenant.
+	seedCLIUser(t, h.db, "cli-foreign@example.com")
+
+	unknown := h.do(t, http.MethodPost, "/api/devices/cli", map[string]any{
+		"id": "cli-9101", "user_name": "cli-ghost@example.com",
+	}, token)
+	outsider := h.do(t, http.MethodPost, "/api/devices/cli", map[string]any{
+		"id": "cli-9101", "user_name": "cli-foreign@example.com",
+	}, token)
+
+	require.Equal(t, http.StatusNotFound, unknown.Code, unknown.Body.String())
+	require.Equal(t, unknown.Code, outsider.Code)
+	require.Equal(t, unknown.Body.String(), outsider.Body.String(),
+		"a globally registered email must not be distinguishable from an unknown one")
+}
+
 func TestLogin_AutoAssignsUnclaimedDevice(t *testing.T) {
 	h := newCLIHarness(t)
 	dev := h.seedDevice(t, "cli-7001", "")
@@ -338,6 +364,60 @@ func TestLogin_AutoAssignsUnclaimedDevice(t *testing.T) {
 	stored := h.loadDevice(t, dev.ID)
 	require.NotNil(t, stored.OwnerUserID, "a login claims an unowned device")
 	require.EqualValues(t, h.owner.ID, *stored.OwnerUserID)
+}
+
+// TestLogin_EmptyUUIDDoesNotAcquireOwnership pins the boundary of the D3
+// auto-assignment: the uuid is the only identity signal the client protocol
+// carries, so a login that presents none proves nothing about the hardware
+// behind the rustdesk id. Ownership is a persistent authorization (it grants
+// peer visibility and passes the device-access gate), so it must not be
+// acquired by merely knowing a device id: an empty-uuid login of an
+// already-bound device is accepted as before but claims no owner.
+func TestLogin_EmptyUUIDDoesNotAcquireOwnership(t *testing.T) {
+	h := newCLIHarness(t)
+	member := seedCLIUser(t, h.db, "cli-bind@example.com")
+	seedCLIMember(t, h.db, h.org.ID, member.ID, model.RoleKindMember)
+	dev := h.seedDevice(t, "cli-9001", "legit-uuid-9001")
+
+	w := h.login(t, "cli-bind@example.com", "cli-9001", "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	stored := h.loadDevice(t, dev.ID)
+	require.Nil(t, stored.OwnerUserID,
+		"a login without the device uuid proves no identity and must not claim ownership")
+	require.Equal(t, "legit-uuid-9001", stored.BoundUUID)
+	require.EqualValues(t, 1, stored.BindingGeneration)
+
+	// Ownership is not just a column: it feeds the device visible set, so the
+	// unproven claim must not surface the device to that member either.
+	accessSvc := access.NewService(h.db.DB, audit.NewGormAuditor(h.db.DB), nil)
+	all, ids, err := accessSvc.AllowedDeviceIDs(context.Background(), h.org.ID, member.ID)
+	require.NoError(t, err)
+	require.False(t, all)
+	require.NotContains(t, ids, dev.ID, "an unclaimed device stays invisible to the ordinary member")
+}
+
+// TestLogin_MatchingUUIDClaimsOwnership is the positive control of the rule
+// above: the upgrade case (a device bound before ownership existed, owner NULL)
+// is claimed by the client that presents the stored uuid.
+func TestLogin_MatchingUUIDClaimsOwnership(t *testing.T) {
+	h := newCLIHarness(t)
+	member := seedCLIUser(t, h.db, "cli-upgrade@example.com")
+	seedCLIMember(t, h.db, h.org.ID, member.ID, model.RoleKindMember)
+	dev := h.seedDevice(t, "cli-9002", "legit-uuid-9002")
+
+	w := h.login(t, "cli-upgrade@example.com", "cli-9002", "legit-uuid-9002")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	stored := h.loadDevice(t, dev.ID)
+	require.NotNil(t, stored.OwnerUserID, "the matching uuid proves the identity and may claim the device")
+	require.EqualValues(t, member.ID, *stored.OwnerUserID)
+
+	accessSvc := access.NewService(h.db.DB, audit.NewGormAuditor(h.db.DB), nil)
+	all, ids, err := accessSvc.AllowedDeviceIDs(context.Background(), h.org.ID, member.ID)
+	require.NoError(t, err)
+	require.False(t, all)
+	require.Contains(t, ids, dev.ID, "a claimed device is visible to its owner")
 }
 
 func TestLogin_DoesNotStealExistingOwner(t *testing.T) {

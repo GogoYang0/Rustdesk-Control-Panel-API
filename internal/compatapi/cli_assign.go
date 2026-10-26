@@ -122,7 +122,11 @@ func (s *Server) cliAssign(c *gin.Context) {
 		var user model.User
 		err := store.WithoutTenantScope(s.deps.DB).Where("email = ?", email).First(&user).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			compatError(c, http.StatusNotFound, "user not found")
+			// Same answer as a registered outsider below: the users table is
+			// platform-global, so a distinct message here would turn this
+			// endpoint into an account oracle for every deployment tenant
+			// (CWE-204).
+			compatError(c, http.StatusNotFound, "target not found")
 			return
 		}
 		if err != nil {

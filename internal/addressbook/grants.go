@@ -201,6 +201,13 @@ func (s *Service) ListGrants(userID, orgID, bookID uint, perms []string) ([]mode
 // user group of a user_group grant and 0 for the user and everyone kinds;
 // subjectUserID is normalized to 0 for the everyone and user_group kinds, so a
 // single subject always maps onto one row.
+//
+// The subject is resolved and validated inside the write transaction, after the
+// organization row lock: a group deleted (or a member removed) concurrently is
+// either observed gone here and refused, or waits for this grant to commit and
+// then cascades it away. Validating before the transaction left a window in
+// which the deletion committed first and the grant outlived its subject
+// (CWE-367), silently reviving if the id was ever reused.
 func (s *Service) UpsertGrant(userID, orgID, bookID, subjectUserID, subjectGroupID uint, subjectKind, accessLevel string, perms []string) (*model.AddressBookGrant, bool, error) {
 	switch subjectKind {
 	case model.GrantSubjectUser:
@@ -212,6 +219,8 @@ func (s *Service) UpsertGrant(userID, orgID, bookID, subjectUserID, subjectGroup
 	if accessLevel != model.GrantAccessRead && accessLevel != model.GrantAccessWrite && accessLevel != model.GrantAccessFull {
 		return nil, false, ErrInvalidGrant
 	}
+	// Shape checks of the payload stay outside the transaction: they judge the
+	// request alone and reveal nothing about stored rows.
 	switch subjectKind {
 	case model.GrantSubjectEveryone:
 		subjectUserID = 0
@@ -221,38 +230,15 @@ func (s *Service) UpsertGrant(userID, orgID, bookID, subjectUserID, subjectGroup
 			return nil, false, ErrInvalidGrant
 		}
 		subjectUserID = 0
-		var group model.UserGroup
-		if err := store.ScopedByOrg(s.db, orgID).Select("id", "kind").
-			First(&group, subjectGroupID).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				// A subject group outside the tenant is indistinguishable from a
-				// missing one.
-				return nil, false, ErrGrantSubjectNotFound
-			}
-			return nil, false, err
-		}
-		if group.Kind == model.UserGroupKindEveryone {
-			// The reserved group stores no member rows (membership is implicit),
-			// so a group grant on it would never match anybody: the first-class
-			// `everyone` subject is the way to grant every member, and a dead
-			// grant row must not look like a working one.
-			return nil, false, fmt.Errorf("%w: the reserved everyone group is not a grant subject; use subject_kind=everyone", ErrInvalidGrant)
-		}
 	case model.GrantSubjectUser:
 		subjectGroupID = 0
 		if subjectUserID == 0 {
 			return nil, false, ErrInvalidGrant
 		}
-		var count int64
-		if err := store.ScopedByOrg(s.db, orgID).Model(&model.Membership{}).
-			Where("user_id = ?", subjectUserID).Count(&count).Error; err != nil {
-			return nil, false, err
-		}
-		if count == 0 {
-			return nil, false, ErrSubjectNotMember
-		}
 	}
 
+	// Authorization precedes every subject lookup: an unauthorized caller must
+	// not be able to probe which groups or members exist.
 	book, err := s.sharedBookForGrants(userID, orgID, bookID, perms)
 	if err != nil {
 		return nil, false, err
@@ -261,8 +247,42 @@ func (s *Service) UpsertGrant(userID, orgID, bookID, subjectUserID, subjectGroup
 	var row model.AddressBookGrant
 	created := false
 	err = s.db.Transaction(func(tx *gorm.DB) error {
+		// Same lock DeleteUserGroup takes first, so the subject validated below
+		// cannot be deleted between the check and the insert.
+		if err := lockOrgRow(tx, orgID); err != nil {
+			return err
+		}
 		if _, err := lockBook(tx, orgID, book.ID); err != nil {
 			return err
+		}
+		switch subjectKind {
+		case model.GrantSubjectUserGroup:
+			var group model.UserGroup
+			if err := store.ScopedByOrg(tx, orgID).Select("id", "kind").
+				First(&group, subjectGroupID).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					// A subject group outside the tenant is indistinguishable from a
+					// missing one.
+					return ErrGrantSubjectNotFound
+				}
+				return err
+			}
+			if group.Kind == model.UserGroupKindEveryone {
+				// The reserved group stores no member rows (membership is implicit),
+				// so a group grant on it would never match anybody: the first-class
+				// `everyone` subject is the way to grant every member, and a dead
+				// grant row must not look like a working one.
+				return fmt.Errorf("%w: the reserved everyone group is not a grant subject; use subject_kind=everyone", ErrInvalidGrant)
+			}
+		case model.GrantSubjectUser:
+			var count int64
+			if err := store.ScopedByOrg(tx, orgID).Model(&model.Membership{}).
+				Where("user_id = ?", subjectUserID).Count(&count).Error; err != nil {
+				return err
+			}
+			if count == 0 {
+				return ErrSubjectNotMember
+			}
 		}
 		var existing model.AddressBookGrant
 		findErr := store.ScopedByOrg(tx, orgID).
