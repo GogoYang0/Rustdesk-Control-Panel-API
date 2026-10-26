@@ -63,6 +63,9 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `unauthorized` | 401 | 登录/刷新的凭据拒绝 |
 | `two_factor_required` | 401 | 已启用 2FA 的账号密码正确但需第二步（`data.challenge_token` 指向 `/auth/2fa/verify`） |
 | `rate_limited` | 429 | 登录锁定（LoginGuard） |
+| `captcha_required` | 400 | 已启用验证码但请求未携带 `captcha`（v0.10.0） |
+| `captcha_invalid` | 400 | 挑战缺失、过期、已用或答案错误；提供商判定失败（响应不区分账号是否存在） |
+| `captcha_unavailable` | 503 | 验证码提供商不可达且 `failMode=closed`（启用验证码时） |
 | `internal` | 500 | 未预期的服务端错误（不向客户端泄露细节） |
 
 ### 2.4 分页
@@ -108,7 +111,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 > 管理员 `member.manage` 可重置成员 2FA（丢失设备场景），重置动作写审计 `user.2fa.reset`；该审计失败则整体失败（fail closed）。管理员**不能重置自己**（409）——自服务移除走 `/auth/2fa/disable`（需当前密码 + TOTP/恢复码），否则该端点就成了第二因素的旁路。2FA 是**账号级**状态：目标在本组织是 owner 时只有 owner（`org.admin`）能重置；目标只要**在本组织之外还存在任何会籍**（无论角色、含已停用）就一律 403——清除账号级因素会同时削弱其登录其他组织的保护，这类跨组织用户的账号恢复只能走平台级运维（系统外）。
 
 > **v0.10.0 交互式验证码**：部署启用后，三个公开凭据入口（`/auth/login`、`/auth/2fa/verify`、`/invitations/accept`）都在密码/TOTP 校验**之前**要求 `captcha` 对象：`{response: {<provider 字段>}}`。客户端先调 `GET /auth/captcha` 取挑战。提供商：`altcha`（默认，自托管 proof-of-work，`response.payload` 为 widget 返回的 base64 payload）、`geetest`（v4，`response` 带 `lot_number`/`captcha_output`/`pass_token`/`gen_time`）、`cap`（自托管 Standalone，`response.response` 为 token）。
-> 错误码：缺 `captcha` → `400 captcha_required`；挑战过期/已用/答案错/提供商判定失败 → `400 captcha_invalid`（响应不区分账号是否存在）；提供商不可达且 `failMode=closed` → `503 captcha_unavailable`。**判定与故障按响应内容区分，不按状态码**：Cap 对不存在或已消耗的 token 返回 `404 {"success":false}`、对过期 token 返回 `403 {"success":false}`，两者都是判定（判定失败永远 400，`failMode=open` 也不放行）；只有网络错误、超时、5xx 或响应里没有任何判定字段才算故障。**验证码失败不计入登录失败窗口**，只受 IP 桶约束；**面板对三家凭据统一做本地单次消费**（Altcha 已用签名 5 分钟窗口；GeeTest `lot_number` 与 Cap token 10 分钟去重窗口，与提供商自身的限制叠加），TTL 默认 5 分钟；提供商不可达属于「无判定」而非「已用」，此时释放本地占用，同一凭据可在服务恢复后重试；已通过校验的凭据在其窗口内不会被内存上限淘汰（表满优先淘汰未通过校验的占位）。compat `/api/login` 不接验证码（原生客户端无法解交互式验证码）。
+> 错误码：缺 `captcha` → `400 captcha_required`；挑战过期/已用/答案错/提供商判定失败 → `400 captcha_invalid`（响应不区分账号是否存在）；提供商不可达且 `failMode=closed` → `503 captcha_unavailable`。**判定与故障按响应内容区分，不按状态码**：Cap 对不存在或已消耗的 token 返回 `404 {"success":false}`、对过期 token 返回 `403 {"success":false}`，两者都是判定（判定失败永远 400，`failMode=open` 也不放行）；只有网络错误、超时、5xx 或响应里没有任何判定字段才算故障。**验证码失败不计入登录失败窗口**，只受 IP 桶约束；**面板对三家凭据统一做本地单次消费**（Altcha 已用签名 5 分钟窗口；GeeTest `lot_number` 与 Cap token 10 分钟去重窗口，与提供商自身的限制叠加），TTL 默认 5 分钟；提供商不可达属于「无判定」而非「已用」，此时释放本地占用，同一凭据可在服务恢复后重试；已通过校验的凭据在其窗口内不会被内存上限淘汰（表满优先淘汰未通过校验的占位）；校验进行中若占位已被淘汰，成功结论仍会补记为已通过，过期句柄也不会覆盖或删除同 key 的新占位。**单次消费状态是进程内的**：多副本部署下按 IP 粘性路由不足以提供全局单次消费（消费键与 IP 无关），需要该保证时须单副本或共享消费存储。compat `/api/login` 不接验证码（原生客户端无法解交互式验证码）。
 
 ### 3.2 组织与成员
 

@@ -73,13 +73,14 @@ func (p *altchaProvider) Verify(_ context.Context, proof Proof) error {
 	}
 	// Reserve before verifying: one attempt per challenge, and a replayed
 	// payload is rejected even when the first attempt failed.
-	if !p.used.Reserve(parsed.Signature, p.ttl) {
+	reservation, ok := p.used.Reserve(parsed.Signature, p.ttl)
+	if !ok {
 		return ErrInvalid
 	}
-	ok, err := altchalib.VerifySolution(payload, p.key, true)
-	if err != nil || !ok {
+	solved, verifyErr := altchalib.VerifySolution(payload, p.key, true)
+	if verifyErr != nil || !solved {
 		return ErrInvalid
 	}
-	p.used.MarkVerified(parsed.Signature)
+	p.used.MarkVerified(reservation)
 	return nil
 }

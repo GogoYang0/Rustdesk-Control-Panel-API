@@ -47,14 +47,15 @@ func (p *capProvider) Verify(ctx context.Context, proof Proof) (err error) {
 	if token == "" {
 		return ErrRequired
 	}
-	if !p.used.Reserve(token, singleUseTTL) {
+	reservation, ok := p.used.Reserve(token, singleUseTTL)
+	if !ok {
 		return ErrInvalid
 	}
 	// A transport or provider fault is not a verdict; free the reservation so
 	// the same token can be retried once the provider recovers.
 	defer func() {
 		if errors.Is(err, ErrUnavailable) {
-			p.used.Release(token)
+			p.used.Release(reservation)
 		}
 	}()
 	body, err := json.Marshal(map[string]string{"secret": p.secret, "response": token})
@@ -94,6 +95,6 @@ func (p *capProvider) Verify(ctx context.Context, proof Proof) (err error) {
 	if !*answer.Success || resp.StatusCode > 299 {
 		return ErrInvalid
 	}
-	p.used.MarkVerified(token)
+	p.used.MarkVerified(reservation)
 	return nil
 }

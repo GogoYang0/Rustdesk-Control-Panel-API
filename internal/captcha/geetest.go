@@ -64,14 +64,15 @@ func (p *geetestProvider) Verify(ctx context.Context, proof Proof) (err error) {
 	// The provider may accept the same lot_number more than once within its
 	// validity window; the panel consumes it locally so one solution cannot
 	// authorise repeated attempts.
-	if !p.used.Reserve(lotNumber, singleUseTTL) {
+	reservation, ok := p.used.Reserve(lotNumber, singleUseTTL)
+	if !ok {
 		return ErrInvalid
 	}
 	// A transport or provider fault is not a verdict; free the reservation so
 	// the same solution can be retried once the provider recovers.
 	defer func() {
 		if errors.Is(err, ErrUnavailable) {
-			p.used.Release(lotNumber)
+			p.used.Release(reservation)
 		}
 	}()
 
@@ -110,6 +111,6 @@ func (p *geetestProvider) Verify(ctx context.Context, proof Proof) (err error) {
 	if answer.Status != "success" || answer.Result != "success" {
 		return ErrInvalid
 	}
-	p.used.MarkVerified(lotNumber)
+	p.used.MarkVerified(reservation)
 	return nil
 }
