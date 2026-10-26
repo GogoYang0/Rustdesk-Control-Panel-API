@@ -353,7 +353,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 
 | 端点 | 说明 |
 |---|---|
-| `POST /api/login` | `{username, password, id, uuid, org?}`。`id`=rustdesk 设备 id，`uuid`=客户端实例 uuid。登录成功 = 签发 compat token + **认领设备** + **自动归属**（设备未归属时归给登录用户，v0.10.0） |
+| `POST /api/login` | `{username, password, id, uuid, org?}`。`id`=rustdesk 设备 id，`uuid`=客户端实例 uuid。登录成功 = 签发 compat token + **认领设备** + **自动归属**（设备未归属、且本次提交的 `uuid` 与设备绑定一致时归给登录用户，v0.10.0） |
 | `POST /api/devices/cli` | 客户端 `--assign` 调用点（v0.10.0，**个人令牌 + `device.write`**，不走 compat 会话）：见下 |
 | `GET /api/login-options` | 登录能力协商（当前返回空列表） |
 | `POST /api/logout` | 撤销当前 compat 会话 |
@@ -361,13 +361,13 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `GET /api/peers` | 设备列表（需 Bearer）：v0.4.0 起按会话所属组织隔离；v0.9.0 起按访问规则过滤并隐藏停用设备，owner/admin 返回组织内全部**未停用**设备（见 §3.10） |
 
 > **v0.10.0 `POST /api/devices/cli`（`--assign`）**：RustDesk 客户端 `rustdesk --assign` 的真实调用点（已核对上游 `core_main.rs`）。鉴权用**个人令牌**（`Authorization: Bearer rdt_...`，非 compat token）：令牌无效/过期/已撤销 → `401`；**有效权限 = 令牌申请集 ∩ 令牌所有者当前角色权限集**（实时重算），不含 `device.write` → `403`。
-> 请求体白名单（其余字段一律 `400`，错误信息含字段名——**不静默忽略**，因为静默忽略会让调用方误以为下发成功）：`id`（rustdesk id，必填）、`uuid`（接受但**不落库**，绑定只由登录路径维护）、`user_name`（本组织成员的邮箱，精确匹配，非成员/不存在 → `404`）、`device_group_name`（本组织的设备组名，大小写不敏感，不存在 → `404`）、`device_name`（设备显示名，≤128 字符）、`note`（运维备注，≤255 字符）。不支持 `strategy_name`、`address_book_*`、`device_username`：Strategy 未实现（波次 5），后两类在本系统无对应概念。
+> 请求体白名单（其余字段一律 `400`，错误信息含字段名——**不静默忽略**，因为静默忽略会让调用方误以为下发成功）：`id`（rustdesk id，必填）、`uuid`（接受但**不落库**，绑定只由登录路径维护）、`user_name`（本组织成员的邮箱，精确匹配；非成员与平台内不存在的邮箱返回**同一个** `404`，响应不可区分——`users` 表是跨组织全局的，区分开就等于给持令牌者一个全局账号探针）、`device_group_name`（本组织的设备组名，大小写不敏感，不存在 → `404`）、`device_name`（设备显示名，≤128 字符）、`note`（运维备注，≤255 字符）。不支持 `strategy_name`、`address_book_*`、`device_username`：Strategy 未实现（波次 5），后两类在本系统无对应概念。
 > 成功 `200 {"code":"ok"}`。设备或目标用户/组不属于令牌所在组织 → `404`（与"不存在"不可区分）。写入走与管理面 `PATCH` **同一个事务化 service**：每个实际变化的字段各写一条审计（`device.assign`/`device.rename`/`device.group`/`device.note`），请求级不再补记 HTTP 审计。设备的所有写入都限制在令牌绑定的组织内，**不存在跨组织改设备的路径**。
 
 **设备认领语义**（重要，v0.4.0 事务化 + 绑定代数，v0.5.0 增加重置入口，v0.10.0 增加自动归属）：
 
 - 设备 `rustdesk_id` 首次登录时绑定提交的 `uuid`（`BoundUUID`）；之后不同 uuid 登录同一 id → 403 `device is already bound`
-- **登录自动归属（v0.10.0）**：认领成功（含复用既有绑定）后，若设备**尚无归属人**则把 `owner_user_id` 置为本次登录用户（与认领同一事务）；**已归属他人的设备绝不被登录改写**（条件 UPDATE `owner_user_id IS NULL`），管理员改派过的归属保持不动。该归属不经 `--assign` 也可生效——这正是「成员登录后只看到自己那台设备」的默认路径（§3.10）。自动归属不单独写审计（登录路径本身不写领域审计；改派与清空由管理面 `PATCH` 或 `--assign` 完成，二者都留痕）
+- **登录自动归属（v0.10.0）**：认领成功（含复用既有绑定）后，若设备**尚无归属人**、且**本次登录提交的 `uuid` 与设备绑定相同**，则把 `owner_user_id` 置为本次登录用户（与认领同一事务）；**已归属他人的设备绝不被登录改写**（条件 UPDATE `owner_user_id IS NULL AND bound_uuid = <提交的 uuid>`），管理员改派过的归属保持不动。**未提交 `uuid` 的登录不产生归属**：uuid 是客户端协议里唯一的身份信号，归属是持久授权（本人可见 + 设备准入兜底），不能凭"知道一个 rustdesk id"取得（CWE-863）；登录本身仍成功（兼容既有客户端形态）。该归属不经 `--assign` 也可生效——这正是「成员登录后只看到自己那台设备」的默认路径（§3.10）。自动归属不单独写审计（登录路径本身不写领域审计；改派与清空由管理面 `PATCH` 或 `--assign` 完成，二者都留痕）
 - **解绑只能走管理面 `POST .../devices/{deviceId}/rebind`**（owner/admin，`reason` 必填随审计留存）：清 `BoundUUID` + `binding_generation` **无条件 +1** + 同一事务写 `device.binding.reset` 审计。重复调用每次成功且代数继续 +1；审计写失败则绑定不变（fail closed）。**禁止直接改 `bound_uuid` 而不动代数**——那会让旧会话仍能驱动设备。重置不吊销旧机 token，重新认领是**先到先得**：要让新机赢得认领，先让旧机退出登录/离线
 - **认领与会话在同一事务**（#40）：认领成功但会话落库失败会整体回滚——不存在「已绑定但无会话」或「有会话无绑定」的中间态；被拒绝的认领（403）不会留下任何会话行
 - **绑定代数**：每次绑定变更（首次认领、管理员改绑）使 `binding_generation` +1；登录会话快照当时的代数，`heartbeat`/`sysinfo` 校验会话代数与设备当前代数一致——**旧代数会话的活动被丢弃**（不落库、不推进 `last_seen_at`）。绑定的所有权语义因此不依赖 uuid 的保密性
