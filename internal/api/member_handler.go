@@ -541,6 +541,7 @@ func (a *AdminAPI) respondMember(c *gin.Context, m *model.Membership) {
 			// Read-back for the console: without it the page can assign roles
 			// but never shows who holds which.
 			ControlRoleId: controlRoleIDOf(*m),
+			StrategyId:    strategyIDToAPI(m.StrategyID),
 			Disabled:      m.Disabled,
 			CreatedAt:     m.CreatedAt,
 		},

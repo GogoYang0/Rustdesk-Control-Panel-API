@@ -125,7 +125,9 @@ func Mount(r gin.IRouter, d Deps) *Server {
 		d.TOTP = auth.NewTOTPService(d.DB, "", d.Now)
 	}
 	if d.Strategies == nil && d.DB != nil {
-		d.Strategies = strategy.NewService(d.DB, nil, d.Now)
+		// A real recorder: the CLI `--assign strategy_name` path assigns a
+		// strategy, and an unaudited assignment is refused by the service.
+		d.Strategies = strategy.NewService(d.DB, audit.NewGormAuditor(d.DB), d.Now)
 	}
 	if d.AuditIngest == nil && d.DB != nil {
 		auditor := d.Auditor

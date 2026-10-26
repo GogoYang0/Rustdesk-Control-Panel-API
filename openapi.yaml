@@ -1229,6 +1229,52 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v1/orgs/{orgId}/members/{userId}/strategy:
+    put:
+      operationId: assignMemberStrategy
+      summary: 分配成员的默认客户端策略
+      description: |
+        需要 `strategy.manage`。作用于该成员**拥有**（`owner_user_id`）且没有设备层、
+        组层分配的设备。`null` 清除。成员必须是本组织会籍，否则 404。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StrategyAssignmentRequest"
+      responses:
+        "200":
+          description: 已分配
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/v1/orgs/{orgId}/user-groups:
     get:
       operationId: listUserGroups
@@ -1583,6 +1629,52 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/device-groups/{deviceGroupId}/strategy:
+    put:
+      operationId: assignDeviceGroupStrategy
+      summary: 分配设备组的客户端策略
+      description: |
+        需要 `strategy.manage`。作用于组内所有**没有设备层分配**的设备。
+        `null` 清除组层分配。写入与审计同事务。
+      tags:
+        - devices
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: deviceGroupId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StrategyAssignmentRequest"
+      responses:
+        "200":
+          description: 已分配
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /api/v1/orgs/{orgId}/device-groups/{deviceGroupId}/devices:
     put:
@@ -3328,6 +3420,53 @@ paths:
         "409":
           $ref: "#/components/responses/Conflict"
 
+  /api/v1/orgs/{orgId}/devices/{deviceId}/strategy:
+    put:
+      operationId: assignDeviceStrategy
+      summary: 分配设备的客户端策略
+      description: |
+        需要 `strategy.manage`。`strategy_id` 显式给 `null` 表示清除设备层分配，
+        回落到设备组层。设备层优先级最高（设计 D1：设备 > 设备组 > 成员）。
+        策略必须属于本组织，跨组织 id 与不存在的设备一律 404。写入与审计同事务。
+      tags:
+        - devices
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: deviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StrategyAssignmentRequest"
+      responses:
+        "200":
+          description: 已分配
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/v1/orgs/{orgId}/devices/{deviceId}:
     patch:
       operationId: updateDevice
@@ -4638,6 +4777,12 @@ components:
           description: |
             成员的控制角色 id（v0.10.0）；`null` 表示未分配、回退组织内置 `default`。
             角色名称由 `GET /control-roles` 的列表解析（避免成员列表逐行 JOIN）。
+        strategy_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: 成员默认策略 id（v0.10.0）；作用于其拥有且无设备/组层分配的设备
         disabled:
           type: boolean
           description: 会籍是否已停用；停用后不能登录或访问该组织
@@ -5055,6 +5200,18 @@ components:
           type: string
           format: date-time
 
+    StrategyAssignmentRequest:
+      type: object
+      required:
+        - strategy_id
+      properties:
+        strategy_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: 目标策略 id；`null` 表示清除该层分配
+
     StrategyCreateRequest:
       type: object
       required:
@@ -5361,6 +5518,12 @@ components:
             type: integer
             format: int64
           description: 当前属于该组的设备 id；一台设备只属于一个组
+        strategy_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: 组层策略 id（v0.10.0）；设备层分配优先
         created_at:
           type: string
           format: date-time
@@ -6033,6 +6196,12 @@ components:
             - "null"
           format: int64
           description: 设备所属设备组 id；null 表示未分组。一台设备只能属于一个设备组。
+        strategy_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: 设备层策略 id（v0.10.0）；`null` 表示回落到设备组或成员层
         owner_user_id:
           type:
             - integer

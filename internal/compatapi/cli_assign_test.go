@@ -49,6 +49,7 @@ func newCLIHarness(t *testing.T) *cliHarness {
 		&model.AuditLog{}, &model.APIToken{}, &model.CompatLoginChallenge{},
 		&model.Device{}, &model.DeviceHeartbeat{}, &model.CompatSession{},
 		&model.UserGroup{}, &model.UserGroupMember{}, &model.DeviceGroup{}, &model.AccessRule{},
+		&model.Strategy{},
 	))
 
 	h := &cliHarness{db: st}
@@ -206,14 +207,9 @@ func TestCLIAssign_RejectsUnsupportedFields(t *testing.T) {
 
 	// A field this deployment does not implement must be refused with its name
 	// instead of being ignored: the client would otherwise believe the
-	// assignment succeeded (D5).
+	// assignment succeeded. (strategy_name used to be on this list; wave 4
+	// implements it, see TestCLIAssign_StrategyName.)
 	w := h.do(t, http.MethodPost, "/api/devices/cli", map[string]any{
-		"id": "cli-2001", "strategy_name": "default",
-	}, token)
-	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
-	require.Contains(t, w.Body.String(), "strategy_name")
-
-	w = h.do(t, http.MethodPost, "/api/devices/cli", map[string]any{
 		"id": "cli-2001", "address_book_name": "team",
 	}, token)
 	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())

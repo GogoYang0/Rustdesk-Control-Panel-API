@@ -336,6 +336,7 @@ func (a *AdminAPI) deviceToAPI(d *model.Device, ownerEmails map[uint]string) gen
 		Bound:         d.BoundUUID != "",
 		Disabled:      d.Disabled,
 		DeviceGroupId: deviceGroupIDToAPI(d.DeviceGroupID),
+		StrategyId:    strategyIDToAPI(d.StrategyID),
 		Note:          &note,
 	}
 	if d.OwnerUserID != nil {

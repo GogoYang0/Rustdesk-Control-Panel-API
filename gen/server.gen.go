@@ -1474,6 +1474,9 @@ type Device struct {
 	OwnerUserId *int64       `json:"owner_user_id,omitempty"`
 	RustdeskId  string       `json:"rustdesk_id"`
 	Status      DeviceStatus `json:"status"`
+
+	// StrategyId 设备层策略 id（v0.10.0）；`null` 表示回落到设备组或成员层
+	StrategyId *int64 `json:"strategy_id,omitempty"`
 }
 
 // DeviceStatus defines model for Device.Status.
@@ -1539,10 +1542,13 @@ type DeviceGroup struct {
 	CreatedAt time.Time `json:"created_at"`
 
 	// DeviceIds 当前属于该组的设备 id；一台设备只属于一个组
-	DeviceIds []int64   `json:"device_ids"`
-	Id        int64     `json:"id"`
-	Name      string    `json:"name"`
-	UpdatedAt time.Time `json:"updated_at"`
+	DeviceIds []int64 `json:"device_ids"`
+	Id        int64   `json:"id"`
+	Name      string  `json:"name"`
+
+	// StrategyId 组层策略 id（v0.10.0）；设备层分配优先
+	StrategyId *int64    `json:"strategy_id,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // DeviceGroupCreateRequest defines model for DeviceGroupCreateRequest.
@@ -2009,7 +2015,10 @@ type Member struct {
 
 	// RoleName 角色展示名（内置 owner/admin/member 或自定义名称）
 	RoleName string `json:"role_name"`
-	UserId   int64  `json:"user_id"`
+
+	// StrategyId 成员默认策略 id（v0.10.0）；作用于其拥有且无设备/组层分配的设备
+	StrategyId *int64 `json:"strategy_id,omitempty"`
+	UserId     int64  `json:"user_id"`
 }
 
 // MemberListResponse defines model for MemberListResponse.
@@ -2782,6 +2791,12 @@ type Strategy struct {
 	Version int64 `json:"version"`
 }
 
+// StrategyAssignmentRequest defines model for StrategyAssignmentRequest.
+type StrategyAssignmentRequest struct {
+	// StrategyId 目标策略 id；`null` 表示清除该层分配
+	StrategyId *int64 `json:"strategy_id"`
+}
+
 // StrategyCreateRequest defines model for StrategyCreateRequest.
 type StrategyCreateRequest struct {
 	// ConfigOptions 省略或空对象表示「不下发任何选项」（占位策略）
@@ -3402,6 +3417,9 @@ type RenameDeviceGroupJSONRequestBody = DeviceGroupRenameRequest
 // ReplaceDeviceGroupDevicesJSONRequestBody defines body for ReplaceDeviceGroupDevices for application/json ContentType.
 type ReplaceDeviceGroupDevicesJSONRequestBody = DeviceGroupDevicesRequest
 
+// AssignDeviceGroupStrategyJSONRequestBody defines body for AssignDeviceGroupStrategy for application/json ContentType.
+type AssignDeviceGroupStrategyJSONRequestBody = StrategyAssignmentRequest
+
 // CreateDeviceJSONRequestBody defines body for CreateDevice for application/json ContentType.
 type CreateDeviceJSONRequestBody = DeviceCreateRequest
 
@@ -3414,6 +3432,9 @@ type RequestDeviceDisconnectJSONRequestBody = DeviceDisconnectRequest
 // ResetDeviceBindingJSONRequestBody defines body for ResetDeviceBinding for application/json ContentType.
 type ResetDeviceBindingJSONRequestBody = DeviceRebindRequest
 
+// AssignDeviceStrategyJSONRequestBody defines body for AssignDeviceStrategy for application/json ContentType.
+type AssignDeviceStrategyJSONRequestBody = StrategyAssignmentRequest
+
 // CreateInvitationJSONRequestBody defines body for CreateInvitation for application/json ContentType.
 type CreateInvitationJSONRequestBody = InvitationCreateRequest
 
@@ -3422,6 +3443,9 @@ type UpdateMemberRoleJSONRequestBody = MemberUpdateRequest
 
 // AssignMemberControlRoleJSONRequestBody defines body for AssignMemberControlRole for application/json ContentType.
 type AssignMemberControlRoleJSONRequestBody = ControlRoleAssignmentRequest
+
+// AssignMemberStrategyJSONRequestBody defines body for AssignMemberStrategy for application/json ContentType.
+type AssignMemberStrategyJSONRequestBody = StrategyAssignmentRequest
 
 // CreatePolicyJSONRequestBody defines body for CreatePolicy for application/json ContentType.
 type CreatePolicyJSONRequestBody = PolicyRequest
@@ -3620,6 +3644,9 @@ type ServerInterface interface {
 	// ReplaceDeviceGroupDevices 全量替换设备组成员
 	// (PUT /api/v1/orgs/{orgId}/device-groups/{deviceGroupId}/devices)
 	ReplaceDeviceGroupDevices(c *gin.Context, orgId int64, deviceGroupId int64)
+	// AssignDeviceGroupStrategy 分配设备组的客户端策略
+	// (PUT /api/v1/orgs/{orgId}/device-groups/{deviceGroupId}/strategy)
+	AssignDeviceGroupStrategy(c *gin.Context, orgId int64, deviceGroupId int64)
 	// ListDevices 列出组织设备
 	// (GET /api/v1/orgs/{orgId}/devices)
 	ListDevices(c *gin.Context, orgId int64, params ListDevicesParams)
@@ -3638,6 +3665,9 @@ type ServerInterface interface {
 	// ResetDeviceBinding 重置设备绑定
 	// (POST /api/v1/orgs/{orgId}/devices/{deviceId}/rebind)
 	ResetDeviceBinding(c *gin.Context, orgId int64, deviceId int64)
+	// AssignDeviceStrategy 分配设备的客户端策略
+	// (PUT /api/v1/orgs/{orgId}/devices/{deviceId}/strategy)
+	AssignDeviceStrategy(c *gin.Context, orgId int64, deviceId int64)
 	// ListFileLogs 查询客户端文件传输日志
 	// (GET /api/v1/orgs/{orgId}/file-logs)
 	ListFileLogs(c *gin.Context, orgId int64, params ListFileLogsParams)
@@ -3665,6 +3695,9 @@ type ServerInterface interface {
 	// AssignMemberControlRole 分配成员的控制角色
 	// (PUT /api/v1/orgs/{orgId}/members/{userId}/control-role)
 	AssignMemberControlRole(c *gin.Context, orgId int64, userId int64)
+	// AssignMemberStrategy 分配成员的默认客户端策略
+	// (PUT /api/v1/orgs/{orgId}/members/{userId}/strategy)
+	AssignMemberStrategy(c *gin.Context, orgId int64, userId int64)
 	// ListPolicies 连接策略列表
 	// (GET /api/v1/orgs/{orgId}/policies)
 	ListPolicies(c *gin.Context, orgId int64)
@@ -5414,6 +5447,40 @@ func (siw *ServerInterfaceWrapper) ReplaceDeviceGroupDevices(c *gin.Context) {
 	siw.Handler.ReplaceDeviceGroupDevices(c, orgId, deviceGroupId)
 }
 
+// AssignDeviceGroupStrategy operation middleware
+func (siw *ServerInterfaceWrapper) AssignDeviceGroupStrategy(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "deviceGroupId" -------------
+	var deviceGroupId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "deviceGroupId", c.Param("deviceGroupId"), &deviceGroupId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceGroupId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AssignDeviceGroupStrategy(c, orgId, deviceGroupId)
+}
+
 // ListDevices operation middleware
 func (siw *ServerInterfaceWrapper) ListDevices(c *gin.Context) {
 
@@ -5633,6 +5700,40 @@ func (siw *ServerInterfaceWrapper) ResetDeviceBinding(c *gin.Context) {
 	}
 
 	siw.Handler.ResetDeviceBinding(c, orgId, deviceId)
+}
+
+// AssignDeviceStrategy operation middleware
+func (siw *ServerInterfaceWrapper) AssignDeviceStrategy(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "deviceId" -------------
+	var deviceId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "deviceId", c.Param("deviceId"), &deviceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AssignDeviceStrategy(c, orgId, deviceId)
 }
 
 // ListFileLogs operation middleware
@@ -6015,6 +6116,40 @@ func (siw *ServerInterfaceWrapper) AssignMemberControlRole(c *gin.Context) {
 	}
 
 	siw.Handler.AssignMemberControlRole(c, orgId, userId)
+}
+
+// AssignMemberStrategy operation middleware
+func (siw *ServerInterfaceWrapper) AssignMemberStrategy(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "userId" -------------
+	var userId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", c.Param("userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter userId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AssignMemberStrategy(c, orgId, userId)
 }
 
 // ListPolicies operation middleware
@@ -6904,6 +7039,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/strategies", wrapper.CreateStrategy)
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/strategies/:strategyId", wrapper.DeleteStrategy)
 	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/strategies/:strategyId", wrapper.UpdateStrategy)
+	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId/strategy", wrapper.AssignMemberStrategy)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/user-groups", wrapper.ListUserGroups)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/user-groups", wrapper.CreateUserGroup)
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/user-groups/:groupId", wrapper.DeleteUserGroup)
@@ -6913,6 +7049,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/device-groups", wrapper.CreateDeviceGroup)
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/device-groups/:deviceGroupId", wrapper.DeleteDeviceGroup)
 	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/device-groups/:deviceGroupId", wrapper.RenameDeviceGroup)
+	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/device-groups/:deviceGroupId/strategy", wrapper.AssignDeviceGroupStrategy)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/device-groups/:deviceGroupId/devices", wrapper.ReplaceDeviceGroupDevices)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/access-rules", wrapper.ListAccessRules)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/access-rules", wrapper.CreateAccessRule)
@@ -6951,6 +7088,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/heartbeat", wrapper.DeviceHeartbeat)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/rebind", wrapper.ResetDeviceBinding)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/disconnect", wrapper.RequestDeviceDisconnect)
+	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/strategy", wrapper.AssignDeviceStrategy)
 	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId", wrapper.UpdateDevice)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/sessions", wrapper.ListSessions)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/sessions/:sessionId", wrapper.GetSession)

@@ -1,6 +1,7 @@
 package compatapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -25,10 +26,10 @@ const ContextAuditRecorded = "audit.domainRecorded"
 
 // cliAssignFields is the whitelist of the client's `--assign` payload, checked
 // against the upstream client: id, uuid, user_name, device_group_name,
-// device_name, note. Anything else (strategy_name, address_book_*,
-// device_username) is refused by name instead of silently dropped: a field this
-// deployment does not implement must not look like a successful assignment
-// (D5).
+// device_name, note, strategy_name (wave 4 reversed D5 for strategies).
+// Anything else (address_book_*, device_username) is refused by name instead of
+// silently dropped: a field this deployment does not implement must not look
+// like a successful assignment.
 var cliAssignFields = map[string]bool{
 	"id":                true,
 	"uuid":              true,
@@ -36,6 +37,7 @@ var cliAssignFields = map[string]bool{
 	"device_group_name": true,
 	"device_name":       true,
 	"note":              true,
+	"strategy_name":     true,
 }
 
 // cliAssign implements POST /api/devices/cli, the endpoint the RustDesk client
@@ -170,6 +172,27 @@ func (s *Server) cliAssign(c *gin.Context) {
 		in.Note = &note
 	}
 
+	// strategy_name is resolved before the device update so a typo fails the
+	// whole request instead of leaving a half-applied assignment behind.
+	var strategyID *uint
+	if raw, present := body["strategy_name"]; present {
+		name, ok := cliStringValue(raw)
+		if !ok || name == "" {
+			compatError(c, http.StatusBadRequest, "strategy_name must be a non-empty string")
+			return
+		}
+		id, found, serr := s.strategyByName(token.OrganizationID, name)
+		if serr != nil {
+			compatError(c, http.StatusInternalServerError, "assign failed")
+			return
+		}
+		if !found {
+			compatError(c, http.StatusNotFound, "strategy not found")
+			return
+		}
+		strategyID = &id
+	}
+
 	_, err = s.deps.Devices.Update(c.Request.Context(), token.OrganizationID, dev.ID, token.UserID, in)
 	switch {
 	case errors.Is(err, device.ErrDeviceNotFound),
@@ -186,6 +209,17 @@ func (s *Server) cliAssign(c *gin.Context) {
 	case err != nil:
 		compatError(c, http.StatusInternalServerError, "assign failed")
 		return
+	}
+
+	if strategyID != nil {
+		// A second transaction with its own `strategy.assign` entry: the
+		// strategy service refuses unaudited writes, and the trail must show
+		// the assignment separately from the device update.
+		if err := s.deps.Strategies.AssignDevice(c.Request.Context(), token.OrganizationID, token.UserID, dev.ID, strategyID); err != nil {
+			s.deps.Logger.Error("cli strategy assignment failed: " + err.Error())
+			compatError(c, http.StatusInternalServerError, "assign failed")
+			return
+		}
 	}
 
 	// The domain rows committed with the changes; the request-level fallback
@@ -212,6 +246,21 @@ func (s *Server) tokenHasDeviceWrite(token *model.APIToken) bool {
 	}
 	perms := auth.IntersectPermissions(role.PermissionList(), token.PermissionList())
 	return authz.Has(perms, authz.PermDeviceWrite)
+}
+
+// strategyByName resolves a strategy by name, folding case in Go so the answer
+// matches the case-insensitive uniqueness rule the management API enforces.
+func (s *Server) strategyByName(orgID uint, name string) (uint, bool, error) {
+	rows, err := s.deps.Strategies.List(context.Background(), orgID)
+	if err != nil {
+		return 0, false, err
+	}
+	for _, row := range rows {
+		if strings.EqualFold(row.Name, name) {
+			return row.ID, true, nil
+		}
+	}
+	return 0, false, nil
 }
 
 // deviceGroupByName resolves a device group by name, folding case in Go so all
