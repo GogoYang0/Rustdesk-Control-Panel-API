@@ -249,14 +249,15 @@ func (a *AdminAPI) ListMembers(c *gin.Context, orgId int64) {
 		// rather than guessing from a stale string (fail closed).
 		name := roleNameOf(roleIdx, m.RoleID)
 		out = append(out, gen.Member{
-			Id:        int64(m.ID),
-			UserId:    int64(m.UserID),
-			Email:     openapi_types.Email(emails[m.UserID]),
-			Role:      name,
-			RoleId:    int64(m.RoleID),
-			RoleName:  name,
-			Disabled:  m.Disabled,
-			CreatedAt: m.CreatedAt,
+			Id:            int64(m.ID),
+			UserId:        int64(m.UserID),
+			Email:         openapi_types.Email(emails[m.UserID]),
+			Role:          name,
+			RoleId:        int64(m.RoleID),
+			RoleName:      name,
+			ControlRoleId: controlRoleIDOf(m),
+			Disabled:      m.Disabled,
+			CreatedAt:     m.CreatedAt,
 		})
 	}
 
@@ -496,14 +497,15 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
 		Data: gen.Member{
-			Id:        int64(member.ID),
-			UserId:    int64(member.UserID),
-			Email:     openapi_types.Email(inv.Email),
-			Role:      joinedName,
-			RoleId:    int64(member.RoleID),
-			RoleName:  joinedName,
-			Disabled:  false,
-			CreatedAt: member.CreatedAt,
+			Id:            int64(member.ID),
+			UserId:        int64(member.UserID),
+			Email:         openapi_types.Email(inv.Email),
+			Role:          joinedName,
+			RoleId:        int64(member.RoleID),
+			RoleName:      joinedName,
+			ControlRoleId: controlRoleIDOf(member),
+			Disabled:      false,
+			CreatedAt:     member.CreatedAt,
 		},
 	})
 }

@@ -35,7 +35,10 @@ func writeAuditResult(c *gin.Context, _ bool, err error) {
 		compatError(c, http.StatusBadRequest, "invalid audit payload")
 	case errors.Is(err, logquery.ErrUnknownDevice):
 		compatError(c, http.StatusForbidden, "unknown device; sign in from the client first")
-	case errors.Is(err, logquery.ErrIdentityMismatch):
+	case errors.Is(err, logquery.ErrIdentityMismatch), errors.Is(err, logquery.ErrAmbiguousDevice):
+		// One message for "no such device", "wrong uuid" and "ambiguous id":
+		// the endpoint is unauthenticated, so differentiating them would hand
+		// callers a registration probe.
 		compatError(c, http.StatusForbidden, "device identity does not match its binding")
 	default:
 		compatError(c, http.StatusInternalServerError, "could not record audit report")

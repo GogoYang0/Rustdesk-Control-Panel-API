@@ -361,7 +361,7 @@ func (a *AdminAPI) writeLogCSV(c *gin.Context, orgID, uid uint, action, kind str
 	w := csv.NewWriter(&buf)
 	for _, record := range records {
 		for i := range record {
-			record[i] = sanitizeCSVCell(record[i])
+			record[i] = audit.EscapeFormula(record[i])
 		}
 		_ = w.Write(record)
 	}
@@ -376,16 +376,4 @@ func (a *AdminAPI) writeLogCSV(c *gin.Context, orgID, uid uint, action, kind str
 		kind, orgID, a.deps.Now().UTC().Format("20060102T150405Z")))
 	c.Set(contextAuditRecorded, true)
 	c.Data(http.StatusOK, "text/csv; charset=utf-8", buf.Bytes())
-}
-
-// sanitizeCSVCell neutralises spreadsheet formula injection.
-func sanitizeCSVCell(v string) string {
-	if v == "" {
-		return v
-	}
-	switch v[0] {
-	case '=', '+', '-', '@':
-		return "'" + v
-	}
-	return v
 }

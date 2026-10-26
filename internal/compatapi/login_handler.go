@@ -2,6 +2,7 @@ package compatapi
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -199,9 +200,26 @@ func (s *Server) loginSecondStep(c *gin.Context, req loginRequest, ip, lockKey s
 		compatError(c, http.StatusUnauthorized, "invalid or expired verification request")
 		return
 	}
+	var user model.User
+	if err := store.WithoutTenantScope(s.deps.DB).First(&user, challenge.UserID).Error; err != nil {
+		compatError(c, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+	// The step-2 username must name the challenge's account. Without this an
+	// attacker holding a challenge could rotate the username to spread failures
+	// across lockout buckets.
+	email, _, _ := strings.Cut(req.Username, "#")
+	if !strings.EqualFold(strings.TrimSpace(email), user.Email) {
+		compatError(c, http.StatusUnauthorized, "invalid or expired verification request")
+		return
+	}
+	// Failures are counted against the challenge's account, never the caller's
+	// spelling of it: a password-only attacker must not be able to dodge the
+	// lockout by inventing usernames.
+	accountKey := fmt.Sprintf("compat-user-%d", user.ID)
 	if err := s.deps.TOTP.VerifyLogin(challenge.UserID, code); err != nil {
 		_ = s.failChallenge(c.Request.Context(), challenge.ID)
-		s.deps.Guard.RecordFailure(lockKey, ip)
+		s.deps.Guard.RecordFailure(accountKey, ip)
 		compatError(c, http.StatusUnauthorized, "invalid authentication code")
 		return
 	}
@@ -210,11 +228,6 @@ func (s *Server) loginSecondStep(c *gin.Context, req loginRequest, ip, lockKey s
 		// Another request redeemed the same challenge first (or the write
 		// failed): never issue a second token from one challenge.
 		compatError(c, http.StatusUnauthorized, "invalid or expired verification request")
-		return
-	}
-	var user model.User
-	if err := store.WithoutTenantScope(s.deps.DB).First(&user, challenge.UserID).Error; err != nil {
-		compatError(c, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 	if !user.EmailVerified {

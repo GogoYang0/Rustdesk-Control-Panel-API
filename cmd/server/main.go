@@ -428,6 +428,19 @@ func main() {
 		lg.Fatal("register audit nonce sweep", zap.Error(err))
 	}
 
+	// Second-factor challenges are minted on every password step of an account
+	// with TOTP; sweeps keep the table from growing with login attempts.
+	if err := sched.Register(worker.Task{
+		Name:       "compat-2fa-sweep",
+		Interval:   time.Hour,
+		RunOnStart: true,
+		Run: func(ctx context.Context) (int64, error) {
+			return logquery.SweepChallenges(st.DB, time.Now())
+		},
+	}); err != nil {
+		lg.Fatal("register compat 2fa sweep", zap.Error(err))
+	}
+
 	// Client connection/file logs follow the organization's audit retention
 	// window (0 = keep forever). They are evidence rather than an archive, so
 	// the cutoff is the only bound: no JSONL pass precedes the delete.

@@ -4398,6 +4398,14 @@ components:
         role_name:
           type: string
           description: 角色展示名（内置 owner/admin/member 或自定义名称）
+        control_role_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: |
+            成员的控制角色 id（v0.10.0）；`null` 表示未分配、回退组织内置 `default`。
+            角色名称由 `GET /control-roles` 的列表解析（避免成员列表逐行 JOIN）。
         disabled:
           type: boolean
           description: 会籍是否已停用；停用后不能登录或访问该组织

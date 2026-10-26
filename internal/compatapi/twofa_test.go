@@ -200,3 +200,23 @@ func decodeCompatBody(t *testing.T, w *httptest.ResponseRecorder) map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	return body
 }
+
+// TestLogin_2FAUsernameMustMatchChallenge pins the fix for lockout evasion:
+// the second step must name the challenge's account, otherwise an attacker
+// holding a challenge could rotate usernames to spread failures.
+func TestLogin_2FAUsernameMustMatchChallenge(t *testing.T) {
+	h := newHarness(t)
+	_, _, secret := seed2FAUser(t, h)
+	other := h.seedUser(t, "other@example.com", "password123", true)
+	require.NotZero(t, other.ID)
+
+	w := h.do(t, http.MethodPost, "/api/login", h.loginBody("600003", "uuid-2fa"), "")
+	challenge := decodeCompatBody(t, w)
+
+	code := compatTOTPCode(t, secret, h.now)
+	w = h.do(t, http.MethodPost, "/api/login", map[string]any{
+		"username": "other@example.com", "id": "600003", "uuid": "uuid-2fa",
+		"type": "email_code", "tfaCode": code, "secret": challenge["secret"],
+	}, "")
+	require.Equal(t, http.StatusUnauthorized, w.Code, w.Body.String())
+}

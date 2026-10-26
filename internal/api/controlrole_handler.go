@@ -48,6 +48,15 @@ func controlPermissionsFromWire(p gen.ControlPermissionStates) controlrole.Permi
 	return out
 }
 
+// controlRoleIDOf renders a nullable assignment for the Member schema.
+func controlRoleIDOf(m model.Membership) *int64 {
+	if m.ControlRoleID == nil {
+		return nil
+	}
+	id := int64(*m.ControlRoleID)
+	return &id
+}
+
 // writeControlRoleError maps control role sentinels onto HTTP responses.
 func (a *AdminAPI) writeControlRoleError(c *gin.Context, err error, logMsg string) {
 	switch {
@@ -196,18 +205,31 @@ func (a *AdminAPI) AssignMemberControlRole(c *gin.Context, orgId int64, userId i
 	if !a.requirePerm(c, uid, uint(orgId), authz.PermControlRoleManage) {
 		return
 	}
-	var req gen.ControlRoleAssignmentRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	// Decode as a raw map: the generated struct cannot tell "field absent" from
+	// "explicit null", and treating {} as "clear the assignment" would let a
+	// typo silently unassign a member. The contract marks the field required.
+	var body map[string]json.RawMessage
+	if err := c.ShouldBindJSON(&body); err != nil {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid control role assignment")
 		return
 	}
+	raw, present := body["control_role_id"]
+	if !present {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "control_role_id is required (use null to clear)")
+		return
+	}
 	var roleID *uint
-	if req.ControlRoleId != nil {
-		if *req.ControlRoleId <= 0 {
+	var requested *int64
+	if err := json.Unmarshal(raw, &requested); err != nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "control_role_id must be an integer or null")
+		return
+	}
+	if requested != nil {
+		if *requested <= 0 {
 			abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "control_role_id must be positive or null")
 			return
 		}
-		id := uint(*req.ControlRoleId)
+		id := uint(*requested)
 		roleID = &id
 	}
 	if err := a.deps.ControlRoles.Assign(c.Request.Context(), uint(orgId), uid, uint(userId), roleID); err != nil {

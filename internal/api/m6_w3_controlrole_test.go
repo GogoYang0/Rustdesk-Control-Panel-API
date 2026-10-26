@@ -239,3 +239,49 @@ func TestControlRole_TicketSnapshot(t *testing.T) {
 	require.NotNil(t, issued.Ticket.ControlRoleId)
 	require.Equal(t, role.Id, *issued.Ticket.ControlRoleId)
 }
+
+// TestControlRole_MemberListExposesAssignment pins the read-back the console
+// needs: a page can assign roles, but without this field it cannot show who
+// holds which.
+func TestControlRole_MemberListExposesAssignment(t *testing.T) {
+	h, orgID, _, _, member, _, adminToken, _ := m4Org(t)
+
+	w := h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgID)+"/control-roles", map[string]any{
+		"name": "Ops", "permissions": map[string]string{"file": "enable"},
+	}, adminToken)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	var role controlRoleView
+	decodeData(t, w, &role)
+
+	w = h.do(t, http.MethodPut,
+		"/api/v1/orgs/"+itoa(orgID)+"/members/"+itoa(int64(member.ID))+"/control-role",
+		map[string]any{"control_role_id": role.Id}, adminToken)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	w = h.do(t, http.MethodGet, "/api/v1/orgs/"+itoa(orgID)+"/members", nil, adminToken)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var members []struct {
+		UserId        int64  `json:"user_id"`
+		ControlRoleId *int64 `json:"control_role_id"`
+	}
+	decodeData(t, w, &members)
+	var found bool
+	for _, m := range members {
+		if m.UserId == int64(member.ID) {
+			found = true
+			require.NotNil(t, m.ControlRoleId)
+			require.Equal(t, role.Id, *m.ControlRoleId)
+		}
+	}
+	require.True(t, found, "the member must appear in the list")
+}
+
+// TestControlRole_AssignRequiresExplicitField: an empty body must not clear a
+// member's assignment; only an explicit null may.
+func TestControlRole_AssignRequiresExplicitField(t *testing.T) {
+	h, orgID, _, _, member, _, adminToken, _ := m4Org(t)
+	memberBase := "/api/v1/orgs/" + itoa(orgID) + "/members/" + itoa(int64(member.ID)) + "/control-role"
+
+	w := h.do(t, http.MethodPut, memberBase, map[string]any{}, adminToken)
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+}

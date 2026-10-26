@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -36,6 +37,9 @@ var (
 	ErrMalformed        = errors.New("malformed audit payload")
 	ErrUnknownDevice    = errors.New("unknown device")
 	ErrIdentityMismatch = errors.New("device identity mismatch")
+	// ErrAmbiguousDevice reports a rustdesk id that exists in more than one
+	// organization with the same binding: writing to either would be a guess.
+	ErrAmbiguousDevice = errors.New("device identity is ambiguous across organizations")
 	// ErrUnaudited reports an alarm that cannot be persisted with its sequence:
 	// dropping a security event silently is worse than returning an error.
 	ErrUnaudited = errors.New("audit recorder does not support transactional writes")
@@ -101,6 +105,9 @@ func New(db *gorm.DB, auditor audit.Auditor, now func() time.Time) *Ingest {
 func (i *Ingest) Conn(ctx context.Context, p ConnPayload) (bool, error) {
 	if p.ID == "" {
 		return false, ErrMalformed
+	}
+	if err := validateConnPayload(p); err != nil {
+		return false, err
 	}
 	if p.Action == "" && p.Note != "" {
 		return false, i.appendNote(ctx, p)
@@ -181,9 +188,29 @@ func (i *Ingest) appendNote(ctx context.Context, p ConnPayload) error {
 	if note == "" {
 		return nil
 	}
+	// Resolve the device first: without it there is no organization to scope
+	// the update to, and an unscoped write by (rustdesk_id, session_id) would
+	// let an unauthenticated caller append text to another tenant's evidence.
+	var candidates []model.Device
+	if err := store.WithoutTenantScope(i.db.WithContext(ctx)).
+		Where("rustdesk_id = ?", p.ID).Find(&candidates).Error; err != nil {
+		return err
+	}
+	switch len(candidates) {
+	case 0:
+		return ErrUnknownDevice
+	case 1:
+	default:
+		// The same id bound in two organizations is not a guess we are willing
+		// to make: fail closed instead of picking a tenant.
+		return ErrAmbiguousDevice
+	}
+	dev := candidates[0]
+	scope := store.ScopedByOrg(i.db.WithContext(ctx), dev.OrganizationID)
+
 	var row model.ConnectionLog
-	err := store.WithoutTenantScope(i.db.WithContext(ctx)).
-		Where("rustdesk_id = ? AND session_id = ? AND status = ?", p.ID, p.SessionID, model.ConnectionLogStatusOpen).
+	err := scope.Where("device_id = ? AND session_id = ? AND status = ?",
+		dev.ID, p.SessionID, model.ConnectionLogStatusOpen).
 		Order("id DESC").First(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil
@@ -195,12 +222,49 @@ func (i *Ingest) appendNote(ctx context.Context, p ConnPayload) error {
 	if row.Note != "" {
 		combined = row.Note + "; " + note
 	}
-	if len(combined) > maxNoteLen {
-		combined = combined[:maxNoteLen]
-	}
-	return store.WithoutTenantScope(i.db.WithContext(ctx)).Model(&model.ConnectionLog{}).
+	combined = truncateRunes(combined, maxNoteLen)
+	return scope.Model(&model.ConnectionLog{}).
 		Where("id = ?", row.ID).
 		Updates(map[string]any{"note": combined, "updated_at": i.now().UTC()}).Error
+}
+
+// truncateRunes cuts on a rune boundary: a byte cut can split a multi-byte
+// character, which PostgreSQL rejects outright and SQLite stores as garbage.
+func truncateRunes(v string, limit int) string {
+	if len(v) <= limit {
+		return v
+	}
+	runes := []rune(v)
+	if len(runes) <= limit {
+		return v
+	}
+	return string(runes[:limit])
+}
+
+// Field bounds mirror the column widths; an over-long value would otherwise
+// surface as a 500 from the database instead of a 400 to the client.
+func validateConnPayload(p ConnPayload) error {
+	if len(p.ID) > 64 || len(p.UUID) > 128 || len(p.Nonce) > 64 ||
+		len(p.IP) > 64 || len(p.ConnAuditRef) > 128 ||
+		utf8.RuneCountInString(p.Note) > maxNoteLen {
+		return ErrMalformed
+	}
+	return nil
+}
+
+func validateFilePayload(p FilePayload) error {
+	if len(p.ID) > 64 || len(p.UUID) > 128 || len(p.Nonce) > 64 ||
+		len(p.PeerID) > 64 {
+		return ErrMalformed
+	}
+	return nil
+}
+
+func validateAlarmPayload(p AlarmPayload) error {
+	if len(p.ID) > 64 || len(p.UUID) > 128 || len(p.Nonce) > 64 || len(p.ConnAuditRef) > 128 {
+		return ErrMalformed
+	}
+	return nil
 }
 
 // File stores one transfer report. The info blob is kept verbatim and only read
@@ -208,6 +272,9 @@ func (i *Ingest) appendNote(ctx context.Context, p ConnPayload) error {
 func (i *Ingest) File(ctx context.Context, p FilePayload) (bool, error) {
 	if p.ID == "" || p.Nonce == "" {
 		return false, ErrMalformed
+	}
+	if err := validateFilePayload(p); err != nil {
+		return false, err
 	}
 	dev, err := i.resolveDevice(ctx, p.ID, p.UUID)
 	if err != nil {
@@ -225,6 +292,9 @@ func (i *Ingest) File(ctx context.Context, p FilePayload) (bool, error) {
 			Files json.RawMessage `json:"files"`
 		}
 		_ = json.Unmarshal([]byte(p.Info), &meta)
+		if len(meta.Name) > 128 || len(meta.IP) > 64 {
+			return ErrMalformed
+		}
 		filesJSON := "[]"
 		if len(meta.Files) > 0 {
 			filesJSON = string(meta.Files)
@@ -255,6 +325,9 @@ func (i *Ingest) File(ctx context.Context, p FilePayload) (bool, error) {
 func (i *Ingest) Alarm(ctx context.Context, p AlarmPayload) (bool, error) {
 	if p.ID == "" || p.Nonce == "" {
 		return false, ErrMalformed
+	}
+	if err := validateAlarmPayload(p); err != nil {
+		return false, err
 	}
 	dev, err := i.resolveDevice(ctx, p.ID, p.UUID)
 	if err != nil {
@@ -317,12 +390,22 @@ func (i *Ingest) resolveDevice(ctx context.Context, rustdeskID, uuid string) (mo
 	if uuid == "" {
 		return model.Device{}, ErrIdentityMismatch
 	}
+	var matched []model.Device
 	for _, dev := range candidates {
 		if dev.BoundUUID != "" && dev.BoundUUID == uuid {
-			return dev, nil
+			matched = append(matched, dev)
 		}
 	}
-	return model.Device{}, ErrIdentityMismatch
+	switch len(matched) {
+	case 0:
+		return model.Device{}, ErrIdentityMismatch
+	case 1:
+		return matched[0], nil
+	default:
+		// Cloned images or restored backups can produce the same (id, uuid) in
+		// two organizations; choosing one would be a cross-tenant write.
+		return model.Device{}, ErrAmbiguousDevice
+	}
 }
 
 // alarmTypes maps the client's AlarmAuditType enum to readable action suffixes.
@@ -353,5 +436,14 @@ func (i *Ingest) SweepNonces(ctx context.Context, now time.Time, olderThan time.
 	cutoff := now.UTC().Add(-olderThan)
 	res := store.WithoutTenantScope(i.db.WithContext(ctx)).
 		Where("created_at < ?", cutoff).Delete(&model.AuditNonce{})
+	return res.RowsAffected, res.Error
+}
+
+// SweepChallenges deletes expired second-factor challenges. They are minted on
+// every password step of an account with TOTP, so without a sweep the table
+// grows with login attempts.
+func SweepChallenges(db *gorm.DB, now time.Time) (int64, error) {
+	res := store.WithoutTenantScope(db).Where("expires_at < ?", now.Add(-time.Hour)).
+		Delete(&model.CompatLoginChallenge{})
 	return res.RowsAffected, res.Error
 }

@@ -264,3 +264,60 @@ func TestSweepNonces_DropsOnlyExpired(t *testing.T) {
 	require.Len(t, rows, 1)
 	require.Equal(t, "fresh", rows[0].Nonce)
 }
+
+// TestIngest_NoteScopedToOwningOrganization pins the fix for the one
+// unauthenticated write path that used to run without a tenant condition: the
+// note must land on the device's own organization, never on another tenant's
+// row that happens to carry the same rustdesk id and session id.
+func TestIngest_NoteScopedToOwningOrganization(t *testing.T) {
+	f := newFixture(t)
+	otherOrg := model.Organization{Name: "globex"}
+	require.NoError(t, f.db.Create(&otherOrg).Error)
+	otherDev := model.Device{OrganizationID: otherOrg.ID, RustdeskID: "800001", Name: "other"}
+	require.NoError(t, store.ScopedByOrg(f.db, otherOrg.ID).Create(&otherDev).Error)
+	// A decoy row in the other organization with the same id/session pair.
+	require.NoError(t, store.ScopedByOrg(f.db, otherOrg.ID).Create(&model.ConnectionLog{
+		OrganizationID: otherOrg.ID, DeviceID: otherDev.ID, RustdeskID: otherDev.RustdeskID,
+		ConnID: 1, SessionID: 4242, Status: model.ConnectionLogStatusOpen, StartedAt: f.now,
+	}).Error)
+	// The real target lives in f.org.
+	require.NoError(t, store.ScopedByOrg(f.db, f.org.ID).Create(&model.ConnectionLog{
+		OrganizationID: f.org.ID, DeviceID: f.device.ID, RustdeskID: f.device.RustdeskID,
+		ConnID: 1, SessionID: 4242, Status: model.ConnectionLogStatusOpen, StartedAt: f.now,
+	}).Error)
+
+	_, err := f.ing.Conn(context.Background(), logquery.ConnPayload{
+		ID: f.device.RustdeskID, SessionID: 4242, Note: "scoped",
+	})
+	require.NoError(t, err)
+
+	var other model.ConnectionLog
+	require.NoError(t, store.ScopedByOrg(f.db, otherOrg.ID).First(&other).Error)
+	require.Empty(t, other.Note, "the other tenant's row must stay untouched")
+	var own model.ConnectionLog
+	require.NoError(t, store.ScopedByOrg(f.db, f.org.ID).First(&own).Error)
+	require.Equal(t, "scoped", own.Note)
+}
+
+// TestIngest_RejectsAmbiguousIdentity: the same (id, uuid) in two organizations
+// is a cross-tenant write waiting to happen, so it fails closed.
+func TestIngest_RejectsAmbiguousIdentity(t *testing.T) {
+	f := newFixture(t)
+	otherOrg := model.Organization{Name: "globex"}
+	require.NoError(t, f.db.Create(&otherOrg).Error)
+	require.NoError(t, store.ScopedByOrg(f.db, otherOrg.ID).Create(&model.Device{
+		OrganizationID: otherOrg.ID, RustdeskID: f.device.RustdeskID, Name: "clone",
+		BoundUUID: f.device.BoundUUID,
+	}).Error)
+
+	_, err := f.ing.Conn(context.Background(), f.connPayload("new", "amb-1"))
+	require.ErrorIs(t, err, logquery.ErrAmbiguousDevice)
+}
+
+func TestIngest_RejectsOversizedField(t *testing.T) {
+	f := newFixture(t)
+	p := f.connPayload("new", "big-1")
+	p.IP = fmt.Sprintf("%0*d", 65, 1)
+	_, err := f.ing.Conn(context.Background(), p)
+	require.ErrorIs(t, err, logquery.ErrMalformed)
+}

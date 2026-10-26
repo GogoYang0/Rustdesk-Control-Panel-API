@@ -532,14 +532,17 @@ func (a *AdminAPI) respondMember(c *gin.Context, m *model.Membership) {
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
 		Data: gen.Member{
-			Id:        int64(m.ID),
-			UserId:    int64(m.UserID),
-			Email:     types.Email(user.Email),
-			Role:      name,
-			RoleId:    int64(m.RoleID),
-			RoleName:  name,
-			Disabled:  m.Disabled,
-			CreatedAt: m.CreatedAt,
+			Id:       int64(m.ID),
+			UserId:   int64(m.UserID),
+			Email:    types.Email(user.Email),
+			Role:     name,
+			RoleId:   int64(m.RoleID),
+			RoleName: name,
+			// Read-back for the console: without it the page can assign roles
+			// but never shows who holds which.
+			ControlRoleId: controlRoleIDOf(*m),
+			Disabled:      m.Disabled,
+			CreatedAt:     m.CreatedAt,
 		},
 	})
 }

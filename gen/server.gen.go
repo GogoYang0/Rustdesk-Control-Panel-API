@@ -1921,7 +1921,10 @@ type LoginRequest struct {
 
 // Member defines model for Member.
 type Member struct {
-	CreatedAt time.Time `json:"created_at"`
+	// ControlRoleId 成员的控制角色 id（v0.10.0）；`null` 表示未分配、回退组织内置 `default`。
+	// 角色名称由 `GET /control-roles` 的列表解析（避免成员列表逐行 JOIN）。
+	ControlRoleId *int64    `json:"control_role_id,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
 
 	// Disabled 会籍是否已停用；停用后不能登录或访问该组织
 	Disabled bool                `json:"disabled"`
