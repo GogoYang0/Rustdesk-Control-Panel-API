@@ -55,8 +55,8 @@ type ClientBuild struct {
 	ManifestJSON        string     `gorm:"type:text;not null" json:"manifest_json"`
 	PlatformsJSON       string     `gorm:"type:text;not null" json:"platforms_json"`
 	Status              string     `gorm:"size:16;index:idx_cb_build_status;index:idx_cb_build_org_status,priority:2;not null" json:"status"`
-	GitHubRunID         *int64     `json:"github_run_id"`
-	GitHubRunURL        string     `gorm:"size:512;not null;default:''" json:"github_run_url"`
+	GitHubRunID         *int64     `gorm:"column:github_run_id" json:"github_run_id"`
+	GitHubRunURL        string     `gorm:"column:github_run_url;size:512;not null;default:''" json:"github_run_url"`
 	ErrorMessage        string     `gorm:"size:1024;not null;default:''" json:"error_message"`
 	ArtifactCount       int        `gorm:"not null;default:0" json:"artifact_count"`
 	CreatedBy           uint       `gorm:"not null" json:"created_by"`
