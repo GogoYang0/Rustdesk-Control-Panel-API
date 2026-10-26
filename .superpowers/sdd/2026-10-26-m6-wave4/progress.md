@@ -16,7 +16,7 @@
 |---|---|---|
 | T1 模型/迁移/租户注册 | ✅ 完成 | 见下方 |
 | T2 白名单 + CRUD | ✅ 完成 | `f001fda` |
-| T3 生效解析 + 心跳下发 | ⏳ 未开始 | — |
+| T3 生效解析 + 心跳下发 | ✅ 完成 | `afb5c64` + `4f5d05c` |
 | T4 断连 | ⏳ 未开始 | — |
 | T5 分配 + CLI strategy_name | ⏳ 未开始 | — |
 | T6 文档 + 评审 | ⏳ 未开始 | — |
@@ -66,3 +66,27 @@ go generate ./... 后 git status --porcelain -- gen openapi.yaml → 空
 - 变异验证 2（版本）：把 `updates["version"] = row.Version + 1` 改成 `row.Version` → `TestUpdate_OptionsChangeBumpsVersion` 断言失败（expected 2, actual 1）；恢复后全绿。
 
 **流程偏差（如实记录）**：T2 的测试先于实现写好，但实现写完才第一次运行，因此没有观察到「断言失败」形态的 RED（首次运行会是编译失败）。补救：两处关键不变量各做一次变异验证，证明用例确实能抓住回归。
+
+**R3 `modified_at` 只在随 `strategy` 下发时出现。**
+- 理由：客户端把 `modified_at` 存进 `strategy_timestamp`（`LocalConfig`，跨重启保留），而且**与 `strategy` 字段独立处理**（`src/hbbs_http/sync.rs` 先取 `modified_at` 存盘，再看 `strategy`）。只发版本不发选项 = 告诉客户端「你已是最新」而它仍跑着旧配置，且此后再也不会请求。
+- 代价：没有策略时响应体为空对象，运维在抓包里看不到「当前生效版本」——需要时查 `strategies.version` 或审计。
+
+**R4 停用策略终止解析，不向下一层回落。**
+- 理由：`enabled=false` 是管理员「这台设备/这组设备不要这套下发」的明确决定；回落到更宽的层（组/成员）会把刚关掉的选项又装回去。只有「分配指向的行不存在」（数据完整性意外）才跳过该层继续。
+- 代价：停用设备级策略后，组级策略不会自动接管；要接管必须显式清空设备级分配。
+
+### T3 证据
+
+```
+go test ./internal/strategy/ -count=1                → ok（32 个顶层测试）
+go test ./internal/compatapi/ -run TestHeartbeat_    → ok（6 个 HTTP 用例）
+go test ./internal/compatapi/ ./internal/api/ ./internal/strategy/ ./internal/model/ -count=1 → 全绿
+```
+
+- 解析顺序：`device.strategy_id ?? device_group.strategy_id ?? owner membership.strategy_id`；无归属人的设备跳过成员层（不会借用别人的策略）；跨组织设备 id 解析为 nil。
+- 下发：`DeliveryFor` 在版本相等时不投递；投递前**再次**用白名单校验库里的 `config_options_json`（防止手工 UPDATE / 旧版本写入 / 未来 bug 把网络键送到客户端）。校验失败 → 记日志、响应为空（fail closed）。
+- 心跳：`touchDevice` 改为返回设备行，`writeHeartbeatResponse` 只在 `Deliver` 为真时同时写 `strategy` 与 `modified_at`；会话过期/设备停用/绑定变化一律空响应。
+- 变异验证 1（版本比对）：`if version == clientVersion` 改成 `if false && ...` → `TestDelivery_DeliversOptionsWithVersion` 转红。
+- 变异验证 2（版本必须伴随策略）：`!Deliver` 分支改成回 `{"modified_at": v}` → `TestHeartbeat_NoStrategySendsNothing` 与 `..._DeliversStrategyAndVersion` 同时转红。
+
+**T3 跑出的真 bug（`afb5c64`）**：`Strategies.Enabled` 原来带 `gorm:"default:true"`，GORM 对「有默认值的零值字段」会从 INSERT 中省略，于是**创建 `enabled=false` 的策略会静默存成 true**，停用开关失效。`TestHeartbeat_DisabledStrategySendsNothing` 直接把它抓出来。改法：去掉 `default:true`，所有写入方显式赋值。
