@@ -268,7 +268,8 @@ func main() {
 	// One session service shared by the API handlers, the log collector's
 	// session hook and the background tasks: all three mutate the same rows,
 	// so they must see one clock and one audit recorder.
-	sessionSvc := session.NewService(st.DB, auditor, time.Now)
+	sessionSvc := session.NewService(st.DB, auditor, time.Now).
+		WithControlRoles(controlrole.NewService(st.DB, auditor, time.Now))
 
 	// Log collection: one tailer pair per provisioned organization. The queue
 	// hook starts the tailers of a fresh deployment immediately instead of

@@ -203,3 +203,39 @@ func TestControlRole_AssignNullRestoresDefault(t *testing.T) {
 		map[string]any{"control_role_id": nil}, adminToken)
 	require.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
 }
+
+// TestControlRole_TicketSnapshot pins the end-to-end snapshot: the issued
+// ticket carries the actor's effective bitmask and role id, and the redeem path
+// copies it onto the session.
+func TestControlRole_TicketSnapshot(t *testing.T) {
+	h, orgID, _, _, member, _, adminToken, memberToken := m4Org(t)
+	dev := model.Device{OrganizationID: uint(orgID), RustdeskID: "770001", Name: "pc"}
+	require.NoError(t, store.ScopedByOrg(h.db.DB, uint(orgID)).Create(&dev).Error)
+
+	w := h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgID)+"/control-roles", map[string]any{
+		"name":        "Ops",
+		"permissions": map[string]string{"file": "enable"},
+	}, adminToken)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	var role controlRoleView
+	decodeData(t, w, &role)
+
+	w = h.do(t, http.MethodPut, "/api/v1/orgs/"+itoa(orgID)+"/members/"+itoa(int64(member.ID))+"/control-role",
+		map[string]any{"control_role_id": role.Id}, adminToken)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	w = h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgID)+"/tickets",
+		map[string]any{"device_id": dev.ID}, memberToken)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	var issued struct {
+		Ticket struct {
+			ControlPermissions int64  `json:"control_permissions"`
+			ControlRoleId      *int64 `json:"control_role_id"`
+		} `json:"ticket"`
+		Token string `json:"token"`
+	}
+	decodeData(t, w, &issued)
+	require.Equal(t, int64(1<<3), issued.Ticket.ControlPermissions)
+	require.NotNil(t, issued.Ticket.ControlRoleId)
+	require.Equal(t, role.Id, *issued.Ticket.ControlRoleId)
+}

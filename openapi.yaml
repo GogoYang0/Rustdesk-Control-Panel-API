@@ -5764,6 +5764,7 @@ components:
         - origin
         - status
         - started_at
+        - control_permissions
       properties:
         id:
           type: integer
@@ -5831,6 +5832,13 @@ components:
             - `idle_timeout`：空闲超时（默认 10 分钟无关联事件）
             - `policy_exceeded`：超过 `max_session_minutes`（后置关闭，不断连）
             - `policy_denied`：签发阶段被策略拒绝（仅 `denied` 会话）
+        control_permissions:
+          type: integer
+          format: int64
+          description: |
+            兑换时从票据复制的权限位图（bit 序号同 `ControlPermissionStates`）。会话记录
+            的是开始时刻的授权，之后修改控制角色不会改写它。原生会话恒为 0：位图由
+            hbbs 注入，面板不在信令链路。
         revision:
           type: integer
           format: int64
@@ -6249,6 +6257,7 @@ components:
         - device_id
         - expires_at
         - created_at
+        - control_permissions
       properties:
         id:
           type: integer
@@ -6274,6 +6283,23 @@ components:
             - "null"
           additionalProperties: true
           description: 签发时生效的策略快照（审计与排障用）
+        control_role_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: |
+            签发时生效的控制角色 id；null 表示签发时未解析到角色（或服务未接线）。
+        control_permissions:
+          type: integer
+          format: int64
+          description: |
+            签发时生效的权限位图，bit 序号与 `ControlPermissionStates` 的声明顺序一致
+            （keyboard=0 … usb=13），只有 `enable` 置位。0 表示「没有显式启用的权限」，
+            不是「未计算」。
+
+            **原生会话不执行该位图**：hbbs 在信令消息里注入 `control_permissions`，
+            本面板不在信令链路（设计 D10），因此它只是票据快照，供网页客户端与审计使用。
         expires_at:
           type: string
           format: date-time

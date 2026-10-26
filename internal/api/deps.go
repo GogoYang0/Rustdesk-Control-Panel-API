@@ -189,7 +189,10 @@ func NewAdminAPI(d Deps) *AdminAPI {
 		if !ok {
 			panic("api: transactional auditor required when Tickets is nil")
 		}
-		tickets = session.NewService(d.DB, recorder, d.Now)
+		// Wire the control role resolver: issuance snapshots the actor's
+		// permissions onto the ticket, and the API tests exercise the real path
+		// instead of a service without role awareness.
+		tickets = session.NewService(d.DB, recorder, d.Now).WithControlRoles(d.ControlRoles)
 	}
 
 	return &AdminAPI{

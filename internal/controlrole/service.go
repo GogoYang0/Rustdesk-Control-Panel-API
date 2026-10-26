@@ -319,7 +319,14 @@ func (s *Service) Assign(ctx context.Context, orgID, actorID, targetUserID uint,
 // default role: control roles never decide whether a connection is allowed, so
 // degrading to "override nothing" is the safe answer.
 func (s *Service) EffectiveFor(ctx context.Context, orgID, userID uint) (Permissions, uint64, *uint, error) {
-	scoped := store.ScopedByOrg(s.db.WithContext(ctx), orgID)
+	return s.EffectiveForTx(s.db.WithContext(ctx), orgID, userID)
+}
+
+// EffectiveForTx is EffectiveFor on the caller's transaction, so ticket
+// issuance reads the role state it is about to snapshot on the same connection
+// as the insert.
+func (s *Service) EffectiveForTx(db *gorm.DB, orgID, userID uint) (Permissions, uint64, *uint, error) {
+	scoped := store.ScopedByOrg(db, orgID)
 
 	var membership model.Membership
 	roleID := uint(0)

@@ -2286,6 +2286,11 @@ type Session struct {
 	// ActorUserId 发起人；native 直连无法识别发起人时为 null
 	ActorUserId *int64 `json:"actor_user_id,omitempty"`
 
+	// ControlPermissions 兑换时从票据复制的权限位图（bit 序号同 `ControlPermissionStates`）。会话记录
+	// 的是开始时刻的授权，之后修改控制角色不会改写它。原生会话恒为 0：位图由
+	// hbbs 注入，面板不在信令链路。
+	ControlPermissions int64 `json:"control_permissions"`
+
 	// DeviceId 组织内设备行 id
 	DeviceId int64 `json:"device_id"`
 
@@ -2615,7 +2620,18 @@ type Ticket struct {
 	ActorUserId *int64 `json:"actor_user_id,omitempty"`
 
 	// ApprovalId 绑定的审批请求（审批放行时）
-	ApprovalId     *int64    `json:"approval_id,omitempty"`
+	ApprovalId *int64 `json:"approval_id,omitempty"`
+
+	// ControlPermissions 签发时生效的权限位图，bit 序号与 `ControlPermissionStates` 的声明顺序一致
+	// （keyboard=0 … usb=13），只有 `enable` 置位。0 表示「没有显式启用的权限」，
+	// 不是「未计算」。
+	//
+	// **原生会话不执行该位图**：hbbs 在信令消息里注入 `control_permissions`，
+	// 本面板不在信令链路（设计 D10），因此它只是票据快照，供网页客户端与审计使用。
+	ControlPermissions int64 `json:"control_permissions"`
+
+	// ControlRoleId 签发时生效的控制角色 id；null 表示签发时未解析到角色（或服务未接线）。
+	ControlRoleId  *int64    `json:"control_role_id,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 	DeviceId       int64     `json:"device_id"`
 	ExpiresAt      time.Time `json:"expires_at"`
