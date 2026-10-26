@@ -183,6 +183,11 @@ func main() {
 	// is created here rather than next to the session service.
 	auditor := audit.NewGormAuditor(st.DB)
 
+	clientBuildSvc, err := newClientBuildService(*cfg, st.DB, auditor, auditor, lg)
+	if err != nil {
+		lg.Fatal("init client build service", zap.Error(err))
+	}
+
 	deviceSvc := device.NewService(st.DB, auditor, nil)
 	orch := &provision.DockerOrchestrator{
 		OrgLabel:  cfg.Provision.OrgLabel,
@@ -467,6 +472,23 @@ func main() {
 	} else {
 		lg.Warn("periodic retention sweep disabled (logcollect.retentionSweepInterval = 0)")
 	}
+
+	if err := sched.Register(worker.Task{
+		Name:       "client-build-advance",
+		Interval:   cfg.ClientBuild.PollInterval,
+		RunOnStart: true,
+		Run:        clientBuildSvc.Advance,
+	}); err != nil {
+		lg.Fatal("register client build advance", zap.Error(err))
+	}
+	if err := sched.Register(worker.Task{
+		Name:       "client-build-sweep",
+		Interval:   time.Hour,
+		RunOnStart: true,
+		Run:        clientBuildSvc.Sweep,
+	}); err != nil {
+		lg.Fatal("register client build sweep", zap.Error(err))
+	}
 	sched.Start(rootCtx)
 
 	// Drain the tailers on shutdown: exec.CommandContext kills the
@@ -521,6 +543,7 @@ func main() {
 			AuthSecret:     cfg.Auth.Secret,
 			Retention:      retentionSvc,
 			Captcha:        captchaSvc,
+			ClientBuilds:   clientBuildSvc,
 		}),
 	}
 
