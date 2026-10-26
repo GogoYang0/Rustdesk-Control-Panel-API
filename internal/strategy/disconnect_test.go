@@ -126,8 +126,18 @@ func TestDisconnect_ExpireStale(t *testing.T) {
 	var row model.DeviceDisconnect
 	require.NoError(t, store.ScopedByOrg(f.db, f.org.ID).First(&row).Error)
 	require.Equal(t, model.DisconnectStatusExpired, row.Status)
-	require.Equal(t, []string{"device.disconnect.expired"}, f.recorder.actions())
-	require.Zero(t, f.recorder.entries[0].ActorUserID, "expiry is a system action, not a person's")
+
+	// The sweep is global and this fixture's recorder receives every audit it
+	// writes (shared CI database: other fixtures' rows expire through here
+	// too), so assert on presence and the system-actor property instead of an
+	// exact entry list.
+	sysEntry := false
+	for _, e := range f.recorder.entries {
+		if e.Action == "device.disconnect.expired" && e.ActorUserID == 0 {
+			sysEntry = true
+		}
+	}
+	require.True(t, sysEntry, "expiry is a system action, not a person's")
 }
 
 // TestDisconnect_NoteConnsRecordsLatestHeartbeat pins the informational column:
