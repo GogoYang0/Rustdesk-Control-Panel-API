@@ -237,6 +237,6 @@ Prometheus 指标端点属后续硬化项（见 #31 描述遗留清单）。
 | panel 启动即退出 | 启动序列某步 Fatal：看日志第一行（配置/DB/邮件校验，见部署指南 §4.1） |
 | 审计序列断号 | 先确认是否落在已归档清理区间（`audit.retention.archive`/`audit.retention.purge` + 归档 JSONL/`.sha256` 交叉核对，§3）；保留窗口内的非预期断号立即排查，确认 DB 访问权限是否受控（应用账号以外的写入途径、是否有直连改表） |
 | 普通成员客户端设备列表为空 | 访问控制（§2.3）：成员所在用户组是否有规则覆盖、`everyone → 全部设备` 是否已删除、设备是否停用；票据签发/兑换被拒 `404` 同因 |
-| 登录/2FA/邀请接受报 400 `captcha_required`/`captcha_invalid` | 验证码（§2.4）：客户端需先 `GET /api/v1/auth/captcha`；挑战过期/已用/答案错都归为 invalid，重新取挑战再试 |
-| 登录报 503 `captcha_unavailable` | 提供商不可达且 `failMode=closed`（§2.4）：检查网络/提供商状态/秘密配置；确认后可临时 `open` 或停用验证码 |
+| 管理面 `POST /api/v1/auth/login` / `POST /api/v1/auth/2fa/verify` / `POST /api/v1/invitations/accept` 报 400 `captcha_required`/`captcha_invalid` | 验证码（§2.4）：客户端需先 `GET /api/v1/auth/captcha`；挑战过期/已用/答案错都归为 invalid，重新取挑战再试。compat `POST /api/login` 不接验证码，无需取挑战 |
+| 上述三个管理面入口报 503 `captcha_unavailable` | 提供商不可达且 `failMode=closed`（§2.4）：检查网络/提供商状态/秘密配置；确认后可临时 `open` 或停用验证码 |
 | 全员登录被限流 429 | 挑战端点与登录各有一个独立的 5/min/IP 桶：排查是否有客户端在循环刷 `/api/v1/auth/captcha`；正常用户刷新一两次不会触发 |
