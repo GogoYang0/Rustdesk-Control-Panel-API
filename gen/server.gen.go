@@ -582,7 +582,7 @@ type AccessRule struct {
 	// TargetKind - device_group：规则指向一个设备组（`target_group_id` 必填）
 	// - user_group：规则指向一个用户组，展开为该组显式成员所拥有的设备
 	//   （v0.10.0；`target_group_id` 必填）。目标为内置 `everyone` 组时语义是
-	//   「所有有归属的设备」
+	//   「所有由**有效成员**归属的设备」（停用/无角色/已移除会籍的归属人贡献空集）
 	// - all_devices：规则指向组织内全部设备（`target_group_id` 必须为空）
 	TargetKind AccessRuleTargetKind `json:"target_kind"`
 }
@@ -598,7 +598,7 @@ type AccessRuleCreateRequest struct {
 	// TargetKind - device_group：规则指向一个设备组（`target_group_id` 必填）
 	// - user_group：规则指向一个用户组，展开为该组显式成员所拥有的设备
 	//   （v0.10.0；`target_group_id` 必填）。目标为内置 `everyone` 组时语义是
-	//   「所有有归属的设备」
+	//   「所有由**有效成员**归属的设备」（停用/无角色/已移除会籍的归属人贡献空集）
 	// - all_devices：规则指向组织内全部设备（`target_group_id` 必须为空）
 	TargetKind AccessRuleTargetKind `json:"target_kind"`
 }
@@ -648,7 +648,7 @@ type AccessRuleResponse struct {
 // AccessRuleTargetKind - device_group：规则指向一个设备组（`target_group_id` 必填）
 //   - user_group：规则指向一个用户组，展开为该组显式成员所拥有的设备
 //     （v0.10.0；`target_group_id` 必填）。目标为内置 `everyone` 组时语义是
-//     「所有有归属的设备」
+//     「所有由**有效成员**归属的设备」（停用/无角色/已移除会籍的归属人贡献空集）
 //   - all_devices：规则指向组织内全部设备（`target_group_id` 必须为空）
 type AccessRuleTargetKind string
 
