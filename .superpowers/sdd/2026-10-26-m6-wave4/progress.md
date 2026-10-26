@@ -17,7 +17,7 @@
 | T1 模型/迁移/租户注册 | ✅ 完成 | 见下方 |
 | T2 白名单 + CRUD | ✅ 完成 | `f001fda` |
 | T3 生效解析 + 心跳下发 | ✅ 完成 | `afb5c64` + `4f5d05c` |
-| T4 断连 | ⏳ 未开始 | — |
+| T4 断连 | ✅ 完成 | `fff8ecf` |
 | T5 分配 + CLI strategy_name | ⏳ 未开始 | — |
 | T6 文档 + 评审 | ⏳ 未开始 | — |
 
@@ -90,3 +90,32 @@ go test ./internal/compatapi/ ./internal/api/ ./internal/strategy/ ./internal/mo
 - 变异验证 2（版本必须伴随策略）：`!Deliver` 分支改成回 `{"modified_at": v}` → `TestHeartbeat_NoStrategySendsNothing` 与 `..._DeliversStrategyAndVersion` 同时转红。
 
 **T3 跑出的真 bug（`afb5c64`）**：`Strategies.Enabled` 原来带 `gorm:"default:true"`，GORM 对「有默认值的零值字段」会从 INSERT 中省略，于是**创建 `enabled=false` 的策略会静默存成 true**，停用开关失效。`TestHeartbeat_DisabledStrategySendsNothing` 直接把它抓出来。改法：去掉 `default:true`，所有写入方显式赋值。
+
+**R5 `device_heartbeats.conn_ids` 只做「最新一行」尽力更新，不作为断连依据。**
+- 理由：心跳行按 30 秒窗口合并（`apiHeartbeatMinInterval`），不是每次心跳都有新行；若把断连依据放在这里，会出现「心跳到了但没有行」而无法断连。真正的依据是**本次请求的 `conns`**，落库证据是 `device_disconnects.conn_count`。
+- 代价：`conn_ids` 可能滞后一个窗口，文档写明它只是排障线索。
+
+**R6 过期是系统动作，审计 `ActorUserID=0`。**
+- 理由：没有人执行过期，是时间到了；把它记成某个用户会污染追责链。
+- 代价：按 actor 过滤审计时这些行不出现，需要按 action 查。
+
+**R7 被拒绝的重复请求（409）落 HTTP 回退审计行。**
+- 理由：领域审计只在状态真的变化时写；一次被拒的重复请求是「有人试了两次」这一事实，用中间件的 `POST .../disconnect` + status 409 记录最贴切，也不会伪造第二条 `device.disconnect.request`。
+- 代价：同一路径在审计里可能同时出现领域行与 HTTP 行（成功一次 + 被拒一次），要靠 action 区分。
+
+### T4 证据
+
+```
+go test ./internal/strategy/ -run TestDisconnect_   → ok（7 个用例）
+go test ./internal/compatapi/ -run TestHeartbeat_   → ok（10 个用例）
+go test ./internal/api/ -run TestDisconnect_        → ok（3 个用例）
+go test ./internal/strategy/ ./internal/compatapi/ ./internal/api/ ./cmd/server/ ./internal/model/ ./internal/store/scopetest/ -count=1 → 全绿
+go generate ./... 后 git status --porcelain -- gen openapi.yaml → 空
+```
+
+- 契约：`POST /orgs/{orgId}/devices/{deviceId}/disconnect`（201 + `DeviceDisconnect`），`reason` 必填 1–255；同设备已有 pending → 409；跨组织/不存在 → 404。
+- 消费：`TakePendingTx` 用条件 UPDATE（`status=pending`）标记 fulfilled，`RowsAffected != 1` 时不再断连——两个并发心跳只有一个能拿到连接列表。
+- 连接号清洗：只接受能装进客户端 `Vec<i32>` 的正整数；`-1`、`0`、`"x"`、`3.5` 全部丢弃，避免把未认证请求里的垃圾值原样回显。
+- worker：`disconnect-expiry` 每 5 分钟扫描 `expires_at <= now` 的 pending 行，标记 expired 并写系统审计。
+- 变异验证 1（空连接不消耗）：删掉 `len(conns)==0` 早退 → `TestDisconnect_NoConnsKeepsPending` 转红。
+- 变异验证 2（连接号校验）：`float64` 分支改成无校验直接转换 → `TestHeartbeat_IgnoresInvalidConnIDs` 转红。
