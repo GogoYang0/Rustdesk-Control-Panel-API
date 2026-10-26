@@ -27,6 +27,10 @@ const (
 	// not delegable: handing it to a custom role would let that role reshape
 	// who can reach which devices.
 	PermAccessManage = "access.manage"
+	// PermControlRoleManage gates control role CRUD and member assignment. Not
+	// delegable for the same reason as access.manage: it decides what an
+	// operator may do after connecting.
+	PermControlRoleManage = "control_role.manage"
 )
 
 // Permission is one entry of the catalog served to role builders.
@@ -42,6 +46,7 @@ var catalog = []Permission{
 	{PermOrgAdmin, "Administer organization settings and provisioning", false},
 	{PermRoleManage, "Create, edit, delete, and assign roles", false},
 	{PermAccessManage, "Manage user groups, device groups and access rules", false},
+	{PermControlRoleManage, "Manage control roles and their member assignments", false},
 	{PermMemberManage, "Invite and remove members, disable memberships", true},
 	{PermDeviceRead, "Read devices", true},
 	{PermDeviceWrite, "Register devices, heartbeat, rebind, disable", true},
@@ -87,7 +92,7 @@ func BuiltinPermissions(kind string) []string {
 		return []string{
 			PermMemberManage, PermDeviceRead, PermDeviceWrite,
 			PermAuditRead, PermAddressBook, PermPolicyWrite, PermApprovalDecide,
-			PermAccessManage,
+			PermAccessManage, PermControlRoleManage,
 		}
 	case "member":
 		return []string{PermDeviceRead}

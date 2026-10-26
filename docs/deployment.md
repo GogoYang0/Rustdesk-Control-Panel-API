@@ -124,6 +124,14 @@ go build -o panel ./cmd/server
   - 若客户端使用 `rustdesk --assign`：需要为该客户端所属账号签发**个人 API Token**（`device.write`）并配置到客户端；`--strategy`、`--address-book-*`、`--device-username` 会被面板 `400` 拒绝（未实现，属有意行为）。
   - 客户端 `--device-name`/`--note` 以及管理面归属变更**不撤销已建立的 compat 会话**（与规则变更一致）。
 
+- **v0.10.0（控制角色 / 客户端审计上报 / compat 2FA）升级要点**：
+  - **无新增配置键**：控制角色的三态权限、日志保留期都复用既有配置（保留期用 `organizations.audit_retention_days`）。升级后行为与波次 2 一致。
+  - 新增表 `control_roles` / `connection_logs` / `file_logs` / `audit_nonces` / `compat_login_challenges` 与新列 `memberships.control_role_id`、`tickets.control_role_id` / `control_permissions` / `control_role_snapshot`、`sessions.control_permissions`，全部由 AutoMigrate 建表/加列/建索引（大表首启会有建索引 DDL，请避开业务高峰）。
+  - 启动时为每个组织补齐内置 `default` 控制角色（幂等，按 `(organization_id, name)` 唯一索引兜底并发启动）；**新组织在创建事务里同步播种**，不存在「重启前没有回退角色」的窗口。
+  - **控制角色不约束原生客户端会话**：权限位图由 hbbs 注入，面板不在信令链路。升级后可以在管理面配置并拿到票据快照，但不要向业务方承诺客户端已强制执行（详见 API 规范 §3.12、运维指南 §2.5）。
+  - compat 登录 2FA 依赖 `auth.secret`：**未配置或不一致时 2FA 操作 fail closed**；轮换 `auth.secret` 会让既有 TOTP 秘密无法解密，须先重置用户 2FA。多实例共享同一 `auth.secret`，否则挑战与 TOTP 校验会随机失败。
+  - `compat_login_challenges` 与 `audit_nonces` 都有内置清扫：过期挑战由 `compat-2fa-sweep` 每小时清理（保留 1 小时余量），nonce 由 `audit-nonce-sweep` 每 10 分钟清理。两项都无需人工干预。
+
 ### 4.3 选择生产数据库
 
 SQLite 的 `occurred_at` 等时间列按**文本比较**（UTC 格式化），行为已与 MySQL/PostgreSQL 对齐测试（`test-db` CI）。生产选 PostgreSQL：

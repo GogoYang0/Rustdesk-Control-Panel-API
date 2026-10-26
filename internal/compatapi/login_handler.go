@@ -25,6 +25,12 @@ type loginRequest struct {
 	Password string `json:"password"`
 	ID       string `json:"id"`
 	UUID     string `json:"uuid"`
+	// Second-step fields (src/ui/index.tis loginData): the client replays the
+	// username/device and adds the opaque secret plus the 6-digit code.
+	Type             string `json:"type"`
+	VerificationCode string `json:"verificationCode"`
+	TfaCode          string `json:"tfaCode"`
+	Secret           string `json:"secret"`
 }
 
 // userPayload mirrors the client's UserPayload serde struct
@@ -72,7 +78,7 @@ var dummyCompatHash = sync.OnceValue(func() string {
 // accounts bind automatically) or "email#orgID" (multi-org disambiguation).
 func (s *Server) login(c *gin.Context) {
 	var req loginRequest
-	if err := c.ShouldBindJSON(&req); err != nil || req.Username == "" || req.Password == "" {
+	if err := c.ShouldBindJSON(&req); err != nil || req.Username == "" {
 		compatError(c, http.StatusBadRequest, "invalid login payload")
 		return
 	}
@@ -91,6 +97,18 @@ func (s *Server) login(c *gin.Context) {
 	lockKey := strings.ToLower(strings.TrimSpace(email))
 	if s.deps.Guard.Locked(lockKey, ip) {
 		compatError(c, http.StatusTooManyRequests, "account temporarily locked")
+		return
+	}
+
+	// The second step carries no password: the challenge secret and the code
+	// are the credential. It is routed before the password check so a request
+	// cannot fall through into the password path by omitting it.
+	if req.Type == "email_code" {
+		s.loginSecondStep(c, req, ip, lockKey)
+		return
+	}
+	if req.Password == "" {
+		compatError(c, http.StatusBadRequest, "invalid login payload")
 		return
 	}
 
@@ -132,6 +150,108 @@ func (s *Server) login(c *gin.Context) {
 		return
 	}
 
+	// A user who enabled TOTP cannot receive a token from the password alone.
+	// The challenge is bound to the device identity, so the second request must
+	// come from the same machine.
+	enabled, terr := s.deps.TOTP.Enabled(user.ID)
+	if terr != nil {
+		// Fail closed: an unreadable second-factor row must not silently
+		// downgrade an account to one factor.
+		compatError(c, http.StatusInternalServerError, "login failed")
+		return
+	}
+	if enabled {
+		secret, cerr := s.startChallenge(c.Request.Context(), orgID, user.ID, req.ID, req.UUID)
+		if cerr != nil {
+			compatError(c, http.StatusInternalServerError, "login failed")
+			return
+		}
+		// The client treats any tfa_type other than "email_check" as a 2FA
+		// prompt and shows the "2FA code" label (src/ui/index.tis).
+		c.JSON(http.StatusOK, gin.H{
+			"type":     "email_check",
+			"tfa_type": "totp",
+			"secret":   secret,
+			"user":     userPayloadOf(user),
+		})
+		return
+	}
+
+	s.finishLogin(c, user, orgID, req, ip, lockKey)
+}
+
+// loginSecondStep verifies the code against the challenge and, on success,
+// continues exactly where the password step would have.
+func (s *Server) loginSecondStep(c *gin.Context, req loginRequest, ip, lockKey string) {
+	code := strings.TrimSpace(req.TfaCode)
+	if code == "" {
+		// The client fills both fields for TOTP; accepting either keeps an
+		// older build working.
+		code = strings.TrimSpace(req.VerificationCode)
+	}
+	if code == "" {
+		compatError(c, http.StatusUnauthorized, "authentication code required")
+		return
+	}
+	challenge, err := s.loadChallenge(c.Request.Context(), req.Secret, req.ID, req.UUID)
+	if err != nil {
+		s.deps.Guard.RecordFailure(lockKey, ip)
+		compatError(c, http.StatusUnauthorized, "invalid or expired verification request")
+		return
+	}
+	var user model.User
+	if err := store.WithoutTenantScope(s.deps.DB).First(&user, challenge.UserID).Error; err != nil {
+		compatError(c, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+	// The step-2 username must name the challenge's account. Without this an
+	// attacker holding a challenge could rotate the username to spread failures
+	// across lockout buckets.
+	email, _, _ := strings.Cut(req.Username, "#")
+	if !strings.EqualFold(strings.TrimSpace(email), user.Email) {
+		compatError(c, http.StatusUnauthorized, "invalid or expired verification request")
+		return
+	}
+	// The username above was verified to be this account's email, so lockKey is
+	// the same key login() checks with Guard.Locked: failures here must feed
+	// that counter, not a separate bucket.
+	// Reserve the attempt atomically before checking the code: N concurrent
+	// requests must not all slip past the 5-attempt cap.
+	claimed, cerr := s.claimAttempt(c.Request.Context(), challenge.ID)
+	if cerr != nil || !claimed {
+		compatError(c, http.StatusUnauthorized, "invalid or expired verification request")
+		return
+	}
+	if err := s.deps.TOTP.VerifyLogin(challenge.UserID, code); err != nil {
+		s.deps.Guard.RecordFailure(lockKey, ip)
+		compatError(c, http.StatusUnauthorized, "invalid authentication code")
+		return
+	}
+	consumed, err := s.consumeChallenge(c.Request.Context(), challenge.ID)
+	if err != nil || !consumed {
+		// Another request redeemed the same challenge first (or the write
+		// failed): never issue a second token from one challenge.
+		compatError(c, http.StatusUnauthorized, "invalid or expired verification request")
+		return
+	}
+	if !user.EmailVerified {
+		compatError(c, http.StatusForbidden, "email is not verified; confirm it via the panel")
+		return
+	}
+	// Re-resolve the organization recorded on the challenge: membership may
+	// have been disabled between the two steps.
+	orgID, status, msg, ok := s.resolveOrg(user.ID, strconv.FormatUint(uint64(challenge.OrganizationID), 10), true)
+	if !ok {
+		compatError(c, status, msg)
+		return
+	}
+	s.finishLogin(c, user, orgID, req, ip, lockKey)
+}
+
+// finishLogin issues the compat token, claims the device and records the
+// session. It is the shared tail of the password path and the second-factor
+// path.
+func (s *Server) finishLogin(c *gin.Context, user model.User, orgID uint, req loginRequest, ip, lockKey string) {
 	// The device claim and the session row land in one transaction (#40): a
 	// login that fails to persist its session must not leave a binding
 	// behind, and a session must never exist without the binding it was

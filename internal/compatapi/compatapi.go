@@ -13,10 +13,12 @@ import (
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/access"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/addressbook"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/limit"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logquery"
 )
 
 // Context keys for the authenticated compat session.
@@ -51,7 +53,15 @@ type Deps struct {
 	Tokens *auth.TokenService
 	// Roles resolves the token owner's live role for the `--assign`
 	// authorization; nil falls back to a service on the same DB.
-	Roles     *authz.RoleService
+	Roles *authz.RoleService
+	// AuditIngest stores the client's connection/file/alarm reports; nil falls
+	// back to a service on the same DB with a GORM auditor.
+	AuditIngest *logquery.Ingest
+	// Auditor records client alarms; nil falls back to a GORM auditor.
+	Auditor audit.Auditor
+	// TOTP verifies the second factor for accounts that enabled it; nil falls
+	// back to a service on the same DB (with an empty key, which fails closed).
+	TOTP      *auth.TOTPService
 	Now       func() time.Time
 	AccessTTL time.Duration
 }
@@ -100,6 +110,16 @@ func Mount(r gin.IRouter, d Deps) *Server {
 	if d.AccessTTL == 0 {
 		d.AccessTTL = 720 * time.Hour
 	}
+	if d.TOTP == nil && d.DB != nil {
+		d.TOTP = auth.NewTOTPService(d.DB, "", d.Now)
+	}
+	if d.AuditIngest == nil && d.DB != nil {
+		auditor := d.Auditor
+		if auditor == nil {
+			auditor = audit.NewGormAuditor(d.DB)
+		}
+		d.AuditIngest = logquery.New(d.DB, auditor, d.Now)
+	}
 	s := &Server{deps: d}
 
 	g := r.Group("/api")
@@ -114,6 +134,12 @@ func Mount(r gin.IRouter, d Deps) *Server {
 	// session carrying the same uuid (裁定 C16).
 	g.POST("/heartbeat", s.heartbeat)
 	g.POST("/sysinfo", s.sysinfo)
+	// Client audit reports. They carry no Authorization header (the client
+	// posts them with an empty auth argument), so they mount beside /login and
+	// authenticate by the (id, uuid) pair matching the device binding.
+	g.POST("/audit/conn", s.auditConn)
+	g.POST("/audit/file", s.auditFile)
+	g.POST("/audit/alarm", s.auditAlarm)
 	authed := g.Group("", s.requireSession())
 	authed.POST("/logout", s.logout)
 	authed.POST("/currentUser", s.currentUser)

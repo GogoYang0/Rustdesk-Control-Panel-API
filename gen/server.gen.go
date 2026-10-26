@@ -193,6 +193,63 @@ func (e ApprovalStatus) Valid() bool {
 	}
 }
 
+// Defines values for ConnectionLogStatus.
+const (
+	ConnectionLogStatusClosed ConnectionLogStatus = "closed"
+	ConnectionLogStatusOpen   ConnectionLogStatus = "open"
+)
+
+// Valid indicates whether the value is a known member of the ConnectionLogStatus enum.
+func (e ConnectionLogStatus) Valid() bool {
+	switch e {
+	case ConnectionLogStatusClosed:
+		return true
+	case ConnectionLogStatusOpen:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ControlPermissionState.
+const (
+	Disable   ControlPermissionState = "disable"
+	Enable    ControlPermissionState = "enable"
+	UseClient ControlPermissionState = "use_client"
+)
+
+// Valid indicates whether the value is a known member of the ControlPermissionState enum.
+func (e ControlPermissionState) Valid() bool {
+	switch e {
+	case Disable:
+		return true
+	case Enable:
+		return true
+	case UseClient:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ControlRoleKind.
+const (
+	ControlRoleKindCustom  ControlRoleKind = "custom"
+	ControlRoleKindDefault ControlRoleKind = "default"
+)
+
+// Valid indicates whether the value is a known member of the ControlRoleKind enum.
+func (e ControlRoleKind) Valid() bool {
+	switch e {
+	case ControlRoleKindCustom:
+		return true
+	case ControlRoleKindDefault:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for DeviceStatus.
 const (
 	Offline DeviceStatus = "offline"
@@ -259,6 +316,24 @@ func (e ErrorCode) Valid() bool {
 	case ErrorCodeTwoFactorRequired:
 		return true
 	case ErrorCodeUnauthorized:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for FileLogDirection.
+const (
+	Receive FileLogDirection = "receive"
+	Send    FileLogDirection = "send"
+)
+
+// Valid indicates whether the value is a known member of the FileLogDirection enum.
+func (e FileLogDirection) Valid() bool {
+	switch e {
+	case Receive:
+		return true
+	case Send:
 		return true
 	default:
 		return false
@@ -1193,6 +1268,166 @@ type CaptchaProof struct {
 	Response map[string]string `json:"response"`
 }
 
+// ConnectionLog 客户端上报的一条连接记录（`POST /api/audit/conn`）。`new` 建行、`close` 关闭；
+// 与面板签发的 session 是两套记录，后者见 `Session`。
+type ConnectionLog struct {
+	ConnAuditRef   *string             `json:"conn_audit_ref,omitempty"`
+	ConnId         int64               `json:"conn_id"`
+	CreatedAt      time.Time           `json:"created_at"`
+	DeviceId       int64               `json:"device_id"`
+	EndedAt        *time.Time          `json:"ended_at,omitempty"`
+	Id             int64               `json:"id"`
+	Ip             *string             `json:"ip,omitempty"`
+	Note           *string             `json:"note,omitempty"`
+	OrganizationId int64               `json:"organization_id"`
+	RustdeskId     string              `json:"rustdesk_id"`
+	SessionId      int64               `json:"session_id"`
+	StartedAt      time.Time           `json:"started_at"`
+	Status         ConnectionLogStatus `json:"status"`
+}
+
+// ConnectionLogStatus defines model for ConnectionLog.Status.
+type ConnectionLogStatus string
+
+// ConnectionLogListResponse defines model for ConnectionLogListResponse.
+type ConnectionLogListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode         `json:"code"`
+	Data    ConnectionLogPage `json:"data"`
+	Message string            `json:"message"`
+}
+
+// ConnectionLogPage defines model for ConnectionLogPage.
+type ConnectionLogPage struct {
+	Items    []ConnectionLog `json:"items"`
+	Page     int             `json:"page"`
+	PageSize int64           `json:"page_size"`
+	Total    int64           `json:"total"`
+}
+
+// ControlPermissionState 单项权限的三态（对齐 RustDesk Server Pro）：
+// - use_client：不覆盖被控端本地设置
+// - enable：显式启用（覆盖本地设置）
+// - disable：显式禁用（覆盖本地设置）
+type ControlPermissionState string
+
+// ControlPermissionStates 14 个权限键到三态的映射，键与 RustDesk 客户端 `ControlPermissions.Permission`
+// 枚举一一对应（bit 序号即声明顺序）：`keyboard`、`remote_printer`、
+// `clipboard`、`file`、`audio`、`camera`、`terminal`、`tunnel`、`restart`、
+// `recording`、`block_input`、`remote_modify`、`privacy_mode`、`usb`。
+// 未知键或非法状态整单拒绝；缺失键按 `use_client` 补全。
+type ControlPermissionStates map[string]ControlPermissionState
+
+// ControlRole defines model for ControlRole.
+type ControlRole struct {
+	// Builtin true 表示内置 `default` 角色（不可删除、不可改名）
+	Builtin   bool      `json:"builtin"`
+	CreatedAt time.Time `json:"created_at"`
+	Id        int64     `json:"id"`
+
+	// Kind - default：每个组织唯一的内置角色，不可删除，未分配角色的成员回退到它
+	// - custom：管理员创建的角色
+	Kind ControlRoleKind `json:"kind"`
+	Name string          `json:"name"`
+
+	// Permissions 14 个权限键到三态的映射，键与 RustDesk 客户端 `ControlPermissions.Permission`
+	// 枚举一一对应（bit 序号即声明顺序）：`keyboard`、`remote_printer`、
+	// `clipboard`、`file`、`audio`、`camera`、`terminal`、`tunnel`、`restart`、
+	// `recording`、`block_input`、`remote_modify`、`privacy_mode`、`usb`。
+	// 未知键或非法状态整单拒绝；缺失键按 `use_client` 补全。
+	Permissions ControlPermissionStates `json:"permissions"`
+	UpdatedAt   time.Time               `json:"updated_at"`
+}
+
+// ControlRoleAssignmentRequest defines model for ControlRoleAssignmentRequest.
+type ControlRoleAssignmentRequest struct {
+	// ControlRoleId 目标控制角色 id；`null` 表示回到组织内置 default 角色
+	ControlRoleId *int64 `json:"control_role_id"`
+}
+
+// ControlRoleCreateRequest defines model for ControlRoleCreateRequest.
+type ControlRoleCreateRequest struct {
+	Name string `json:"name"`
+
+	// Permissions 14 个权限键到三态的映射，键与 RustDesk 客户端 `ControlPermissions.Permission`
+	// 枚举一一对应（bit 序号即声明顺序）：`keyboard`、`remote_printer`、
+	// `clipboard`、`file`、`audio`、`camera`、`terminal`、`tunnel`、`restart`、
+	// `recording`、`block_input`、`remote_modify`、`privacy_mode`、`usb`。
+	// 未知键或非法状态整单拒绝；缺失键按 `use_client` 补全。
+	Permissions ControlPermissionStates `json:"permissions"`
+}
+
+// ControlRoleKind - default：每个组织唯一的内置角色，不可删除，未分配角色的成员回退到它
+// - custom：管理员创建的角色
+type ControlRoleKind string
+
+// ControlRoleListResponse defines model for ControlRoleListResponse.
+type ControlRoleListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode     `json:"code"`
+	Data    []ControlRole `json:"data"`
+	Message string        `json:"message"`
+}
+
+// ControlRoleResponse defines model for ControlRoleResponse.
+type ControlRoleResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode   `json:"code"`
+	Data    ControlRole `json:"data"`
+	Message string      `json:"message"`
+}
+
+// ControlRoleUpdateRequest defines model for ControlRoleUpdateRequest.
+type ControlRoleUpdateRequest struct {
+	Name *string `json:"name,omitempty"`
+
+	// Permissions 14 个权限键到三态的映射，键与 RustDesk 客户端 `ControlPermissions.Permission`
+	// 枚举一一对应（bit 序号即声明顺序）：`keyboard`、`remote_printer`、
+	// `clipboard`、`file`、`audio`、`camera`、`terminal`、`tunnel`、`restart`、
+	// `recording`、`block_input`、`remote_modify`、`privacy_mode`、`usb`。
+	// 未知键或非法状态整单拒绝；缺失键按 `use_client` 补全。
+	Permissions *ControlPermissionStates `json:"permissions,omitempty"`
+}
+
 // Device defines model for Device.
 type Device struct {
 	// Bound 是否已绑定某个客户端实例（重置绑定后为 false）
@@ -1475,6 +1710,60 @@ type ErrorResponse struct {
 	Message string                  `json:"message"`
 }
 
+// FileLog 客户端上报的一条文件传输记录（`POST /api/audit/file`）。`files` 是上游截断到
+// 10 项的 `[name, size]` 数组；`info` 为客户端原始 JSON 文本，便于排障。
+type FileLog struct {
+	ConnId    *int64           `json:"conn_id,omitempty"`
+	CreatedAt time.Time        `json:"created_at"`
+	DeviceId  int64            `json:"device_id"`
+	Direction FileLogDirection `json:"direction"`
+	FileCount *int             `json:"file_count,omitempty"`
+	Files     *[][]interface{} `json:"files,omitempty"`
+	Id        int64            `json:"id"`
+
+	// Info 客户端上传的原始 info JSON 文本
+	Info           *string `json:"info,omitempty"`
+	Ip             *string `json:"ip,omitempty"`
+	IsFile         *bool   `json:"is_file,omitempty"`
+	Name           *string `json:"name,omitempty"`
+	OrganizationId int64   `json:"organization_id"`
+	Path           *string `json:"path,omitempty"`
+	PeerId         *string `json:"peer_id,omitempty"`
+	RustdeskId     string  `json:"rustdesk_id"`
+}
+
+// FileLogDirection defines model for FileLog.Direction.
+type FileLogDirection string
+
+// FileLogListResponse defines model for FileLogListResponse.
+type FileLogListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode   `json:"code"`
+	Data    FileLogPage `json:"data"`
+	Message string      `json:"message"`
+}
+
+// FileLogPage defines model for FileLogPage.
+type FileLogPage struct {
+	Items    []FileLog `json:"items"`
+	Page     int       `json:"page"`
+	PageSize int64     `json:"page_size"`
+	Total    int64     `json:"total"`
+}
+
 // Invitation defines model for Invitation.
 type Invitation struct {
 	Email     openapi_types.Email `json:"email"`
@@ -1632,7 +1921,10 @@ type LoginRequest struct {
 
 // Member defines model for Member.
 type Member struct {
-	CreatedAt time.Time `json:"created_at"`
+	// ControlRoleId 成员的控制角色 id（v0.10.0）；`null` 表示未分配、回退组织内置 `default`。
+	// 角色名称由 `GET /control-roles` 的列表解析（避免成员列表逐行 JOIN）。
+	ControlRoleId *int64    `json:"control_role_id,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
 
 	// Disabled 会籍是否已停用；停用后不能登录或访问该组织
 	Disabled bool                `json:"disabled"`
@@ -2137,6 +2429,11 @@ type Session struct {
 	// ActorUserId 发起人；native 直连无法识别发起人时为 null
 	ActorUserId *int64 `json:"actor_user_id,omitempty"`
 
+	// ControlPermissions 兑换时从票据复制的权限位图（bit 序号同 `ControlPermissionStates`）。会话记录
+	// 的是开始时刻的授权，之后修改控制角色不会改写它。原生会话恒为 0：位图由
+	// hbbs 注入，面板不在信令链路。
+	ControlPermissions int64 `json:"control_permissions"`
+
 	// DeviceId 组织内设备行 id
 	DeviceId int64 `json:"device_id"`
 
@@ -2466,7 +2763,18 @@ type Ticket struct {
 	ActorUserId *int64 `json:"actor_user_id,omitempty"`
 
 	// ApprovalId 绑定的审批请求（审批放行时）
-	ApprovalId     *int64    `json:"approval_id,omitempty"`
+	ApprovalId *int64 `json:"approval_id,omitempty"`
+
+	// ControlPermissions 签发时生效的权限位图，bit 序号与 `ControlPermissionStates` 的声明顺序一致
+	// （keyboard=0 … usb=13），只有 `enable` 置位。0 表示「没有显式启用的权限」，
+	// 不是「未计算」。
+	//
+	// **原生会话不执行该位图**：hbbs 在信令消息里注入 `control_permissions`，
+	// 本面板不在信令链路（设计 D10），因此它只是票据快照，供网页客户端与审计使用。
+	ControlPermissions int64 `json:"control_permissions"`
+
+	// ControlRoleId 签发时生效的控制角色 id；null 表示签发时未解析到角色（或服务未接线）。
+	ControlRoleId  *int64    `json:"control_role_id,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 	DeviceId       int64     `json:"device_id"`
 	ExpiresAt      time.Time `json:"expires_at"`
@@ -2776,6 +3084,28 @@ type ExportAuditLogsParams struct {
 	To          *time.Time `form:"to,omitempty" json:"to,omitempty"`
 }
 
+// ListConnectionLogsParams defines parameters for ListConnectionLogs.
+type ListConnectionLogsParams struct {
+	DeviceId   *int64  `form:"deviceId,omitempty" json:"deviceId,omitempty"`
+	RustdeskId *string `form:"rustdeskId,omitempty" json:"rustdeskId,omitempty"`
+
+	// From 含下界（UTC），比较 `started_at`
+	From *time.Time `form:"from,omitempty" json:"from,omitempty"`
+
+	// To 含上界（UTC），比较 `started_at`
+	To       *time.Time `form:"to,omitempty" json:"to,omitempty"`
+	Page     *int       `form:"page,omitempty" json:"page,omitempty"`
+	PageSize *int       `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
+// ExportConnectionLogsParams defines parameters for ExportConnectionLogs.
+type ExportConnectionLogsParams struct {
+	DeviceId   *int64     `form:"deviceId,omitempty" json:"deviceId,omitempty"`
+	RustdeskId *string    `form:"rustdeskId,omitempty" json:"rustdeskId,omitempty"`
+	From       *time.Time `form:"from,omitempty" json:"from,omitempty"`
+	To         *time.Time `form:"to,omitempty" json:"to,omitempty"`
+}
+
 // ListDevicesParams defines parameters for ListDevices.
 type ListDevicesParams struct {
 	// Q 按名称或 rustdesk_id 大小写不敏感子串匹配
@@ -2785,6 +3115,28 @@ type ListDevicesParams struct {
 	Bound    *bool `form:"bound,omitempty" json:"bound,omitempty"`
 	Page     *int  `form:"page,omitempty" json:"page,omitempty"`
 	PageSize *int  `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
+// ListFileLogsParams defines parameters for ListFileLogs.
+type ListFileLogsParams struct {
+	DeviceId   *int64  `form:"deviceId,omitempty" json:"deviceId,omitempty"`
+	RustdeskId *string `form:"rustdeskId,omitempty" json:"rustdeskId,omitempty"`
+
+	// From 含下界（UTC），比较 `created_at`
+	From *time.Time `form:"from,omitempty" json:"from,omitempty"`
+
+	// To 含上界（UTC），比较 `created_at`
+	To       *time.Time `form:"to,omitempty" json:"to,omitempty"`
+	Page     *int       `form:"page,omitempty" json:"page,omitempty"`
+	PageSize *int       `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
+// ExportFileLogsParams defines parameters for ExportFileLogs.
+type ExportFileLogsParams struct {
+	DeviceId   *int64     `form:"deviceId,omitempty" json:"deviceId,omitempty"`
+	RustdeskId *string    `form:"rustdeskId,omitempty" json:"rustdeskId,omitempty"`
+	From       *time.Time `form:"from,omitempty" json:"from,omitempty"`
+	To         *time.Time `form:"to,omitempty" json:"to,omitempty"`
 }
 
 // ListLogEventsParams defines parameters for ListLogEvents.
@@ -2876,6 +3228,12 @@ type DecideApprovalJSONRequestBody = ApprovalDecisionRequest
 // SetAuditRetentionJSONRequestBody defines body for SetAuditRetention for application/json ContentType.
 type SetAuditRetentionJSONRequestBody = AuditRetentionRequest
 
+// CreateControlRoleJSONRequestBody defines body for CreateControlRole for application/json ContentType.
+type CreateControlRoleJSONRequestBody = ControlRoleCreateRequest
+
+// UpdateControlRoleJSONRequestBody defines body for UpdateControlRole for application/json ContentType.
+type UpdateControlRoleJSONRequestBody = ControlRoleUpdateRequest
+
 // CreateDeviceGroupJSONRequestBody defines body for CreateDeviceGroup for application/json ContentType.
 type CreateDeviceGroupJSONRequestBody = DeviceGroupCreateRequest
 
@@ -2899,6 +3257,9 @@ type CreateInvitationJSONRequestBody = InvitationCreateRequest
 
 // UpdateMemberRoleJSONRequestBody defines body for UpdateMemberRole for application/json ContentType.
 type UpdateMemberRoleJSONRequestBody = MemberUpdateRequest
+
+// AssignMemberControlRoleJSONRequestBody defines body for AssignMemberControlRole for application/json ContentType.
+type AssignMemberControlRoleJSONRequestBody = ControlRoleAssignmentRequest
 
 // CreatePolicyJSONRequestBody defines body for CreatePolicy for application/json ContentType.
 type CreatePolicyJSONRequestBody = PolicyRequest
@@ -3058,6 +3419,24 @@ type ServerInterface interface {
 	// SetAuditRetention 设置审计保留期
 	// (PUT /api/v1/orgs/{orgId}/audit-retention)
 	SetAuditRetention(c *gin.Context, orgId int64)
+	// ListConnectionLogs 查询客户端连接日志
+	// (GET /api/v1/orgs/{orgId}/connection-logs)
+	ListConnectionLogs(c *gin.Context, orgId int64, params ListConnectionLogsParams)
+	// ExportConnectionLogs 导出连接日志 CSV
+	// (GET /api/v1/orgs/{orgId}/connection-logs/export)
+	ExportConnectionLogs(c *gin.Context, orgId int64, params ExportConnectionLogsParams)
+	// ListControlRoles 列出控制角色
+	// (GET /api/v1/orgs/{orgId}/control-roles)
+	ListControlRoles(c *gin.Context, orgId int64)
+	// CreateControlRole 创建控制角色
+	// (POST /api/v1/orgs/{orgId}/control-roles)
+	CreateControlRole(c *gin.Context, orgId int64)
+	// DeleteControlRole 删除控制角色
+	// (DELETE /api/v1/orgs/{orgId}/control-roles/{roleId})
+	DeleteControlRole(c *gin.Context, orgId int64, roleId int64)
+	// UpdateControlRole 更新控制角色
+	// (PATCH /api/v1/orgs/{orgId}/control-roles/{roleId})
+	UpdateControlRole(c *gin.Context, orgId int64, roleId int64)
 	// ListDeviceGroups 列出设备组
 	// (GET /api/v1/orgs/{orgId}/device-groups)
 	ListDeviceGroups(c *gin.Context, orgId int64)
@@ -3088,6 +3467,12 @@ type ServerInterface interface {
 	// ResetDeviceBinding 重置设备绑定
 	// (POST /api/v1/orgs/{orgId}/devices/{deviceId}/rebind)
 	ResetDeviceBinding(c *gin.Context, orgId int64, deviceId int64)
+	// ListFileLogs 查询客户端文件传输日志
+	// (GET /api/v1/orgs/{orgId}/file-logs)
+	ListFileLogs(c *gin.Context, orgId int64, params ListFileLogsParams)
+	// ExportFileLogs 导出文件传输日志 CSV
+	// (GET /api/v1/orgs/{orgId}/file-logs/export)
+	ExportFileLogs(c *gin.Context, orgId int64, params ExportFileLogsParams)
 	// CreateInvitation 邀请成员加入组织
 	// (POST /api/v1/orgs/{orgId}/invitations)
 	CreateInvitation(c *gin.Context, orgId int64)
@@ -3106,6 +3491,9 @@ type ServerInterface interface {
 	// ResetMemberTOTP 重置成员的 2FA
 	// (POST /api/v1/orgs/{orgId}/members/{userId}/2fa/reset)
 	ResetMemberTOTP(c *gin.Context, orgId int64, userId int64)
+	// AssignMemberControlRole 分配成员的控制角色
+	// (PUT /api/v1/orgs/{orgId}/members/{userId}/control-role)
+	AssignMemberControlRole(c *gin.Context, orgId int64, userId int64)
 	// ListPolicies 连接策略列表
 	// (GET /api/v1/orgs/{orgId}/policies)
 	ListPolicies(c *gin.Context, orgId int64)
@@ -4437,6 +4825,260 @@ func (siw *ServerInterfaceWrapper) SetAuditRetention(c *gin.Context) {
 	siw.Handler.SetAuditRetention(c, orgId)
 }
 
+// ListConnectionLogs operation middleware
+func (siw *ServerInterfaceWrapper) ListConnectionLogs(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListConnectionLogsParams
+
+	// ------------- Optional query parameter "deviceId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "deviceId", c.Request.URL.Query(), &params.DeviceId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "rustdeskId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "rustdeskId", c.Request.URL.Query(), &params.RustdeskId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter rustdeskId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "from" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "from", c.Request.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter from: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "to" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "to", c.Request.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter to: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "page" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "page", c.Request.URL.Query(), &params.Page, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter page: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "pageSize" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "pageSize", c.Request.URL.Query(), &params.PageSize, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter pageSize: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListConnectionLogs(c, orgId, params)
+}
+
+// ExportConnectionLogs operation middleware
+func (siw *ServerInterfaceWrapper) ExportConnectionLogs(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ExportConnectionLogsParams
+
+	// ------------- Optional query parameter "deviceId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "deviceId", c.Request.URL.Query(), &params.DeviceId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "rustdeskId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "rustdeskId", c.Request.URL.Query(), &params.RustdeskId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter rustdeskId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "from" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "from", c.Request.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter from: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "to" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "to", c.Request.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter to: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ExportConnectionLogs(c, orgId, params)
+}
+
+// ListControlRoles operation middleware
+func (siw *ServerInterfaceWrapper) ListControlRoles(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListControlRoles(c, orgId)
+}
+
+// CreateControlRole operation middleware
+func (siw *ServerInterfaceWrapper) CreateControlRole(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateControlRole(c, orgId)
+}
+
+// DeleteControlRole operation middleware
+func (siw *ServerInterfaceWrapper) DeleteControlRole(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "roleId" -------------
+	var roleId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "roleId", c.Param("roleId"), &roleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter roleId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteControlRole(c, orgId, roleId)
+}
+
+// UpdateControlRole operation middleware
+func (siw *ServerInterfaceWrapper) UpdateControlRole(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "roleId" -------------
+	var roleId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "roleId", c.Param("roleId"), &roleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter roleId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UpdateControlRole(c, orgId, roleId)
+}
+
 // ListDeviceGroups operation middleware
 func (siw *ServerInterfaceWrapper) ListDeviceGroups(c *gin.Context) {
 
@@ -4776,6 +5418,142 @@ func (siw *ServerInterfaceWrapper) ResetDeviceBinding(c *gin.Context) {
 	siw.Handler.ResetDeviceBinding(c, orgId, deviceId)
 }
 
+// ListFileLogs operation middleware
+func (siw *ServerInterfaceWrapper) ListFileLogs(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListFileLogsParams
+
+	// ------------- Optional query parameter "deviceId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "deviceId", c.Request.URL.Query(), &params.DeviceId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "rustdeskId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "rustdeskId", c.Request.URL.Query(), &params.RustdeskId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter rustdeskId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "from" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "from", c.Request.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter from: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "to" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "to", c.Request.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter to: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "page" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "page", c.Request.URL.Query(), &params.Page, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter page: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "pageSize" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "pageSize", c.Request.URL.Query(), &params.PageSize, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter pageSize: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListFileLogs(c, orgId, params)
+}
+
+// ExportFileLogs operation middleware
+func (siw *ServerInterfaceWrapper) ExportFileLogs(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ExportFileLogsParams
+
+	// ------------- Optional query parameter "deviceId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "deviceId", c.Request.URL.Query(), &params.DeviceId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "rustdeskId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "rustdeskId", c.Request.URL.Query(), &params.RustdeskId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter rustdeskId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "from" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "from", c.Request.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter from: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "to" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "to", c.Request.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter to: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ExportFileLogs(c, orgId, params)
+}
+
 // CreateInvitation operation middleware
 func (siw *ServerInterfaceWrapper) CreateInvitation(c *gin.Context) {
 
@@ -4986,6 +5764,40 @@ func (siw *ServerInterfaceWrapper) ResetMemberTOTP(c *gin.Context) {
 	}
 
 	siw.Handler.ResetMemberTOTP(c, orgId, userId)
+}
+
+// AssignMemberControlRole operation middleware
+func (siw *ServerInterfaceWrapper) AssignMemberControlRole(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "userId" -------------
+	var userId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", c.Param("userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter userId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AssignMemberControlRole(c, orgId, userId)
 }
 
 // ListPolicies operation middleware
@@ -5748,6 +6560,11 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/roles/:roleId", wrapper.DeleteRole)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/roles/:roleId", wrapper.GetRole)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/roles/:roleId", wrapper.UpdateRole)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/control-roles", wrapper.ListControlRoles)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/control-roles", wrapper.CreateControlRole)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/control-roles/:roleId", wrapper.DeleteControlRole)
+	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/control-roles/:roleId", wrapper.UpdateControlRole)
+	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId/control-role", wrapper.AssignMemberControlRole)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/user-groups", wrapper.ListUserGroups)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/user-groups", wrapper.CreateUserGroup)
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/user-groups/:groupId", wrapper.DeleteUserGroup)
@@ -5763,6 +6580,10 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/access-rules/:ruleId", wrapper.DeleteAccessRule)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-logs", wrapper.ListAuditLogs)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-logs/export", wrapper.ExportAuditLogs)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/connection-logs", wrapper.ListConnectionLogs)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/connection-logs/export", wrapper.ExportConnectionLogs)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/file-logs", wrapper.ListFileLogs)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/file-logs/export", wrapper.ExportFileLogs)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-retention", wrapper.GetAuditRetention)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/audit-retention", wrapper.SetAuditRetention)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/provisioning", wrapper.GetProvisioning)

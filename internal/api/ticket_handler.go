@@ -278,6 +278,11 @@ func ticketToAPI(t model.Ticket) gen.Ticket {
 			out.PolicySnapshot = &snapshot
 		}
 	}
+	if t.ControlRoleID != nil {
+		id := int64(*t.ControlRoleID)
+		out.ControlRoleId = &id
+	}
+	out.ControlPermissions = int64(t.ControlPermissions)
 	return out
 }
 
@@ -292,6 +297,8 @@ func sessionToAPI(s model.Session) gen.Session {
 		EndedAt:        s.EndedAt,
 		EndReason:      s.EndReason,
 		LastActivityAt: s.LastActivityAt,
+
+		ControlPermissions: int64(s.ControlPermissions),
 	}
 	if s.ActorUserID != nil {
 		uid := int64(*s.ActorUserID)

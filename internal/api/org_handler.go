@@ -22,6 +22,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/controlrole"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
@@ -98,6 +99,12 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 		// rule) commit with the organization: without them every member of a new
 		// organization would start with an empty device list.
 		if err := access.EnsureDefaultsTx(tx, org.ID); err != nil {
+			return err
+		}
+		// The built-in default control role commits with the organization too:
+		// every member without an assignment falls back to it, so a missing row
+		// would leave the organization with no permission set at all.
+		if err := controlrole.EnsureDefaultsTx(tx, org.ID); err != nil {
 			return err
 		}
 		// Record the audit entry on the same transaction (issue #19): the
@@ -242,14 +249,15 @@ func (a *AdminAPI) ListMembers(c *gin.Context, orgId int64) {
 		// rather than guessing from a stale string (fail closed).
 		name := roleNameOf(roleIdx, m.RoleID)
 		out = append(out, gen.Member{
-			Id:        int64(m.ID),
-			UserId:    int64(m.UserID),
-			Email:     openapi_types.Email(emails[m.UserID]),
-			Role:      name,
-			RoleId:    int64(m.RoleID),
-			RoleName:  name,
-			Disabled:  m.Disabled,
-			CreatedAt: m.CreatedAt,
+			Id:            int64(m.ID),
+			UserId:        int64(m.UserID),
+			Email:         openapi_types.Email(emails[m.UserID]),
+			Role:          name,
+			RoleId:        int64(m.RoleID),
+			RoleName:      name,
+			ControlRoleId: controlRoleIDOf(m),
+			Disabled:      m.Disabled,
+			CreatedAt:     m.CreatedAt,
 		})
 	}
 
@@ -489,14 +497,15 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
 		Data: gen.Member{
-			Id:        int64(member.ID),
-			UserId:    int64(member.UserID),
-			Email:     openapi_types.Email(inv.Email),
-			Role:      joinedName,
-			RoleId:    int64(member.RoleID),
-			RoleName:  joinedName,
-			Disabled:  false,
-			CreatedAt: member.CreatedAt,
+			Id:            int64(member.ID),
+			UserId:        int64(member.UserID),
+			Email:         openapi_types.Email(inv.Email),
+			Role:          joinedName,
+			RoleId:        int64(member.RoleID),
+			RoleName:      joinedName,
+			ControlRoleId: controlRoleIDOf(member),
+			Disabled:      false,
+			CreatedAt:     member.CreatedAt,
 		},
 	})
 }

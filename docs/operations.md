@@ -135,6 +135,26 @@
 
 **排查**：全员卡在登录 → 先看 `GET /api/v1/auth/captcha` 是否 5xx（提供商不可达或配置错误），再看 `captcha` 配置与秘密是否注入；个别用户反复 `captcha_invalid` → 检查客户端时钟与挑战 TTL；日志出现 `captcha provider unavailable; fail-mode open` → 说明正在放行，立即确认提供商状态并改回 `closed`。
 
+### 2.5 控制角色运维（v0.10.0）
+
+**它管什么、不管什么**：控制角色只描述「连上之后能做什么」（键盘鼠标、剪贴板、文件、音频、摄像头、终端、隧道、重启、录屏、阻断输入、远程改配置、隐私模式、USB、远程打印，共 14 项，每项三态）。它**不决定能否连接**（那是访问控制 §2.3），也**不改被控端设置**（那是 Strategy，波次 4）。
+
+**最重要的运维事实：原生客户端会话目前不受它约束。** 权限位图由 hbbs 在信令消息里注入，面板不在信令链路、provision 起的是 stock rustdesk-server（设计 D10）。当前版本你能得到的是：管理面可配、票据与服务端快照可查（`tickets.control_permissions` / `sessions.control_permissions`）、审计可追。**不要把它当作已生效的强制限制向业务方承诺。**
+
+- 每个成员最多一个角色；未分配即回到组织内置 `default`（每组织一行，不可删、不可改名、权限可改）。
+- `control_role.manage` 授予 owner 与 admin（不可委派给自定义角色）。删除自定义角色会把持有者的分配清空（回到 default），同事务写审计。
+- 排障：票据上的 `control_permissions` 与预期不符 → 先看签发时刻该成员的分配（角色后来被改不会回溯旧票据），再看 `control_role.assign` 审计；`control_permissions=0` 表示「没有任何显式 enable」，不是「未计算」。
+
+### 2.6 compat 登录 2FA 运维（v0.10.0）
+
+- 开启方式与面板一致：成员在面板里完成 TOTP 启用（`/auth/2fa/enable`）；开启后**原生客户端登录也必须过第二步**。
+- 现象：客户端先弹「2FA code」输入框（服务端返回 `tfa_type=totp`），输入 6 位码后才进入；密码错误/验证码错误都计入同一账号锁定计数（与面板共用）。
+- **同码两次登录会失败**：面板与客户端共用 `user_totps.last_step`，同一 30 秒窗口内先用面板登录、再用同一个码登录客户端会被判重放。等下一窗口即可，不是故障。
+- 用户丢失设备：管理员走 `POST /orgs/{orgId}/members/{userId}/2fa/reset`（与面板 2FA 同一入口，见 §3.1 的跨组织边界）。
+- 挑战记录存 `compat_login_challenges`（TTL 5 分钟、单次消费、失败 5 次作废）；表无需手工清理，过期行不影响登录，可按需在维护窗口删除。
+- 注意：**未配置 `auth.secret` 时 2FA 相关操作 fail closed**；轮换 `auth.secret` 会让既有 TOTP 秘密无法解密，必须先重置用户的 2FA。
+
+
 ---
 
 ## 3. 审计日志
@@ -154,6 +174,17 @@
 - **回收站（地址簿 v0.8.0）**：删除的 peer 软删除保留 30 天，每小时清扫永久删除过期行；恢复会 bump revision，永久删除不动 revision 与 live 内容。
 - **个人令牌（v0.8.0）**：只在组织路径生效；有效权限 = 申请集 ∩ 当前角色权限集，每请求实时重算。列表只显示 `token_prefix`，明文只在创建响应出现一次；遗失令牌请直接撤销后重建。**令牌权限是硬上限**：地址簿写入即使由所有权或 full 授权放行，仍要求令牌含 `addressbook.write`，否则 403。
 - **管理面 2FA（v0.8.0）**：启用后用户登录需要第二步（`/auth/2fa/verify`，与登录共用两轨限流）。用户丢失设备与恢复码时，由 owner/admin 用 `POST /orgs/{orgId}/members/{userId}/2fa/reset` 重置（写 `user.2fa.reset` 审计）。**边界**：2FA 是账号级而非组织级——管理员不能重置自己（409，自服务走 `/auth/2fa/disable`）；目标在本组织是 owner 时只有 owner（`org.admin`）能重置；目标只要**在本组织之外还存在任何会籍**（无论角色、含已停用）就一律拒绝（403）——账号级因素同时保护其在其他组织的登录，清除它会让任一组织的管理员越权削弱别租户；这类跨组织用户的账号恢复只能走平台级运维（系统外）。TOTP 密钥以 `auth.secret` 派生的密钥加密存储，**未配置 `auth.secret` 时 2FA 操作 fail closed**（500）；**轮换 `auth.secret` 会让既有 2FA 配置无法解密**，须先重置相关用户 2FA 再轮换。**启用流程原子化**：已启用的配置不会被再次 setup 覆盖（行锁 + `enabled_at IS NULL` 条件写），Enable 只激活它校验过的那个待启用秘密——并发的 setup 不能把已激活账号"降级"回待启用状态。
+
+### 3.2 客户端连接 / 文件传输日志（v0.10.0）
+
+- 来源：原生客户端上报 `POST /api/audit/{conn,file,alarm}`（无 Authorization，靠 `(id, uuid)` 与设备绑定比对；见 API 规范 §4.5）。**与 `sessions` 是两套记录**：`sessions` 是面板记账，这里是客户端侧证据。
+- 查询：`connection-logs` / `file-logs`（`audit.read` + `audit_scope`）。`individual` 只能看自己拥有设备（`owner_user_id`）的记录；想看全组织需要 `global` 审计范围。
+- 导出上限 1000 行，超出报 400 要求收窄；导出动作本身写 `connection_log.export` / `file_log.export` 审计。
+- 去重：客户端重试按 `nonce` 幂等 5 分钟；`audit_nonces` 由每 10 分钟的 worker 清理，正常运维无需干预。
+- 保留期：跟随组织 `audit_retention_days`（0 = 永久），`client-log-retention` 每小时删除过期行。**没有归档**：与审计日志不同，删了就没了；需要长期留存的证据请自行导出 CSV 到外部存储。
+- 可信度：知道 `(id, uuid)` 的人可以伪造上报，与免凭据心跳同一信任级。**不要把这两张表当作不可抵赖证据**；需要强证据时以 `sessions` + hbbs 日志采集交叉验证。
+- 常见现象：`close` 先于 `new` 到达会留下一条 `status=closed`、`started_at=ended_at` 的孤儿行（设计如此，用于保留证据）；备注只写进该会话最近一条 open 行，同一设备并发会话时可能落到相邻行。
+
 
 ---
 
@@ -262,4 +293,8 @@ Prometheus 指标端点属后续硬化项（见 #31 描述遗留清单）。
 | 成员看不到**自己的**设备 | 设备归属（§2.3.1）：`owner_user_id` 是否指向本人（登录自动归属只在设备无归属时生效，可能已被改派）、设备是否停用、该成员会籍是否停用；改派用管理面 `PATCH` |
 | 管理面 `POST /api/v1/auth/login` / `POST /api/v1/auth/2fa/verify` / `POST /api/v1/invitations/accept` 报 400 `captcha_required`/`captcha_invalid` | 验证码（§2.4）：客户端需先 `GET /api/v1/auth/captcha`；挑战过期/已用/答案错都归为 invalid，重新取挑战再试。compat `POST /api/login` 不接验证码，无需取挑战 |
 | 上述三个管理面入口报 503 `captcha_unavailable` | 提供商不可达且 `failMode=closed`（§2.4）：检查网络/提供商状态/秘密配置；确认后可临时 `open` 或停用验证码 |
+| 客户端登录弹出「2FA code」且输入后仍 401 | compat 2FA（§2.6）：码已过期/同窗口被面板用过（防重放）/挑战过期超 5 分钟；重新登录取新挑战。确认账号确实启用了 TOTP |
+| 票据/会话的 `control_permissions` 与预期不符 | 控制角色（§2.5）：快照取签发时刻、不回溯；`0` 表示无显式 enable。**原生客户端不受其约束** |
+| 连接/文件日志为空但客户端确实在跑 | 客户端需已登录（上报依赖登录态）且设备 `bound_uuid` 与应用一致；`uuid` 不符会被 403 丢弃（§3.2） |
+| 导出连接/文件日志报 400 | 结果超过 1000 行（§3.2）：加 `deviceId` / `from` / `to` 收窄 |
 | 全员登录被限流 429 | 挑战端点与登录各有一个独立的 5/min/IP 桶：排查是否有客户端在循环刷 `/api/v1/auth/captcha`；正常用户刷新一两次不会触发 |

@@ -43,8 +43,8 @@ func newRebindHarness(t *testing.T) *rebindHarness {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.DB.AutoMigrate(
-		&model.User{}, &model.RefreshToken{},
-		&model.Organization{}, &model.Membership{},
+		&model.User{}, &model.RefreshToken{}, &model.UserTOTP{},
+		&model.Organization{}, &model.Membership{}, &model.CompatLoginChallenge{},
 		&model.AuditLog{},
 		&model.Device{}, &model.DeviceHeartbeat{},
 		&model.CompatSession{},

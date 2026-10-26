@@ -16,6 +16,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/controlrole"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
@@ -68,6 +69,18 @@ type Service struct {
 	db       *gorm.DB
 	recorder audit.TxRecorder
 	now      func() time.Time
+	// controlRoles resolves the actor's in-session permissions at issuance.
+	// Nil means "not wired": tickets then carry a zero mask rather than a
+	// guessed one.
+	controlRoles *controlrole.Service
+}
+
+// WithControlRoles injects the control role resolver. Issuance snapshots the
+// actor's permissions onto the ticket so a later role edit cannot rewrite what
+// an already-issued ticket meant.
+func (s *Service) WithControlRoles(svc *controlrole.Service) *Service {
+	s.controlRoles = svc
+	return s
 }
 
 // NewService wires the service. recorder may be nil in tests that do not audit;
@@ -159,6 +172,22 @@ func (s *Service) Issue(ctx context.Context, in IssueInput) (model.Ticket, strin
 			PolicySnapshotJSON: string(snapshot),
 			ExpiresAt:          now.Add(time.Duration(ttl) * time.Second),
 			CreatedAt:          now,
+		}
+		if s.controlRoles != nil {
+			// Snapshot on the same transaction: the permissions recorded on the
+			// ticket are the ones that were effective when the token was minted,
+			// not whatever the role table says at redemption time (D7).
+			perms, mask, roleID, rerr := s.controlRoles.EffectiveForTx(tx, in.OrganizationID, in.ActorUserID)
+			if rerr != nil {
+				return fmt.Errorf("resolve control role: %w", rerr)
+			}
+			permsJSON, merr := json.Marshal(perms)
+			if merr != nil {
+				return fmt.Errorf("marshal control role snapshot: %w", merr)
+			}
+			ticket.ControlPermissions = mask
+			ticket.ControlRoleID = roleID
+			ticket.ControlRoleSnapshotJSON = string(permsJSON)
 		}
 		if err := tx.Create(&ticket).Error; err != nil {
 			return fmt.Errorf("create ticket: %w", err)
@@ -382,7 +411,10 @@ func (s *Service) Redeem(ctx context.Context, orgID, actorID, ticketID uint, tok
 			Status:         model.SessionStatusOpen,
 			TicketID:       &ticketID,
 			PolicyID:       policyID,
-			StartedAt:      now,
+			// Copied from the ticket: the session records what the operator was
+			// allowed to do when it started, independent of later role edits.
+			ControlPermissions: ticket.ControlPermissions,
+			StartedAt:          now,
 			// Without an activity clock the idle sweeper would close every panel
 			// session one idle window after redemption.
 			LastActivityAt: &now,

@@ -32,4 +32,7 @@ func registerDefaultScopedModels() {
 	RegisterScopedModel(&model.UserGroupMember{})
 	RegisterScopedModel(&model.DeviceGroup{})
 	RegisterScopedModel(&model.AccessRule{})
+	RegisterScopedModel(&model.ControlRole{})
+	RegisterScopedModel(&model.ConnectionLog{})
+	RegisterScopedModel(&model.FileLog{})
 }

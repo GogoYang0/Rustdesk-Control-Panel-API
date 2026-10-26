@@ -19,9 +19,19 @@ type Ticket struct {
 	// PolicySnapshotJSON is the effective policy at issuance time, kept for
 	// audit and troubleshooting after policies change or disappear. The JSON
 	// suffix marks it as "marshal before use".
-	PolicySnapshotJSON string     `gorm:"type:text" json:"policy_snapshot"`
-	ExpiresAt          time.Time  `gorm:"not null;index" json:"expires_at"`
-	UsedAt             *time.Time `json:"used_at"`
-	RevokedAt          *time.Time `json:"revoked_at"`
-	CreatedAt          time.Time  `json:"created_at"`
+	PolicySnapshotJSON string `gorm:"type:text" json:"policy_snapshot"`
+	// ControlRoleID is the role whose permissions were snapshotted; nil when no
+	// role service was wired or the actor resolves to no role.
+	ControlRoleID *uint `gorm:"index" json:"control_role_id"`
+	// ControlPermissions is the bitmask of permissions the actor holds in the
+	// "enable" state at issuance time (bit order = RustDesk protocol enum).
+	// Zero means "nothing explicitly enabled", not "not computed".
+	ControlPermissions uint64 `gorm:"not null;default:0" json:"control_permissions"`
+	// ControlRoleSnapshotJSON is the full tri-state map at issuance time. It is
+	// the only place "disable" survives: the bitmask cannot express it.
+	ControlRoleSnapshotJSON string     `gorm:"type:text" json:"control_role_snapshot"`
+	ExpiresAt               time.Time  `gorm:"not null;index" json:"expires_at"`
+	UsedAt                  *time.Time `json:"used_at"`
+	RevokedAt               *time.Time `json:"revoked_at"`
+	CreatedAt               time.Time  `json:"created_at"`
 }

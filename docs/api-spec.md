@@ -1,6 +1,6 @@
 # 后端 API 规范（Backend API Specification）
 
-> 适用版本：v0.10.0（M6 波次 1：交互式验证码；上一基线 v0.9.0）。本文档是对 `openapi.yaml`（契约 v0.10.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
+> 适用版本：v0.10.0（M6：波次 1 交互式验证码、波次 2 组模型下半场、波次 3 控制角色/客户端审计上报/compat 2FA；上一基线 v0.9.0）。本文档是对 `openapi.yaml`（契约 v0.10.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
 > 本文档随版本演进持续更新——契约变更的 PR 必须同步更新 §3/§4。
 > 配套文档：[部署指南](deployment.md) · [运维指南](operations.md)
 
@@ -343,6 +343,26 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 - `cap`：`params={"api_endpoint":"https://cap.example.com/<site_key>/","site_key":"..."}`（尾斜杠必需：widget 会拼接 `challenge`/`redeem`）。
 - 挑战只对 `altcha` 携带 `maxNumber`（解题上限）；挑战 TTL 由部署配置（`1m–10m`），外部提供商校验超时固定 3 秒，见 [部署指南 §3.2](deployment.md)。
 
+### 3.12 控制角色（v0.10.0）
+
+控制角色（Control Role）定义「**连上之后能做什么**」，与访问控制（能否连接）、Strategy（改被控端设置）是三件不同的事。
+
+- 端点：`GET|POST /orgs/{orgId}/control-roles`、`PATCH|DELETE /orgs/{orgId}/control-roles/{roleId}`、`PUT /orgs/{orgId}/members/{userId}/control-role`。读取要求组织成员；写入要求 `control_role.manage`（owner 全量、admin 由内置集合授予，**不可委派**）。
+- 权限集合是 **14 个协议键的三态映射**：`use_client`（不覆盖被控端本地设置，缺省值）/ `enable` / `disable`；键与 RustDesk 客户端 `ControlPermissions.Permission` 枚举一一对应（`keyboard`=bit0 … `usb`=bit13）。未知键或非法状态整单 `400`。
+- 内置 `default` 角色：每个组织一行，**不可删除、不可改名**，权限可改；未分配角色的成员回退到它。删除自定义角色会在同一事务里清空持有者的 `control_role_id`（回到 default）。成员列表/详情通过 `Member.control_role_id`（可空）回读当前分配，名称由 `GET /control-roles` 解析。
+- 快照语义：票据签发时按操作人计算并写入 `tickets.control_role_id` / `control_permissions`（14 位 bitmask）与完整三态快照，兑换时复制到 `sessions.control_permissions`。**之后修改角色不会改写已签发的票据**（票据 TTL ≤ 15 分钟）。
+- **执行边界（必读）**：`control_permissions` 由 hbbs 在信令消息（`PunchHole`/`RequestRelay`/`FetchLocalAddr`）里注入，本面板**不在信令链路**（设计 D10），provision 起的是 stock rustdesk-server——因此**原生客户端会话不受控制角色约束**。本版本交付的是管理面模型、票据快照与审计证据；执行面属于 M7 网页客户端（读票据快照）或未来的 Pro 兼容 hbbs。不要据此向用户承诺「已在客户端生效」。
+
+### 3.13 客户端连接 / 文件传输日志（v0.10.0）
+
+数据来自原生客户端主动上报（§4.5），与面板签发的 `sessions` 是两套记录：前者是**被控端视角的连接与传输证据**，后者是面板侧记账。
+
+- `GET /orgs/{orgId}/connection-logs`、`GET .../connection-logs/export`、`GET /orgs/{orgId}/file-logs`、`GET .../file-logs/export`；权限 `audit.read`。
+- 可见范围复用角色 `audit_scope`：`global` 看全组织；`individual` 只看自己拥有设备（`devices.owner_user_id`）的记录；`individual` 且用户 id 为 0 时返回空页（不退化成全量）。
+- 过滤：`deviceId`、`rustdeskId`、`from`/`to`（连接日志比较 `started_at`，文件日志比较 `created_at`，均为含边界）。
+- 导出口径：单次最多 **1000** 行，超出返回 `400` 要求收窄（不静默截断）；CSV 单元格对 `= + - @` 前缀加 `'` 防公式注入；导出写审计 `connection_log.export` / `file_log.export`（含过滤条件与行数），审计写不进去则不返回文件。
+- 保留期：两张表跟随组织 `audit_retention_days`（0 = 永久），由 `client-log-retention` 每小时清扫；**不做归档**——这些行是证据而非审计卷宗，删除即不可恢复。
+
 ---
 
 ## 4. compat 层（RustDesk 原生客户端）
@@ -359,6 +379,8 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `POST /api/logout` | 撤销当前 compat 会话 |
 | `POST /api/currentUser` | 当前用户信息（需 Bearer） |
 | `GET /api/peers` | 设备列表（需 Bearer）：v0.4.0 起按会话所属组织隔离；v0.9.0 起按访问规则过滤并隐藏停用设备，owner/admin 返回组织内全部**未停用**设备（见 §3.10） |
+
+> **v0.10.0 两步登录（TOTP）**：账号启用 TOTP 后，`POST /api/login` 的密码步骤不再直接发 token，而是返回 **200** `{"type":"email_check","tfa_type":"totp","secret":"<挑战>","user":{...}}`（客户端对任何非 `email_check` 的 `tfa_type` 显示「2FA code」，已核对 `src/ui/index.tis`）。第二步用 `{"type":"email_code","id","uuid","verificationCode","tfaCode","secret"}`（客户端两个字段都填，服务端 `tfaCode` 优先）换取 token。挑战 5 分钟有效、**单次消费**、绑定 `id + uuid`（换机器 401）、失败 5 次作废；失败同样计入登录锁定计数。未启用 TOTP 的账号走 `email_code` 一律 401（不允许绕过密码）。**与面板共用同一 TOTP 秘密与防重放步进**：同一 30 秒窗口内先在面板登录、再用同码登录客户端会被判重放，这是预期行为。`email_check`（邮件验证码）本版本未实现——面板的邮箱验证只用于注册激活。
 
 > **v0.10.0 `POST /api/devices/cli`（`--assign`）**：RustDesk 客户端 `rustdesk --assign` 的真实调用点（已核对上游 `core_main.rs`）。鉴权用**个人令牌**（`Authorization: Bearer rdt_...`，非 compat token）：令牌无效/过期/已撤销 → `401`；**有效权限 = 令牌申请集 ∩ 令牌所有者当前角色权限集**（实时重算），不含 `device.write` → `403`。
 > 请求体白名单（其余字段一律 `400`，错误信息含字段名——**不静默忽略**，因为静默忽略会让调用方误以为下发成功）：`id`（rustdesk id，必填）、`uuid`（接受但**不落库**，绑定只由登录路径维护）、`user_name`（本组织成员的邮箱，精确匹配；非成员与平台内不存在的邮箱返回**同一个** `404`，响应不可区分——`users` 表是跨组织全局的，区分开就等于给持令牌者一个全局账号探针）、`device_group_name`（本组织的设备组名，大小写不敏感，不存在 → `404`）、`device_name`（设备显示名，≤128 字符）、`note`（运维备注，≤255 字符）。不支持 `strategy_name`、`address_book_*`、`device_username`：Strategy 未实现（波次 5），后两类在本系统无对应概念。
@@ -414,6 +436,22 @@ compat 地址簿**只服务个人地址簿**（`EnsurePersonalBook`），共享�
 - compat 整本写入（`/api/ab`）带 content hash → 冲突 409，**仅个人簿**
 - 管理 API 的 `PUT .../peers` 无冲突检测（最后写入者生效，revision 仅对比用）——共享簿由客户端自行协调
 
+### 4.5 客户端审计上报（v0.10.0）
+
+客户端把连接、文件传输与告警记录 POST 到 `/api/audit/{conn,file,alarm}`。**三个端点都不带 `Authorization`**（客户端 `post_request(url, body, "")`，已核对 `src/common.rs` 与 `src/server/connection.rs`），因此真实性只能靠请求体里的 `(id, uuid)` 与设备绑定比对：
+
+| 端点 | 载荷要点 |
+|---|---|
+| `POST /api/audit/conn` | `{id, uuid, action:"new"\|"close", ip, conn_id, session_id, nonce, conn_audit_ref?}`；`new` 建行、`close` 只关闭同一 `(id, conn_id, session_id)` 的 open 行，找不到则写一行已关闭的 orphan 行（证据不丢） |
+| `POST /api/audit/conn`（备注） | 客户端的「发送备注」只发 `{id, session_id, note}`（无 uuid/action/nonce），服务端追加到该会话最近一条 open 行（≤512 字符） |
+| `POST /api/audit/file` | `{id, uuid, peer_id, conn_id, type:0\|1, path, is_file, info, nonce}`；`type` 0=send、1=receive，`info` 是 JSON 字符串（ip/name/num/files） |
+| `POST /api/audit/alarm` | `{id, uuid, typ, info, conn_id, nonce, conn_audit_ref?}`；落 `audit_logs`，动作 `client.alarm.<类型>`（未知类型保留编号，不丢弃） |
+
+- 校验顺序：字段缺失/超长 → `400`；`id` 在本组织查不到设备或 `uuid` 与绑定不符（含空绑定）→ `403`。
+- `nonce` 去重窗口 **5 分钟**（上游注释：api server only remembers a nonce for five minutes；客户端重试上限 120 秒）。重复 nonce 返回 **200** 幂等，不重复落行。去重标记由 `audit-nonce-sweep` 每 10 分钟清理。
+- 风险边界：知道 `(id, uuid)` 的人可以伪造记录——uuid 不随请求加密，这与免凭据 heartbeat 同一信任级；不要在事故调查中把这两张表当作不可抵赖证据。
+- **备注路径更弱**：客户端「发送备注」只带 `{id, session_id, note}`，没有 uuid。服务端要求该 `id` 在全平台唯一命中一台设备（0 或 >1 台一律 403），并用命中的组织 + `device_id` 收敛写入范围，因此不会跨租户；但同一组织内，知道正在进行的 rustdesk id 与会话编号的人仍可追加文本。备注只是标注，不承担证据强度。
+
 ---
 
 ## 5. 与官方客户端的兼容性注记
@@ -427,7 +465,7 @@ compat 地址簿**只服务个人地址簿**（`EnsurePersonalBook`），共享�
 
 ## 6. 版本与变更管理
 
-- 契约版本随 release 演进：v0.1.0（M0）→ v0.2.0（M1）→ v0.3.0（M2）→ v0.4.0（M3，会话治理域）→ v0.5.0（设备管理增量）→ v0.6.0（成员离场）→ v0.7.0（按组织 provisioning 开关）→ v0.8.0（M4：角色模型、审计查询/导出、停用、地址簿授权与回收站、令牌、2FA）→ v0.9.0（M5：访问控制——用户组/设备组/组规则、peers 过滤与票据准入）→ **v0.10.0（M6 波次 1：交互式验证码——Altcha/GeeTest/Cap、三入口准入）**
+- 契约版本随 release 演进：v0.1.0（M0）→ v0.2.0（M1）→ v0.3.0（M2）→ v0.4.0（M3，会话治理域）→ v0.5.0（设备管理增量）→ v0.6.0（成员离场）→ v0.7.0（按组织 provisioning 开关）→ v0.8.0（M4：角色模型、审计查询/导出、停用、地址簿授权与回收站、令牌、2FA）→ v0.9.0（M5：访问控制——用户组/设备组/组规则、peers 过滤与票据准入）→ v0.10.0（M6：波次 1 交互式验证码——Altcha/GeeTest/Cap、三入口准入；波次 2 组模型下半场；**波次 3 控制角色、客户端审计上报与连接/文件日志、compat 登录 TOTP**）
 - v0.6.0 为**加性变更**：新增 `DELETE/PATCH /orgs/{orgId}/members/{userId}`（#39 撤销接线）。v0.5.0 的新增设备列表与 rebind 保持不变；仍不提供 `DELETE` 设备
 - v0.7.0 为**加性变更**：新增 `GET/PUT /orgs/{orgId}/provisioning` 与 `ProvisioningStatus.cleanup_pending`；既有端点请求/响应形状与字段不变
 - v0.9.0 为**加性变更**（新增 user-groups/device-groups/access-rules 端点、`access.manage` 权限目录项与 `Device.device_group_id` 字段），但**票据访问语义有变化**：签发/兑换新增访问控制判定（拒绝 `404 not_found`），停用设备的签发由成功变为 `404`（兑换仍为 `409`）；客户端需处理该分支

@@ -77,7 +77,7 @@ func WriteCSV(w io.Writer, rows []model.AuditLog, emails map[uint]string) error 
 			row.Detail,
 		}
 		for i := range record {
-			record[i] = escapeFormula(record[i])
+			record[i] = EscapeFormula(record[i])
 		}
 		if err := out.Write(record); err != nil {
 			return err
@@ -87,11 +87,11 @@ func WriteCSV(w io.Writer, rows []model.AuditLog, emails map[uint]string) error 
 	return out.Error()
 }
 
-// escapeFormula prefixes a leading formula trigger with a single quote. The
+// EscapeFormula prefixes a leading formula trigger with a single quote. The
 // escaped cell stays readable and the spreadsheet never evaluates it. Control
 // prefixes (tab, CR, LF) are included: some spreadsheets strip them and then
 // evaluate the remainder as a formula.
-func escapeFormula(cell string) string {
+func EscapeFormula(cell string) string {
 	if cell == "" {
 		return cell
 	}

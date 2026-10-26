@@ -31,6 +31,10 @@ type harness struct {
 	db     store.Store
 	issuer *auth.Issuer
 	guard  *limit.LoginGuard
+	// totp is the same service the login endpoints use, so tests can enroll a
+	// user and generate codes against one controllable clock.
+	totp *auth.TOTPService
+	now  time.Time
 }
 
 func newHarness(t *testing.T) *harness {
@@ -42,7 +46,7 @@ func newHarness(t *testing.T) *harness {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.DB.AutoMigrate(
-		&model.User{}, &model.RefreshToken{},
+		&model.User{}, &model.RefreshToken{}, &model.UserTOTP{},
 		&model.Organization{}, &model.Membership{}, &model.Invitation{},
 		&model.AuditLog{},
 		&model.Device{}, &model.DeviceHeartbeat{},
@@ -52,19 +56,34 @@ func newHarness(t *testing.T) *harness {
 		// role and the organization's groups and rules.
 		&model.Role{}, &model.UserGroup{}, &model.UserGroupMember{},
 		&model.DeviceGroup{}, &model.AccessRule{},
+		// Client audit ingest: connection/file rows plus the nonce dedupe table.
+		&model.ConnectionLog{}, &model.FileLog{}, &model.AuditNonce{},
+		&model.CompatLoginChallenge{},
 	))
 
 	issuer := auth.NewIssuer("test-secret", time.Minute, time.Hour)
 	guard := limit.NewLoginGuard()
 	r := gin.New()
+	h := &harness{
+		router: r,
+		db:     *st,
+		issuer: issuer,
+		guard:  guard,
+		// Local time basis on purpose: the harness anchors the session and
+		// challenge clocks, and existing tests compare against time.Now().
+		now: time.Now().Truncate(30 * time.Second),
+	}
+	h.totp = auth.NewTOTPService(st.DB, "test-secret", func() time.Time { return h.now })
 	compatapi.Mount(r, compatapi.Deps{
 		DB:        st.DB,
 		Issuer:    issuer,
 		Devices:   device.NewService(st.DB, nil, nil),
 		Guard:     guard,
+		TOTP:      h.totp,
+		Now:       func() time.Time { return h.now },
 		AccessTTL: time.Hour,
 	})
-	return &harness{router: r, db: *st, issuer: issuer, guard: guard}
+	return h
 }
 
 func (h *harness) do(t *testing.T, method, path string, body any, token string) *httptest.ResponseRecorder {

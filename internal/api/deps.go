@@ -15,7 +15,9 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/captcha"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/controlrole"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logquery"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/provision"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/session"
@@ -63,6 +65,14 @@ type Deps struct {
 	// Access owns user groups, device groups and access rules. NewAdminAPI
 	// derives it from DB and the transactional auditor when nil.
 	Access *access.Service
+
+	// ControlRoles owns in-session roles and member assignments. NewAdminAPI
+	// derives it from DB and the transactional auditor when nil.
+	ControlRoles *controlrole.Service
+
+	// LogQuery reads the client-reported connection/file logs. NewAdminAPI
+	// derives it from DB when nil.
+	LogQuery *logquery.Service
 
 	// Tokens mints and validates personal API tokens. NewRouter derives it from
 	// DB when nil so tests and the entrypoint share the same wiring.
@@ -154,6 +164,15 @@ func NewAdminAPI(d Deps) *AdminAPI {
 		recorder, _ := d.Auditor.(audit.TxRecorder)
 		d.Access = access.NewService(d.DB, recorder, d.Now)
 	}
+	if d.ControlRoles == nil {
+		// Same fail-closed rule as Access: no transactional recorder means every
+		// role mutation is refused rather than committed unaudited.
+		recorder, _ := d.Auditor.(audit.TxRecorder)
+		d.ControlRoles = controlrole.NewService(d.DB, recorder, d.Now)
+	}
+	if d.LogQuery == nil {
+		d.LogQuery = logquery.NewService(d.DB)
+	}
 	if d.TOTP == nil {
 		d.TOTP = auth.NewTOTPService(d.DB, d.AuthSecret, d.Now)
 	}
@@ -178,7 +197,10 @@ func NewAdminAPI(d Deps) *AdminAPI {
 		if !ok {
 			panic("api: transactional auditor required when Tickets is nil")
 		}
-		tickets = session.NewService(d.DB, recorder, d.Now)
+		// Wire the control role resolver: issuance snapshots the actor's
+		// permissions onto the ticket, and the API tests exercise the real path
+		// instead of a service without role awareness.
+		tickets = session.NewService(d.DB, recorder, d.Now).WithControlRoles(d.ControlRoles)
 	}
 
 	return &AdminAPI{

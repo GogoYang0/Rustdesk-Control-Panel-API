@@ -27,9 +27,11 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/captcha"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/controlrole"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logcollect"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logger"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logquery"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/provision"
@@ -111,8 +113,17 @@ func main() {
 		&model.Ticket{}, &model.Policy{},
 		&model.Approval{}, &model.Alert{},
 		&model.UserGroup{}, &model.UserGroupMember{}, &model.DeviceGroup{}, &model.AccessRule{},
+		&model.ControlRole{}, &model.ConnectionLog{}, &model.FileLog{}, &model.AuditNonce{},
+		&model.CompatLoginChallenge{},
 	); err != nil {
 		lg.Fatal("migrate database", zap.Error(err))
+	}
+
+	// Every organization needs its built-in default control role, otherwise a
+	// member without an assignment would have no permission set at all. The
+	// unique index on (organization_id, name) makes the concurrent boot safe.
+	if err := controlrole.Migrate(st.DB, time.Now); err != nil {
+		lg.Fatal("migrate control roles", zap.Error(err))
 	}
 
 	// Roles are the authorization source from v0.8.0: every organization gets
@@ -258,7 +269,12 @@ func main() {
 	// One session service shared by the API handlers, the log collector's
 	// session hook and the background tasks: all three mutate the same rows,
 	// so they must see one clock and one audit recorder.
-	sessionSvc := session.NewService(st.DB, auditor, time.Now)
+	sessionSvc := session.NewService(st.DB, auditor, time.Now).
+		WithControlRoles(controlrole.NewService(st.DB, auditor, time.Now))
+
+	// Client audit ingest: the same service the compat endpoints use, exposed
+	// here for its nonce sweep.
+	auditIngest := logquery.New(st.DB, auditor, time.Now)
 
 	// Log collection: one tailer pair per provisioned organization. The queue
 	// hook starts the tailers of a fresh deployment immediately instead of
@@ -395,6 +411,48 @@ func main() {
 		},
 	}); err != nil {
 		lg.Fatal("register audit retention sweep", zap.Error(err))
+	}
+
+	// Client audit dedupe markers outlive their usefulness quickly: the upstream
+	// API server remembers a nonce for five minutes and the client retries for at
+	// most two, so a ten-minute sweep keeps the table bounded without ever
+	// dropping a marker a live retry could still need.
+	if err := sched.Register(worker.Task{
+		Name:       "audit-nonce-sweep",
+		Interval:   10 * time.Minute,
+		RunOnStart: true,
+		Run: func(ctx context.Context) (int64, error) {
+			return auditIngest.SweepNonces(ctx, time.Now(), 10*time.Minute)
+		},
+	}); err != nil {
+		lg.Fatal("register audit nonce sweep", zap.Error(err))
+	}
+
+	// Second-factor challenges are minted on every password step of an account
+	// with TOTP; sweeps keep the table from growing with login attempts.
+	if err := sched.Register(worker.Task{
+		Name:       "compat-2fa-sweep",
+		Interval:   time.Hour,
+		RunOnStart: true,
+		Run: func(ctx context.Context) (int64, error) {
+			return logquery.SweepChallenges(st.DB, time.Now())
+		},
+	}); err != nil {
+		lg.Fatal("register compat 2fa sweep", zap.Error(err))
+	}
+
+	// Client connection/file logs follow the organization's audit retention
+	// window (0 = keep forever). They are evidence rather than an archive, so
+	// the cutoff is the only bound: no JSONL pass precedes the delete.
+	if err := sched.Register(worker.Task{
+		Name:       "client-log-retention",
+		Interval:   time.Hour,
+		RunOnStart: true,
+		Run: func(ctx context.Context) (int64, error) {
+			return logquery.Prune(ctx, st.DB, time.Now())
+		},
+	}); err != nil {
+		lg.Fatal("register client log retention sweep", zap.Error(err))
 	}
 
 	if cfg.Logcollect.RetentionSweepInterval > 0 {
