@@ -12,7 +12,7 @@
 | T1 模型、迁移、租户注册 | ✅ 完成 | `bfe130c` |
 | T2 Control Role 服务层（Normalize/Mask/CRUD/Assign/EffectiveFor） | ✅ 完成 | `8d10644` |
 | T2 契约 + handler + 成员分配端点 | ✅ 完成 | `16ee672` |
-| T3 票据/会话快照接线 | ⏳ 未开始 | — |
+| T3 票据/会话快照接线 | ✅ 完成 | `898474a` |
 | T4 客户端审计上报 | ⏳ 未开始 | — |
 | T5 日志查询导出与保留期 | ⏳ 未开始 | — |
 | T6 compat 登录 2FA | ⏳ 未开始 | — |
@@ -93,3 +93,18 @@ ok  cmd/server      0.255s
 - 新增权限 `control_role.manage`（不可委派；admin 内置集合授予；`MigrateAccessPermission` 每次启动重写内置集合，存量组织自动获得）。
 - 变异验证：删掉 `CreateControlRole` 的 `requirePerm` → `TestControlRole_RequiresManagePermission` 转红；恢复后转绿、`git diff` 为空。
 - 覆盖：成员 403/列表 200、跨组织 404、default 不可改名/不可删（409）但可改权限、未知键与非法状态 400、分配与 `null` 清除、删除清空分配、审计恰好一条 `control_role.create` 且无 HTTP 回退行。
+
+### T3（票据/会话快照）验证证据
+
+```
+go test ./internal/session/ ./internal/controlrole/ ./internal/api/ ./cmd/server/ -count=1
+ok  internal/session      3.003s
+ok  internal/controlrole  0.354s
+ok  internal/api         37.137s
+ok  cmd/server            0.236s
+go generate ./... && git status --porcelain → 空（提交后复核）
+```
+- 契约：`Ticket.control_role_id`（nullable）、`Ticket.control_permissions`（required，bitmask）、`Session.control_permissions`（required）；说明文字明写「原生会话不执行该位图」。
+- 接线：`session.Service.WithControlRoles`；签发事务内 `EffectiveForTx` 计算并落快照；兑换复制到会话；`api.NewAdminAPI` 与 `cmd/server` 均注入。
+- 变异验证：把 `ticket.ControlPermissions = mask` 改成 `mask ^ mask` → `TestIssue_SnapshotsControlPermissions` 断言失败（expected 0xc, actual 0x0）；恢复后全绿、`git diff` 为空。
+- 测试覆盖：启用位 bitmask、disable 不置位、未分配回退 default、改角色不回溯旧票据、兑换复制、未接线保持 0。
