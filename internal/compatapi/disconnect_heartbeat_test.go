@@ -122,3 +122,38 @@ func TestHeartbeat_DisconnectAndStrategyTogether(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "N", options["enable-audio"])
 }
+
+// TestHeartbeat_ConnsCapAndDedupe: the id array comes from an unauthenticated
+// body. An oversized array is garbage and is discarded whole; duplicates are
+// collapsed so `conn_count` counts connections, not array entries.
+func TestHeartbeat_ConnsCapAndDedupe(t *testing.T) {
+	h := newHarness(t)
+	org, dev := loginHeartbeatDevice(t, h, "881006")
+	seedPendingDisconnect(t, h, org.ID, dev.ID)
+
+	// 65 entries: over the cap, nothing is echoed and nothing is consumed.
+	oversized := make([]any, 65)
+	for i := range oversized {
+		oversized[i] = i + 1
+	}
+	w := h.do(t, http.MethodPost, "/api/heartbeat", map[string]any{
+		"id": "881006", "uuid": "uuid-881006", "conns": oversized,
+	}, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	require.NotContains(t, decodeCompatBody(t, w), "disconnect")
+
+	var row model.DeviceDisconnect
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).First(&row).Error)
+	require.Equal(t, model.DisconnectStatusPending, row.Status)
+
+	// Duplicates collapse: the response carries each id once.
+	w = h.do(t, http.MethodPost, "/api/heartbeat", map[string]any{
+		"id": "881006", "uuid": "uuid-881006", "conns": []int{11, 11, 12},
+	}, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	require.Equal(t, []any{float64(11), float64(12)}, decodeCompatBody(t, w)["disconnect"])
+
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).First(&row).Error)
+	require.Equal(t, model.DisconnectStatusFulfilled, row.Status)
+	require.Equal(t, 2, row.ConnCount, "conn_count counts connections, not array entries")
+}

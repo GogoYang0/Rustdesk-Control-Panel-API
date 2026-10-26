@@ -1105,7 +1105,7 @@ paths:
         `config_options` 只接受白名单键（见 `Strategy.config_options` 说明）；
         未知键、超过 50 个键、值超过 256 字符或含控制字符均整单 400——客户端
         对收到的键**没有自己的白名单**，漏一个网络类键（如 `api-server`）就等于
-        把设备交给别人。新策略 `version=1`、`enabled=true`。
+        把设备交给别人。`version` 取自组织内单调的下发代次（首个策略为 1，此后递增，跨策略不重复）；`enabled=true`。
       tags:
         - orgs
       security:
@@ -5226,6 +5226,13 @@ components:
           type: integer
           format: int64
           description: 下发版本；作为心跳响应的 `modified_at` 交给客户端比对
+        cleared_keys:
+          type: array
+          items:
+            type: string
+          description: |
+            已从 `config_options` 移除、仍以空值随下发回传的键（v0.10.0）。
+            客户端只写收到的键，删除键必须显式清除，否则旧值会一直保留。
         enabled:
           type: boolean
           description: false 表示停用（保留行与分配，但心跳不下发）

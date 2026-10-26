@@ -2760,6 +2760,10 @@ type SessionStatus string
 
 // Strategy defines model for Strategy.
 type Strategy struct {
+	// ClearedKeys 已从 `config_options` 移除、仍以空值随下发回传的键（v0.10.0）。
+	// 客户端只写收到的键，删除键必须显式清除，否则旧值会一直保留。
+	ClearedKeys *[]string `json:"cleared_keys,omitempty"`
+
 	// ConfigOptions 下发给客户端的选项键值。**只允许以下 20 个键**（大小写与空格敏感，
 	// 必须逐字匹配）：
 	//

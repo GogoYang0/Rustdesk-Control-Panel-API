@@ -28,5 +28,8 @@ configs/config.local.yaml
 # stay in the local workspace only, never in the repository.
 .superpowers/
 
+# one-off maintenance scripts
+.tmp_*
+
 # git worktrees (superpowers using-git-worktrees)
 /.worktrees/

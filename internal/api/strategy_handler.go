@@ -25,10 +25,20 @@ func strategyResponse(row *model.Strategy) (gen.Strategy, error) {
 			return gen.Strategy{}, err
 		}
 	}
+	// Cleared keys are part of the operator-facing contract: without reading
+	// them back, the console cannot explain why a removed option keeps being
+	// delivered as an empty value.
+	cleared := []string{}
+	if row.ClearedKeysJSON != "" {
+		if err := json.Unmarshal([]byte(row.ClearedKeysJSON), &cleared); err != nil {
+			return gen.Strategy{}, err
+		}
+	}
 	return gen.Strategy{
 		Id:            int64(row.ID),
 		Name:          row.Name,
 		ConfigOptions: options,
+		ClearedKeys:   &cleared,
 		Version:       row.Version,
 		Enabled:       row.Enabled,
 		CreatedAt:     row.CreatedAt,

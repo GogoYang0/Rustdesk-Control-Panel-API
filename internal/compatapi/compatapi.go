@@ -54,7 +54,9 @@ type Deps struct {
 	// falls back to a read-only service on the same DB.
 	Access *access.Service
 	// Strategies resolves and delivers client strategies on the heartbeat
-	// response; nil falls back to a read-only service on the same DB.
+	// response. When nil, Mount builds one on the same DB with a GORM
+	// transactional auditor — the CLI `strategy_name` path assigns through
+	// this service and refuses unaudited writes.
 	Strategies *strategy.Service
 	// Tokens authenticates the personal token the client's `--assign` call
 	// carries; nil falls back to a service on the same DB.

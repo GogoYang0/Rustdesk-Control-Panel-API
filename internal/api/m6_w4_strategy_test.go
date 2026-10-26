@@ -14,6 +14,7 @@ type strategyView struct {
 	Id            int64             `json:"id"`
 	Name          string            `json:"name"`
 	ConfigOptions map[string]string `json:"config_options"`
+	ClearedKeys   []string          `json:"cleared_keys"`
 	Version       int64             `json:"version"`
 	Enabled       bool              `json:"enabled"`
 }
@@ -212,4 +213,28 @@ func TestStrategy_RejectsUnknownFields(t *testing.T) {
 	}, adminToken)
 	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 	require.Contains(t, w.Body.String(), "extra")
+}
+
+// TestStrategy_ClearedKeysReadBack: a removed key keeps being delivered as an
+// empty value; the console needs the list to explain that to the operator.
+func TestStrategy_ClearedKeysReadBack(t *testing.T) {
+	h, orgID, _, _, _, _, adminToken, _ := m4Org(t)
+	base := "/api/v1/orgs/" + itoa(orgID) + "/strategies"
+
+	w := h.do(t, http.MethodPost, base, map[string]any{
+		"name":           "Baseline",
+		"config_options": map[string]string{"enable-audio": "N", "enable-clipboard": "N"},
+	}, adminToken)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	var created strategyView
+	decodeData(t, w, &created)
+	require.Empty(t, created.ClearedKeys)
+
+	w = h.do(t, http.MethodPatch, base+"/"+itoa(created.Id), map[string]any{
+		"config_options": map[string]string{"enable-audio": "N"},
+	}, adminToken)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var updated strategyView
+	decodeData(t, w, &updated)
+	require.Equal(t, []string{"enable-clipboard"}, updated.ClearedKeys)
 }

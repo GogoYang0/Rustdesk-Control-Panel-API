@@ -113,35 +113,54 @@ func (s *Server) takeDisconnect(c *gin.Context, orgID, deviceID uint, conns []in
 	return drop, err
 }
 
+// maxHeartbeatConns bounds how many connection ids one heartbeat may carry. A
+// live client holds a handful; the field comes from an unauthenticated body,
+// so an oversized array is treated as garbage rather than partially trusted.
+const maxHeartbeatConns = 64
+
 // parseConnIDs converts the client's `conns` array into ids. The client sends
 // the ids it holds; anything that is not a positive integer that fits the
-// client's own i32 field is dropped rather than guessed at.
+// client's own i32 field is dropped rather than guessed at. An oversized array
+// is discarded whole: the ids would otherwise be echoed back as disconnect
+// targets and serialized into the hottest table.
 func parseConnIDs(raw []any) []int64 {
+	if len(raw) > maxHeartbeatConns {
+		return nil
+	}
 	out := make([]int64, 0, len(raw))
+	seen := make(map[int64]bool, len(raw))
 	for _, v := range raw {
-		switch n := v.(type) {
+		var n int64
+		switch x := v.(type) {
 		case float64:
-			if n <= 0 || n != float64(int64(n)) || n > math.MaxInt32 {
+			if x <= 0 || x != float64(int64(x)) || x > math.MaxInt32 {
 				continue
 			}
-			out = append(out, int64(n))
+			n = int64(x)
 		case int:
-			if n <= 0 || int64(n) > math.MaxInt32 {
+			if x <= 0 || int64(x) > math.MaxInt32 {
 				continue
 			}
-			out = append(out, int64(n))
+			n = int64(x)
 		case int64:
-			if n <= 0 || n > math.MaxInt32 {
+			if x <= 0 || x > math.MaxInt32 {
 				continue
 			}
-			out = append(out, n)
+			n = x
 		case json.Number:
-			i, err := n.Int64()
+			i, err := x.Int64()
 			if err != nil || i <= 0 || i > math.MaxInt32 {
 				continue
 			}
-			out = append(out, i)
+			n = i
+		default:
+			continue
 		}
+		if seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
 	}
 	return out
 }

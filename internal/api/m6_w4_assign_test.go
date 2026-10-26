@@ -81,6 +81,9 @@ func TestStrategyAssign_DeviceGroupAndMember(t *testing.T) {
 	w = h.do(t, http.MethodGet, "/api/v1/orgs/"+itoa(orgID)+"/members", nil, adminToken)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	decodeData(t, w, &members)
+	// Reset: `found` was set by the device loop above and would make this
+	// assertion vacuous.
+	found = false
 	for _, m := range members {
 		if m.UserId == int64(member.ID) {
 			require.NotNil(t, m.StrategyId)

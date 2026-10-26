@@ -108,7 +108,12 @@ func (s *Service) Create(ctx context.Context, orgID, actorID uint, name string, 
 		}
 		if cerr := scoped.Create(&row).Error; cerr != nil {
 			// A concurrent create may have won between the check and the
-			// insert; report it as the name conflict it is.
+			// insert. On PostgreSQL the loser's transaction is aborted, so the
+			// in-transaction re-check below cannot run; the constraint error
+			// itself is the name conflict and must surface as 409, not 500.
+			if isDuplicateKeyError(cerr) {
+				return ErrDuplicateName
+			}
 			if taken, _ := strategyNameTaken(scoped, clean, 0); taken {
 				return ErrDuplicateName
 			}
@@ -228,6 +233,11 @@ func (s *Service) Update(ctx context.Context, orgID, actorID, id uint, in Update
 
 		updates["updated_at"] = s.now()
 		if err := scoped.Model(&model.Strategy{}).Where("id = ?", row.ID).Updates(updates).Error; err != nil {
+			// Same reasoning as Create: a rename that loses a race against a
+			// concurrent create with the folded name is a conflict, not a 500.
+			if isDuplicateKeyError(err) {
+				return ErrDuplicateName
+			}
 			return err
 		}
 		if err := scoped.First(&updated, row.ID).Error; err != nil {
@@ -409,6 +419,22 @@ func strategyNameTaken(scoped *gorm.DB, name string, excludeID uint) (bool, erro
 		return false, err
 	}
 	return count > 0, nil
+}
+
+// isDuplicateKeyError reports whether the driver rejected a row because a
+// unique constraint fired. The message forms differ per dialect ("UNIQUE
+// constraint failed" on SQLite, "duplicate key value violates unique
+// constraint" on PostgreSQL, "Duplicate entry" on MySQL), and the caller often
+// cannot re-check inside an aborted PostgreSQL transaction, so the error itself
+// has to be classified.
+func isDuplicateKeyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unique constraint") ||
+		strings.Contains(msg, "duplicate key") ||
+		strings.Contains(msg, "duplicate entry")
 }
 
 // marshalOptions renders the option map canonically. encoding/json sorts map
