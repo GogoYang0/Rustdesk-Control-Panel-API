@@ -2,6 +2,7 @@ package device_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -24,8 +25,13 @@ func assignFixture(t *testing.T) (*store.Store, *device.Service, model.Organizat
 	))
 	org := model.Organization{Name: "assign-org"}
 	require.NoError(t, st.DB.Create(&org).Error)
-	alice := model.User{Email: "alice@example.com", EmailVerified: true}
-	bob := model.User{Email: "bob@example.com", EmailVerified: true}
+	// CI runs this suite against one shared PostgreSQL/MySQL database (see
+	// openDeviceStore), so every fixture row behind a global unique index needs
+	// a per-test value: the users.email index is unique across the whole
+	// database, not per organization.
+	suffix := strings.ReplaceAll(t.Name(), "/", "-")
+	alice := model.User{Email: "alice+" + suffix + "@example.com", EmailVerified: true}
+	bob := model.User{Email: "bob+" + suffix + "@example.com", EmailVerified: true}
 	require.NoError(t, st.DB.Create(&alice).Error)
 	require.NoError(t, st.DB.Create(&bob).Error)
 	require.NoError(t, st.DB.Create(&model.Membership{OrganizationID: org.ID, UserID: alice.ID, RoleID: 1}).Error)
@@ -53,7 +59,8 @@ func TestAssign_SetsOwnerAndAudits(t *testing.T) {
 	require.NoError(t, store.WithoutTenantScope(st.DB).
 		Where("organization_id = ? AND action = ?", org.ID, "device.assign").First(&entry).Error)
 	require.Contains(t, entry.Detail, `"from":null`)
-	require.Contains(t, entry.Detail, `"to":1`, "the new owner is the audit's subject")
+	require.Contains(t, entry.Detail, fmt.Sprintf(`"to":%d`, alice.ID),
+		"the new owner is the audit's subject")
 }
 
 func TestAssign_ClearsOwnerWithZero(t *testing.T) {
@@ -75,7 +82,10 @@ func TestAssign_ClearsOwnerWithZero(t *testing.T) {
 
 func TestAssign_RejectsForeignOwner(t *testing.T) {
 	st, svc, org, alice, _, dev := assignFixture(t)
-	stranger := model.User{Email: "stranger@example.com", EmailVerified: true}
+	stranger := model.User{
+		Email:         "stranger+" + strings.ReplaceAll(t.Name(), "/", "-") + "@example.com",
+		EmailVerified: true,
+	}
 	require.NoError(t, st.DB.Create(&stranger).Error)
 
 	_, err := svc.Assign(context.Background(), org.ID, dev.ID, alice.ID,
