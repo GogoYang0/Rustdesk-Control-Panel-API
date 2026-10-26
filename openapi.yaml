@@ -849,6 +849,213 @@ paths:
         "409":
           $ref: "#/components/responses/Conflict"
 
+  /api/v1/orgs/{orgId}/control-roles:
+    get:
+      operationId: listControlRoles
+      summary: 列出控制角色
+      description: |
+        返回组织的内置 `default` 角色与全部自定义角色，``default`` 在前。
+        调用者必须是该组织成员；读取不需要 `control_role.manage`。
+
+        **控制角色只决定「连上后能做什么」，且当前不约束原生客户端会话**：
+        `control_permissions` 由 hbbs 在信令消息里注入，本面板不在信令链路
+        （设计 D10），因此角色只在票据上留下快照，供网页客户端与审计使用。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 控制角色列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ControlRoleListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      operationId: createControlRole
+      summary: 创建控制角色
+      description: |
+        需要 `control_role.manage`（owner 全量、admin 由内置集合授予，不可委派）。
+        权限键必须来自 14 个协议键；未知键或非法状态整单 400。名称在组织内唯一，
+        重名返回 409。缺失的权限键按 `use_client` 补全。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ControlRoleCreateRequest"
+      responses:
+        "201":
+          description: 已创建的控制角色
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ControlRoleResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/control-roles/{roleId}:
+    patch:
+      operationId: updateControlRole
+      summary: 更新控制角色
+      description: |
+        需要 `control_role.manage`。按字段更新，至少给出 `name` 或 `permissions` 之一。
+        内置 `default` 角色的**名称不可改**（改权限可以）：启动播种与「未分配即回退
+        default」都绑定该行；改名返回 409。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: roleId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ControlRoleUpdateRequest"
+      responses:
+        "200":
+          description: 更新后的控制角色
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ControlRoleResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      operationId: deleteControlRole
+      summary: 删除控制角色
+      description: |
+        需要 `control_role.manage`。内置 `default` 角色不可删（409）。删除在同一事务内
+        把持有该角色的会籍改回「未分配」（回退 default），并写审计。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: roleId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/members/{userId}/control-role:
+    put:
+      operationId: assignMemberControlRole
+      summary: 分配成员的控制角色
+      description: |
+        需要 `control_role.manage`。`control_role_id` 显式给 `null` 表示回到组织内置
+        `default` 角色。目标必须是本组织成员，角色必须属于本组织（跨组织 id 一律 404）。
+        写入与审计同事务。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ControlRoleAssignmentRequest"
+      responses:
+        "200":
+          description: 已分配
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/v1/orgs/{orgId}/user-groups:
     get:
       operationId: listUserGroups
@@ -4154,6 +4361,135 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Role"
+
+    ControlRoleKind:
+      type: string
+      description: |
+        - default：每个组织唯一的内置角色，不可删除，未分配角色的成员回退到它
+        - custom：管理员创建的角色
+      enum:
+        - default
+        - custom
+
+    ControlPermissionState:
+      type: string
+      description: |
+        单项权限的三态（对齐 RustDesk Server Pro）：
+        - use_client：不覆盖被控端本地设置
+        - enable：显式启用（覆盖本地设置）
+        - disable：显式禁用（覆盖本地设置）
+      enum:
+        - use_client
+        - enable
+        - disable
+
+    ControlPermissionStates:
+      type: object
+      description: |
+        14 个权限键到三态的映射，键与 RustDesk 客户端 `ControlPermissions.Permission`
+        枚举一一对应（bit 序号即声明顺序）：`keyboard`、`remote_printer`、
+        `clipboard`、`file`、`audio`、`camera`、`terminal`、`tunnel`、`restart`、
+        `recording`、`block_input`、`remote_modify`、`privacy_mode`、`usb`。
+        未知键或非法状态整单拒绝；缺失键按 `use_client` 补全。
+      additionalProperties:
+        $ref: "#/components/schemas/ControlPermissionState"
+
+    ControlRole:
+      type: object
+      required:
+        - id
+        - name
+        - kind
+        - permissions
+        - builtin
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          maxLength: 64
+        kind:
+          $ref: "#/components/schemas/ControlRoleKind"
+        permissions:
+          $ref: "#/components/schemas/ControlPermissionStates"
+        builtin:
+          type: boolean
+          description: true 表示内置 `default` 角色（不可删除、不可改名）
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ControlRoleCreateRequest:
+      type: object
+      required:
+        - name
+        - permissions
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        permissions:
+          $ref: "#/components/schemas/ControlPermissionStates"
+
+    ControlRoleUpdateRequest:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        permissions:
+          $ref: "#/components/schemas/ControlPermissionStates"
+
+    ControlRoleListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ControlRole"
+
+    ControlRoleResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/ControlRole"
+
+    ControlRoleAssignmentRequest:
+      type: object
+      required:
+        - control_role_id
+      properties:
+        control_role_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: 目标控制角色 id；`null` 表示回到组织内置 default 角色
 
     UserGroupKind:
       type: string

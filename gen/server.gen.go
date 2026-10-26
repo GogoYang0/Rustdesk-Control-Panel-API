@@ -193,6 +193,45 @@ func (e ApprovalStatus) Valid() bool {
 	}
 }
 
+// Defines values for ControlPermissionState.
+const (
+	Disable   ControlPermissionState = "disable"
+	Enable    ControlPermissionState = "enable"
+	UseClient ControlPermissionState = "use_client"
+)
+
+// Valid indicates whether the value is a known member of the ControlPermissionState enum.
+func (e ControlPermissionState) Valid() bool {
+	switch e {
+	case Disable:
+		return true
+	case Enable:
+		return true
+	case UseClient:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ControlRoleKind.
+const (
+	ControlRoleKindCustom  ControlRoleKind = "custom"
+	ControlRoleKindDefault ControlRoleKind = "default"
+)
+
+// Valid indicates whether the value is a known member of the ControlRoleKind enum.
+func (e ControlRoleKind) Valid() bool {
+	switch e {
+	case ControlRoleKindCustom:
+		return true
+	case ControlRoleKindDefault:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for DeviceStatus.
 const (
 	Offline DeviceStatus = "offline"
@@ -1191,6 +1230,116 @@ type CaptchaProof struct {
 	// payload）；`geetest` 传 `lot_number`、`captcha_output`、`pass_token`、
 	// `gen_time`；`cap` 传 `response`。
 	Response map[string]string `json:"response"`
+}
+
+// ControlPermissionState 单项权限的三态（对齐 RustDesk Server Pro）：
+// - use_client：不覆盖被控端本地设置
+// - enable：显式启用（覆盖本地设置）
+// - disable：显式禁用（覆盖本地设置）
+type ControlPermissionState string
+
+// ControlPermissionStates 14 个权限键到三态的映射，键与 RustDesk 客户端 `ControlPermissions.Permission`
+// 枚举一一对应（bit 序号即声明顺序）：`keyboard`、`remote_printer`、
+// `clipboard`、`file`、`audio`、`camera`、`terminal`、`tunnel`、`restart`、
+// `recording`、`block_input`、`remote_modify`、`privacy_mode`、`usb`。
+// 未知键或非法状态整单拒绝；缺失键按 `use_client` 补全。
+type ControlPermissionStates map[string]ControlPermissionState
+
+// ControlRole defines model for ControlRole.
+type ControlRole struct {
+	// Builtin true 表示内置 `default` 角色（不可删除、不可改名）
+	Builtin   bool      `json:"builtin"`
+	CreatedAt time.Time `json:"created_at"`
+	Id        int64     `json:"id"`
+
+	// Kind - default：每个组织唯一的内置角色，不可删除，未分配角色的成员回退到它
+	// - custom：管理员创建的角色
+	Kind ControlRoleKind `json:"kind"`
+	Name string          `json:"name"`
+
+	// Permissions 14 个权限键到三态的映射，键与 RustDesk 客户端 `ControlPermissions.Permission`
+	// 枚举一一对应（bit 序号即声明顺序）：`keyboard`、`remote_printer`、
+	// `clipboard`、`file`、`audio`、`camera`、`terminal`、`tunnel`、`restart`、
+	// `recording`、`block_input`、`remote_modify`、`privacy_mode`、`usb`。
+	// 未知键或非法状态整单拒绝；缺失键按 `use_client` 补全。
+	Permissions ControlPermissionStates `json:"permissions"`
+	UpdatedAt   time.Time               `json:"updated_at"`
+}
+
+// ControlRoleAssignmentRequest defines model for ControlRoleAssignmentRequest.
+type ControlRoleAssignmentRequest struct {
+	// ControlRoleId 目标控制角色 id；`null` 表示回到组织内置 default 角色
+	ControlRoleId *int64 `json:"control_role_id"`
+}
+
+// ControlRoleCreateRequest defines model for ControlRoleCreateRequest.
+type ControlRoleCreateRequest struct {
+	Name string `json:"name"`
+
+	// Permissions 14 个权限键到三态的映射，键与 RustDesk 客户端 `ControlPermissions.Permission`
+	// 枚举一一对应（bit 序号即声明顺序）：`keyboard`、`remote_printer`、
+	// `clipboard`、`file`、`audio`、`camera`、`terminal`、`tunnel`、`restart`、
+	// `recording`、`block_input`、`remote_modify`、`privacy_mode`、`usb`。
+	// 未知键或非法状态整单拒绝；缺失键按 `use_client` 补全。
+	Permissions ControlPermissionStates `json:"permissions"`
+}
+
+// ControlRoleKind - default：每个组织唯一的内置角色，不可删除，未分配角色的成员回退到它
+// - custom：管理员创建的角色
+type ControlRoleKind string
+
+// ControlRoleListResponse defines model for ControlRoleListResponse.
+type ControlRoleListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode     `json:"code"`
+	Data    []ControlRole `json:"data"`
+	Message string        `json:"message"`
+}
+
+// ControlRoleResponse defines model for ControlRoleResponse.
+type ControlRoleResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode   `json:"code"`
+	Data    ControlRole `json:"data"`
+	Message string      `json:"message"`
+}
+
+// ControlRoleUpdateRequest defines model for ControlRoleUpdateRequest.
+type ControlRoleUpdateRequest struct {
+	Name *string `json:"name,omitempty"`
+
+	// Permissions 14 个权限键到三态的映射，键与 RustDesk 客户端 `ControlPermissions.Permission`
+	// 枚举一一对应（bit 序号即声明顺序）：`keyboard`、`remote_printer`、
+	// `clipboard`、`file`、`audio`、`camera`、`terminal`、`tunnel`、`restart`、
+	// `recording`、`block_input`、`remote_modify`、`privacy_mode`、`usb`。
+	// 未知键或非法状态整单拒绝；缺失键按 `use_client` 补全。
+	Permissions *ControlPermissionStates `json:"permissions,omitempty"`
 }
 
 // Device defines model for Device.
@@ -2876,6 +3025,12 @@ type DecideApprovalJSONRequestBody = ApprovalDecisionRequest
 // SetAuditRetentionJSONRequestBody defines body for SetAuditRetention for application/json ContentType.
 type SetAuditRetentionJSONRequestBody = AuditRetentionRequest
 
+// CreateControlRoleJSONRequestBody defines body for CreateControlRole for application/json ContentType.
+type CreateControlRoleJSONRequestBody = ControlRoleCreateRequest
+
+// UpdateControlRoleJSONRequestBody defines body for UpdateControlRole for application/json ContentType.
+type UpdateControlRoleJSONRequestBody = ControlRoleUpdateRequest
+
 // CreateDeviceGroupJSONRequestBody defines body for CreateDeviceGroup for application/json ContentType.
 type CreateDeviceGroupJSONRequestBody = DeviceGroupCreateRequest
 
@@ -2899,6 +3054,9 @@ type CreateInvitationJSONRequestBody = InvitationCreateRequest
 
 // UpdateMemberRoleJSONRequestBody defines body for UpdateMemberRole for application/json ContentType.
 type UpdateMemberRoleJSONRequestBody = MemberUpdateRequest
+
+// AssignMemberControlRoleJSONRequestBody defines body for AssignMemberControlRole for application/json ContentType.
+type AssignMemberControlRoleJSONRequestBody = ControlRoleAssignmentRequest
 
 // CreatePolicyJSONRequestBody defines body for CreatePolicy for application/json ContentType.
 type CreatePolicyJSONRequestBody = PolicyRequest
@@ -3058,6 +3216,18 @@ type ServerInterface interface {
 	// SetAuditRetention 设置审计保留期
 	// (PUT /api/v1/orgs/{orgId}/audit-retention)
 	SetAuditRetention(c *gin.Context, orgId int64)
+	// ListControlRoles 列出控制角色
+	// (GET /api/v1/orgs/{orgId}/control-roles)
+	ListControlRoles(c *gin.Context, orgId int64)
+	// CreateControlRole 创建控制角色
+	// (POST /api/v1/orgs/{orgId}/control-roles)
+	CreateControlRole(c *gin.Context, orgId int64)
+	// DeleteControlRole 删除控制角色
+	// (DELETE /api/v1/orgs/{orgId}/control-roles/{roleId})
+	DeleteControlRole(c *gin.Context, orgId int64, roleId int64)
+	// UpdateControlRole 更新控制角色
+	// (PATCH /api/v1/orgs/{orgId}/control-roles/{roleId})
+	UpdateControlRole(c *gin.Context, orgId int64, roleId int64)
 	// ListDeviceGroups 列出设备组
 	// (GET /api/v1/orgs/{orgId}/device-groups)
 	ListDeviceGroups(c *gin.Context, orgId int64)
@@ -3106,6 +3276,9 @@ type ServerInterface interface {
 	// ResetMemberTOTP 重置成员的 2FA
 	// (POST /api/v1/orgs/{orgId}/members/{userId}/2fa/reset)
 	ResetMemberTOTP(c *gin.Context, orgId int64, userId int64)
+	// AssignMemberControlRole 分配成员的控制角色
+	// (PUT /api/v1/orgs/{orgId}/members/{userId}/control-role)
+	AssignMemberControlRole(c *gin.Context, orgId int64, userId int64)
 	// ListPolicies 连接策略列表
 	// (GET /api/v1/orgs/{orgId}/policies)
 	ListPolicies(c *gin.Context, orgId int64)
@@ -4437,6 +4610,124 @@ func (siw *ServerInterfaceWrapper) SetAuditRetention(c *gin.Context) {
 	siw.Handler.SetAuditRetention(c, orgId)
 }
 
+// ListControlRoles operation middleware
+func (siw *ServerInterfaceWrapper) ListControlRoles(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListControlRoles(c, orgId)
+}
+
+// CreateControlRole operation middleware
+func (siw *ServerInterfaceWrapper) CreateControlRole(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateControlRole(c, orgId)
+}
+
+// DeleteControlRole operation middleware
+func (siw *ServerInterfaceWrapper) DeleteControlRole(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "roleId" -------------
+	var roleId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "roleId", c.Param("roleId"), &roleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter roleId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteControlRole(c, orgId, roleId)
+}
+
+// UpdateControlRole operation middleware
+func (siw *ServerInterfaceWrapper) UpdateControlRole(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "roleId" -------------
+	var roleId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "roleId", c.Param("roleId"), &roleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter roleId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UpdateControlRole(c, orgId, roleId)
+}
+
 // ListDeviceGroups operation middleware
 func (siw *ServerInterfaceWrapper) ListDeviceGroups(c *gin.Context) {
 
@@ -4986,6 +5277,40 @@ func (siw *ServerInterfaceWrapper) ResetMemberTOTP(c *gin.Context) {
 	}
 
 	siw.Handler.ResetMemberTOTP(c, orgId, userId)
+}
+
+// AssignMemberControlRole operation middleware
+func (siw *ServerInterfaceWrapper) AssignMemberControlRole(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "userId" -------------
+	var userId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", c.Param("userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter userId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AssignMemberControlRole(c, orgId, userId)
 }
 
 // ListPolicies operation middleware
@@ -5748,6 +6073,11 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/roles/:roleId", wrapper.DeleteRole)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/roles/:roleId", wrapper.GetRole)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/roles/:roleId", wrapper.UpdateRole)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/control-roles", wrapper.ListControlRoles)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/control-roles", wrapper.CreateControlRole)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/control-roles/:roleId", wrapper.DeleteControlRole)
+	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/control-roles/:roleId", wrapper.UpdateControlRole)
+	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId/control-role", wrapper.AssignMemberControlRole)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/user-groups", wrapper.ListUserGroups)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/user-groups", wrapper.CreateUserGroup)
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/user-groups/:groupId", wrapper.DeleteUserGroup)

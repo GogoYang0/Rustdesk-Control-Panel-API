@@ -22,6 +22,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/controlrole"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
@@ -98,6 +99,12 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 		// rule) commit with the organization: without them every member of a new
 		// organization would start with an empty device list.
 		if err := access.EnsureDefaultsTx(tx, org.ID); err != nil {
+			return err
+		}
+		// The built-in default control role commits with the organization too:
+		// every member without an assignment falls back to it, so a missing row
+		// would leave the organization with no permission set at all.
+		if err := controlrole.EnsureDefaultsTx(tx, org.ID); err != nil {
 			return err
 		}
 		// Record the audit entry on the same transaction (issue #19): the

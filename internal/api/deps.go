@@ -15,6 +15,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/captcha"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/controlrole"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/provision"
@@ -63,6 +64,10 @@ type Deps struct {
 	// Access owns user groups, device groups and access rules. NewAdminAPI
 	// derives it from DB and the transactional auditor when nil.
 	Access *access.Service
+
+	// ControlRoles owns in-session roles and member assignments. NewAdminAPI
+	// derives it from DB and the transactional auditor when nil.
+	ControlRoles *controlrole.Service
 
 	// Tokens mints and validates personal API tokens. NewRouter derives it from
 	// DB when nil so tests and the entrypoint share the same wiring.
@@ -153,6 +158,12 @@ func NewAdminAPI(d Deps) *AdminAPI {
 		// instead of silently dropping audit entries.
 		recorder, _ := d.Auditor.(audit.TxRecorder)
 		d.Access = access.NewService(d.DB, recorder, d.Now)
+	}
+	if d.ControlRoles == nil {
+		// Same fail-closed rule as Access: no transactional recorder means every
+		// role mutation is refused rather than committed unaudited.
+		recorder, _ := d.Auditor.(audit.TxRecorder)
+		d.ControlRoles = controlrole.NewService(d.DB, recorder, d.Now)
 	}
 	if d.TOTP == nil {
 		d.TOTP = auth.NewTOTPService(d.DB, d.AuthSecret, d.Now)
