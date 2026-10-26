@@ -56,10 +56,21 @@ func newClientBuildHarness(t *testing.T) (
 	h *harness, orgID int64, ownerToken, adminToken, memberToken string, svc *clientbuild.Service,
 ) {
 	t.Helper()
+	return newClientBuildHarnessWith(t, nil)
+}
+
+func newClientBuildHarnessWith(t *testing.T, mutate func(*clientbuild.Config)) (
+	h *harness, orgID int64, ownerToken, adminToken, memberToken string, svc *clientbuild.Service,
+) {
+	t.Helper()
 	h, orgID, _, _, _, ownerToken, adminToken, memberToken = m4OrgWith(t, func(d *api.Deps) {
 		recorder, ok := d.Auditor.(audit.TxRecorder)
 		require.True(t, ok)
-		s, err := clientbuild.NewService(d.DB, recorder, d.Auditor, clientBuildTestConfig(t), nil, zap.NewNop(), nil)
+		cfg := clientBuildTestConfig(t)
+		if mutate != nil {
+			mutate(&cfg)
+		}
+		s, err := clientbuild.NewService(d.DB, recorder, d.Auditor, cfg, nil, zap.NewNop(), nil)
 		require.NoError(t, err)
 		svc = s
 		d.ClientBuilds = s

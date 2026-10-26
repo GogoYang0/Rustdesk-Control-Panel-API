@@ -104,6 +104,7 @@ func (f *fakeGitHub) DeleteArtifact(ctx context.Context, id int64) error {
 }
 
 type fixture struct {
+	t        *testing.T
 	db       *gorm.DB
 	svc      *Service
 	cfg      Config
@@ -131,6 +132,7 @@ func newFixture(t *testing.T) *fixture {
 	))
 
 	f := &fixture{
+		t:        t,
 		db:       st.DB,
 		recorder: &fakeRecorder{},
 		github:   &fakeGitHub{},
