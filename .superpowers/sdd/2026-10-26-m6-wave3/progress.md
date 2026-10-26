@@ -1,8 +1,8 @@
 # M6 波次 3 执行台账（Control Role / 客户端审计上报 / compat 2FA）
 
 > 起点：develop `1c74e87`（v0.9.0 已发布，契约 0.10.0）
-> 设计：`docs/superpowers/specs/2026-10-26-m6-wave3-control-role-client-audit-2fa-design.md`
-> 计划：`docs/superpowers/plans/2026-10-26-m6-wave3-control-role-client-audit-2fa.md`
+> 设计：`<工作区>/docs/superpowers/specs/2026-10-26-m6-wave3-control-role-client-audit-2fa-design.md`（工作区根，不在本仓库内）
+> 计划：`<工作区>/docs/superpowers/plans/2026-10-26-m6-wave3-control-role-client-audit-2fa.md`（同上）
 > 工作区：`.worktrees/m6-w3-control-role-client-audit-2fa`，分支 `feature/m6-w3-control-role-client-audit-2fa`
 
 ## 执行状态
@@ -174,3 +174,32 @@ go test -count=1 ./...                    → 22 个包全绿（api 43.0s、comp
 - operations：新增 §2.5 控制角色运维、§2.6 compat 2FA 运维、§3.2 客户端日志运维；故障速查补 4 行。
 - deployment：新增「v0.10.0 控制角色/客户端审计/2FA」升级要点（无新配置键、新表与新列、default 角色播种、auth.secret 依赖）。
 - INDEX：台账登记波次 3。
+
+## 子代理独立评审与整改（PR 前，2026-10-26）
+
+评审范围 `1c74e87..8c8744e`，输出「阻断 / 建议 / 疑问」分级。已修复（提交 `c56bf6d`）：
+
+- **阻断：备注上报无租户条件**。`appendNote` 原按 `(rustdesk_id, session_id)` 全局命中并 `WithoutTenantScope` 更新，任何人都能往任意组织的连接记录追加文本。修复：先解析设备并要求**全平台唯一**（0 条 → 403，>1 条 → `ErrAmbiguousDevice` 403），再用 `ScopedByOrg` + `device_id` 更新；备注按 rune 截断（避免切断 UTF-8 被 PG 拒绝）。新增跨租户回归用例 `TestIngest_NoteScopedToOwningOrganization`。
+- **重要：CSV 清洗器弱化复制**。本地 `sanitizeCSVCell` 只处理 `= + - @`，漏掉 `\t \r \n`；改为导出 `audit.EscapeFormula` 并删除本地副本，避免 M4 已修问题回归。
+- **重要：成员读不到控制角色**。`Member` 增加可空 `control_role_id`（名称由 `GET /control-roles` 解析，避免逐行 JOIN），三处映射点同步；新增 `TestControlRole_MemberListExposesAssignment`。
+- **重要：2FA 锁定键可被攻击者提供**。第二步原先用请求里的 `username` 作为 lockKey 且不校验与挑战用户一致；改为校验 email 必须等于挑战用户，失败一律记在 `compat-user-<id>` 桶。新增 `TestLogin_2FAUsernameMustMatchChallenge`。
+- **重要：多组织同 id 歧义**。`resolveDevice` 命中 >1 条时 fail closed（`ErrAmbiguousDevice`），并给 `devices.rustdesk_id` 增加单列索引（原先按 id 全局查是全表扫描）。
+- **重要：上报字段无长度校验**。按列宽校验 `id/uuid/nonce/ip/conn_audit_ref/peer_id/name`，超长 400 而不是 PG/MySQL 500；新增 `TestIngest_RejectsOversizedField`。
+- **重要：`PUT control-role` 空体静默清空**。改为按原始 map 判键存在，缺 `control_role_id` → 400，只有显式 `null` 才清除；新增用例。
+- **次要：挑战表无清扫**。新增 `logquery.SweepChallenges` + `compat-2fa-sweep` worker（每小时，删过期 1 小时以上的行）。
+- **次要：403 文案区分设备不存在与 uuid 不符**。合并为同一文案，避免未认证端点变成注册探针。
+
+**未修复、记入后续**（评审同意的低风险项，均不阻断）：
+- `Assign` 与 `Delete` 竞态可能把已删角色 id 写回会籍（读取侧回退 default，仅排障噪音）→ 建议 `Assign` 对角色行加锁。
+- 重名并发创建在 PostgreSQL 上可能返回 500 而非 409（事务 abort 后同事务重查失效）。
+- `EnsureDefaultsTx` 的「缺 default」判定按 kind、插入冲突按 (org,name)：若手工删除 default 且存在同名自定义角色，播种会被静默跳过（签发随即 500，fail closed 但无 API 恢复）。
+- `Migrate` 的 `now` 参数未使用；orphan close 未写 `orphan_close` 标记；`fakeRecorder.fail` 未覆盖「审计失败→回滚」用例。
+- 上报端点未限流（设计 §10 已声明可后续加）。
+
+### 整改后验证
+
+```
+npx @redocly/cli lint openapi.yaml → valid
+go generate ./... 后 git status --porcelain -- gen openapi.yaml → 空
+go test -count=1 ./... → 22 包全绿（api 43.9s、compatapi 9.8s）
+```

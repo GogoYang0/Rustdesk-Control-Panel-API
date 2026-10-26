@@ -349,7 +349,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 
 - 端点：`GET|POST /orgs/{orgId}/control-roles`、`PATCH|DELETE /orgs/{orgId}/control-roles/{roleId}`、`PUT /orgs/{orgId}/members/{userId}/control-role`。读取要求组织成员；写入要求 `control_role.manage`（owner 全量、admin 由内置集合授予，**不可委派**）。
 - 权限集合是 **14 个协议键的三态映射**：`use_client`（不覆盖被控端本地设置，缺省值）/ `enable` / `disable`；键与 RustDesk 客户端 `ControlPermissions.Permission` 枚举一一对应（`keyboard`=bit0 … `usb`=bit13）。未知键或非法状态整单 `400`。
-- 内置 `default` 角色：每个组织一行，**不可删除、不可改名**，权限可改；未分配角色的成员回退到它。删除自定义角色会在同一事务里清空持有者的 `control_role_id`（回到 default）。
+- 内置 `default` 角色：每个组织一行，**不可删除、不可改名**，权限可改；未分配角色的成员回退到它。删除自定义角色会在同一事务里清空持有者的 `control_role_id`（回到 default）。成员列表/详情通过 `Member.control_role_id`（可空）回读当前分配，名称由 `GET /control-roles` 解析。
 - 快照语义：票据签发时按操作人计算并写入 `tickets.control_role_id` / `control_permissions`（14 位 bitmask）与完整三态快照，兑换时复制到 `sessions.control_permissions`。**之后修改角色不会改写已签发的票据**（票据 TTL ≤ 15 分钟）。
 - **执行边界（必读）**：`control_permissions` 由 hbbs 在信令消息（`PunchHole`/`RequestRelay`/`FetchLocalAddr`）里注入，本面板**不在信令链路**（设计 D10），provision 起的是 stock rustdesk-server——因此**原生客户端会话不受控制角色约束**。本版本交付的是管理面模型、票据快照与审计证据；执行面属于 M7 网页客户端（读票据快照）或未来的 Pro 兼容 hbbs。不要据此向用户承诺「已在客户端生效」。
 
