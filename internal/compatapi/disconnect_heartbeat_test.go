@@ -157,3 +157,36 @@ func TestHeartbeat_ConnsCapAndDedupe(t *testing.T) {
 	require.Equal(t, model.DisconnectStatusFulfilled, row.Status)
 	require.Equal(t, 2, row.ConnCount, "conn_count counts connections, not array entries")
 }
+
+// TestHeartbeat_AmbiguousIdentityDeliversNothing pins the fix for the shadow-
+// registration attack CodeRabbit's security review rated High: the heartbeat
+// session lookup is global and picks the newest session, so a device pair
+// registered in a second organization must not receive that organization's
+// policy — or consume its pending disconnects — through the real client's
+// heartbeat. Ambiguous identity delivers nothing.
+func TestHeartbeat_AmbiguousIdentityDeliversNothing(t *testing.T) {
+	h := newHarness(t)
+	org, dev := loginHeartbeatDevice(t, h, "881007")
+	s := seedStrategy(t, h, org.ID, "Baseline", `{"enable-audio":"N"}`, 2, true)
+	assignStrategyToDevice(t, h, org.ID, dev.ID, s.ID)
+	seedPendingDisconnect(t, h, org.ID, dev.ID)
+
+	// A shadow registration of the same (rustdesk id, bound uuid) in another
+	// organization: exactly what an attacker who knows the identifiers can do.
+	other := h.seedOrg(t, "hb-shadow")
+	shadow := model.Device{
+		OrganizationID: other.ID, RustdeskID: "881007", Name: "clone",
+		BoundUUID: "uuid-881007",
+	}
+	require.NoError(t, store.ScopedByOrg(h.db.DB, other.ID).Create(&shadow).Error)
+
+	body := heartbeat(t, h, "881007", 0)
+	require.NotContains(t, body, "strategy", "an ambiguous identity must not receive any policy")
+	require.NotContains(t, body, "disconnect")
+	require.NotContains(t, body, "modified_at")
+
+	var row model.DeviceDisconnect
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).First(&row).Error)
+	require.Equal(t, model.DisconnectStatusPending, row.Status,
+		"a shadowed identity must not consume teardown requests")
+}

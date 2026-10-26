@@ -158,7 +158,16 @@ func (s *Service) Update(ctx context.Context, orgID, actorID, id uint, in Update
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		scoped := store.ScopedByOrg(tx, orgID)
 		var row model.Strategy
-		if err := scoped.First(&row, id).Error; err != nil {
+		read := scoped
+		if tx.Name() != "sqlite" {
+			// Update is a read-modify-write over config_options and the cleared
+			// keys. Without the row lock two concurrent PATCHes both compute
+			// from the same snapshot and the loser's write silently drops the
+			// winner's key removal — the client keeps a fixed option the stored
+			// policy no longer mentions.
+			read = read.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		if err := read.First(&row, id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrNotFound
 			}

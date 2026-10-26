@@ -1,6 +1,7 @@
 package compatapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"math"
@@ -53,7 +54,7 @@ func (s *Server) heartbeat(c *gin.Context) {
 		ok(c)
 		return
 	}
-	s.writeHeartbeatResponse(c, session.OrganizationID, dev.ID, req)
+	s.writeHeartbeatResponse(c, session.OrganizationID, dev.ID, session.UUID, req)
 }
 
 // writeHeartbeatResponse builds the compat heartbeat body, which is a free-form
@@ -65,8 +66,20 @@ func (s *Server) heartbeat(c *gin.Context) {
 //   - `disconnect`, only when a pending request exists and the client just
 //     reported live connections; those ids are the client's own, so the panel
 //     can never name a connection nobody holds.
-func (s *Server) writeHeartbeatResponse(c *gin.Context, orgID, deviceID uint, req heartbeatRequest) {
+func (s *Server) writeHeartbeatResponse(c *gin.Context, orgID, deviceID uint, sessionUUID string, req heartbeatRequest) {
 	body := gin.H{}
+
+	if s.identityAmbiguous(c.Request.Context(), req.ID, sessionUUID) {
+		// The same (rustdesk id, bound uuid) exists in another organization:
+		// the global newest-session lookup may currently be resolving to a
+		// shadow registration there. Configuration and teardown authority must
+		// not ride on an ambiguous identity, so nothing is delivered — neither
+		// this organization's policy nor its pending disconnects — until an
+		// administrator removes the duplicate.
+		s.deps.Logger.Warn("heartbeat identity is ambiguous across organizations; delivering nothing")
+		ok(c)
+		return
+	}
 
 	if conns := parseConnIDs(req.Conns); len(conns) > 0 && s.deps.Strategies != nil {
 		// Informational only: the disconnect path uses the ids from this very
@@ -99,6 +112,20 @@ func (s *Server) writeHeartbeatResponse(c *gin.Context, orgID, deviceID uint, re
 	}
 
 	c.JSON(http.StatusOK, body)
+}
+
+// identityAmbiguous reports whether the (rustdesk id, bound uuid) pair exists
+// in more than one organization. The lookup failure fails closed: an
+// unresolvable identity delivers nothing.
+func (s *Server) identityAmbiguous(ctx context.Context, rustdeskID, uuid string) bool {
+	var n int64
+	if err := store.WithoutTenantScope(s.deps.DB.WithContext(ctx)).
+		Model(&model.Device{}).
+		Where("rustdesk_id = ? AND bound_uuid = ?", rustdeskID, uuid).
+		Count(&n).Error; err != nil {
+		return true
+	}
+	return n > 1
 }
 
 // takeDisconnect consumes a pending request inside its own transaction so the
