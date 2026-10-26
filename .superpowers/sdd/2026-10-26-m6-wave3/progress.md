@@ -203,3 +203,39 @@ npx @redocly/cli lint openapi.yaml → valid
 go generate ./... 后 git status --porcelain -- gen openapi.yaml → 空
 go test -count=1 ./... → 22 包全绿（api 43.9s、compatapi 9.8s）
 ```
+
+## 遗留补记：CI、CodeRabbit 与合并（2026-10-26，波次 4 分支补）
+
+> 本节在波次 3 合并后补写：当时特性分支已合并，按「不直接提交 develop」的规则没有为一段文档单独开 PR，随波次 4 的文档提交一并落账。
+
+### CI（test-db / PostgreSQL）
+
+三轮失败，根因都是 **CI 的 test-db 作业多包共享同一个 PostgreSQL 库**，而新测试按「每测试独立库」写：
+
+1. `39d74cc`：`controlrole` / `session` / `logquery` 用固定邮箱（撞 `idx_users_email`）与固定 rustdesk id（撞本波次新增的「跨组织同 id 歧义」规则）。修复：邮箱原子计数、org 名与设备 id 带 fixture 序号、`Migrate` 计数限定本测试的组织。
+2. `53a0188`：`logquery` 断言用 `WithoutTenantScope(f.db).Find(...)` 读到别的测试的行。修复：断言改 `ScopedByOrg(f.db, f.org.ID)`。
+3. `ece801d`：nonce 清扫是全局表操作，断言 `removed == 1` 在共享库上不成立。修复：断言本 fixture 的行状态，全局计数只要求 `>= 1`。
+
+教训已写入项目 MEMORY.md：共享测试库下 fixture 标识必须唯一、断言必须带租户条件，SQLite 绿灯不代表 test-db 绿灯。
+
+### CodeRabbit（11 条内联 + 1 条正文 nitpick）
+
+甄别结果：**8 条属实已修**（`57d93b3`）、**3 条已过时**（指向 `53a0188`/`ece801d` 已修的共享库问题，回复中引用 commit）。显式处理：
+
+| 类别 | 内容 | 处理 |
+|---|---|---|
+| 枚举探针 | `ErrUnknownDevice` 与 mismatch/ambiguous 返回不同 403 文案 | 合并为同一条 |
+| 竞态 | 2FA 次数上限「先读后加」并发可绕过 | `claimAttempt` 条件 UPDATE 原子占用 |
+| 逻辑错配 | 失败记在 `compat-user-<id>` 桶、锁定检查用 `lockKey` | 统一用已校验的 `lockKey` |
+| 可用性 | `default` 角色缺失导致签发票据 500 | 回退空权限（控制角色不决定能否连接） |
+| 并发 | orphan close 撞唯一索引 500 | `ON CONFLICT DO NOTHING` |
+| 文档 | GFM 表格 `\|` 未转义（MD056）、备注路径风险未单列、部署指南称挑战表需手工清理 | 三处均已修 |
+| nitpick | 2FA 并发兑换与 5 次上限无测试 | 补两个用例（恰好一个 200、一个 401、一条会话；第 6 次正确码被拒） |
+
+第二轮增量复审（13:57–13:58）全部是「已确认修复」与两条自我撤回，无新缺陷。
+
+### 合并
+
+- PR [#91](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/pull/91) `feat: control roles, client audit logs and compat 2FA (M6 wave 3)`，base `develop`，21 commits，+6176/−125。
+- 合并前 `mergeStateStatus=CLEAN`、CI 全绿（build/lint/test/test-db/contract/vulncheck/CodeQL）。
+- 合并方式 merge commit，结果 `1ef1e4d`（用户批准后执行）。

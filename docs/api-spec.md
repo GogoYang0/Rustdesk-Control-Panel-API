@@ -1,6 +1,6 @@
 # 后端 API 规范（Backend API Specification）
 
-> 适用版本：v0.10.0（M6：波次 1 交互式验证码、波次 2 组模型下半场、波次 3 控制角色/客户端审计上报/compat 2FA；上一基线 v0.9.0）。本文档是对 `openapi.yaml`（契约 v0.10.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
+> 适用版本：v0.10.0（M6：波次 1 交互式验证码、波次 2 组模型下半场、波次 3 控制角色/客户端审计上报/compat 2FA、波次 4 客户端策略下发与心跳断连；上一基线 v0.9.0）。本文档是对 `openapi.yaml`（契约 v0.10.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
 > 本文档随版本演进持续更新——契约变更的 PR 必须同步更新 §3/§4。
 > 配套文档：[部署指南](deployment.md) · [运维指南](operations.md)
 
@@ -363,6 +363,27 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 - 导出口径：单次最多 **1000** 行，超出返回 `400` 要求收窄（不静默截断）；CSV 单元格对 `= + - @` 前缀加 `'` 防公式注入；导出写审计 `connection_log.export` / `file_log.export`（含过滤条件与行数），审计写不进去则不返回文件。
 - 保留期：两张表跟随组织 `audit_retention_days`（0 = 永久），由 `client-log-retention` 每小时清扫；**不做归档**——这些行是证据而非审计卷宗，删除即不可恢复。
 
+### 3.14 客户端策略（Strategy，v0.10.0）
+
+策略是**下发到被控端的客户端配置**，与「能否连接」（访问控制 §3.10）和「连上后能做什么」（控制角色 §3.12）是三件不同的事。它通过客户端每 30 秒一次的 `POST /api/heartbeat` 响应下发（§4.2），不是主动推送。
+
+- 端点：`GET|POST /orgs/{orgId}/strategies`、`PATCH|DELETE /orgs/{orgId}/strategies/{strategyId}`；读取要求组织成员，写入要求 `strategy.manage`（owner 全量、admin 由内置集合授予，**不可委派**）。
+- `config_options` 是 **20 个白名单键**的三态字符串映射（键名逐字匹配，大小写与空格敏感）：`enable-audio`、`enable-clipboard`、`enable-file-transfer`、`enable-file-copy-paste`、`enable-camera`、`enable-terminal`、`enable-tunnel`、`enable-remote-restart`、`enable-record-session`、`enable-block-input`、`enable-privacy-mode`、`enable-remote-modify`、`enable-remote-printer`、`enable-check-update`、`disable-change-id`、`disable-settings`、`disable-installation`、`disable-unlock-pin`、`disable-tcp-listen`、`disable-ab`。
+- **白名单就是安全边界**：客户端对收到的键**没有自己的白名单**（`handle_config_options` 直接写入本地配置），因此 `api-server`、`custom-rendezvous-server`、`relay-server`、`key`、`whitelist` 一类键一律 400——放行一个就等于把设备交给别人。值 ≤256 字符、不得含控制字符；空值的语义是「清除该键、回到客户端内置默认」。
+- 客户端会把下发的键标记为**固定**（`is_option_fixed`），用户无法在本机改回——这是策略生效的表现，不是 bug。
+- 三层分配（固定优先级，无叠加）：**设备 > 设备组 > 成员**（设备归属人的会籍）。`PUT .../devices/{deviceId}/strategy`、`PUT .../device-groups/{deviceGroupId}/strategy`、`PUT .../members/{userId}/strategy`，`strategy_id` 必填（显式 `null` 清除）。跨组织 id 一律 404。
+- `enabled=false` 是停用开关：保留行与分配，但心跳不下发；**停用会终止解析**，不会回落到更宽的层（避免把刚关掉的选项装回去）。
+- `version` 只在 `config_options` **实际变化时 +1**，作为心跳响应的 `modified_at`：客户端回传相同版本就不再下发。改名、停用、空转 PATCH 都不 bump。
+- 删除策略在同一事务里清空设备/设备组/会籍上指向它的分配，并写审计 `strategy.delete`。
+
+### 3.15 心跳断连（v0.10.0）
+
+- `POST /orgs/{orgId}/devices/{deviceId}/disconnect {reason}`：权限 `device.disconnect`（不可委派），`reason` 必填 1–255 字符；同设备已有 pending 请求 → `409`。
+- **面板不直接断连**：它不在信令链路（设计 D10）。请求落 `device_disconnects`，由客户端下一次心跳响应里的 `disconnect` 字段执行；客户端只会断开**它自己刚上报的**连接编号（`conns`），面板编不出编号。
+- 生效延迟：最长一个心跳周期（30 秒）加客户端处理时间；客户端当时没有活跃连接时请求**保持 pending**，不消耗。
+- pending 15 分钟未被消费 → `disconnect-expiry` worker 标记 `expired` 并写系统审计（`ActorUserID=0`）。
+- 请求记录 `status`（`pending|fulfilled|expired`）、`conn_count`、`fulfilled_at`，审计动作 `device.disconnect.request/fulfilled/expired`。
+
 ---
 
 ## 4. compat 层（RustDesk 原生客户端）
@@ -383,7 +404,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 > **v0.10.0 两步登录（TOTP）**：账号启用 TOTP 后，`POST /api/login` 的密码步骤不再直接发 token，而是返回 **200** `{"type":"email_check","tfa_type":"totp","secret":"<挑战>","user":{...}}`（客户端对任何非 `email_check` 的 `tfa_type` 显示「2FA code」，已核对 `src/ui/index.tis`）。第二步用 `{"type":"email_code","id","uuid","verificationCode","tfaCode","secret"}`（客户端两个字段都填，服务端 `tfaCode` 优先）换取 token。挑战 5 分钟有效、**单次消费**、绑定 `id + uuid`（换机器 401）、失败 5 次作废；失败同样计入登录锁定计数。未启用 TOTP 的账号走 `email_code` 一律 401（不允许绕过密码）。**与面板共用同一 TOTP 秘密与防重放步进**：同一 30 秒窗口内先在面板登录、再用同码登录客户端会被判重放，这是预期行为。`email_check`（邮件验证码）本版本未实现——面板的邮箱验证只用于注册激活。
 
 > **v0.10.0 `POST /api/devices/cli`（`--assign`）**：RustDesk 客户端 `rustdesk --assign` 的真实调用点（已核对上游 `core_main.rs`）。鉴权用**个人令牌**（`Authorization: Bearer rdt_...`，非 compat token）：令牌无效/过期/已撤销 → `401`；**有效权限 = 令牌申请集 ∩ 令牌所有者当前角色权限集**（实时重算），不含 `device.write` → `403`。
-> 请求体白名单（其余字段一律 `400`，错误信息含字段名——**不静默忽略**，因为静默忽略会让调用方误以为下发成功）：`id`（rustdesk id，必填）、`uuid`（接受但**不落库**，绑定只由登录路径维护）、`user_name`（本组织成员的邮箱，精确匹配；非成员与平台内不存在的邮箱返回**同一个** `404`，响应不可区分——`users` 表是跨组织全局的，区分开就等于给持令牌者一个全局账号探针）、`device_group_name`（本组织的设备组名，大小写不敏感，不存在 → `404`）、`device_name`（设备显示名，≤128 字符）、`note`（运维备注，≤255 字符）。不支持 `strategy_name`、`address_book_*`、`device_username`：Strategy 未实现（波次 5），后两类在本系统无对应概念。
+> 请求体白名单（其余字段一律 `400`，错误信息含字段名——**不静默忽略**，因为静默忽略会让调用方误以为下发成功）：`id`（rustdesk id，必填）、`uuid`（接受但**不落库**，绑定只由登录路径维护）、`user_name`（本组织成员的邮箱，精确匹配；非成员与平台内不存在的邮箱返回**同一个** `404`，响应不可区分——`users` 表是跨组织全局的，区分开就等于给持令牌者一个全局账号探针）、`device_group_name`（本组织的设备组名，大小写不敏感，不存在 → `404`）、`device_name`（设备显示名，≤128 字符）、`note`（运维备注，≤255 字符）。`strategy_name`（v0.10.0 起支持，反转波次 2 的 D5）：本组织策略名，大小写不敏感，不存在 → `404`；解析发生在设备更新**之前**，名字错则整单失败，失败不会留下「备注改了、策略没分配」的半状态。仍不支持 `address_book_*`、`device_username`：这两类在本系统无对应概念。
 > 成功 `200 {"code":"ok"}`。设备或目标用户/组不属于令牌所在组织 → `404`（与"不存在"不可区分）。写入走与管理面 `PATCH` **同一个事务化 service**：每个实际变化的字段各写一条审计（`device.assign`/`device.rename`/`device.group`/`device.note`），请求级不再补记 HTTP 审计。设备的所有写入都限制在令牌绑定的组织内，**不存在跨组织改设备的路径**。
 
 **设备认领语义**（重要，v0.4.0 事务化 + 绑定代数，v0.5.0 增加重置入口，v0.10.0 增加自动归属）：
@@ -403,10 +424,20 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 
 | 端点 | 说明 |
 |---|---|
-| `POST /api/heartbeat` | `{id, uuid}`。按 `(uuid, device_id)` 解析活跃会话；命中则更新 `last_seen_at`（30s 窗口合并，幂等）。任何匹配失败都**静默 200**（协议兼容； forged id 不会被记录） |
+| `POST /api/heartbeat` | `{id, uuid, ver, conns?, modified_at?}`。按 `(uuid, device_id)` 解析活跃会话；命中则更新 `last_seen_at`（30s 窗口合并，幂等）。任何匹配失败都**静默 200**（协议兼容；伪造 id 不会被记录） |
 | `POST /api/sysinfo` | 同心跳语义，携带系统信息 |
 
-安全语义：无凭据写槽位按设备 30s 窗口收敛；伪造的 `(id, uuid)` 组合不会命中会话（#32 修复的 DoS：只按 uuid 解析会让攻击者压制他人设备）。
+心跳**响应**（v0.10.0 起可能带三个字段，全部可选）：
+
+| 响应字段 | 语义 |
+|---|---|
+| `strategy: {config_options: {...}}` | 生效策略的选项；只在版本变化时出现 |
+| `modified_at: <int64>` | 策略版本号（`strategies.version`）。**只与 `strategy` 同时出现**：客户端会独立持久化该值（`strategy_timestamp`），只发版本不发选项 = 告诉它「已是最新」而它仍跑旧配置，且此后再也不会请求 |
+| `disconnect: [conn_id...]` | 要断开的连接编号，取自**本次请求**的 `conns`（客户端自报）。没有待处理请求或 `conns` 为空时不出现 |
+
+`conns` 只接受能装进客户端 `Vec<i32>` 的正整数，其余（`-1`、`0`、字符串、小数）丢弃，不会被回显成断连目标。订阅上报的连接编号只做排障线索（`device_heartbeats.conn_ids`，最多滞后一个心跳窗口），断连的真实依据是当次请求。
+
+安全语义：无凭据写槽位按设备 30s 窗口收敛；伪造的 `(id, uuid)` 组合不会命中会话（#32 修复的 DoS：只按 uuid 解析会让攻击者压制他人设备）。策略与断连都**只对通过 `(uuid, device_id)` + 绑定代数校验的会话生效**——过期会话拿不到组织策略，也不会替别人断连。
 
 ### 4.3 地址簿同步（个人簿）
 
