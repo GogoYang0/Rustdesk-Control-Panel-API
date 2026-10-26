@@ -513,6 +513,10 @@ func mapGrantError(c *gin.Context, err error) bool {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
 	case errors.Is(err, addressbook.ErrSubjectNotMember):
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
+	case errors.Is(err, addressbook.ErrGrantSubjectNotFound):
+		// 404, not 400: whether the group id names a group outside this
+		// organization or no group at all must stay indistinguishable.
+		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "subject group not found")
 	case errors.Is(err, addressbook.ErrGrantNotFound):
 		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "grant not found")
 	default:

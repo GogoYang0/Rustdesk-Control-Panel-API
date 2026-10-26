@@ -50,3 +50,108 @@ func seedsAdminToken(t *testing.T, h *harness, orgID int64, userID uint, perms .
 	require.NoError(t, err)
 	return plain
 }
+
+// TestAddressBookGrant_UserGroupRoundTrip pins the contract round trip of a
+// user_group grant: the request carries subject_group_id, the response echoes
+// it, and a group outside the organization is a 404 (never a 400 that would
+// distinguish "not yours" from "does not exist").
+func TestAddressBookGrant_UserGroupRoundTrip(t *testing.T) {
+	h, orgID, _, _, _, _, adminToken, _ := m4Org(t)
+	base := "/api/v1/orgs/" + itoa(orgID)
+
+	// A shared book and a user group to grant it to.
+	w := h.do(t, http.MethodPost, base+"/address-books",
+		map[string]string{"name": "team-book", "scope": "shared"}, adminToken)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	var book struct {
+		Id int64 `json:"id"`
+	}
+	decodeData(t, w, &book)
+
+	w = h.do(t, http.MethodPost, base+"/user-groups", map[string]string{"name": "ops"}, adminToken)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	var group struct {
+		Id int64 `json:"id"`
+	}
+	decodeData(t, w, &group)
+
+	grantPath := base + "/address-books/" + itoa(book.Id) + "/grants"
+	w = h.do(t, http.MethodPost, grantPath, map[string]any{
+		"subject_kind": "user_group", "subject_group_id": group.Id, "access": "write",
+	}, adminToken)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	var grant struct {
+		Id           int64  `json:"id"`
+		SubjectKind  string `json:"subject_kind"`
+		SubjectGroup int64  `json:"subject_group_id"`
+		Access       string `json:"access"`
+	}
+	decodeData(t, w, &grant)
+	require.Equal(t, "user_group", grant.SubjectKind)
+	require.EqualValues(t, group.Id, grant.SubjectGroup)
+	require.Equal(t, "write", grant.Access)
+
+	// The upsert is idempotent on the same subject.
+	w = h.do(t, http.MethodPost, grantPath, map[string]any{
+		"subject_kind": "user_group", "subject_group_id": group.Id, "access": "full",
+	}, adminToken)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var updated struct {
+		Id     int64  `json:"id"`
+		Access string `json:"access"`
+	}
+	decodeData(t, w, &updated)
+	require.EqualValues(t, grant.Id, updated.Id)
+	require.Equal(t, "full", updated.Access)
+
+	// An unknown group id is a not-found, and the negative id is a 400.
+	w = h.do(t, http.MethodPost, grantPath, map[string]any{
+		"subject_kind": "user_group", "subject_group_id": 999999, "access": "read",
+	}, adminToken)
+	require.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
+	w = h.do(t, http.MethodPost, grantPath, map[string]any{
+		"subject_kind": "user_group", "subject_group_id": 0, "access": "read",
+	}, adminToken)
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+	w = h.do(t, http.MethodPost, grantPath, map[string]any{
+		"subject_kind": "user_group", "access": "read",
+	}, adminToken)
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+}
+
+// TestUserGroupDelete_ReportsCascadedGrants pins the response shape of the
+// group deletion after the wave-2 cascade: both counts are reported.
+func TestUserGroupDelete_ReportsCascadedGrants(t *testing.T) {
+	h, orgID, _, _, _, _, adminToken, _ := m4Org(t)
+	base := "/api/v1/orgs/" + itoa(orgID)
+
+	w := h.do(t, http.MethodPost, base+"/address-books",
+		map[string]string{"name": "team-book", "scope": "shared"}, adminToken)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	var book struct {
+		Id int64 `json:"id"`
+	}
+	decodeData(t, w, &book)
+
+	w = h.do(t, http.MethodPost, base+"/user-groups", map[string]string{"name": "ops"}, adminToken)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	var group struct {
+		Id int64 `json:"id"`
+	}
+	decodeData(t, w, &group)
+
+	w = h.do(t, http.MethodPost, base+"/address-books/"+itoa(book.Id)+"/grants", map[string]any{
+		"subject_kind": "user_group", "subject_group_id": group.Id, "access": "read",
+	}, adminToken)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+
+	w = h.do(t, http.MethodDelete, base+"/user-groups/"+itoa(group.Id), nil, adminToken)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var data struct {
+		RemovedRules  int `json:"removed_rules"`
+		RemovedGrants int `json:"removed_grants"`
+	}
+	decodeData(t, w, &data)
+	require.Zero(t, data.RemovedRules)
+	require.Equal(t, 1, data.RemovedGrants)
+}
