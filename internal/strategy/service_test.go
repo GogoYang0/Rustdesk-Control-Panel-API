@@ -84,6 +84,7 @@ func newFixture(t *testing.T) *fixture {
 	require.NoError(t, st.DB.AutoMigrate(
 		&model.Organization{}, &model.User{}, &model.Membership{},
 		&model.Device{}, &model.DeviceGroup{}, &model.Strategy{}, &model.DeviceDisconnect{},
+		&model.DeviceHeartbeat{},
 	))
 
 	n := fixtureSeq.Add(1)

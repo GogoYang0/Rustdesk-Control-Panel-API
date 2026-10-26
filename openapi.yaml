@@ -3269,6 +3269,65 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v1/orgs/{orgId}/devices/{deviceId}/disconnect:
+    post:
+      operationId: requestDeviceDisconnect
+      summary: 请求断开设备的当前连接
+      description: |
+        需要 `device.disconnect`（owner 全量、admin 由内置集合授予，不可委派）。
+        `reason` 必填（去首尾空白后 1–255 字符），随审计留存。
+
+        **面板不直接断连**：它不在信令链路（设计 D10）。本端点只记录一次请求，
+        由客户端下一次 `POST /api/heartbeat` 的响应 `disconnect` 字段执行——
+        客户端把请求里自报的**活跃连接编号**断开。因此：
+
+        - 生效延迟最长一个心跳周期（30 秒）加上客户端处理时间；
+        - 客户端当时没有活跃连接（`conns` 为空）时请求**保持 pending**，不消耗；
+        - 同一设备已有 pending 请求时返回 `409`（避免堆积重复断连）；
+        - 15 分钟未被消费则标记 `expired` 并写系统审计。
+
+        设备不存在或不属于本组织均返回 `404`。
+      tags:
+        - devices
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: deviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceDisconnectRequest"
+      responses:
+        "201":
+          description: 已记录的断连请求
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceDisconnectResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
   /api/v1/orgs/{orgId}/devices/{deviceId}:
     patch:
       operationId: updateDevice
@@ -5055,6 +5114,75 @@ components:
           type: string
         data:
           $ref: "#/components/schemas/Strategy"
+
+    DeviceDisconnectRequest:
+      type: object
+      required:
+        - reason
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: 断连原因；写入审计，供事后追溯
+
+    DeviceDisconnect:
+      type: object
+      required:
+        - id
+        - device_id
+        - reason
+        - status
+        - requested_at
+        - expires_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        device_id:
+          type: integer
+          format: int64
+        reason:
+          type: string
+          maxLength: 255
+        status:
+          type: string
+          description: |
+            - `pending`：已记录，等待客户端心跳消费
+            - `fulfilled`：某次心跳带回了活跃连接，`disconnect` 已下发
+            - `expired`：15 分钟内没有可断开的连接，请求作废
+          enum:
+            - pending
+            - fulfilled
+            - expired
+        requested_at:
+          type: string
+          format: date-time
+        fulfilled_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        conn_count:
+          type: integer
+          description: 消费该请求的那次心跳里客户端报告的连接数
+
+    DeviceDisconnectResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/DeviceDisconnect"
 
     UserGroupKind:
       type: string

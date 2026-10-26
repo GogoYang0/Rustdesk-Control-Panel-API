@@ -268,6 +268,27 @@ func (e DeviceStatus) Valid() bool {
 	}
 }
 
+// Defines values for DeviceDisconnectStatus.
+const (
+	DeviceDisconnectStatusExpired   DeviceDisconnectStatus = "expired"
+	DeviceDisconnectStatusFulfilled DeviceDisconnectStatus = "fulfilled"
+	DeviceDisconnectStatusPending   DeviceDisconnectStatus = "pending"
+)
+
+// Valid indicates whether the value is a known member of the DeviceDisconnectStatus enum.
+func (e DeviceDisconnectStatus) Valid() bool {
+	switch e {
+	case DeviceDisconnectStatusExpired:
+		return true
+	case DeviceDisconnectStatusFulfilled:
+		return true
+	case DeviceDisconnectStatusPending:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ErrorCode.
 const (
 	ErrorCodeApprovalRequired   ErrorCode = "approval_required"
@@ -1462,6 +1483,55 @@ type DeviceStatus string
 type DeviceCreateRequest struct {
 	Name       string `json:"name"`
 	RustdeskId string `json:"rustdesk_id"`
+}
+
+// DeviceDisconnect defines model for DeviceDisconnect.
+type DeviceDisconnect struct {
+	// ConnCount 消费该请求的那次心跳里客户端报告的连接数
+	ConnCount   *int       `json:"conn_count,omitempty"`
+	DeviceId    int64      `json:"device_id"`
+	ExpiresAt   time.Time  `json:"expires_at"`
+	FulfilledAt *time.Time `json:"fulfilled_at,omitempty"`
+	Id          int64      `json:"id"`
+	Reason      string     `json:"reason"`
+	RequestedAt time.Time  `json:"requested_at"`
+
+	// Status - `pending`：已记录，等待客户端心跳消费
+	// - `fulfilled`：某次心跳带回了活跃连接，`disconnect` 已下发
+	// - `expired`：15 分钟内没有可断开的连接，请求作废
+	Status DeviceDisconnectStatus `json:"status"`
+}
+
+// DeviceDisconnectStatus - `pending`：已记录，等待客户端心跳消费
+// - `fulfilled`：某次心跳带回了活跃连接，`disconnect` 已下发
+// - `expired`：15 分钟内没有可断开的连接，请求作废
+type DeviceDisconnectStatus string
+
+// DeviceDisconnectRequest defines model for DeviceDisconnectRequest.
+type DeviceDisconnectRequest struct {
+	// Reason 断连原因；写入审计，供事后追溯
+	Reason string `json:"reason"`
+}
+
+// DeviceDisconnectResponse defines model for DeviceDisconnectResponse.
+type DeviceDisconnectResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode        `json:"code"`
+	Data    DeviceDisconnect `json:"data"`
+	Message string           `json:"message"`
 }
 
 // DeviceGroup defines model for DeviceGroup.
@@ -3338,6 +3408,9 @@ type CreateDeviceJSONRequestBody = DeviceCreateRequest
 // UpdateDeviceJSONRequestBody defines body for UpdateDevice for application/json ContentType.
 type UpdateDeviceJSONRequestBody = DeviceUpdateRequest
 
+// RequestDeviceDisconnectJSONRequestBody defines body for RequestDeviceDisconnect for application/json ContentType.
+type RequestDeviceDisconnectJSONRequestBody = DeviceDisconnectRequest
+
 // ResetDeviceBindingJSONRequestBody defines body for ResetDeviceBinding for application/json ContentType.
 type ResetDeviceBindingJSONRequestBody = DeviceRebindRequest
 
@@ -3556,6 +3629,9 @@ type ServerInterface interface {
 	// UpdateDevice 更新设备（停用/恢复、归属、备注）
 	// (PATCH /api/v1/orgs/{orgId}/devices/{deviceId})
 	UpdateDevice(c *gin.Context, orgId int64, deviceId int64)
+	// RequestDeviceDisconnect 请求断开设备的当前连接
+	// (POST /api/v1/orgs/{orgId}/devices/{deviceId}/disconnect)
+	RequestDeviceDisconnect(c *gin.Context, orgId int64, deviceId int64)
 	// DeviceHeartbeat 设备心跳
 	// (POST /api/v1/orgs/{orgId}/devices/{deviceId}/heartbeat)
 	DeviceHeartbeat(c *gin.Context, orgId int64, deviceId int64)
@@ -5457,6 +5533,40 @@ func (siw *ServerInterfaceWrapper) UpdateDevice(c *gin.Context) {
 	siw.Handler.UpdateDevice(c, orgId, deviceId)
 }
 
+// RequestDeviceDisconnect operation middleware
+func (siw *ServerInterfaceWrapper) RequestDeviceDisconnect(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "deviceId" -------------
+	var deviceId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "deviceId", c.Param("deviceId"), &deviceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RequestDeviceDisconnect(c, orgId, deviceId)
+}
+
 // DeviceHeartbeat operation middleware
 func (siw *ServerInterfaceWrapper) DeviceHeartbeat(c *gin.Context) {
 
@@ -6840,6 +6950,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/auth/resend-verification", wrapper.ResendVerification)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/heartbeat", wrapper.DeviceHeartbeat)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/rebind", wrapper.ResetDeviceBinding)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/disconnect", wrapper.RequestDeviceDisconnect)
 	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId", wrapper.UpdateDevice)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/sessions", wrapper.ListSessions)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/sessions/:sessionId", wrapper.GetSession)

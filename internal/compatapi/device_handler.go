@@ -1,7 +1,9 @@
 package compatapi
 
 import (
+	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"time"
 
@@ -51,38 +53,97 @@ func (s *Server) heartbeat(c *gin.Context) {
 		ok(c)
 		return
 	}
-	s.writeHeartbeatResponse(c, session.OrganizationID, dev.ID, req.ModifiedAt)
+	s.writeHeartbeatResponse(c, session.OrganizationID, dev.ID, req)
 }
 
 // writeHeartbeatResponse builds the compat heartbeat body, which is a free-form
-// JSON object rather than the management envelope.
+// JSON object rather than the management envelope. Two optional fields are set:
 //
-// Only `strategy` and `modified_at` are set here, and only together: the client
-// persists `modified_at` (strategy_timestamp) even when no strategy arrives, so
-// a version without options would tell it "you are up to date" while it still
-// runs the old configuration — and it would never ask again.
-func (s *Server) writeHeartbeatResponse(c *gin.Context, orgID, deviceID uint, clientVersion int64) {
-	if s.deps.Strategies == nil {
-		ok(c)
-		return
+//   - `strategy` + `modified_at`, only together: the client persists
+//     `modified_at` even when no strategy arrives, so a version without options
+//     would tell it "you are up to date" while it still runs the old config.
+//   - `disconnect`, only when a pending request exists and the client just
+//     reported live connections; those ids are the client's own, so the panel
+//     can never name a connection nobody holds.
+func (s *Server) writeHeartbeatResponse(c *gin.Context, orgID, deviceID uint, req heartbeatRequest) {
+	body := gin.H{}
+
+	if conns := parseConnIDs(req.Conns); len(conns) > 0 && s.deps.Strategies != nil {
+		// Informational only: the disconnect path uses the ids from this very
+		// request, so a missing heartbeat row loses nothing but a debug aid.
+		if err := s.deps.Strategies.NoteConns(c.Request.Context(), orgID, deviceID, conns); err != nil {
+			s.deps.Logger.Warn("heartbeat conn note failed: " + err.Error())
+		}
+
+		drop, err := s.takeDisconnect(c, orgID, deviceID, conns)
+		if err != nil {
+			// Fail closed: a request that cannot be consumed stays pending and
+			// is retried on the next heartbeat.
+			s.deps.Logger.Error("heartbeat disconnect consume failed: " + err.Error())
+		} else if len(drop) > 0 {
+			body["disconnect"] = drop
+		}
 	}
-	delivery, err := s.deps.Strategies.DeliveryFor(c.Request.Context(), orgID, deviceID, clientVersion)
-	if err != nil {
-		// Fail closed: a strategy that cannot be resolved or validated is not
-		// sent. The client keeps its current configuration and asks again on
-		// the next heartbeat; the protocol has no error channel for this.
-		s.deps.Logger.Error("heartbeat strategy delivery failed: " + err.Error())
-		ok(c)
-		return
+
+	if s.deps.Strategies != nil {
+		delivery, err := s.deps.Strategies.DeliveryFor(c.Request.Context(), orgID, deviceID, req.ModifiedAt)
+		switch {
+		case err != nil:
+			// Fail closed: the client keeps its current configuration and asks
+			// again; the protocol has no error channel for this.
+			s.deps.Logger.Error("heartbeat strategy delivery failed: " + err.Error())
+		case delivery.Deliver:
+			body["strategy"] = gin.H{"config_options": delivery.Options}
+			body["modified_at"] = delivery.Version
+		}
 	}
-	if !delivery.Deliver {
-		ok(c)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"strategy":    gin.H{"config_options": delivery.Options},
-		"modified_at": delivery.Version,
+
+	c.JSON(http.StatusOK, body)
+}
+
+// takeDisconnect consumes a pending request inside its own transaction so the
+// status change and its audit entry commit together.
+func (s *Server) takeDisconnect(c *gin.Context, orgID, deviceID uint, conns []int64) ([]int64, error) {
+	var drop []int64
+	err := s.deps.DB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		var terr error
+		drop, terr = s.deps.Strategies.TakePendingTx(tx, orgID, deviceID, conns)
+		return terr
 	})
+	return drop, err
+}
+
+// parseConnIDs converts the client's `conns` array into ids. The client sends
+// the ids it holds; anything that is not a positive integer that fits the
+// client's own i32 field is dropped rather than guessed at.
+func parseConnIDs(raw []any) []int64 {
+	out := make([]int64, 0, len(raw))
+	for _, v := range raw {
+		switch n := v.(type) {
+		case float64:
+			if n <= 0 || n != float64(int64(n)) || n > math.MaxInt32 {
+				continue
+			}
+			out = append(out, int64(n))
+		case int:
+			if n <= 0 {
+				continue
+			}
+			out = append(out, int64(n))
+		case int64:
+			if n <= 0 || n > math.MaxInt32 {
+				continue
+			}
+			out = append(out, n)
+		case json.Number:
+			i, err := n.Int64()
+			if err != nil || i <= 0 || i > math.MaxInt32 {
+				continue
+			}
+			out = append(out, i)
+		}
+	}
+	return out
 }
 
 // sysinfo receives the client's system information dump. The panel only
