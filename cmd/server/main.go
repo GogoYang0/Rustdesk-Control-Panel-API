@@ -97,26 +97,7 @@ func main() {
 	// data migration that trusts pre-verification accounts as verified.
 	const backfillEmailVerifiedTrue = "backfill_email_verified_true"
 
-	if err := st.DB.AutoMigrate(
-		&model.User{}, &model.RefreshToken{},
-		&model.UserTOTP{},
-		&model.Organization{}, &model.Membership{}, &model.Role{}, &model.Invitation{},
-		&model.APIToken{},
-		&model.AuditLog{},
-		&model.Device{}, &model.DeviceHeartbeat{}, &model.ServerGroup{},
-		&model.AddressBook{}, &model.AddressBookPeer{},
-		&model.AddressBookTag{}, &model.AddressBookGrant{}, &model.SyncCursor{},
-		&model.VerificationToken{},
-		&model.MigrationMark{},
-		&model.CompatSession{},
-		&model.LogEvent{},
-		&model.Session{}, &model.SessionEvent{},
-		&model.Ticket{}, &model.Policy{},
-		&model.Approval{}, &model.Alert{},
-		&model.UserGroup{}, &model.UserGroupMember{}, &model.DeviceGroup{}, &model.AccessRule{},
-		&model.ControlRole{}, &model.ConnectionLog{}, &model.FileLog{}, &model.AuditNonce{},
-		&model.CompatLoginChallenge{},
-	); err != nil {
+	if err := st.DB.AutoMigrate(model.PersistentModels()...); err != nil {
 		lg.Fatal("migrate database", zap.Error(err))
 	}
 
