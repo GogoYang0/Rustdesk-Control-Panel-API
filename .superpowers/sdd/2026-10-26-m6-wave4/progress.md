@@ -15,7 +15,7 @@
 | Task | 状态 | 提交 |
 |---|---|---|
 | T1 模型/迁移/租户注册 | ✅ 完成 | 见下方 |
-| T2 白名单 + CRUD | ⏳ 未开始 | — |
+| T2 白名单 + CRUD | ✅ 完成 | `f001fda` |
 | T3 生效解析 + 心跳下发 | ⏳ 未开始 | — |
 | T4 断连 | ⏳ 未开始 | — |
 | T5 分配 + CLI strategy_name | ⏳ 未开始 | — |
@@ -38,3 +38,31 @@ go build ./...                                              → ok
 - 新增 `strategies`、`device_disconnects`；`Device/DeviceGroup/Membership.StrategyID`；`DeviceHeartbeat.ConnIDs`。
 - 两张新表注册 `store/defaults.go` + `scopetest`，api harness AutoMigrate 同步。
 - 测试覆盖：`(organization_id,name)` 唯一（同组织重复失败、跨组织同名允许）、四处新列存在。
+
+**R1 分配语义（AssignDevice/AssignGroup/AssignMember）随 T2 落地，T5 只补端点与 CLI。**
+- 理由：Delete 必须在同一事务里清空三处分配，分配与清理是同一套语义；拆到 T5 会让 T2 的删除测试无法验证「悬空 id 已清除」。
+- 代价：T2 的提交比计划大一点；T5 只剩契约、handler 与 CLI 解析。
+
+**R2 改名/空转的 PATCH 不 bump 版本，也不写审计。**
+- 理由：`version` 是客户端「是否需要重新套用」的唯一信号（`strategy_timestamp` 持久化在客户端本地），改名或重复提交同样的 `config_options` 会触发一次全量下发，把 30 秒一次的心跳变成无谓的配置重写。
+- 代价：审计里看不到「有人点了一次没有变化的保存」。这是有意的：没有变化就没有变更可审计。
+
+### T2 证据
+
+```
+go test ./internal/strategy/ -count=1                 → ok（22 个顶层测试）
+go test ./internal/api/ -run TestStrategy_           → ok（6 个 HTTP 用例）
+go test ./internal/api/ ./internal/authz/ ./internal/store/scopetest/ -count=1 → 全绿
+npx @redocly/cli lint openapi.yaml                   → valid（3 条既有告警）
+go generate ./... 后 git status --porcelain -- gen openapi.yaml → 空
+```
+
+- 白名单：20 个键集中在 `internal/strategy/options.go`，`TestAllowedOptions_MatchesDesignList` 逐字钉死顺序与内容；逐字匹配（不 trim、不 fold），`API-SERVER` / `" enable-audio"` / `enable-audio\t` 均 400。
+- 值约束：≤256 **rune**、禁控制字符（值最终写进客户端配置文件）；键数上限 50 是防御性常量，白名单只有 20 个键，测试断言两者关系。
+- CRUD：名称 1–64 字符、组织内**不区分大小写**唯一（CLI 按名解析）；`enabled=false` 是停用开关，保留分配；删除同事务清空 devices/device_groups/memberships 的 `strategy_id` 并写 `strategy.delete`。
+- 权限：`strategy.manage`、`device.disconnect` 均为不可委派，admin 内置集合授予，owner 全量。
+- 审计：三个写端点在成功后 `c.Set(contextAuditRecorded, true)`，避免中间件再写一条 HTTP 回退行（该问题是本任务的 API 测试跑出来的：`httpRows` 断言 3 条）。
+- 变异验证 1（白名单）：把 `if !allowlist[k]` 改成 `if false` → `TestNormalizeOptions_RejectsSystemKeys` 与 `..._RejectsCaseAndWhitespaceVariants` 转红；恢复后全绿。
+- 变异验证 2（版本）：把 `updates["version"] = row.Version + 1` 改成 `row.Version` → `TestUpdate_OptionsChangeBumpsVersion` 断言失败（expected 2, actual 1）；恢复后全绿。
+
+**流程偏差（如实记录）**：T2 的测试先于实现写好，但实现写完才第一次运行，因此没有观察到「断言失败」形态的 RED（首次运行会是编译失败）。补救：两处关键不变量各做一次变异验证，证明用例确实能抓住回归。
