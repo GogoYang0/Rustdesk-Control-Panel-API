@@ -11,7 +11,7 @@
 |---|---|---|
 | T1 模型、迁移、租户注册 | ✅ 完成 | `bfe130c` |
 | T2 Control Role 服务层（Normalize/Mask/CRUD/Assign/EffectiveFor） | ✅ 完成 | `8d10644` |
-| T2 契约 + handler + 成员分配端点 | ⏳ 未开始 | — |
+| T2 契约 + handler + 成员分配端点 | ✅ 完成 | `16ee672` |
 | T3 票据/会话快照接线 | ⏳ 未开始 | — |
 | T4 客户端审计上报 | ⏳ 未开始 | — |
 | T5 日志查询导出与保留期 | ⏳ 未开始 | — |
@@ -65,3 +65,31 @@ ok  .../internal/controlrole 0.249s   （19 个顶层测试）
 ```
 - 变异验证：`Mask()` 把 `StateDisable` 也置位 → `TestMask_OnlyEnableBits` 转红（actual 0x2009 vs expected 0x9）；恢复后转绿。
 - 覆盖：未知键/非法状态拒绝、缺失键补 `use_client`、bitmask 只置 enable、重复名、空名、builtin 不可删/不可改名、删除清空分配、跨组织角色不可分配、EffectiveFor 回退 default、无 recorder 拒绝写。
+
+**R8 成员分配走独立端点 `PUT /members/{userId}/control-role`，不改 `MemberUpdateRequest`。**
+- 理由：`UpdateMemberRole` 的事务里同时处理角色变更、停用与 compat 会话撤销；把控制角色塞进去会让审计动作与失败回滚互相牵连。独立端点的语义只需「设/清」，失败面最小。
+- 代价：契约多一条路径；客户端要分别调用。
+
+**R9 组织创建时同事务播种 default 角色（`controlrole.EnsureDefaultsTx`），不只在启动时 Migrate。**
+- 理由：测试里新建组织读不到 default 角色而失败（列表只有自定义角色），真实场景则是「新组织在下次重启前没有任何回退角色」。
+- 代价：组织创建事务多一次写入；`Migrate` 仍需保留以覆盖存量组织。
+
+## 流程偏差（如实记录）
+
+- T2 的 handler 与契约**先于 handler 测试落地**：`go generate` 生成 `gen.ServerInterface` 后不实现即无法编译，属于契约驱动生成的结构性约束。补救：handler 测试补齐后用变异验证证明门禁确实有效（删除 `requirePerm` → `TestControlRole_RequiresManagePermission` 转红）。
+- 其余任务恢复严格 RED→GREEN：先写失败测试、看到预期失败，再实现。
+
+### T2（契约 + 管理面）验证证据
+
+```
+npx @redocly/cli lint openapi.yaml   → valid（3 条告警均为既有的 info/servers/healthz）
+go generate ./... && git status --porcelain  → 空（零漂移）
+go test ./internal/authz/ ./internal/api/ ./cmd/server/ -count=1
+ok  internal/authz  0.336s
+ok  internal/api   36.839s
+ok  cmd/server      0.255s
+```
+- 新增契约路径：`GET|POST /control-roles`、`PATCH|DELETE /control-roles/{roleId}`、`PUT /members/{userId}/control-role`。
+- 新增权限 `control_role.manage`（不可委派；admin 内置集合授予；`MigrateAccessPermission` 每次启动重写内置集合，存量组织自动获得）。
+- 变异验证：删掉 `CreateControlRole` 的 `requirePerm` → `TestControlRole_RequiresManagePermission` 转红；恢复后转绿、`git diff` 为空。
+- 覆盖：成员 403/列表 200、跨组织 404、default 不可改名/不可删（409）但可改权限、未知键与非法状态 400、分配与 `null` 清除、删除清空分配、审计恰好一条 `control_role.create` 且无 HTTP 回退行。
