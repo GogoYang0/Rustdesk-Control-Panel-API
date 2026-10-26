@@ -144,7 +144,7 @@ func (s *Server) login(c *gin.Context) {
 
 	if req.ID != "" {
 		err = s.deps.DB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-			generation, cerr := s.claimDeviceTx(tx, orgID, req.ID, req.UUID)
+			generation, cerr := s.claimDeviceTx(tx, orgID, user.ID, req.ID, req.UUID)
 			if cerr != nil {
 				// Roll back everything: errDeviceBound is answered below from
 				// the returned error, and any other failure must not commit
@@ -221,7 +221,13 @@ var errDeviceDisabled = errors.New("device is disabled")
 // instead of taking the binding over (CWE-863). Admins reset a lost binding
 // through POST /api/v1/orgs/{orgId}/devices/{deviceId}/rebind, which clears the
 // binding and advances the generation in one audited transaction.
-func (s *Server) claimDeviceTx(tx *gorm.DB, orgID uint, rustdeskID, uuid string) (uint64, error) {
+//
+// A successful claim also auto-assigns an owner (D3): the device is attached to
+// the logging-in user if nobody owns it yet. The conditional UPDATE means a
+// device an administrator reassigned is never stolen back by the next login,
+// and the ownership change rides the login transaction (no separate audit: the
+// login path has none to begin with).
+func (s *Server) claimDeviceTx(tx *gorm.DB, orgID, userID uint, rustdeskID, uuid string) (uint64, error) {
 	var dev model.Device
 	err := store.ScopedByOrg(tx, orgID).
 		Where("rustdesk_id = ?", rustdeskID).First(&dev).Error
@@ -299,6 +305,16 @@ func (s *Server) claimDeviceTx(tx *gorm.DB, orgID uint, rustdeskID, uuid string)
 	// raced the administrator is refused instead of persisting a session.
 	if final.Disabled {
 		return 0, errDeviceDisabled
+	}
+	if final.OwnerUserID == nil && userID != 0 {
+		// Conditional on the column still being NULL: an administrator who
+		// reassigned the device between the read and this write keeps the new
+		// owner instead of having the login overwrite it.
+		if err := store.ScopedByOrg(tx, orgID).Model(&model.Device{}).
+			Where("id = ? AND owner_user_id IS NULL", final.ID).
+			Update("owner_user_id", userID).Error; err != nil {
+			return 0, err
+		}
 	}
 	return final.BindingGeneration, nil
 }

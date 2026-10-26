@@ -31,6 +31,10 @@ var ErrInvalidInput = errors.New("invalid device input")
 // membership in the device's organization.
 var ErrOwnerNotMember = errors.New("owner is not an active member")
 
+// ErrDeviceGroupNotFound reports a requested device group that does not exist
+// in the organization.
+var ErrDeviceGroupNotFound = errors.New("device group not found")
+
 // Field limits mirror the contract and the column sizes.
 const (
 	maxNameLen       = 128
@@ -497,26 +501,42 @@ func (s *Service) Assign(ctx context.Context, orgID, deviceID, actorID uint, in 
 const maxNoteLen = 255
 
 // UpdateInput carries the fields of one device update. A nil pointer leaves the
-// field alone; OwnerUserID pointed at 0 clears the owner.
+// field alone; OwnerUserID pointed at 0 clears the owner. DeviceGroupID never
+// clears: a device is moved from one group to another (the management API owns
+// the explicit ungrouping).
 type UpdateInput struct {
-	Disabled    *bool
-	OwnerUserID *uint
-	Note        *string
+	Disabled      *bool
+	OwnerUserID   *uint
+	Note          *string
+	Name          *string
+	DeviceGroupID *uint
 }
 
 // Update applies every requested change to one device inside a single audited
 // transaction: a request that names several fields either takes effect in full
 // or not at all, and each changed field writes its own audit row
-// (device.assign, device.note, device.disable/device.enable). Disabling revokes
-// the device's active compat sessions in the same transaction. Fields left at
-// their current value write no audit row, and a service without a recorder
-// refuses the whole mutation.
+// (device.assign, device.note, device.rename, device.group,
+// device.disable/device.enable). Disabling revokes the device's active compat
+// sessions in the same transaction. Fields left at their current value write no
+// audit row, and a service without a recorder refuses the whole mutation. It
+// never touches the client binding: that belongs to the login path alone.
 func (s *Service) Update(ctx context.Context, orgID, deviceID, actorID uint, in UpdateInput) (*model.Device, error) {
 	if orgID == 0 {
 		return nil, fmt.Errorf("%w: organization is required", ErrInvalidInput)
 	}
 	if in.Note != nil && len([]rune(*in.Note)) > maxNoteLen {
 		return nil, fmt.Errorf("%w: note exceeds %d characters", ErrInvalidInput, maxNoteLen)
+	}
+	if in.Name != nil {
+		if *in.Name == "" {
+			return nil, fmt.Errorf("%w: name is required", ErrInvalidInput)
+		}
+		if len([]rune(*in.Name)) > maxNameLen {
+			return nil, fmt.Errorf("%w: name exceeds %d characters", ErrInvalidInput, maxNameLen)
+		}
+	}
+	if in.DeviceGroupID != nil && *in.DeviceGroupID == 0 {
+		return nil, fmt.Errorf("%w: device_group_id is required", ErrInvalidInput)
 	}
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -554,7 +574,7 @@ func (s *Service) Update(ctx context.Context, orgID, deviceID, actorID uint, in 
 			}
 			if !sameOwner(dev.OwnerUserID, next) {
 				ownerChanged = true
-				ownerFrom, ownerTo = ownerIDOrNil(dev.OwnerUserID), ownerIDOrNil(&next)
+				ownerFrom, ownerTo = nullableID(dev.OwnerUserID), nullableID(&next)
 				if next == 0 {
 					updates["owner_user_id"] = nil
 				} else {
@@ -589,7 +609,34 @@ func (s *Service) Update(ctx context.Context, orgID, deviceID, actorID uint, in 
 			}
 		}
 
-		if !ownerChanged && !noteChanged && !disabledChanged {
+		renameChanged := false
+		previousName := dev.Name
+		if in.Name != nil && dev.Name != *in.Name {
+			renameChanged = true
+			updates["name"] = *in.Name
+		}
+
+		groupChanged := false
+		var groupFrom, groupTo any
+		if in.DeviceGroupID != nil && (dev.DeviceGroupID == nil || *dev.DeviceGroupID != *in.DeviceGroupID) {
+			// The group is resolved by the caller, so a dangling id can only
+			// arrive from a race with a group deletion; the same transaction
+			// then refuses instead of pointing the device at nothing.
+			var count int64
+			if err := store.ScopedByOrg(tx, orgID).Model(&model.DeviceGroup{}).
+				Where("id = ?", *in.DeviceGroupID).Count(&count).Error; err != nil {
+				return err
+			}
+			if count == 0 {
+				return ErrDeviceGroupNotFound
+			}
+			groupChanged = true
+			groupFrom = nullableID(dev.DeviceGroupID)
+			groupTo = nullableID(in.DeviceGroupID)
+			updates["device_group_id"] = *in.DeviceGroupID
+		}
+
+		if !ownerChanged && !noteChanged && !disabledChanged && !renameChanged && !groupChanged {
 			return nil
 		}
 		updates["updated_at"] = now
@@ -654,6 +701,38 @@ func (s *Service) Update(ctx context.Context, orgID, deviceID, actorID uint, in 
 				return err
 			}
 		}
+		if renameChanged {
+			if err := s.record(tx, audit.Entry{
+				OrganizationID: orgID,
+				ActorUserID:    actorID,
+				Action:         "device.rename",
+				TargetType:     "device",
+				TargetID:       fmt.Sprint(dev.ID),
+				Detail: map[string]any{
+					"rustdesk_id": dev.RustdeskID,
+					"from":        previousName,
+					"to":          *in.Name,
+				},
+			}); err != nil {
+				return err
+			}
+		}
+		if groupChanged {
+			if err := s.record(tx, audit.Entry{
+				OrganizationID: orgID,
+				ActorUserID:    actorID,
+				Action:         "device.group",
+				TargetType:     "device",
+				TargetID:       fmt.Sprint(dev.ID),
+				Detail: map[string]any{
+					"rustdesk_id": dev.RustdeskID,
+					"from":        groupFrom,
+					"to":          groupTo,
+				},
+			}); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -675,9 +754,10 @@ func sameOwner(current *uint, next uint) bool {
 	return current != nil && *current == next
 }
 
-// ownerIDOrNil renders an owner reference for an audit detail. A zero pointer
-// renders as nil because 0 is never a user id: it means "nobody".
-func ownerIDOrNil(v *uint) any {
+// nullableID renders a nullable reference for an audit detail. A zero pointer
+// renders as nil because 0 is never a valid id: it means "nobody" or "no
+// group".
+func nullableID(v *uint) any {
 	if v == nil || *v == 0 {
 		return nil
 	}
