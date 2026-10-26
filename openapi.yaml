@@ -4459,9 +4459,13 @@ components:
       type: string
       description: |
         - device_group：规则指向一个设备组（`target_group_id` 必填）
+        - user_group：规则指向一个用户组，展开为该组显式成员所拥有的设备
+          （v0.10.0；`target_group_id` 必填）。目标为内置 `everyone` 组时语义是
+          「所有有归属的设备」
         - all_devices：规则指向组织内全部设备（`target_group_id` 必须为空）
       enum:
         - device_group
+        - user_group
         - all_devices
 
     AccessRule:
@@ -4491,10 +4495,10 @@ components:
             - integer
             - "null"
           format: int64
-          description: 设备组 id；`all_devices` 时为 null
+          description: 目标组 id（设备组或用户组，按 `target_kind` 解释）；`all_devices` 时为 null
         target_group_name:
           type: string
-          description: 设备组名；`all_devices` 时为空字符串
+          description: 目标组名；`all_devices` 时为空字符串
         created_at:
           type: string
           format: date-time
@@ -4532,7 +4536,7 @@ components:
             - integer
             - "null"
           format: int64
-          description: 设备组 id；`device_group` 时必填，`all_devices` 时不得给出
+          description: 目标组 id（设备组或用户组）；`device_group`/`user_group` 时必填，`all_devices` 时不得给出
 
     AccessRuleResponse:
       type: object

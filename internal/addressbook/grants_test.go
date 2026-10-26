@@ -264,6 +264,15 @@ func TestUpsertGrant_UserGroupSubject(t *testing.T) {
 	_, _, err = svc.UpsertGrant(ownerID, orgID, book.ID, 0, foreign.ID,
 		model.GrantSubjectUserGroup, model.GrantAccessRead, perms)
 	require.ErrorIs(t, err, ErrGrantSubjectNotFound, "another organization's group is not a subject")
+
+	// The reserved everyone group has no explicit members: a grant on it would
+	// never match anybody, so it is refused instead of silently dead.
+	everyone := model.UserGroup{OrganizationID: orgID, Name: "everyone", Kind: model.UserGroupKindEveryone}
+	require.NoError(t, svc.db.Create(&everyone).Error)
+	_, _, err = svc.UpsertGrant(ownerID, orgID, book.ID, 0, everyone.ID,
+		model.GrantSubjectUserGroup, model.GrantAccessRead, perms)
+	require.ErrorIs(t, err, ErrInvalidGrant)
+	require.Contains(t, err.Error(), "subject_kind=everyone")
 }
 
 // TestGrants_UserGroupReachesItsMembers walks the group grant through the

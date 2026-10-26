@@ -17,6 +17,7 @@ import (
 const (
 	AccessRuleTargetKindAllDevices  AccessRuleTargetKind = "all_devices"
 	AccessRuleTargetKindDeviceGroup AccessRuleTargetKind = "device_group"
+	AccessRuleTargetKindUserGroup   AccessRuleTargetKind = "user_group"
 )
 
 // Valid indicates whether the value is a known member of the AccessRuleTargetKind enum.
@@ -25,6 +26,8 @@ func (e AccessRuleTargetKind) Valid() bool {
 	case AccessRuleTargetKindAllDevices:
 		return true
 	case AccessRuleTargetKindDeviceGroup:
+		return true
+	case AccessRuleTargetKindUserGroup:
 		return true
 	default:
 		return false
@@ -570,13 +573,16 @@ type AccessRule struct {
 	// SourceGroupName 源用户组名（含内置 `everyone`）
 	SourceGroupName string `json:"source_group_name"`
 
-	// TargetGroupId 设备组 id；`all_devices` 时为 null
+	// TargetGroupId 目标组 id（设备组或用户组，按 `target_kind` 解释）；`all_devices` 时为 null
 	TargetGroupId *int64 `json:"target_group_id"`
 
-	// TargetGroupName 设备组名；`all_devices` 时为空字符串
+	// TargetGroupName 目标组名；`all_devices` 时为空字符串
 	TargetGroupName string `json:"target_group_name"`
 
 	// TargetKind - device_group：规则指向一个设备组（`target_group_id` 必填）
+	// - user_group：规则指向一个用户组，展开为该组显式成员所拥有的设备
+	//   （v0.10.0；`target_group_id` 必填）。目标为内置 `everyone` 组时语义是
+	//   「所有有归属的设备」
 	// - all_devices：规则指向组织内全部设备（`target_group_id` 必须为空）
 	TargetKind AccessRuleTargetKind `json:"target_kind"`
 }
@@ -586,10 +592,13 @@ type AccessRuleCreateRequest struct {
 	// SourceGroupId 本组织的用户组 id（含 `everyone`）
 	SourceGroupId int64 `json:"source_group_id"`
 
-	// TargetGroupId 设备组 id；`device_group` 时必填，`all_devices` 时不得给出
+	// TargetGroupId 目标组 id（设备组或用户组）；`device_group`/`user_group` 时必填，`all_devices` 时不得给出
 	TargetGroupId *int64 `json:"target_group_id,omitempty"`
 
 	// TargetKind - device_group：规则指向一个设备组（`target_group_id` 必填）
+	// - user_group：规则指向一个用户组，展开为该组显式成员所拥有的设备
+	//   （v0.10.0；`target_group_id` 必填）。目标为内置 `everyone` 组时语义是
+	//   「所有有归属的设备」
 	// - all_devices：规则指向组织内全部设备（`target_group_id` 必须为空）
 	TargetKind AccessRuleTargetKind `json:"target_kind"`
 }
@@ -637,7 +646,10 @@ type AccessRuleResponse struct {
 }
 
 // AccessRuleTargetKind - device_group：规则指向一个设备组（`target_group_id` 必填）
-// - all_devices：规则指向组织内全部设备（`target_group_id` 必须为空）
+//   - user_group：规则指向一个用户组，展开为该组显式成员所拥有的设备
+//     （v0.10.0；`target_group_id` 必填）。目标为内置 `everyone` 组时语义是
+//     「所有有归属的设备」
+//   - all_devices：规则指向组织内全部设备（`target_group_id` 必须为空）
 type AccessRuleTargetKind string
 
 // AddressBook defines model for AddressBook.

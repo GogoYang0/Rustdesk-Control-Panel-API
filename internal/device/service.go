@@ -620,15 +620,22 @@ func (s *Service) Update(ctx context.Context, orgID, deviceID, actorID uint, in 
 		var groupFrom, groupTo any
 		if in.DeviceGroupID != nil && (dev.DeviceGroupID == nil || *dev.DeviceGroupID != *in.DeviceGroupID) {
 			// The group is resolved by the caller, so a dangling id can only
-			// arrive from a race with a group deletion; the same transaction
-			// then refuses instead of pointing the device at nothing.
-			var count int64
-			if err := store.ScopedByOrg(tx, orgID).Model(&model.DeviceGroup{}).
-				Where("id = ?", *in.DeviceGroupID).Count(&count).Error; err != nil {
-				return err
+			// arrive from a race with a group deletion. The row is read with a
+			// write lock on the served dialects, which serialises against
+			// DeleteDeviceGroup: either the deletion has not committed yet and
+			// waits for this transaction (its own ungrouping sweep then sees the
+			// device), or the locked current read reports the group as gone.
+			groupRead := store.ScopedByOrg(tx, orgID).Select("id").Where("id = ?", *in.DeviceGroupID)
+			if tx.Name() != "sqlite" {
+				groupRead = groupRead.Clauses(clause.Locking{Strength: "UPDATE"})
 			}
-			if count == 0 {
+			var group model.DeviceGroup
+			err := groupRead.First(&group).Error
+			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrDeviceGroupNotFound
+			}
+			if err != nil {
+				return err
 			}
 			groupChanged = true
 			groupFrom = nullableID(dev.DeviceGroupID)

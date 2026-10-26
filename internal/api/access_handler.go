@@ -412,10 +412,12 @@ func (a *AdminAPI) ReplaceDeviceGroupDevices(c *gin.Context, orgId int64, device
 }
 
 // accessRuleToAPI maps one rule view onto the contract shape. all_devices rules
-// carry a null target id and an empty target name.
+// carry a null target id and an empty target name; both group-target kinds carry
+// the id and the resolved name, so a client can round-trip the rule.
 func accessRuleToAPI(view access.RuleView) gen.AccessRule {
 	var targetID *int64
-	if view.Rule.TargetKind == model.AccessTargetKindDeviceGroup {
+	if view.Rule.TargetKind == model.AccessTargetKindDeviceGroup ||
+		view.Rule.TargetKind == model.AccessTargetKindUserGroup {
 		id := int64(view.Rule.TargetGroupID)
 		targetID = &id
 	}

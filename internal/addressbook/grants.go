@@ -221,15 +221,22 @@ func (s *Service) UpsertGrant(userID, orgID, bookID, subjectUserID, subjectGroup
 			return nil, false, ErrInvalidGrant
 		}
 		subjectUserID = 0
-		var count int64
-		if err := store.ScopedByOrg(s.db, orgID).Model(&model.UserGroup{}).
-			Where("id = ?", subjectGroupID).Count(&count).Error; err != nil {
+		var group model.UserGroup
+		if err := store.ScopedByOrg(s.db, orgID).Select("id", "kind").
+			First(&group, subjectGroupID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				// A subject group outside the tenant is indistinguishable from a
+				// missing one.
+				return nil, false, ErrGrantSubjectNotFound
+			}
 			return nil, false, err
 		}
-		if count == 0 {
-			// A subject group outside the tenant is indistinguishable from a
-			// missing one.
-			return nil, false, ErrGrantSubjectNotFound
+		if group.Kind == model.UserGroupKindEveryone {
+			// The reserved group stores no member rows (membership is implicit),
+			// so a group grant on it would never match anybody: the first-class
+			// `everyone` subject is the way to grant every member, and a dead
+			// grant row must not look like a working one.
+			return nil, false, fmt.Errorf("%w: the reserved everyone group is not a grant subject; use subject_kind=everyone", ErrInvalidGrant)
 		}
 	case model.GrantSubjectUser:
 		subjectGroupID = 0

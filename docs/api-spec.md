@@ -198,7 +198,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 
 > **v0.8.0 共享簿授权**：授权主体为 `user`（`subject_user_id` 必填且须为本组织成员）、`everyone`（无 subject id）或 v0.10.0 起的 `user_group`（`subject_group_id` 必填且须为本组织的用户组，否则 404），访问级别 `read`/`write`/`full`。
 > 共享簿默认**所有成员可读**（保持 M2 行为），授权只升不降：`everyone` 授权可把全体成员升到 write/full；**显式 user 授权优先于 everyone**，因此可用 user=`read` 把某成员重新收紧。
-> `user_group` 授权对该组的**显式成员**生效（`everyone` 组的隐式成员身份不参与授权）：有效级别取所有命中主体（`everyone`、命中的各 `user_group`）中的**最高档**；显式 user 授权仍然优先（可把某成员从组授权的高档重新收紧）。
+> `user_group` 授权对该组的**显式成员**生效（`everyone` 组的隐式成员身份不参与授权）：有效级别取所有命中主体（`everyone`、命中的各 `user_group`）中的**最高档**；显式 user 授权仍然优先（可把某成员从组授权的高档重新收紧）。内置 `everyone` 组**不能**作为 `user_group` 主体（它没有显式成员行，授权永远不会命中任何人）——给全体成员授权请直接用 `subject_kind=everyone`，误用返回 400。
 > `addressbook.write` 权限（owner/admin 与持有该码的自定义角色）始终是 full。`write` 可替换 peers/tags；`full` 还可改名、删除簿、管理授权。个人簿没有授权概念（400）。
 > 同一主体重复 POST 为更新（200），首次创建为 201。**删除用户组时**，以该组为主体的授权在同一事务级联删除，删除响应 `removed_grants` 报告条数（§3.10）。
 
