@@ -102,9 +102,11 @@ func (s *Service) AllowedDeviceIDs(ctx context.Context, orgID, userID uint) (boo
 
 // devicesOwnedByGroups expands user_group rule targets into device ids: the
 // devices owned by members of those groups. The reserved everyone group means
-// "every owned device" (D6) rather than every device, and an owner whose
-// membership is disabled or missing contributes nothing — the same fail-closed
-// rule the caller itself obeys.
+// "every device owned by an active member" (D6) rather than every device, and an
+// owner whose membership is disabled, role-less or missing contributes nothing
+// — the same fail-closed rule the explicit-group branch and the caller itself
+// obey. Ownership rows survive deactivation (D13), so the membership filter is
+// what keeps an offboarded member's device out of everybody else's peer list.
 func (s *Service) devicesOwnedByGroups(db *gorm.DB, orgID uint, groupIDs []uint) ([]uint, error) {
 	reserved := make(map[uint]bool, 1)
 	var everyone []uint
@@ -116,13 +118,28 @@ func (s *Service) devicesOwnedByGroups(db *gorm.DB, orgID uint, groupIDs []uint)
 		reserved[id] = true
 	}
 
+	var activeMembers []uint
+	activeLoaded := false
+
 	var ids []uint
 	explicit := make([]uint, 0, len(groupIDs))
 	for _, id := range groupIDs {
 		if reserved[id] {
+			if !activeLoaded {
+				if err := store.ScopedByOrg(db, orgID).Model(&model.Membership{}).
+					Where("disabled = ? AND role_id <> 0", false).
+					Pluck("user_id", &activeMembers).Error; err != nil {
+					return nil, err
+				}
+				activeMembers = dedupeIDs(activeMembers)
+				activeLoaded = true
+			}
+			if len(activeMembers) == 0 {
+				continue
+			}
 			var all []uint
 			if err := store.ScopedByOrg(db, orgID).Model(&model.Device{}).
-				Where("owner_user_id IS NOT NULL AND disabled = ?", false).
+				Where("owner_user_id IN ? AND disabled = ?", activeMembers, false).
 				Pluck("id", &all).Error; err != nil {
 				return nil, err
 			}
