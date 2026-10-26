@@ -96,7 +96,7 @@
 
 ### 2.4 验证码运维（v0.10.0）
 
-**启用前置**：选定 `captcha.provider`（默认 `altcha`），注入对应秘密（`PANEL_CAPTCHA_ALTCHA_KEY` / `PANEL_CAPTCHA_GEETEST_KEY` / `PANEL_CAPTCHA_CAP_SECRET`），并把 `captcha.enabled=true`。启用后 `/auth/login`、`/auth/2fa/verify`、`/invitations/accept` 全部要求 `GET /auth/captcha` 发放的挑战；compat `/api/login`（原生客户端）不受影响。
+**启用前置**：选定 `captcha.provider`（默认 `altcha`），注入对应秘密（`PANEL_CAPTCHA_ALTCHA_KEY` / `PANEL_CAPTCHA_GEETEST_KEY` / `PANEL_CAPTCHA_CAP_SECRET`），并把 `captcha.enabled=true`。启用后 `POST /api/v1/auth/login`、`POST /api/v1/auth/2fa/verify`、`POST /api/v1/invitations/accept` 全部要求 `GET /api/v1/auth/captcha` 发放的挑战；compat `POST /api/login`（原生客户端，**不带 `/api/v1` 前缀**）不受影响。
 
 **提供商与运维归属**：
 - `altcha`：自带 proof-of-work，无外部依赖；`maxNumber` 越高越难爆破、客户端越费 CPU（默认 10 万次哈希，通常毫秒级）。
@@ -107,11 +107,11 @@
 
 **状态与多副本**：挑战本身无状态，但「已消耗凭据」与登录限流都在进程内存（Altcha 5 分钟、GeeTest/Cap 10 分钟去重窗口）。两者约束不同：**消费键与 IP 无关**，按 IP 粘性路由**不能**保证跨实例单次消费（换源 IP 的同一凭据可能命中未记录它的实例），需要该保证时必须单副本或共享消费存储；登录限流按 IP 计费，粘性路由有效。进程重启同样会清空消费表。一个凭据只有一次尝试机会；错误答案也会消耗它。已通过校验的凭据在 TTL 内不会被容量淘汰——内存表满时优先淘汰未通过校验的占位，全是已通过条目时拒绝新挑战，而不是把已用凭据放回可用；校验进行中若占位被淘汰，成功结果仍会补记为**已通过**状态，且过期句柄不会覆盖或删除同 key 的新占位。
 
-**failMode 的边界**：`open` 只在**校验阶段**遇到提供商网络故障时放行；如果提供商连**挑战都发不出来**（`GET /auth/captcha` 503），三个入口仍会被挡住——此时应临时停用验证码（`captcha.enabled=false`）或切换提供商，而不是长期依赖 `open`。
+**failMode 的边界**：`open` 只在**校验阶段**遇到提供商网络故障时放行；如果提供商连**挑战都发不出来**（`GET /api/v1/auth/captcha` 503），三个入口仍会被挡住——此时应临时停用验证码（`captcha.enabled=false`）或切换提供商，而不是长期依赖 `open`。
 
-**停用**：把 `captcha.enabled=false` 重启即可恢复原登录流程（无需数据库变更）；停用后 `GET /auth/captcha` 返回 `enabled=false`，客户端可跳过验证码。
+**停用**：把 `captcha.enabled=false` 重启即可恢复原登录流程（无需数据库变更）；停用后 `GET /api/v1/auth/captcha` 返回 `enabled=false`，客户端可跳过验证码。
 
-**排查**：全员卡在登录 → 先看 `/auth/captcha` 是否 5xx（提供商不可达或配置错误），再看 `captcha` 配置与秘密是否注入；个别用户反复 `captcha_invalid` → 检查客户端时钟与挑战 TTL；日志出现 `captcha provider unavailable; fail-mode open` → 说明正在放行，立即确认提供商状态并改回 `closed`。
+**排查**：全员卡在登录 → 先看 `GET /api/v1/auth/captcha` 是否 5xx（提供商不可达或配置错误），再看 `captcha` 配置与秘密是否注入；个别用户反复 `captcha_invalid` → 检查客户端时钟与挑战 TTL；日志出现 `captcha provider unavailable; fail-mode open` → 说明正在放行，立即确认提供商状态并改回 `closed`。
 
 ---
 
