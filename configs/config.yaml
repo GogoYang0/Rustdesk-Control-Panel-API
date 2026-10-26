@@ -143,3 +143,45 @@ captcha:
   cap:
     instanceUrl: ""
     siteKey: ""
+
+# Custom client generator. Disabled by default; profile CRUD remains available
+# for preparation, but build creation returns 503 until enabled.
+#
+# publicBaseURL must be the panel origin reachable by the build runner; it is
+# also compiled into the client as its API server (compat entry).
+# Secrets are injected from the environment and must never be stored here:
+#   PANEL_CLIENTBUILD_GITHUB_TOKEN  fine-grained PAT (Actions RW, Metadata R)
+#   PANEL_CLIENTBUILD_BUNDLE_KEY    HMAC key, at least 32 bytes
+clientbuild:
+  enabled: false
+  publicBaseURL: ""
+  assetDir: "./data/client-builds"
+  rustdeskVersion: "1.5.0"
+  github:
+    apiBaseURL: "https://api.github.com"
+    repo: ""
+    workflow: "build-client.yml"
+    ref: "main"
+    artifactHosts:
+      - "github.com"
+      - "*.githubusercontent.com"
+      - "*.blob.core.windows.net"
+  bundle:
+    ttl: 24h
+  pollInterval: 30s
+  pendingTimeout: 12h
+  dispatchTimeout: 10m
+  buildTimeout: 3h
+  ingestTimeout: 1h
+  artifactRetention: 720h
+  deleteRemoteArtifacts: true
+  maxProfilesPerOrg: 10
+  maxConcurrentPerOrg: 2
+  maxActiveBuilds: 4
+  maxArtifactBytes: 2147483648
+  platforms:
+    - "windows-x64"
+    - "linux-x64"
+    - "macos-arm64"
+    - "macos-x64"
+    - "android-arm64"

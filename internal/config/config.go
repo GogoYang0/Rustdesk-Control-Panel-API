@@ -12,18 +12,19 @@ import (
 
 // Config is the root configuration tree.
 type Config struct {
-	Server     ServerConfig     `mapstructure:"server"`
-	Log        LogConfig        `mapstructure:"log"`
-	Database   DatabaseConfig   `mapstructure:"database"`
-	Auth       AuthConfig       `mapstructure:"auth"`
-	Provision  ProvisionConfig  `mapstructure:"provision"`
-	Mail       MailConfig       `mapstructure:"mail"`
-	Web        WebConfig        `mapstructure:"web"`
-	Compat     CompatConfig     `mapstructure:"compat"`
-	Logcollect LogcollectConfig `mapstructure:"logcollect"`
-	Session    SessionConfig    `mapstructure:"session"`
-	Audit      AuditConfig      `mapstructure:"audit"`
-	Captcha    CaptchaConfig    `mapstructure:"captcha"`
+	Server      ServerConfig      `mapstructure:"server"`
+	Log         LogConfig         `mapstructure:"log"`
+	Database    DatabaseConfig    `mapstructure:"database"`
+	Auth        AuthConfig        `mapstructure:"auth"`
+	Provision   ProvisionConfig   `mapstructure:"provision"`
+	Mail        MailConfig        `mapstructure:"mail"`
+	Web         WebConfig         `mapstructure:"web"`
+	Compat      CompatConfig      `mapstructure:"compat"`
+	Logcollect  LogcollectConfig  `mapstructure:"logcollect"`
+	Session     SessionConfig     `mapstructure:"session"`
+	Audit       AuditConfig       `mapstructure:"audit"`
+	Captcha     CaptchaConfig     `mapstructure:"captcha"`
+	ClientBuild ClientBuildConfig `mapstructure:"clientbuild"`
 }
 
 // CaptchaConfig enables the interactive captcha in front of the public
@@ -220,6 +221,32 @@ func Load(path string) (*Config, error) {
 	if err := v.BindEnv("web.baseurl", "PANEL_WEB_BASE_URL"); err != nil {
 		return nil, fmt.Errorf("bind web base url env: %w", err)
 	}
+	v.SetDefault("clientbuild.enabled", false)
+	v.SetDefault("clientbuild.assetDir", "./data/client-builds")
+	v.SetDefault("clientbuild.rustdeskVersion", "1.5.0")
+	v.SetDefault("clientbuild.github.apiBaseURL", "https://api.github.com")
+	v.SetDefault("clientbuild.github.workflow", "build-client.yml")
+	v.SetDefault("clientbuild.github.ref", "main")
+	v.SetDefault("clientbuild.github.artifactHosts", []string{"github.com", "*.githubusercontent.com", "*.blob.core.windows.net"})
+	v.SetDefault("clientbuild.bundle.ttl", "24h")
+	v.SetDefault("clientbuild.pollInterval", "30s")
+	v.SetDefault("clientbuild.pendingTimeout", "12h")
+	v.SetDefault("clientbuild.dispatchTimeout", "10m")
+	v.SetDefault("clientbuild.buildTimeout", "3h")
+	v.SetDefault("clientbuild.ingestTimeout", "1h")
+	v.SetDefault("clientbuild.artifactRetention", "720h")
+	v.SetDefault("clientbuild.deleteRemoteArtifacts", true)
+	v.SetDefault("clientbuild.maxProfilesPerOrg", 10)
+	v.SetDefault("clientbuild.maxConcurrentPerOrg", 2)
+	v.SetDefault("clientbuild.maxActiveBuilds", 4)
+	v.SetDefault("clientbuild.maxArtifactBytes", int64(2147483648))
+	v.SetDefault("clientbuild.platforms", []string{"windows-x64", "linux-x64", "macos-arm64", "macos-x64", "android-arm64"})
+	if err := v.BindEnv("clientbuild.github.token", "PANEL_CLIENTBUILD_GITHUB_TOKEN"); err != nil {
+		return nil, fmt.Errorf("bind client build github token: %w", err)
+	}
+	if err := v.BindEnv("clientbuild.bundle.key", "PANEL_CLIENTBUILD_BUNDLE_KEY"); err != nil {
+		return nil, fmt.Errorf("bind client build bundle key: %w", err)
+	}
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
@@ -238,6 +265,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("unmarshal config %s: %w", path, err)
 	}
 
+	if err := validateClientBuild(cfg.ClientBuild); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+	}
 	if err := validateLogcollect(cfg.Logcollect); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
