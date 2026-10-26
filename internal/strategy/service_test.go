@@ -162,8 +162,10 @@ func TestCreate_RejectsUnknownOption(t *testing.T) {
 		map[string]string{"api-server": "evil.example.com"})
 	require.ErrorIs(t, err, strategy.ErrUnknownOption)
 
+	// Scoped to this fixture: the shared CI database holds other tests'
+	// strategies, and only this organization must stay empty.
 	var rows int64
-	require.NoError(t, store.WithoutTenantScope(f.db).Model(&model.Strategy{}).Count(&rows).Error)
+	require.NoError(t, store.ScopedByOrg(f.db, f.org.ID).Model(&model.Strategy{}).Count(&rows).Error)
 	require.Zero(t, rows, "a rejected option must not leave a row behind")
 }
 

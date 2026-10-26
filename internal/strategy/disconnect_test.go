@@ -115,10 +115,13 @@ func TestDisconnect_ExpireStale(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, n)
 
-	// Past the TTL: marked expired and audited as a system action.
+	// Past the TTL: marked expired and audited as a system action. The sweep is
+	// global (expiry is a clock condition, not a tenant one), so on CI's shared
+	// database it also clears other fixtures' pending rows — assert this
+	// fixture's outcome, not an exact count.
 	n, err = f.svc.ExpireStale(context.Background(), f.now.Add(strategy.DisconnectTTL+time.Minute))
 	require.NoError(t, err)
-	require.EqualValues(t, 1, n)
+	require.GreaterOrEqual(t, n, int64(1))
 
 	var row model.DeviceDisconnect
 	require.NoError(t, store.ScopedByOrg(f.db, f.org.ID).First(&row).Error)

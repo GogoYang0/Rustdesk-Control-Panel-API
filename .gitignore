@@ -24,5 +24,9 @@ coverage.*
 configs/config.local.yaml
 .env
 
+# superpowers ledgers: process artifacts (rulings, review notes, evidence)
+# stay in the local workspace only, never in the repository.
+.superpowers/
+
 # git worktrees (superpowers using-git-worktrees)
 /.worktrees/
