@@ -3,6 +3,8 @@ package controlrole_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -64,8 +66,11 @@ func newFixture(t *testing.T) *fixture {
 	require.NoError(t, f.db.Create(&f.org).Error)
 	require.NoError(t, f.db.Create(&f.otherOrg).Error)
 
-	f.user = model.User{Email: "alice@example.com", PasswordHash: "x", EmailVerified: true}
-	f.other = model.User{Email: "bob@example.com", PasswordHash: "x", EmailVerified: true}
+	// Emails are globally unique and CI's test-db job shares one PostgreSQL
+	// database across tests, so a fixed address would collide on the second
+	// fixture (idx_users_email).
+	f.user = model.User{Email: fmt.Sprintf("alice-%d@example.com", userSeq.Add(1)), PasswordHash: "x", EmailVerified: true}
+	f.other = model.User{Email: fmt.Sprintf("bob-%d@example.com", userSeq.Add(1)), PasswordHash: "x", EmailVerified: true}
 	require.NoError(t, f.db.Create(&f.user).Error)
 	require.NoError(t, f.db.Create(&f.other).Error)
 
@@ -77,6 +82,8 @@ func newFixture(t *testing.T) *fixture {
 	f.svc = controlrole.NewService(f.db, f.recorder, now)
 	return f
 }
+
+var userSeq atomic.Int64
 
 func (f *fixture) defaultRole(t *testing.T) model.ControlRole {
 	t.Helper()

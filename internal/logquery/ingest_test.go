@@ -47,6 +47,11 @@ type fixture struct {
 	org    model.Organization
 	device model.Device
 	now    time.Time
+	// base makes every rustdesk id unique per fixture. CI's test-db job runs
+	// against one shared PostgreSQL database, and ingest resolves a device by
+	// id across tenants, so a reused id would look like a cross-tenant clone
+	// (ErrAmbiguousDevice) on the second test.
+	base string
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -57,12 +62,16 @@ func newFixture(t *testing.T) *fixture {
 		&model.Organization{}, &model.Device{}, &model.ConnectionLog{},
 		&model.FileLog{}, &model.AuditNonce{}, &model.AuditLog{},
 	))
-	f := &fixture{db: s.DB, now: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)}
-	f.org = model.Organization{Name: "acme"}
+	f := &fixture{
+		db:   s.DB,
+		now:  time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC),
+		base: fmt.Sprintf("%d", ingestSeq.Add(1)),
+	}
+	f.org = model.Organization{Name: "acme-" + f.base}
 	require.NoError(t, f.db.Create(&f.org).Error)
 	f.device = model.Device{
 		OrganizationID: f.org.ID,
-		RustdeskID:     "123456789",
+		RustdeskID:     "dev-" + f.base,
 		Name:           "pc",
 		BoundUUID:      "uuid-abc",
 	}
@@ -273,7 +282,7 @@ func TestIngest_NoteScopedToOwningOrganization(t *testing.T) {
 	f := newFixture(t)
 	otherOrg := model.Organization{Name: "globex"}
 	require.NoError(t, f.db.Create(&otherOrg).Error)
-	otherDev := model.Device{OrganizationID: otherOrg.ID, RustdeskID: "800001", Name: "other"}
+	otherDev := model.Device{OrganizationID: otherOrg.ID, RustdeskID: "other-" + f.base, Name: "other"}
 	require.NoError(t, store.ScopedByOrg(f.db, otherOrg.ID).Create(&otherDev).Error)
 	// A decoy row in the other organization with the same id/session pair.
 	require.NoError(t, store.ScopedByOrg(f.db, otherOrg.ID).Create(&model.ConnectionLog{

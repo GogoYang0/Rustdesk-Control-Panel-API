@@ -18,7 +18,7 @@ func (f *fixture) addDevice(t *testing.T, rustdeskID string, owner uint) model.D
 	t.Helper()
 	dev := model.Device{
 		OrganizationID: f.org.ID,
-		RustdeskID:     rustdeskID,
+		RustdeskID:     rustdeskID + "-" + f.base,
 		Name:           rustdeskID,
 		BoundUUID:      "uuid-" + rustdeskID,
 		OwnerUserID:    &owner,
@@ -112,7 +112,7 @@ func TestConnections_FiltersByDeviceAndTime(t *testing.T) {
 
 	rows, total, err = svc.Connections(context.Background(), f.org.ID,
 		audit.Viewer{Scope: model.AuditScopeGlobal},
-		logquery.Filter{RustdeskID: "700001"}, 1, 50)
+		logquery.Filter{RustdeskID: dev.RustdeskID}, 1, 50)
 	require.NoError(t, err)
 	require.EqualValues(t, 2, total)
 	require.Len(t, rows, 2)

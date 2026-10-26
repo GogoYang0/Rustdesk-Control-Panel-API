@@ -47,8 +47,11 @@ func TestMigrate_CreatesDefaultRolePerOrganization(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 	require.NoError(t, s.DB.AutoMigrate(&model.Organization{}, &model.ControlRole{}))
 
+	orgs := make([]model.Organization, 0, 2)
 	for _, name := range []string{"acme", "globex"} {
-		require.NoError(t, s.DB.Create(&model.Organization{Name: name}).Error)
+		org := model.Organization{Name: name}
+		require.NoError(t, s.DB.Create(&org).Error)
+		orgs = append(orgs, org)
 	}
 
 	// Twice on purpose: the marker-free seed must be idempotent, because every
@@ -56,8 +59,12 @@ func TestMigrate_CreatesDefaultRolePerOrganization(t *testing.T) {
 	require.NoError(t, controlrole.Migrate(s.DB, fixedClock))
 	require.NoError(t, controlrole.Migrate(s.DB, fixedClock))
 
+	// Scope the read to this test's organizations: the CI test-db job shares
+	// one database, so an unscoped count would include every other test's seed.
+	ids := []uint{orgs[0].ID, orgs[1].ID}
 	var rows []model.ControlRole
-	require.NoError(t, store.WithoutTenantScope(s.DB).Order("organization_id").Find(&rows).Error)
+	require.NoError(t, store.WithoutTenantScope(s.DB).
+		Where("organization_id IN ?", ids).Order("organization_id").Find(&rows).Error)
 	require.Len(t, rows, 2)
 	for _, r := range rows {
 		require.Equal(t, model.KindControlRoleDefault, r.Kind)

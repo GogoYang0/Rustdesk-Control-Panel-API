@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,12 +16,17 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
 
+var actorSeq atomic.Int64
+
 // addActor creates a member with an optional control role and returns its user
 // id. The control role service writes audit entries, so the harness recorder is
 // reused.
 func (h *harness) addActor(t *testing.T, perms controlrole.Permissions) (uint, *model.ControlRole, *controlrole.Service) {
 	t.Helper()
-	user := model.User{Email: fmt.Sprintf("actor-%d@example.com", h.now.UnixNano()), PasswordHash: "x", EmailVerified: true}
+	// The harness clock is fixed, so the email must come from a counter: CI's
+	// test-db job shares one PostgreSQL database and users.email is globally
+	// unique.
+	user := model.User{Email: fmt.Sprintf("actor-%d@example.com", actorSeq.Add(1)), PasswordHash: "x", EmailVerified: true}
 	require.NoError(t, h.db.Create(&user).Error)
 	require.NoError(t, h.db.Create(&model.Membership{
 		OrganizationID: h.org.ID,
