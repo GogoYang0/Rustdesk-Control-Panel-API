@@ -266,7 +266,10 @@ func TestSweepNonces_DropsOnlyExpired(t *testing.T) {
 
 	removed, err := f.ing.SweepNonces(context.Background(), f.now, 10*time.Minute)
 	require.NoError(t, err)
-	require.EqualValues(t, 1, removed)
+	// The sweep is global (nonces are a system table), so on CI's shared
+	// database it also clears other tests' markers. Assert this fixture's rows
+	// instead of an exact global count.
+	require.GreaterOrEqual(t, removed, int64(1))
 
 	var rows []model.AuditNonce
 	require.NoError(t, store.ScopedByOrg(f.db, f.org.ID).Find(&rows).Error)
