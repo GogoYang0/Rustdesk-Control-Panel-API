@@ -13,7 +13,7 @@
 | T2 Control Role 服务层（Normalize/Mask/CRUD/Assign/EffectiveFor） | ✅ 完成 | `8d10644` |
 | T2 契约 + handler + 成员分配端点 | ✅ 完成 | `16ee672` |
 | T3 票据/会话快照接线 | ✅ 完成 | `898474a` |
-| T4 客户端审计上报 | ⏳ 未开始 | — |
+| T4 客户端审计上报 | ✅ 完成 | `56ba80d` |
 | T5 日志查询导出与保留期 | ⏳ 未开始 | — |
 | T6 compat 登录 2FA | ⏳ 未开始 | — |
 | T7 文档与全仓验证 | ⏳ 未开始 | — |
@@ -108,3 +108,16 @@ go generate ./... && git status --porcelain → 空（提交后复核）
 - 接线：`session.Service.WithControlRoles`；签发事务内 `EffectiveForTx` 计算并落快照；兑换复制到会话；`api.NewAdminAPI` 与 `cmd/server` 均注入。
 - 变异验证：把 `ticket.ControlPermissions = mask` 改成 `mask ^ mask` → `TestIssue_SnapshotsControlPermissions` 断言失败（expected 0xc, actual 0x0）；恢复后全绿、`git diff` 为空。
 - 测试覆盖：启用位 bitmask、disable 不置位、未分配回退 default、改角色不回溯旧票据、兑换复制、未接线保持 0。
+
+### T4（客户端审计上报）验证证据
+
+```
+go test ./internal/logquery/ ./internal/compatapi/ ./cmd/server/ -count=1
+ok  internal/logquery   0.340s   （10 个顶层测试）
+ok  internal/compatapi  6.823s
+ok  cmd/server          0.272s
+```
+- 端点：`POST /api/audit/{conn,file,alarm}`，**不经** `requireSession`（客户端不发 Authorization），按 `(rustdesk_id, uuid)` 多候选匹配设备绑定；空 uuid/不匹配 → 403，未知设备 → 403，缺字段 → 400。
+- 语义：`new` 建 open 行（唯一索引 `(org, rustdesk_id, conn_id, session_id)` 兜底重试）、`close` 只关自己那条（无匹配时写 orphan closed 行保留证据）、note 追加到最近一条 open 行（≤512）；`file` 的 `info` 原样存并解析 ip/name/num/files；`alarm` 走 `TxRecorder` 与 nonce 同事务落 `audit_logs`。
+- nonce：唯一索引 + `ON CONFLICT DO NOTHING`，重复 nonce 返回 200 幂等；`SweepNonces` 由 `audit-nonce-sweep` worker 每 10 分钟清理。
+- 变异验证：把 uuid 比对改成 `if true` → `TestIngest_RejectsUUIDMismatch` 转红；恢复后 logquery 与 compatapi 全绿。
