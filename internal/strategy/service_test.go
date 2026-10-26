@@ -91,14 +91,16 @@ func newFixture(t *testing.T) *fixture {
 	f := &fixture{db: st.DB, recorder: &fakeRecorder{}, now: time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)}
 
 	// CI's test-db job shares one PostgreSQL database across packages, so every
-	// fixture identifier carries its own sequence (idx_org_name / idx_users_email).
+	// fixture identifier must be globally unique. The email prefix is
+	// package-specific: internal/controlrole also counts from 1 and would
+	// collide on idx_users_email otherwise (seen in CI).
 	f.org = model.Organization{Name: fmt.Sprintf("acme-%d", n)}
 	f.otherOrg = model.Organization{Name: fmt.Sprintf("globex-%d", n)}
 	require.NoError(t, f.db.Create(&f.org).Error)
 	require.NoError(t, f.db.Create(&f.otherOrg).Error)
 
 	f.user = model.User{
-		Email: fmt.Sprintf("alice-%d@example.com", n), PasswordHash: "x", EmailVerified: true,
+		Email: fmt.Sprintf("strategy-alice-%d@example.com", n), PasswordHash: "x", EmailVerified: true,
 	}
 	require.NoError(t, f.db.Create(&f.user).Error)
 	require.NoError(t, f.db.Create(&model.Membership{
