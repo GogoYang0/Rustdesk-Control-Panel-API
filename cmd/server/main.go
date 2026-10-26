@@ -27,6 +27,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/captcha"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/controlrole"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logcollect"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logger"
@@ -111,8 +112,17 @@ func main() {
 		&model.Ticket{}, &model.Policy{},
 		&model.Approval{}, &model.Alert{},
 		&model.UserGroup{}, &model.UserGroupMember{}, &model.DeviceGroup{}, &model.AccessRule{},
+		&model.ControlRole{}, &model.ConnectionLog{}, &model.FileLog{}, &model.AuditNonce{},
+		&model.CompatLoginChallenge{},
 	); err != nil {
 		lg.Fatal("migrate database", zap.Error(err))
+	}
+
+	// Every organization needs its built-in default control role, otherwise a
+	// member without an assignment would have no permission set at all. The
+	// unique index on (organization_id, name) makes the concurrent boot safe.
+	if err := controlrole.Migrate(st.DB, time.Now); err != nil {
+		lg.Fatal("migrate control roles", zap.Error(err))
 	}
 
 	// Roles are the authorization source from v0.8.0: every organization gets

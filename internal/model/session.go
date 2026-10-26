@@ -36,19 +36,23 @@ const (
 // inferred from hbbs/hbbr log events. Only open panel sessions count against a
 // concurrency policy (native is record-only, design D10).
 type Session struct {
-	ID             uint       `gorm:"primaryKey" json:"id"`
-	OrganizationID uint       `gorm:"index:idx_session_org_status,priority:1;index:idx_session_org_started,priority:1;not null" json:"organization_id"`
-	DeviceID       uint       `gorm:"index:idx_session_device;not null" json:"device_id"`
-	RustdeskID     string     `gorm:"size:64" json:"rustdesk_id"`
-	ActorUserID    *uint      `gorm:"index" json:"actor_user_id"`
-	Origin         string     `gorm:"size:16;not null" json:"origin"`
-	Status         string     `gorm:"size:16;not null;index:idx_session_org_status,priority:2" json:"status"`
-	TicketID       *uint      `gorm:"index" json:"ticket_id"`
-	PolicyID       *uint      `gorm:"index" json:"policy_id"`
-	StartedAt      time.Time  `gorm:"not null;index:idx_session_org_started,priority:2" json:"started_at"`
-	EndedAt        *time.Time `json:"ended_at"`
-	LastActivityAt *time.Time `gorm:"index" json:"last_activity_at"`
-	EndReason      *string    `gorm:"size:64" json:"end_reason"`
+	ID             uint   `gorm:"primaryKey" json:"id"`
+	OrganizationID uint   `gorm:"index:idx_session_org_status,priority:1;index:idx_session_org_started,priority:1;not null" json:"organization_id"`
+	DeviceID       uint   `gorm:"index:idx_session_device;not null" json:"device_id"`
+	RustdeskID     string `gorm:"size:64" json:"rustdesk_id"`
+	ActorUserID    *uint  `gorm:"index" json:"actor_user_id"`
+	Origin         string `gorm:"size:16;not null" json:"origin"`
+	Status         string `gorm:"size:16;not null;index:idx_session_org_status,priority:2" json:"status"`
+	TicketID       *uint  `gorm:"index" json:"ticket_id"`
+	PolicyID       *uint  `gorm:"index" json:"policy_id"`
+	// ControlPermissions is copied from the ticket at redemption: the session
+	// records what the operator was allowed to do when it started, even if the
+	// role is edited afterwards.
+	ControlPermissions uint64     `gorm:"not null;default:0" json:"control_permissions"`
+	StartedAt          time.Time  `gorm:"not null;index:idx_session_org_started,priority:2" json:"started_at"`
+	EndedAt            *time.Time `json:"ended_at"`
+	LastActivityAt     *time.Time `gorm:"index" json:"last_activity_at"`
+	EndReason          *string    `gorm:"size:64" json:"end_reason"`
 	// Revision increments on every state change. Optimistic concurrency must be
 	// spelled `WHERE id = ? AND revision = ?` plus `SET revision = revision + 1`;
 	// writing a loaded absolute value back (Save, Select("*")) silently defeats

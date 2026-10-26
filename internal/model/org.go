@@ -38,13 +38,17 @@ const (
 // organization without deleting the row: history (devices, sessions, audits)
 // stays attributable, and re-enabling restores access.
 type Membership struct {
-	ID             uint       `gorm:"primaryKey" json:"id"`
-	OrganizationID uint       `gorm:"uniqueIndex:idx_membership_org_user;not null" json:"organization_id"`
-	UserID         uint       `gorm:"uniqueIndex:idx_membership_org_user;not null" json:"user_id"`
-	RoleID         uint       `gorm:"not null;default:0;index" json:"role_id"`
-	Disabled       bool       `gorm:"not null;default:false" json:"disabled"`
-	DisabledAt     *time.Time `json:"disabled_at,omitempty"`
-	DisabledBy     uint       `gorm:"not null;default:0" json:"disabled_by,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	ID             uint `gorm:"primaryKey" json:"id"`
+	OrganizationID uint `gorm:"uniqueIndex:idx_membership_org_user;not null" json:"organization_id"`
+	UserID         uint `gorm:"uniqueIndex:idx_membership_org_user;not null" json:"user_id"`
+	RoleID         uint `gorm:"not null;default:0;index" json:"role_id"`
+	// ControlRoleID is the member's control role; nil means the organization's
+	// built-in default role applies. Assignment is per membership, not per user
+	// (the same person may be a stricter role in one organization).
+	ControlRoleID *uint      `gorm:"index" json:"control_role_id"`
+	Disabled      bool       `gorm:"not null;default:false" json:"disabled"`
+	DisabledAt    *time.Time `json:"disabled_at,omitempty"`
+	DisabledBy    uint       `gorm:"not null;default:0" json:"disabled_by,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }

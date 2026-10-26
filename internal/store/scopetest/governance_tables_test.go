@@ -67,6 +67,9 @@ func TestScopedModels_CoverAccessControlTables(t *testing.T) {
 		"user_group_members",
 		"device_groups",
 		"access_rules",
+		"control_roles",
+		"connection_logs",
+		"file_logs",
 	} {
 		require.True(t, registered[table],
 			"%s must be registered as a tenant-scoped model, otherwise tenant isolation does not apply to it", table)
