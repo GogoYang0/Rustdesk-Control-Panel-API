@@ -50,46 +50,46 @@ func (s *Service) ingestRun(ctx context.Context, build *model.ClientBuild) error
 		return ErrUnaudited
 	}
 	if s.github == nil {
-		return s.failBuild(ctx, build, "github client is not configured")
+		return s.failIngest(ctx, build, "github client is not configured")
 	}
 	if build.GitHubRunID == nil {
-		return s.failBuild(ctx, build, "github run id is missing")
+		return s.failIngest(ctx, build, "github run id is missing")
 	}
 	platforms, err := ParsePlatforms(build.PlatformsJSON)
 	if err != nil || len(platforms) == 0 {
-		return s.failBuild(ctx, build, "stored platforms are unreadable")
+		return s.failIngest(ctx, build, "stored platforms are unreadable")
 	}
 	remote, err := s.github.ListArtifacts(ctx, *build.GitHubRunID)
 	if err != nil {
-		return s.failBuild(ctx, build, "could not list artifacts")
+		return s.failIngest(ctx, build, "could not list artifacts")
 	}
 	expected := make(map[string]RemoteArtifact, len(platforms))
 	for _, artifact := range remote {
 		prefix := fmt.Sprintf("panel-client-%d-", build.ID)
 		if !strings.HasPrefix(artifact.Name, prefix) {
-			return s.failBuild(ctx, build, "unexpected artifact")
+			return s.failIngest(ctx, build, "unexpected artifact")
 		}
 		platform := strings.TrimPrefix(artifact.Name, prefix)
 		if !containsPlatform(platforms, platform) {
-			return s.failBuild(ctx, build, "unexpected artifact")
+			return s.failIngest(ctx, build, "unexpected artifact")
 		}
 		if _, duplicate := expected[platform]; duplicate {
-			return s.failBuild(ctx, build, "duplicate platform artifact")
+			return s.failIngest(ctx, build, "duplicate platform artifact")
 		}
 		expected[platform] = artifact
 	}
 	if len(remote) != len(platforms) {
-		return s.failBuild(ctx, build, "missing platform artifact")
+		return s.failIngest(ctx, build, "missing platform artifact")
 	}
 	for _, platform := range platforms {
 		if _, ok := expected[platform]; !ok {
-			return s.failBuild(ctx, build, "missing platform artifact")
+			return s.failIngest(ctx, build, "missing platform artifact")
 		}
 	}
 
 	stage, err := s.storage.NewStaging(build.ID)
 	if err != nil {
-		return s.failBuild(ctx, build, "could not create staging directory")
+		return s.failIngest(ctx, build, "could not create staging directory")
 	}
 	defer os.RemoveAll(stage)
 
@@ -101,30 +101,30 @@ func (s *Service) ingestRun(ctx context.Context, build *model.ClientBuild) error
 		zipPath := filepath.Join(stage, platform+".zip")
 		n, err := s.github.DownloadArtifact(ctx, remoteArtifact.ID, zipPath, s.cfg.MaxArtifactBytes)
 		if err != nil {
-			return s.failBuild(ctx, build, "artifact download failed")
+			return s.failIngest(ctx, build, "artifact download failed")
 		}
 		if n > s.cfg.MaxArtifactBytes {
-			return s.failBuild(ctx, build, "artifact download exceeded the size limit")
+			return s.failIngest(ctx, build, "artifact download exceeded the size limit")
 		}
 		platformFiles, err := s.extractArtifact(zipPath, stage, build.ID, platform, &total, seen)
 		if err != nil {
-			return s.failBuild(ctx, build, err.Error())
+			return s.failIngest(ctx, build, err.Error())
 		}
 		for i := range platformFiles {
 			platformFiles[i].remoteID = remoteArtifact.ID
 		}
 		files = append(files, platformFiles...)
 		if err := validatePlatformFiles(platform, platformFiles); err != nil {
-			return s.failBuild(ctx, build, err.Error())
+			return s.failIngest(ctx, build, err.Error())
 		}
 	}
 	if total > s.cfg.MaxArtifactBytes {
-		return s.failBuild(ctx, build, "artifacts exceed the size limit")
+		return s.failIngest(ctx, build, "artifacts exceed the size limit")
 	}
 
 	finalDir, err := s.storage.ArtifactDir(build.OrganizationID, build.ID)
 	if err != nil {
-		return s.failBuild(ctx, build, "could not create artifact directory")
+		return s.failIngest(ctx, build, "could not create artifact directory")
 	}
 	moved := make([]string, 0, len(files))
 	cleanupFinal := func() {
@@ -136,7 +136,7 @@ func (s *Service) ingestRun(ctx context.Context, build *model.ClientBuild) error
 		dest := filepath.Join(finalDir, file.fileName)
 		if err := os.Rename(file.path, dest); err != nil {
 			cleanupFinal()
-			return s.failBuild(ctx, build, "could not store artifact")
+			return s.failIngest(ctx, build, "could not store artifact")
 		}
 		moved = append(moved, file.fileName)
 	}
@@ -188,7 +188,7 @@ func (s *Service) ingestRun(ctx context.Context, build *model.ClientBuild) error
 	})
 	if err != nil {
 		cleanupFinal()
-		return s.failBuild(ctx, build, "could not store artifact records")
+		return s.failIngest(ctx, build, "could not store artifact records")
 	}
 	if s.cfg.DeleteRemoteArtifacts {
 		for _, artifact := range remote {
@@ -318,20 +318,30 @@ func (s *Service) failBuild(ctx context.Context, build *model.ClientBuild, reaso
 		})
 	})
 	if err != nil {
-		return fmt.Errorf("ingest failed: %s (status update failed: %v)", reason, err)
+		return fmt.Errorf("update failed build: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) failIngest(ctx context.Context, build *model.ClientBuild, reason string) error {
+	if err := s.failBuild(ctx, build, reason); err != nil {
+		return err
 	}
 	return fmt.Errorf("ingest failed: %s", reason)
 }
 
-func (s *Service) markIngesting(ctx context.Context, buildID, orgID uint, now time.Time) error {
+func (s *Service) markIngesting(ctx context.Context, buildID, orgID uint, now time.Time) (bool, error) {
 	res := store.ScopedByOrg(s.db.WithContext(ctx), orgID).Model(&model.ClientBuild{}).
 		Where("id = ? AND status IN ?", buildID, []string{
-			model.ClientBuildStatusDispatched, model.ClientBuildStatusRunning,
+			model.ClientBuildStatusDispatching, model.ClientBuildStatusDispatched, model.ClientBuildStatusRunning,
 		}).Updates(map[string]any{
 		"status":       model.ClientBuildStatusIngesting,
 		"ingesting_at": now,
 	})
-	return res.Error
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected > 0, nil
 }
 
 func (s *Service) OpenArtifact(ctx context.Context, orgID, buildID, artifactID, actorID uint) (*ArtifactFile, error) {
