@@ -80,5 +80,6 @@ func (p *altchaProvider) Verify(_ context.Context, proof Proof) error {
 	if err != nil || !ok {
 		return ErrInvalid
 	}
+	p.used.MarkVerified(parsed.Signature)
 	return nil
 }

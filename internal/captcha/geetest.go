@@ -110,5 +110,6 @@ func (p *geetestProvider) Verify(ctx context.Context, proof Proof) (err error) {
 	if answer.Status != "success" || answer.Result != "success" {
 		return ErrInvalid
 	}
+	p.used.MarkVerified(lotNumber)
 	return nil
 }

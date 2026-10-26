@@ -58,6 +58,34 @@ func TestCap_TransportFailureIsUnavailable(t *testing.T) {
 	require.NoError(t, NewService(p, ServiceOptions{FailMode: "open"}).Verify(context.Background(), capProof("t")))
 }
 
+// Cap answers a missing or already consumed token with 404 (and an expired one
+// with 403) plus {"success":false}: that is a judgement, so fail-mode open must
+// not turn the rejection into an admission.
+func TestCap_RejectionStatusIsInvalid(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"success":false,"error":"Token not found"}`))
+	}))
+	defer srv.Close()
+
+	p := newCapProvider(srv.URL, "site-key", "cap-secret", srv.Client())
+	require.ErrorIs(t, NewService(p, ServiceOptions{FailMode: "closed"}).Verify(context.Background(), capProof("t-closed")), ErrInvalid)
+	require.ErrorIs(t, NewService(p, ServiceOptions{FailMode: "open"}).Verify(context.Background(), capProof("t-open")), ErrInvalid)
+}
+
+// A body without a success field carries no verdict - an intermediary error
+// page, for instance - and stays an outage rather than becoming a judgement.
+func TestCap_BodyWithoutVerdictIsUnavailable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"bad request"}`))
+	}))
+	defer srv.Close()
+
+	p := newCapProvider(srv.URL, "site-key", "cap-secret", srv.Client())
+	require.ErrorIs(t, NewService(p, ServiceOptions{FailMode: "closed"}).Verify(context.Background(), capProof("t")), ErrUnavailable)
+}
+
 func TestCap_MissingToken(t *testing.T) {
 	p := newCapProvider("https://unused.invalid", "site-key", "cap-secret", http.DefaultClient)
 	require.ErrorIs(t, p.Verify(context.Background(), Proof{}), ErrRequired)

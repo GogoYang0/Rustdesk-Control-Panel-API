@@ -73,18 +73,27 @@ func (p *capProvider) Verify(ctx context.Context, proof Proof) (err error) {
 		return ErrUnavailable
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+	if resp.StatusCode >= 500 {
 		return ErrUnavailable
 	}
 
+	// Cap answers a verdict with a non-2xx status: 404 "Token not found" for an
+	// unknown or already consumed token, 403 for an expired one or a wrong
+	// secret. The body decides, so a server error is the only status class that
+	// counts as an outage; a body without a success field (an intermediary
+	// error page, say) carries no verdict and stays an outage too.
 	var answer struct {
-		Success bool `json:"success"`
+		Success *bool `json:"success"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&answer); err != nil {
 		return ErrUnavailable
 	}
-	if !answer.Success {
+	if answer.Success == nil {
+		return ErrUnavailable
+	}
+	if !*answer.Success || resp.StatusCode > 299 {
 		return ErrInvalid
 	}
+	p.used.MarkVerified(token)
 	return nil
 }

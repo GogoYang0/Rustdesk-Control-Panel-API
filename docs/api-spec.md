@@ -108,7 +108,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 > 管理员 `member.manage` 可重置成员 2FA（丢失设备场景），重置动作写审计 `user.2fa.reset`；该审计失败则整体失败（fail closed）。管理员**不能重置自己**（409）——自服务移除走 `/auth/2fa/disable`（需当前密码 + TOTP/恢复码），否则该端点就成了第二因素的旁路。2FA 是**账号级**状态：目标在本组织是 owner 时只有 owner（`org.admin`）能重置；目标只要**在本组织之外还存在任何会籍**（无论角色、含已停用）就一律 403——清除账号级因素会同时削弱其登录其他组织的保护，这类跨组织用户的账号恢复只能走平台级运维（系统外）。
 
 > **v0.10.0 交互式验证码**：部署启用后，三个公开凭据入口（`/auth/login`、`/auth/2fa/verify`、`/invitations/accept`）都在密码/TOTP 校验**之前**要求 `captcha` 对象：`{response: {<provider 字段>}}`。客户端先调 `GET /auth/captcha` 取挑战。提供商：`altcha`（默认，自托管 proof-of-work，`response.payload` 为 widget 返回的 base64 payload）、`geetest`（v4，`response` 带 `lot_number`/`captcha_output`/`pass_token`/`gen_time`）、`cap`（自托管 Standalone，`response.response` 为 token）。
-> 错误码：缺 `captcha` → `400 captcha_required`；挑战过期/已用/答案错/提供商判定失败 → `400 captcha_invalid`（响应不区分账号是否存在）；提供商不可达且 `failMode=closed` → `503 captcha_unavailable`。**验证码失败不计入登录失败窗口**，只受 IP 桶约束；**面板对三家凭据统一做本地单次消费**（Altcha 已用签名 5 分钟窗口；GeeTest `lot_number` 与 Cap token 10 分钟去重窗口，与提供商自身的限制叠加），TTL 默认 5 分钟；提供商不可达属于「无判定」而非「已用」，此时释放本地占用，同一凭据可在服务恢复后重试。compat `/api/login` 不接验证码（原生客户端无法解交互式验证码）。
+> 错误码：缺 `captcha` → `400 captcha_required`；挑战过期/已用/答案错/提供商判定失败 → `400 captcha_invalid`（响应不区分账号是否存在）；提供商不可达且 `failMode=closed` → `503 captcha_unavailable`。**判定与故障按响应内容区分，不按状态码**：Cap 对不存在或已消耗的 token 返回 `404 {"success":false}`、对过期 token 返回 `403 {"success":false}`，两者都是判定（判定失败永远 400，`failMode=open` 也不放行）；只有网络错误、超时、5xx 或响应里没有任何判定字段才算故障。**验证码失败不计入登录失败窗口**，只受 IP 桶约束；**面板对三家凭据统一做本地单次消费**（Altcha 已用签名 5 分钟窗口；GeeTest `lot_number` 与 Cap token 10 分钟去重窗口，与提供商自身的限制叠加），TTL 默认 5 分钟；提供商不可达属于「无判定」而非「已用」，此时释放本地占用，同一凭据可在服务恢复后重试；已通过校验的凭据在其窗口内不会被内存上限淘汰（表满优先淘汰未通过校验的占位）。compat `/api/login` 不接验证码（原生客户端无法解交互式验证码）。
 
 ### 3.2 组织与成员
 
@@ -411,5 +411,6 @@ compat 地址簿**只服务个人地址簿**（`EnsurePersonalBook`），共享�
 - v0.9.0 为**加性变更**（新增 user-groups/device-groups/access-rules 端点、`access.manage` 权限目录项与 `Device.device_group_id` 字段），但**票据访问语义有变化**：签发/兑换新增访问控制判定（拒绝 `404 not_found`），停用设备的签发由成功变为 `404`（兑换仍为 `409`）；客户端需处理该分支
 - v0.10.0 为**加性变更**：新增 `GET /auth/captcha`、三个公开凭据请求的可选 `captcha` 字段与三个错误码。**行为变化仅在被部署显式启用验证码后生效**（默认关闭）：启用时三个入口新增 400/503 分支，客户端必须先取挑战；compat `/api/login` 不变
 - v0.4.0 的既有端点请求/响应形状与字段零变更，但 **`ErrorCode` 新增了 `approval_required`**（所有响应共用的 `code` 类型）——对穷尽式 `switch` 或严格枚举解码的客户端属于 **breaking**，重新生成类型后必须处理该分支（0.x 阶段按 C10 以 minor 承载，见 §3.6）
+- v0.10.0 同样**新增了三个 `ErrorCode` 值**（`captcha_required`/`captcha_invalid`/`captcha_unavailable`），并且给 `/auth/login`、`/auth/2fa/verify`、`/invitations/accept` 补上了 `503` 响应声明——对穷尽式 `switch` 或严格枚举解码的客户端与 v0.4.0 同理属于 **breaking**：重新生成类型后必须处理这三个错误码与 503 分支，**即使部署未启用验证码**（枚举是共用的 `code` 类型）
 - **契约变更的 PR 必须同步更新本文档 §3/§4 与 `openapi.yaml`**，并保证 `go generate` 零漂移
 - WEB/APP 从 `openapi.yaml` 生成类型：任何字段/形状变更视为 breaking，需在 PR 描述中标注

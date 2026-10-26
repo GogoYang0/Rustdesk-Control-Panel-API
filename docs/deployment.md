@@ -45,7 +45,7 @@ go build -o panel ./cmd/server
 | `PANEL_AUTH_SECRET` | 是 | JWT 签名密钥。未设置时进程拒绝启动（`auth.secret must be configured`）。用 `openssl rand -base64 48` 生成；**泄漏等于任何人可伪造令牌** |
 | `PANEL_SMTP_PASSWORD` | 条件 | `mail.devMode=false` 且设置了 `mail.smtp.username` 时必须；否则启动即失败 |
 | `PANEL_WEB_BASE_URL` | 条件 | 覆盖 `web.baseURL`；`devMode=false` 时必须是公网 https origin，否则启动失败（验证码/邀请链接会嵌入此地址） |
-| `PANEL_CAPTCHA_ALTCHA_KEY` | 条件 | `captcha.enabled=true` 且 `provider=altcha` 时必须（建议 ≥32 字节随机值）；缺失则启动失败 |
+| `PANEL_CAPTCHA_ALTCHA_KEY` | 条件 | `captcha.enabled=true` 且 `provider=altcha` 时必须，且**长度 ≥32 字节**（建议用 `openssl rand -base64 48` 生成）；缺失或过短均启动失败 |
 | `PANEL_CAPTCHA_GEETEST_KEY` | 条件 | `captcha.enabled=true` 且 `provider=geetest` 时必须 |
 | `PANEL_CAPTCHA_CAP_SECRET` | 条件 | `captcha.enabled=true` 且 `provider=cap` 时必须 |
 
