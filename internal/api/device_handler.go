@@ -274,6 +274,12 @@ func parseDeviceUpdate(body map[string]json.RawMessage) (device.UpdateInput, err
 		switch key {
 		case "disabled":
 			recognised = true
+			// JSON null is rejected, not read as false: binding null into a bool
+			// is a silent no-op that would look like an explicit "enable" and
+			// re-enable a device the caller never named.
+			if isJSONNull(raw) {
+				return in, errors.New("disabled must be a boolean")
+			}
 			var disabled bool
 			if err := json.Unmarshal(raw, &disabled); err != nil {
 				return in, errors.New("disabled must be a boolean")

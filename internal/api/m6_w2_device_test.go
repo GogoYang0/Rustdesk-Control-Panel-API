@@ -198,16 +198,29 @@ func TestUpdateDevice_InvalidOwnerRejected(t *testing.T) {
 	w = h.do(t, http.MethodPatch, devicePath, map[string]any{"owner_user_id": "abc"}, adminToken)
 	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 
+	// JSON null is not a boolean: a `{"disabled": null}` that bound as false
+	// would silently re-enable a stopped device.
+	w = h.do(t, http.MethodPatch, devicePath, map[string]any{"disabled": true}, adminToken)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	w = h.do(t, http.MethodPatch, devicePath, map[string]any{"disabled": nil}, adminToken)
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+	require.EqualValues(t, 1, countAudit(t, h, "action = ?", "device.disable"))
+	require.Zero(t, countAudit(t, h, "action = ?", "device.enable"),
+		"a null disabled must not read as an enable")
+
 	// A note longer than the column is refused.
 	w = h.do(t, http.MethodPatch, devicePath, map[string]any{"note": strings.Repeat("n", 256)}, adminToken)
 	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 
 	var stored model.Device
 	require.NoError(t, store.ScopedByOrg(h.db.DB, uint(orgID)).First(&stored, dev.Id).Error)
-	require.Nil(t, stored.OwnerUserID)
-	require.Empty(t, stored.Note)
+	require.Nil(t, stored.OwnerUserID, "a rejected assignment changes nothing")
+	require.Empty(t, stored.Note, "a rejected note changes nothing")
+	require.True(t, stored.Disabled, "the null disabled did not re-enable the device")
+	// Only the explicit disable above is audited; every rejected request left
+	// no trace of its own.
 	require.Zero(t, countAudit(t, h, "action IN ?",
-		[]string{"device.assign", "device.note", "device.disable", "device.enable"}),
+		[]string{"device.assign", "device.note", "device.enable"}),
 		"a rejected update must not write an audit row")
 }
 
