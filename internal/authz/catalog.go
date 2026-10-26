@@ -35,6 +35,10 @@ const (
 	// a strategy rewrites the controlled side's client options, i.e. it can
 	// disable screen privacy or file transfer for everybody in the group.
 	PermStrategyManage = "strategy.manage"
+	// PermClientBuildManage gates custom client build profiles and builds. Not
+	// delegable: a generated installer embeds the organization's server address
+	// and consumes CI quota, so only owner/admin may produce one.
+	PermClientBuildManage = "client_build.manage"
 	// PermDeviceDisconnect gates the heartbeat-driven "drop this device's
 	// live connections" request. Not delegable: it terminates other people's
 	// sessions.
@@ -56,6 +60,7 @@ var catalog = []Permission{
 	{PermAccessManage, "Manage user groups, device groups and access rules", false},
 	{PermControlRoleManage, "Manage control roles and their member assignments", false},
 	{PermStrategyManage, "Manage client strategies and their assignments", false},
+	{PermClientBuildManage, "Manage custom client build profiles and builds", false},
 	{PermDeviceDisconnect, "Disconnect a device's live connections", false},
 	{PermMemberManage, "Invite and remove members, disable memberships", true},
 	{PermDeviceRead, "Read devices", true},
@@ -102,7 +107,8 @@ func BuiltinPermissions(kind string) []string {
 		return []string{
 			PermMemberManage, PermDeviceRead, PermDeviceWrite,
 			PermAuditRead, PermAddressBook, PermPolicyWrite, PermApprovalDecide,
-			PermAccessManage, PermControlRoleManage, PermStrategyManage, PermDeviceDisconnect,
+			PermAccessManage, PermControlRoleManage, PermStrategyManage, PermClientBuildManage,
+			PermDeviceDisconnect,
 		}
 	case "member":
 		return []string{PermDeviceRead}

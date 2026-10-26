@@ -4302,6 +4302,376 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/v1/orgs/{orgId}/client-build/capabilities:
+    get:
+      operationId: getClientBuildCapabilities
+      summary: 读取自定义客户端构建能力
+      description: |
+        任何组织成员可读。返回平台白名单、配额、服务器推导状态与默认值。
+        `enabled=false` 时仍可维护 profile，但发起构建返回 503。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 构建能力
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildCapabilitiesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/orgs/{orgId}/client-build-profiles:
+    get:
+      operationId: listClientBuildProfiles
+      summary: 列出客户端品牌配置
+      description: 分页返回本组织的品牌配置，按名称升序。任何成员可读。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: 品牌配置列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildProfileListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      operationId: createClientBuildProfile
+      summary: 创建客户端品牌配置
+      description: |
+        需要 `client_build.manage`（owner/admin，不可委派）。名称去首尾空白后
+        1–64 字符，组织内不区分大小写唯一；应用名 1–32 字符，拒绝精确的
+        `RustDesk`。组织最多保留 10 个 profile。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClientBuildProfileCreateRequest"
+      responses:
+        "201":
+          description: 已创建的品牌配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildProfileResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          description: 客户端构建能力未配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/orgs/{orgId}/client-build-profiles/{profileId}:
+    get:
+      operationId: getClientBuildProfile
+      summary: 读取客户端品牌配置
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 品牌配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildProfileResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateClientBuildProfile
+      summary: 更新客户端品牌配置
+      description: 只允许修改 `name` 与 `app_name`；Logo 走独立端点。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClientBuildProfileUpdateRequest"
+      responses:
+        "200":
+          description: 已更新的品牌配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildProfileResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          description: 客户端构建能力未配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteClientBuildProfile
+      summary: 删除客户端品牌配置
+      description: 存在非终态构建时返回 409；历史构建保留快照。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          description: 客户端构建能力未配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/orgs/{orgId}/client-build-profiles/{profileId}/logo:
+    put:
+      operationId: putClientBuildProfileLogo
+      summary: 上传客户端 Logo
+      description: |
+        需要 `client_build.manage`。PNG、正方形 256–1024、解码后 ≤1 MiB；
+        服务端会解码并重新编码，剥离元数据。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClientBuildLogoUploadRequest"
+      responses:
+        "200":
+          description: 已更新的品牌配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildProfileResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          description: 客户端构建能力未配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    get:
+      operationId: getClientBuildProfileLogo
+      summary: 读取客户端 Logo
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: PNG Logo
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      operationId: deleteClientBuildProfileLogo
+      summary: 删除客户端 Logo
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          description: 客户端构建能力未配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -7606,3 +7976,208 @@ components:
           type: string
         data:
           $ref: "#/components/schemas/Session"
+
+    ClientBuildCapabilitiesResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/ClientBuildCapabilities"
+
+    ClientBuildCapabilities:
+      type: object
+      required:
+        - enabled
+        - platforms
+        - limits
+        - provisioning_state
+      properties:
+        enabled:
+          type: boolean
+        platforms:
+          type: array
+          items:
+            type: string
+            enum:
+              - windows-x64
+              - linux-x64
+              - macos-arm64
+              - macos-x64
+              - android-arm64
+        limits:
+          $ref: "#/components/schemas/ClientBuildLimits"
+        provisioning_state:
+          type: string
+          enum:
+            - deployed
+            - provisioning
+            - failed
+            - disabled
+            - missing
+        defaults:
+          $ref: "#/components/schemas/ClientBuildDefaults"
+
+    ClientBuildLimits:
+      type: object
+      required:
+        - max_profiles_per_org
+        - max_concurrent_per_org
+        - max_active_builds
+        - max_artifact_bytes
+        - artifact_retention_days
+      properties:
+        max_profiles_per_org:
+          type: integer
+        max_concurrent_per_org:
+          type: integer
+        max_active_builds:
+          type: integer
+        max_artifact_bytes:
+          type: integer
+          format: int64
+        artifact_retention_days:
+          type: integer
+
+    ClientBuildDefaults:
+      type: object
+      required:
+        - server
+        - server_key
+        - api_server
+      properties:
+        server:
+          type: string
+        server_key:
+          type: string
+        api_server:
+          type: string
+
+    ClientBuildProfile:
+      type: object
+      required:
+        - id
+        - name
+        - app_name
+        - has_logo
+        - logo_width
+        - logo_height
+        - logo_sha256
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          maxLength: 64
+        app_name:
+          type: string
+          maxLength: 32
+        has_logo:
+          type: boolean
+        logo_width:
+          type: integer
+        logo_height:
+          type: integer
+        logo_sha256:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ClientBuildProfilePage:
+      type: object
+      required:
+        - items
+        - page
+        - page_size
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClientBuildProfile"
+        page:
+          type: integer
+        page_size:
+          type: integer
+          format: int64
+        total:
+          type: integer
+          format: int64
+
+    ClientBuildProfileListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/ClientBuildProfilePage"
+
+    ClientBuildProfileResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/ClientBuildProfile"
+
+    ClientBuildProfileCreateRequest:
+      type: object
+      required:
+        - name
+        - app_name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        app_name:
+          type: string
+          minLength: 1
+          maxLength: 32
+
+    ClientBuildProfileUpdateRequest:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        app_name:
+          type: string
+          minLength: 1
+          maxLength: 32
+
+    ClientBuildLogoUploadRequest:
+      type: object
+      required:
+        - png_base64
+      properties:
+        png_base64:
+          type: string
+          minLength: 1

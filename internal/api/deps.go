@@ -15,6 +15,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/captcha"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/clientbuild"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/controlrole"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logquery"
@@ -80,6 +81,11 @@ type Deps struct {
 	// when nil.
 	Strategies *strategy.Service
 
+	// ClientBuilds owns custom client build profiles, builds and artifacts.
+	// It is nil when the deployment did not wire the feature; the endpoints
+	// then answer 503 instead of pretending the capability exists.
+	ClientBuilds *clientbuild.Service
+
 	// Tokens mints and validates personal API tokens. NewRouter derives it from
 	// DB when nil so tests and the entrypoint share the same wiring.
 	Tokens *auth.TokenService
@@ -130,6 +136,7 @@ type AdminAPI struct {
 	totp            *auth.TOTPService
 	retention       *audit.RetentionService
 	captcha         *captcha.Service
+	clientBuilds    *clientbuild.Service
 	// captchaGuard bounds challenge issuance per IP without spending the
 	// login attempt budget.
 	captchaGuard *loginGuard
@@ -227,6 +234,7 @@ func NewAdminAPI(d Deps) *AdminAPI {
 		totp:            d.TOTP,
 		retention:       d.Retention,
 		captcha:         d.Captcha,
+		clientBuilds:    d.ClientBuilds,
 		captchaGuard:    newLoginGuard(),
 	}
 }

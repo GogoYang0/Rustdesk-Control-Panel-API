@@ -193,6 +193,60 @@ func (e ApprovalStatus) Valid() bool {
 	}
 }
 
+// Defines values for ClientBuildCapabilitiesPlatforms.
+const (
+	AndroidArm64 ClientBuildCapabilitiesPlatforms = "android-arm64"
+	LinuxX64     ClientBuildCapabilitiesPlatforms = "linux-x64"
+	MacosArm64   ClientBuildCapabilitiesPlatforms = "macos-arm64"
+	MacosX64     ClientBuildCapabilitiesPlatforms = "macos-x64"
+	WindowsX64   ClientBuildCapabilitiesPlatforms = "windows-x64"
+)
+
+// Valid indicates whether the value is a known member of the ClientBuildCapabilitiesPlatforms enum.
+func (e ClientBuildCapabilitiesPlatforms) Valid() bool {
+	switch e {
+	case AndroidArm64:
+		return true
+	case LinuxX64:
+		return true
+	case MacosArm64:
+		return true
+	case MacosX64:
+		return true
+	case WindowsX64:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ClientBuildCapabilitiesProvisioningState.
+const (
+	ClientBuildCapabilitiesProvisioningStateDeployed     ClientBuildCapabilitiesProvisioningState = "deployed"
+	ClientBuildCapabilitiesProvisioningStateDisabled     ClientBuildCapabilitiesProvisioningState = "disabled"
+	ClientBuildCapabilitiesProvisioningStateFailed       ClientBuildCapabilitiesProvisioningState = "failed"
+	ClientBuildCapabilitiesProvisioningStateMissing      ClientBuildCapabilitiesProvisioningState = "missing"
+	ClientBuildCapabilitiesProvisioningStateProvisioning ClientBuildCapabilitiesProvisioningState = "provisioning"
+)
+
+// Valid indicates whether the value is a known member of the ClientBuildCapabilitiesProvisioningState enum.
+func (e ClientBuildCapabilitiesProvisioningState) Valid() bool {
+	switch e {
+	case ClientBuildCapabilitiesProvisioningStateDeployed:
+		return true
+	case ClientBuildCapabilitiesProvisioningStateDisabled:
+		return true
+	case ClientBuildCapabilitiesProvisioningStateFailed:
+		return true
+	case ClientBuildCapabilitiesProvisioningStateMissing:
+		return true
+	case ClientBuildCapabilitiesProvisioningStateProvisioning:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ConnectionLogStatus.
 const (
 	ConnectionLogStatusClosed ConnectionLogStatus = "closed"
@@ -1287,6 +1341,138 @@ type CaptchaProof struct {
 	// payload）；`geetest` 传 `lot_number`、`captcha_output`、`pass_token`、
 	// `gen_time`；`cap` 传 `response`。
 	Response map[string]string `json:"response"`
+}
+
+// ClientBuildCapabilities defines model for ClientBuildCapabilities.
+type ClientBuildCapabilities struct {
+	Defaults          *ClientBuildDefaults                     `json:"defaults,omitempty"`
+	Enabled           bool                                     `json:"enabled"`
+	Limits            ClientBuildLimits                        `json:"limits"`
+	Platforms         []ClientBuildCapabilitiesPlatforms       `json:"platforms"`
+	ProvisioningState ClientBuildCapabilitiesProvisioningState `json:"provisioning_state"`
+}
+
+// ClientBuildCapabilitiesPlatforms defines model for ClientBuildCapabilities.Platforms.
+type ClientBuildCapabilitiesPlatforms string
+
+// ClientBuildCapabilitiesProvisioningState defines model for ClientBuildCapabilities.ProvisioningState.
+type ClientBuildCapabilitiesProvisioningState string
+
+// ClientBuildCapabilitiesResponse defines model for ClientBuildCapabilitiesResponse.
+type ClientBuildCapabilitiesResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode               `json:"code"`
+	Data    ClientBuildCapabilities `json:"data"`
+	Message string                  `json:"message"`
+}
+
+// ClientBuildDefaults defines model for ClientBuildDefaults.
+type ClientBuildDefaults struct {
+	ApiServer string `json:"api_server"`
+	Server    string `json:"server"`
+	ServerKey string `json:"server_key"`
+}
+
+// ClientBuildLimits defines model for ClientBuildLimits.
+type ClientBuildLimits struct {
+	ArtifactRetentionDays int   `json:"artifact_retention_days"`
+	MaxActiveBuilds       int   `json:"max_active_builds"`
+	MaxArtifactBytes      int64 `json:"max_artifact_bytes"`
+	MaxConcurrentPerOrg   int   `json:"max_concurrent_per_org"`
+	MaxProfilesPerOrg     int   `json:"max_profiles_per_org"`
+}
+
+// ClientBuildLogoUploadRequest defines model for ClientBuildLogoUploadRequest.
+type ClientBuildLogoUploadRequest struct {
+	PngBase64 string `json:"png_base64"`
+}
+
+// ClientBuildProfile defines model for ClientBuildProfile.
+type ClientBuildProfile struct {
+	AppName    string    `json:"app_name"`
+	CreatedAt  time.Time `json:"created_at"`
+	HasLogo    bool      `json:"has_logo"`
+	Id         int64     `json:"id"`
+	LogoHeight int       `json:"logo_height"`
+	LogoSha256 string    `json:"logo_sha256"`
+	LogoWidth  int       `json:"logo_width"`
+	Name       string    `json:"name"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+// ClientBuildProfileCreateRequest defines model for ClientBuildProfileCreateRequest.
+type ClientBuildProfileCreateRequest struct {
+	AppName string `json:"app_name"`
+	Name    string `json:"name"`
+}
+
+// ClientBuildProfileListResponse defines model for ClientBuildProfileListResponse.
+type ClientBuildProfileListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode              `json:"code"`
+	Data    ClientBuildProfilePage `json:"data"`
+	Message string                 `json:"message"`
+}
+
+// ClientBuildProfilePage defines model for ClientBuildProfilePage.
+type ClientBuildProfilePage struct {
+	Items    []ClientBuildProfile `json:"items"`
+	Page     int                  `json:"page"`
+	PageSize int64                `json:"page_size"`
+	Total    int64                `json:"total"`
+}
+
+// ClientBuildProfileResponse defines model for ClientBuildProfileResponse.
+type ClientBuildProfileResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode          `json:"code"`
+	Data    ClientBuildProfile `json:"data"`
+	Message string             `json:"message"`
+}
+
+// ClientBuildProfileUpdateRequest defines model for ClientBuildProfileUpdateRequest.
+type ClientBuildProfileUpdateRequest struct {
+	AppName *string `json:"app_name,omitempty"`
+	Name    *string `json:"name,omitempty"`
 }
 
 // ConnectionLog 客户端上报的一条连接记录（`POST /api/audit/conn`）。`new` 建行、`close` 关闭；
@@ -3262,6 +3448,12 @@ type ExportAuditLogsParams struct {
 	To          *time.Time `form:"to,omitempty" json:"to,omitempty"`
 }
 
+// ListClientBuildProfilesParams defines parameters for ListClientBuildProfiles.
+type ListClientBuildProfilesParams struct {
+	Page     *int `form:"page,omitempty" json:"page,omitempty"`
+	PageSize *int `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
 // ListConnectionLogsParams defines parameters for ListConnectionLogs.
 type ListConnectionLogsParams struct {
 	DeviceId   *int64  `form:"deviceId,omitempty" json:"deviceId,omitempty"`
@@ -3405,6 +3597,15 @@ type DecideApprovalJSONRequestBody = ApprovalDecisionRequest
 
 // SetAuditRetentionJSONRequestBody defines body for SetAuditRetention for application/json ContentType.
 type SetAuditRetentionJSONRequestBody = AuditRetentionRequest
+
+// CreateClientBuildProfileJSONRequestBody defines body for CreateClientBuildProfile for application/json ContentType.
+type CreateClientBuildProfileJSONRequestBody = ClientBuildProfileCreateRequest
+
+// UpdateClientBuildProfileJSONRequestBody defines body for UpdateClientBuildProfile for application/json ContentType.
+type UpdateClientBuildProfileJSONRequestBody = ClientBuildProfileUpdateRequest
+
+// PutClientBuildProfileLogoJSONRequestBody defines body for PutClientBuildProfileLogo for application/json ContentType.
+type PutClientBuildProfileLogoJSONRequestBody = ClientBuildLogoUploadRequest
 
 // CreateControlRoleJSONRequestBody defines body for CreateControlRole for application/json ContentType.
 type CreateControlRoleJSONRequestBody = ControlRoleCreateRequest
@@ -3615,6 +3816,33 @@ type ServerInterface interface {
 	// SetAuditRetention 设置审计保留期
 	// (PUT /api/v1/orgs/{orgId}/audit-retention)
 	SetAuditRetention(c *gin.Context, orgId int64)
+	// ListClientBuildProfiles 列出客户端品牌配置
+	// (GET /api/v1/orgs/{orgId}/client-build-profiles)
+	ListClientBuildProfiles(c *gin.Context, orgId int64, params ListClientBuildProfilesParams)
+	// CreateClientBuildProfile 创建客户端品牌配置
+	// (POST /api/v1/orgs/{orgId}/client-build-profiles)
+	CreateClientBuildProfile(c *gin.Context, orgId int64)
+	// DeleteClientBuildProfile 删除客户端品牌配置
+	// (DELETE /api/v1/orgs/{orgId}/client-build-profiles/{profileId})
+	DeleteClientBuildProfile(c *gin.Context, orgId int64, profileId int64)
+	// GetClientBuildProfile 读取客户端品牌配置
+	// (GET /api/v1/orgs/{orgId}/client-build-profiles/{profileId})
+	GetClientBuildProfile(c *gin.Context, orgId int64, profileId int64)
+	// UpdateClientBuildProfile 更新客户端品牌配置
+	// (PATCH /api/v1/orgs/{orgId}/client-build-profiles/{profileId})
+	UpdateClientBuildProfile(c *gin.Context, orgId int64, profileId int64)
+	// DeleteClientBuildProfileLogo 删除客户端 Logo
+	// (DELETE /api/v1/orgs/{orgId}/client-build-profiles/{profileId}/logo)
+	DeleteClientBuildProfileLogo(c *gin.Context, orgId int64, profileId int64)
+	// GetClientBuildProfileLogo 读取客户端 Logo
+	// (GET /api/v1/orgs/{orgId}/client-build-profiles/{profileId}/logo)
+	GetClientBuildProfileLogo(c *gin.Context, orgId int64, profileId int64)
+	// PutClientBuildProfileLogo 上传客户端 Logo
+	// (PUT /api/v1/orgs/{orgId}/client-build-profiles/{profileId}/logo)
+	PutClientBuildProfileLogo(c *gin.Context, orgId int64, profileId int64)
+	// GetClientBuildCapabilities 读取自定义客户端构建能力
+	// (GET /api/v1/orgs/{orgId}/client-build/capabilities)
+	GetClientBuildCapabilities(c *gin.Context, orgId int64)
 	// ListConnectionLogs 查询客户端连接日志
 	// (GET /api/v1/orgs/{orgId}/connection-logs)
 	ListConnectionLogs(c *gin.Context, orgId int64, params ListConnectionLogsParams)
@@ -5046,6 +5274,304 @@ func (siw *ServerInterfaceWrapper) SetAuditRetention(c *gin.Context) {
 	}
 
 	siw.Handler.SetAuditRetention(c, orgId)
+}
+
+// ListClientBuildProfiles operation middleware
+func (siw *ServerInterfaceWrapper) ListClientBuildProfiles(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListClientBuildProfilesParams
+
+	// ------------- Optional query parameter "page" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "page", c.Request.URL.Query(), &params.Page, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter page: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "pageSize" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "pageSize", c.Request.URL.Query(), &params.PageSize, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter pageSize: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListClientBuildProfiles(c, orgId, params)
+}
+
+// CreateClientBuildProfile operation middleware
+func (siw *ServerInterfaceWrapper) CreateClientBuildProfile(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateClientBuildProfile(c, orgId)
+}
+
+// DeleteClientBuildProfile operation middleware
+func (siw *ServerInterfaceWrapper) DeleteClientBuildProfile(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "profileId" -------------
+	var profileId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "profileId", c.Param("profileId"), &profileId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter profileId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteClientBuildProfile(c, orgId, profileId)
+}
+
+// GetClientBuildProfile operation middleware
+func (siw *ServerInterfaceWrapper) GetClientBuildProfile(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "profileId" -------------
+	var profileId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "profileId", c.Param("profileId"), &profileId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter profileId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetClientBuildProfile(c, orgId, profileId)
+}
+
+// UpdateClientBuildProfile operation middleware
+func (siw *ServerInterfaceWrapper) UpdateClientBuildProfile(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "profileId" -------------
+	var profileId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "profileId", c.Param("profileId"), &profileId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter profileId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UpdateClientBuildProfile(c, orgId, profileId)
+}
+
+// DeleteClientBuildProfileLogo operation middleware
+func (siw *ServerInterfaceWrapper) DeleteClientBuildProfileLogo(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "profileId" -------------
+	var profileId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "profileId", c.Param("profileId"), &profileId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter profileId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteClientBuildProfileLogo(c, orgId, profileId)
+}
+
+// GetClientBuildProfileLogo operation middleware
+func (siw *ServerInterfaceWrapper) GetClientBuildProfileLogo(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "profileId" -------------
+	var profileId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "profileId", c.Param("profileId"), &profileId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter profileId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetClientBuildProfileLogo(c, orgId, profileId)
+}
+
+// PutClientBuildProfileLogo operation middleware
+func (siw *ServerInterfaceWrapper) PutClientBuildProfileLogo(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "profileId" -------------
+	var profileId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "profileId", c.Param("profileId"), &profileId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter profileId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.PutClientBuildProfileLogo(c, orgId, profileId)
+}
+
+// GetClientBuildCapabilities operation middleware
+func (siw *ServerInterfaceWrapper) GetClientBuildCapabilities(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetClientBuildCapabilities(c, orgId)
 }
 
 // ListConnectionLogs operation middleware
@@ -7146,4 +7672,13 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/approvals/:approvalId", wrapper.GetApproval)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/tickets/:ticketId", wrapper.GetTicket)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/tickets/:ticketId/redeem", wrapper.RedeemTicket)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/client-build/capabilities", wrapper.GetClientBuildCapabilities)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/client-build-profiles", wrapper.ListClientBuildProfiles)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/client-build-profiles", wrapper.CreateClientBuildProfile)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/client-build-profiles/:profileId", wrapper.DeleteClientBuildProfile)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/client-build-profiles/:profileId", wrapper.GetClientBuildProfile)
+	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/client-build-profiles/:profileId", wrapper.UpdateClientBuildProfile)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/client-build-profiles/:profileId/logo", wrapper.DeleteClientBuildProfileLogo)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/client-build-profiles/:profileId/logo", wrapper.GetClientBuildProfileLogo)
+	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/client-build-profiles/:profileId/logo", wrapper.PutClientBuildProfileLogo)
 }
