@@ -266,18 +266,20 @@ func RoleByIDTx(tx *gorm.DB, orgID, roleID uint) (*model.Role, error) {
 	return &role, nil
 }
 
-// RoleIDsTx returns the ids of the organization's role rows. Callers that judge
-// a membership by "role_id <> 0" must also require the id to resolve, because a
-// concurrent role deletion can commit between the reference count of
-// DeleteCustomTx and a role assignment, leaving a dangling role_id behind: such
-// a membership authorizes nothing (authz resolution fails closed), so it must
-// contribute nothing to any rule evaluation either.
-func RoleIDsTx(tx *gorm.DB, orgID uint) ([]uint, error) {
-	var ids []uint
-	if err := store.ScopedByOrg(tx, orgID).Model(&model.Role{}).Pluck("id", &ids).Error; err != nil {
-		return nil, err
-	}
-	return ids, nil
+// ResolvableRoleIDs returns the subquery of role ids that exist in this
+// organization, for use as `role_id IN (?)`.
+//
+// Judging a membership by "role_id <> 0" alone is not enough: a concurrent role
+// deletion can leave a dangling role_id behind (DeleteCustomTx counts
+// references without holding the role assignment path's lock), and such a
+// membership authorizes nothing — authz resolution fails closed — so it must
+// contribute nothing to rule evaluation either. The set is rendered as a
+// subquery inside the caller's statement, so the role set and the membership
+// rows are read by one query instead of two reads that a concurrent deletion
+// can straddle. A subquery built through ScopedByOrg carries the tenant context
+// the plugin injects, so it never crosses organizations.
+func ResolvableRoleIDs(db *gorm.DB, orgID uint) *gorm.DB {
+	return store.ScopedByOrg(db, orgID).Model(&model.Role{}).Select("id")
 }
 
 // List returns every role of the organization, builtins first (seed order) and

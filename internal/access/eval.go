@@ -122,11 +122,10 @@ func (s *Service) devicesOwnedByGroups(db *gorm.DB, orgID uint, groupIDs []uint)
 
 	// A dangling role_id (role deleted concurrently with an assignment) must be
 	// treated exactly like a zero one: the membership resolves to nothing, so it
-	// contributes no devices. An empty id set fails the IN clause closed.
-	roleIDs, err := authz.RoleIDsTx(db, orgID)
-	if err != nil {
-		return nil, err
-	}
+	// contributes no devices. The role set is a subquery of the same statement,
+	// so the two facts are read atomically instead of through two reads a
+	// concurrent deletion could straddle.
+	roleIDs := authz.ResolvableRoleIDs(db, orgID)
 
 	var activeMembers []uint
 	activeLoaded := false
@@ -137,7 +136,7 @@ func (s *Service) devicesOwnedByGroups(db *gorm.DB, orgID uint, groupIDs []uint)
 		if reserved[id] {
 			if !activeLoaded {
 				if err := store.ScopedByOrg(db, orgID).Model(&model.Membership{}).
-					Where("disabled = ? AND role_id IN ?", false, roleIDs).
+					Where("disabled = ? AND role_id IN (?)", false, roleIDs).
 					Pluck("user_id", &activeMembers).Error; err != nil {
 					return nil, err
 				}
@@ -174,7 +173,7 @@ func (s *Service) devicesOwnedByGroups(db *gorm.DB, orgID uint, groupIDs []uint)
 
 	var activeOwners []uint
 	if err := store.ScopedByOrg(db, orgID).Model(&model.Membership{}).
-		Where("user_id IN ? AND disabled = ? AND role_id IN ?", memberIDs, false, roleIDs).
+		Where("user_id IN ? AND disabled = ? AND role_id IN (?)", memberIDs, false, roleIDs).
 		Pluck("user_id", &activeOwners).Error; err != nil {
 		return nil, err
 	}

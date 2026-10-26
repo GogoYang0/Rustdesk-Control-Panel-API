@@ -238,6 +238,35 @@ func TestEval_DanglingRoleContributesNothing(t *testing.T) {
 	require.Contains(t, ids, carolDevice.ID, "resolvable members stay covered")
 }
 
+// TestEval_ForeignRoleContributesNothing pins the tenant scope of the role
+// subquery: a membership pointing at a role row of another organization does not
+// resolve here (authz resolution is scoped and fails closed), so it must not
+// make its owner's device visible to anybody. It is the eval-side counterpart of
+// the device owner check, and the test that would catch a role set read without
+// the tenant condition.
+func TestEval_ForeignRoleContributesNothing(t *testing.T) {
+	f := newEvalFixture(t)
+	alice := f.addMember(t, "alice@example.com", model.RoleKindMember)
+	bob := f.addMember(t, "bob@example.com", model.RoleKindMember)
+	viewers := f.addUserGroup(t, "viewers", alice)
+	targets := f.addUserGroup(t, "targets", bob)
+	bobDevice := f.addDevice(t, "750", false)
+	f.ownDevice(t, bobDevice, bob)
+
+	other := model.Organization{Name: "eval-other-org"}
+	require.NoError(t, f.st.DB.Create(&other).Error)
+	foreignRole := model.Role{OrganizationID: other.ID, Name: "member", Kind: model.RoleKindMember}
+	require.NoError(t, f.st.DB.Create(&foreignRole).Error)
+	require.NoError(t, store.ScopedByOrg(f.st.DB, f.org.ID).Model(&model.Membership{}).
+		Where("user_id = ?", bob.UserID).Update("role_id", foreignRole.ID).Error)
+
+	f.removeDefaultRule(t)
+	f.addRule(t, viewers.ID, model.AccessTargetKindUserGroup, targets.ID)
+
+	_, ids := allowedIDs(t, f, alice.UserID)
+	require.Empty(t, ids, "another organization's role row must not authorize this member's device")
+}
+
 // TestEval_DisabledDeviceHiddenFromItsOwner pins the precedence: the stop
 // action outranks ownership.
 func TestEval_DisabledDeviceHiddenFromItsOwner(t *testing.T) {

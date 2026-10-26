@@ -563,17 +563,16 @@ func (s *Service) Update(ctx context.Context, orgID, deviceID, actorID uint, in 
 		if in.OwnerUserID != nil {
 			next := *in.OwnerUserID
 			if next != 0 {
-				// The target must be an active member whose role still resolves:
-				// a dangling role_id authorizes nothing (authz resolution fails
+				// The target must be an active member whose role still resolves: a
+				// dangling role_id authorizes nothing (authz resolution fails
 				// closed), so pointing ownership at it would hide the device
-				// from every non-administrator.
-				roleIDs, err := authz.RoleIDsTx(tx, orgID)
-				if err != nil {
-					return err
-				}
+				// from every non-administrator. The role set is a subquery of
+				// the same statement, so the check cannot straddle a concurrent
+				// role deletion.
 				var count int64
 				if err := store.ScopedByOrg(tx, orgID).Model(&model.Membership{}).
-					Where("user_id = ? AND disabled = ? AND role_id IN ?", next, false, roleIDs).
+					Where("user_id = ? AND disabled = ? AND role_id IN (?)", next, false,
+						authz.ResolvableRoleIDs(tx, orgID)).
 					Count(&count).Error; err != nil {
 					return err
 				}
