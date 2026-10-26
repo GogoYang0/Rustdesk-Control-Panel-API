@@ -52,6 +52,8 @@ func newHarness(t *testing.T) *harness {
 		// role and the organization's groups and rules.
 		&model.Role{}, &model.UserGroup{}, &model.UserGroupMember{},
 		&model.DeviceGroup{}, &model.AccessRule{},
+		// Client audit ingest: connection/file rows plus the nonce dedupe table.
+		&model.ConnectionLog{}, &model.FileLog{}, &model.AuditNonce{},
 	))
 
 	issuer := auth.NewIssuer("test-secret", time.Minute, time.Hour)

@@ -31,6 +31,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logcollect"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logger"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logquery"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/provision"
@@ -271,6 +272,10 @@ func main() {
 	sessionSvc := session.NewService(st.DB, auditor, time.Now).
 		WithControlRoles(controlrole.NewService(st.DB, auditor, time.Now))
 
+	// Client audit ingest: the same service the compat endpoints use, exposed
+	// here for its nonce sweep.
+	auditIngest := logquery.New(st.DB, auditor, time.Now)
+
 	// Log collection: one tailer pair per provisioned organization. The queue
 	// hook starts the tailers of a fresh deployment immediately instead of
 	// waiting for the next process start.
@@ -406,6 +411,21 @@ func main() {
 		},
 	}); err != nil {
 		lg.Fatal("register audit retention sweep", zap.Error(err))
+	}
+
+	// Client audit dedupe markers outlive their usefulness quickly: the upstream
+	// API server remembers a nonce for five minutes and the client retries for at
+	// most two, so a ten-minute sweep keeps the table bounded without ever
+	// dropping a marker a live retry could still need.
+	if err := sched.Register(worker.Task{
+		Name:       "audit-nonce-sweep",
+		Interval:   10 * time.Minute,
+		RunOnStart: true,
+		Run: func(ctx context.Context) (int64, error) {
+			return auditIngest.SweepNonces(ctx, time.Now(), 10*time.Minute)
+		},
+	}); err != nil {
+		lg.Fatal("register audit nonce sweep", zap.Error(err))
 	}
 
 	if cfg.Logcollect.RetentionSweepInterval > 0 {
