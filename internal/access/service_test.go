@@ -22,7 +22,7 @@ func newGroupFixture(t *testing.T) (*store.Store, *access.Service, model.Organiz
 	user := model.User{Email: "member@example.com", PasswordHash: "x", EmailVerified: true}
 	require.NoError(t, st.DB.Create(&user).Error)
 	require.NoError(t, st.DB.Create(&model.Membership{
-		OrganizationID: org.ID, UserID: user.ID, Role: model.RoleMember,
+		OrganizationID: org.ID, UserID: user.ID, RoleID: 3,
 	}).Error)
 	require.NoError(t, access.Migrate(st.DB))
 	svc := access.NewService(st.DB, audit.NewGormAuditor(st.DB), nil)
@@ -109,7 +109,7 @@ func TestAccess_ReplaceMembersRejectsForeignUser(t *testing.T) {
 	foreign := model.User{Email: "foreign@example.com", PasswordHash: "x", EmailVerified: true}
 	require.NoError(t, st.DB.Create(&foreign).Error)
 	require.NoError(t, st.DB.Create(&model.Membership{
-		OrganizationID: other.ID, UserID: foreign.ID, Role: model.RoleMember,
+		OrganizationID: other.ID, UserID: foreign.ID, RoleID: 3,
 	}).Error)
 
 	group, err := svc.CreateUserGroup(ctx, org.ID, 1, "Team")

@@ -109,7 +109,6 @@ func (h *harness) seedMembershipKind(t *testing.T, userID, orgID uint, kind stri
 	require.NoError(t, h.db.DB.Create(&model.Membership{
 		OrganizationID: orgID,
 		UserID:         userID,
-		Role:           kind,
 		RoleID:         role.ID,
 	}).Error)
 }

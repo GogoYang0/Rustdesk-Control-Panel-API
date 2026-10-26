@@ -32,7 +32,7 @@ func TestTOTP_AdminCannotResetCrossOrgAdministrator(t *testing.T) {
 	admin := h.seedUser(t, "scope-a-admin@example.com", "password123")
 	adminRole := h.roleID(t, uint(orgA), model.RoleAdmin)
 	require.NoError(t, h.db.DB.Create(&model.Membership{
-		OrganizationID: uint(orgA), UserID: admin.ID, RoleID: adminRole, Role: model.RoleAdmin,
+		OrganizationID: uint(orgA), UserID: admin.ID, RoleID: adminRole,
 	}).Error)
 	adminToken := h.login(t, "scope-a-admin@example.com", "password123")
 

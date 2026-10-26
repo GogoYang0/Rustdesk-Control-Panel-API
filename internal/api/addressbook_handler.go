@@ -450,7 +450,7 @@ func (a *AdminAPI) CreateAddressBookGrant(c *gin.Context, orgId int64, bookId in
 		return
 	}
 
-	grant, created, err := a.books.UpsertGrant(uid, uint(orgId), uint(bookId), subjectUserID,
+	grant, created, err := a.books.UpsertGrant(uid, uint(orgId), uint(bookId), subjectUserID, 0,
 		string(req.SubjectKind), string(req.Access), perms)
 	if err != nil && mapGrantError(c, err) {
 		return

@@ -146,6 +146,10 @@ const roleMigrationName = "2026-10-24-m4-roles"
 // membership's legacy role string onto its role_id. Unknown role strings abort
 // the migration (fail closed) instead of silently demoting members; the marker
 // is written only on success, so a crashed startup retries the backfill.
+//
+// Once MigrateDropLegacyRole has removed memberships.role, the string backfill
+// has nothing left to read: the builtins are still seeded (they are what the
+// organization needs to authorize anyone) and the mapping loop is skipped.
 func MigrateRoles(db *gorm.DB) error {
 	var mark model.MigrationMark
 	err := db.Where("name = ?", roleMigrationName).First(&mark).Error
@@ -157,6 +161,7 @@ func MigrateRoles(db *gorm.DB) error {
 	}
 
 	return db.Transaction(func(tx *gorm.DB) error {
+		hasLegacyColumn := tx.Migrator().HasColumn(&model.Membership{}, "role")
 		var orgIDs []uint
 		if err := tx.Model(&model.Organization{}).Order("id").Pluck("id", &orgIDs).Error; err != nil {
 			return fmt.Errorf("list organizations: %w", err)
@@ -165,15 +170,33 @@ func MigrateRoles(db *gorm.DB) error {
 			if err := (&RoleService{}).EnsureBuiltinsTx(tx, orgID); err != nil {
 				return fmt.Errorf("seed builtin roles for organization %d: %w", orgID, err)
 			}
+			if !hasLegacyColumn {
+				continue
+			}
 			var members []model.Membership
 			if err := store.ScopedByOrg(tx, orgID).
 				Where("role_id = 0").Find(&members).Error; err != nil {
 				return fmt.Errorf("list memberships of organization %d: %w", orgID, err)
 			}
 			for _, m := range members {
-				role, err := RoleByNameTx(tx, orgID, m.Role)
+				// The legacy column is read outside the tenant scope and
+				// filtered by organization explicitly: this is the cross-tenant
+				// migration loop, and a tenant-scoped handle without a tenant
+				// context would inject an empty condition and silently read
+				// nothing.
+				var legacy []string
+				if err := store.WithoutTenantScope(tx).Table("memberships").
+					Where("id = ? AND organization_id = ?", m.ID, orgID).
+					Pluck("role", &legacy).Error; err != nil {
+					return fmt.Errorf("read legacy role of membership %d: %w", m.ID, err)
+				}
+				legacyRole := ""
+				if len(legacy) > 0 {
+					legacyRole = legacy[0]
+				}
+				role, err := RoleByNameTx(tx, orgID, legacyRole)
 				if err != nil {
-					return fmt.Errorf("membership %d has unknown role %q: %w", m.ID, m.Role, ErrUnknownLegacyRole)
+					return fmt.Errorf("membership %d has unknown role %q: %w", m.ID, legacyRole, ErrUnknownLegacyRole)
 				}
 				if err := store.ScopedByOrg(tx, orgID).
 					Model(&model.Membership{}).

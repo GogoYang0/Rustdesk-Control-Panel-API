@@ -26,8 +26,8 @@ func newGrantFixture(t *testing.T) (*Service, uint, uint, uint) {
 	))
 	org := model.Organization{Name: "grants-acme"}
 	require.NoError(t, st.DB.Create(&org).Error)
-	owner := model.Membership{OrganizationID: org.ID, UserID: 7, RoleID: 1, Role: model.RoleOwner}
-	member := model.Membership{OrganizationID: org.ID, UserID: 8, RoleID: 3, Role: model.RoleMember}
+	owner := model.Membership{OrganizationID: org.ID, UserID: 7, RoleID: 1}
+	member := model.Membership{OrganizationID: org.ID, UserID: 8, RoleID: 3}
 	require.NoError(t, st.DB.Create(&owner).Error)
 	require.NoError(t, st.DB.Create(&member).Error)
 	return NewService(st.DB), org.ID, 7, 8
@@ -78,13 +78,13 @@ func TestUpsertGrant_UpsertsAndValidates(t *testing.T) {
 	require.NoError(t, err)
 	perms := []string{authz.PermAddressBook}
 
-	grant, created, err := svc.UpsertGrant(ownerID, orgID, book.ID, memberID,
+	grant, created, err := svc.UpsertGrant(ownerID, orgID, book.ID, memberID, 0,
 		model.GrantSubjectUser, model.GrantAccessWrite, perms)
 	require.NoError(t, err)
 	require.True(t, created)
 	require.Equal(t, model.GrantAccessWrite, grant.Access)
 
-	updated, created, err := svc.UpsertGrant(ownerID, orgID, book.ID, memberID,
+	updated, created, err := svc.UpsertGrant(ownerID, orgID, book.ID, memberID, 0,
 		model.GrantSubjectUser, model.GrantAccessFull, perms)
 	require.NoError(t, err)
 	require.False(t, created)
@@ -95,26 +95,26 @@ func TestUpsertGrant_UpsertsAndValidates(t *testing.T) {
 	require.Len(t, list, 1)
 
 	// everyone normalizes the subject id to the sentinel 0.
-	everyone, _, err := svc.UpsertGrant(ownerID, orgID, book.ID, 999,
+	everyone, _, err := svc.UpsertGrant(ownerID, orgID, book.ID, 999, 0,
 		model.GrantSubjectEveryone, model.GrantAccessRead, perms)
 	require.NoError(t, err)
 	require.Zero(t, everyone.SubjectUserID)
 
-	_, _, err = svc.UpsertGrant(ownerID, orgID, book.ID, 0,
+	_, _, err = svc.UpsertGrant(ownerID, orgID, book.ID, 0, 0,
 		model.GrantSubjectUser, model.GrantAccessRead, perms)
 	require.ErrorIs(t, err, ErrInvalidGrant)
 
-	_, _, err = svc.UpsertGrant(ownerID, orgID, book.ID, 424242,
+	_, _, err = svc.UpsertGrant(ownerID, orgID, book.ID, 424242, 0,
 		model.GrantSubjectUser, model.GrantAccessRead, perms)
 	require.ErrorIs(t, err, ErrSubjectNotMember)
 
-	_, _, err = svc.UpsertGrant(ownerID, orgID, book.ID, memberID,
+	_, _, err = svc.UpsertGrant(ownerID, orgID, book.ID, memberID, 0,
 		model.GrantSubjectUser, "admin", perms)
 	require.ErrorIs(t, err, ErrInvalidGrant)
 
 	personal, err := svc.Create(ownerID, orgID, model.AddressBookScopePersonal, "mine")
 	require.NoError(t, err)
-	_, _, err = svc.UpsertGrant(ownerID, orgID, personal.ID, memberID,
+	_, _, err = svc.UpsertGrant(ownerID, orgID, personal.ID, memberID, 0,
 		model.GrantSubjectUser, model.GrantAccessRead, perms)
 	require.ErrorIs(t, err, ErrGrantNotShared)
 }
@@ -134,7 +134,8 @@ func TestGrants_DelegatedLevelsAndRevocation(t *testing.T) {
 	require.ErrorIs(t, err, ErrForbidden)
 
 	// A write grant enables peers/tags but not rename, delete, or grants.
-	_, _, err = svc.UpsertGrant(ownerID, orgID, book.ID, memberID, model.GrantSubjectUser, model.GrantAccessWrite, perms)
+	_, _, err = svc.UpsertGrant(ownerID, orgID, book.ID, memberID, 0,
+		model.GrantSubjectUser, model.GrantAccessWrite, perms)
 	require.NoError(t, err)
 	_, err = svc.ReplacePeers(memberID, nil, orgID, book.ID, []PeerInput{{PeerID: "1"}})
 	require.NoError(t, err)
@@ -146,7 +147,8 @@ func TestGrants_DelegatedLevelsAndRevocation(t *testing.T) {
 	require.ErrorIs(t, err, ErrForbidden)
 
 	// A full grant opens the management surfaces.
-	_, _, err = svc.UpsertGrant(ownerID, orgID, book.ID, memberID, model.GrantSubjectUser, model.GrantAccessFull, perms)
+	_, _, err = svc.UpsertGrant(ownerID, orgID, book.ID, memberID, 0,
+		model.GrantSubjectUser, model.GrantAccessFull, perms)
 	require.NoError(t, err)
 	grants, err := svc.ListGrants(memberID, orgID, book.ID, nil)
 	require.NoError(t, err)
@@ -167,13 +169,15 @@ func TestGrants_EveryoneWriteReachesMembers(t *testing.T) {
 	require.NoError(t, err)
 	perms := []string{authz.PermAddressBook}
 
-	_, _, err = svc.UpsertGrant(ownerID, orgID, book.ID, 0, model.GrantSubjectEveryone, model.GrantAccessWrite, perms)
+	_, _, err = svc.UpsertGrant(ownerID, orgID, book.ID, 0, 0,
+		model.GrantSubjectEveryone, model.GrantAccessWrite, perms)
 	require.NoError(t, err)
 	_, err = svc.ReplacePeers(memberID, nil, orgID, book.ID, []PeerInput{{PeerID: "1"}})
 	require.NoError(t, err)
 
 	// A user-specific read grant deliberately caps that member again.
-	_, _, err = svc.UpsertGrant(ownerID, orgID, book.ID, memberID, model.GrantSubjectUser, model.GrantAccessRead, perms)
+	_, _, err = svc.UpsertGrant(ownerID, orgID, book.ID, memberID, 0,
+		model.GrantSubjectUser, model.GrantAccessRead, perms)
 	require.NoError(t, err)
 	_, err = svc.ReplacePeers(memberID, nil, orgID, book.ID, []PeerInput{{PeerID: "2"}})
 	require.ErrorIs(t, err, ErrForbidden)

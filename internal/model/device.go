@@ -39,9 +39,18 @@ type Device struct {
 	// DeviceGroupID is the single device group this device belongs to. A device
 	// is in at most one group; moving it rewrites this column inside the same
 	// transaction, and deleting its group clears it.
-	DeviceGroupID *uint     `gorm:"index" json:"device_group_id"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	DeviceGroupID *uint `gorm:"index" json:"device_group_id"`
+	// OwnerUserID is the organization member this device belongs to, nil when
+	// nobody claimed it. Ownership is what makes "user group -> user group"
+	// rules expressible: the target side expands to the devices owned by the
+	// members of that group. Deactivated members keep their ownership rows (the
+	// history stays attributable) but stop being reachable through rules.
+	OwnerUserID *uint `gorm:"index" json:"owner_user_id"`
+	// Note is a free-form operator annotation, written through the management
+	// API or the client --assign path.
+	Note      string    `gorm:"size:255;not null;default:''" json:"note"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // OnlineWindow is how fresh a heartbeat must be for the device to count as

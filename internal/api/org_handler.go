@@ -91,7 +91,6 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 			OrganizationID: org.ID,
 			UserID:         uid,
 			RoleID:         ownerRole.ID,
-			Role:           ownerRole.Name,
 		}).Error; err != nil {
 			return err
 		}
@@ -239,10 +238,9 @@ func (a *AdminAPI) ListMembers(c *gin.Context, orgId int64) {
 	}
 	out := make([]gen.Member, 0, len(memberships))
 	for _, m := range memberships {
+		// The role row is the only source; a missing row leaves the name empty
+		// rather than guessing from a stale string (fail closed).
 		name := roleNameOf(roleIdx, m.RoleID)
-		if name == "" {
-			name = m.Role
-		}
 		out = append(out, gen.Member{
 			Id:        int64(m.ID),
 			UserId:    int64(m.UserID),
@@ -422,7 +420,6 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 			OrganizationID: inv.OrganizationID,
 			UserID:         user.ID,
 			RoleID:         joinerRole.ID,
-			Role:           joinerRole.Name,
 		}
 		if err := store.ScopedByOrg(tx, inv.OrganizationID).Create(&member).Error; err != nil {
 			return err
@@ -481,6 +478,13 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 	// middleware fallback for this request (issue #19).
 	c.Set(contextAuditRecorded, true)
 
+	// The membership row carries only the role id; the display name comes from
+	// the role row, and stays empty if that row cannot be resolved (fail closed
+	// rather than guessing a name).
+	joinedName := ""
+	if role, rerr := a.deps.Roles.RoleByID(inv.OrganizationID, member.RoleID); rerr == nil {
+		joinedName = role.Name
+	}
 	c.JSON(http.StatusOK, gen.MemberResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
@@ -488,9 +492,9 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 			Id:        int64(member.ID),
 			UserId:    int64(member.UserID),
 			Email:     openapi_types.Email(inv.Email),
-			Role:      member.Role,
+			Role:      joinedName,
 			RoleId:    int64(member.RoleID),
-			RoleName:  member.Role,
+			RoleName:  joinedName,
 			Disabled:  false,
 			CreatedAt: member.CreatedAt,
 		},

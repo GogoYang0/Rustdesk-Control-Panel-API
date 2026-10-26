@@ -159,9 +159,10 @@ func (s *Service) ListGrants(userID, orgID, bookID uint, perms []string) ([]mode
 }
 
 // UpsertGrant creates or replaces one subject's grant on a shared book and
-// reports whether a new row was inserted. The unique (book, kind, user) index
-// makes the upsert atomic on all three dialects.
-func (s *Service) UpsertGrant(userID, orgID, bookID, subjectUserID uint, subjectKind, accessLevel string, perms []string) (*model.AddressBookGrant, bool, error) {
+// reports whether a new row was inserted. The unique (book, kind, user, group)
+// index makes the upsert atomic on all three dialects. subjectGroupID is the
+// user group of a user_group grant and 0 for the user and everyone kinds.
+func (s *Service) UpsertGrant(userID, orgID, bookID, subjectUserID, subjectGroupID uint, subjectKind, accessLevel string, perms []string) (*model.AddressBookGrant, bool, error) {
 	if subjectKind != model.GrantSubjectUser && subjectKind != model.GrantSubjectEveryone {
 		return nil, false, ErrInvalidGrant
 	}
@@ -197,7 +198,8 @@ func (s *Service) UpsertGrant(userID, orgID, bookID, subjectUserID uint, subject
 		}
 		var existing model.AddressBookGrant
 		findErr := store.ScopedByOrg(tx, orgID).
-			Where("book_id = ? AND subject_kind = ? AND subject_user_id = ?", book.ID, subjectKind, subjectUserID).
+			Where("book_id = ? AND subject_kind = ? AND subject_user_id = ? AND subject_group_id = ?",
+				book.ID, subjectKind, subjectUserID, subjectGroupID).
 			First(&existing).Error
 		switch {
 		case findErr == nil:
@@ -216,6 +218,7 @@ func (s *Service) UpsertGrant(userID, orgID, bookID, subjectUserID uint, subject
 				BookID:         book.ID,
 				SubjectKind:    subjectKind,
 				SubjectUserID:  subjectUserID,
+				SubjectGroupID: subjectGroupID,
 				Access:         accessLevel,
 				CreatedBy:      userID,
 			}
@@ -223,14 +226,18 @@ func (s *Service) UpsertGrant(userID, orgID, bookID, subjectUserID uint, subject
 			// updates the row instead of failing on a duplicate.
 			if err := store.ScopedByOrg(tx, orgID).
 				Clauses(clause.OnConflict{
-					Columns:   []clause.Column{{Name: "book_id"}, {Name: "subject_kind"}, {Name: "subject_user_id"}},
+					Columns: []clause.Column{
+						{Name: "book_id"}, {Name: "subject_kind"},
+						{Name: "subject_user_id"}, {Name: "subject_group_id"},
+					},
 					DoUpdates: clause.AssignmentColumns([]string{"access", "created_by", "updated_at"}),
 				}).
 				Create(&row).Error; err != nil {
 				return err
 			}
 			if err := store.ScopedByOrg(tx, orgID).
-				Where("book_id = ? AND subject_kind = ? AND subject_user_id = ?", book.ID, subjectKind, subjectUserID).
+				Where("book_id = ? AND subject_kind = ? AND subject_user_id = ? AND subject_group_id = ?",
+					book.ID, subjectKind, subjectUserID, subjectGroupID).
 				First(&row).Error; err != nil {
 				return err
 			}

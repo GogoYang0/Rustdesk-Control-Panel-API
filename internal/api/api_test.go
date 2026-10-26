@@ -251,7 +251,9 @@ func TestCreateOrg_BecomesOwner(t *testing.T) {
 
 	var m model.Membership
 	require.NoError(t, store.ScopedByOrg(h.db.DB, uint(resp.Data.Id)).First(&m).Error)
-	require.Equal(t, model.RoleOwner, m.Role)
+	var owner model.Role
+	require.NoError(t, store.ScopedByOrg(h.db.DB, uint(resp.Data.Id)).First(&owner, m.RoleID).Error)
+	require.Equal(t, model.RoleKindOwner, owner.Kind, "the creator joins as owner")
 }
 
 func TestListMembers_CrossOrg_Forbidden(t *testing.T) {
@@ -306,7 +308,7 @@ func TestAcceptInvitation_JoinsAsRole(t *testing.T) {
 
 	var member model.Membership
 	require.NoError(t, store.ScopedByOrg(h.db.DB, uint(orgResp.Data.Id)).
-		Where("role = ?", model.RoleAdmin).First(&member).Error)
+		Where("role_id = ?", h.roleID(t, uint(orgResp.Data.Id), model.RoleAdmin)).First(&member).Error)
 	require.NotZero(t, member.UserID)
 
 	// Reusing the token must fail with a conflict.
