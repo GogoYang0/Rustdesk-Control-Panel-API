@@ -20,11 +20,16 @@ func assignFixture(t *testing.T) (*store.Store, *device.Service, model.Organizat
 	st := openDeviceStore(t)
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.DB.AutoMigrate(
-		&model.User{}, &model.Organization{}, &model.Membership{},
+		&model.User{}, &model.Organization{}, &model.Membership{}, &model.Role{},
 		&model.Device{}, &model.AuditLog{},
 	))
 	org := model.Organization{Name: "assign-org"}
 	require.NoError(t, st.DB.Create(&org).Error)
+	// The memberships must reference a role row that actually exists: ownership
+	// assignment resolves the role exactly like authorization does, so a bare
+	// RoleID would be refused as an inactive member.
+	role := model.Role{OrganizationID: org.ID, Name: "member", Kind: model.RoleKindMember}
+	require.NoError(t, st.DB.Create(&role).Error)
 	// CI runs this suite against one shared PostgreSQL/MySQL database (see
 	// openDeviceStore), so every fixture row behind a global unique index needs
 	// a per-test value: the users.email index is unique across the whole
@@ -34,8 +39,8 @@ func assignFixture(t *testing.T) (*store.Store, *device.Service, model.Organizat
 	bob := model.User{Email: "bob+" + suffix + "@example.com", EmailVerified: true}
 	require.NoError(t, st.DB.Create(&alice).Error)
 	require.NoError(t, st.DB.Create(&bob).Error)
-	require.NoError(t, st.DB.Create(&model.Membership{OrganizationID: org.ID, UserID: alice.ID, RoleID: 1}).Error)
-	require.NoError(t, st.DB.Create(&model.Membership{OrganizationID: org.ID, UserID: bob.ID, RoleID: 1}).Error)
+	require.NoError(t, st.DB.Create(&model.Membership{OrganizationID: org.ID, UserID: alice.ID, RoleID: role.ID}).Error)
+	require.NoError(t, st.DB.Create(&model.Membership{OrganizationID: org.ID, UserID: bob.ID, RoleID: role.ID}).Error)
 
 	svc := device.NewService(st.DB, audit.NewGormAuditor(st.DB), nil)
 	dev, err := svc.Register(context.Background(), org.ID, device.RegisterInput{Name: "pc", RustdeskID: "900"})
@@ -78,6 +83,39 @@ func TestAssign_ClearsOwnerWithZero(t *testing.T) {
 	require.NoError(t, store.WithoutTenantScope(st.DB).Model(&model.AuditLog{}).
 		Where("organization_id = ? AND action = ?", org.ID, "device.assign").Count(&count).Error)
 	require.EqualValues(t, 2, count, "the clear is audited too")
+}
+
+func TestAssign_RejectsMemberWithDanglingRole(t *testing.T) {
+	st, svc, org, alice, bob, dev := assignFixture(t)
+
+	// Simulate the post-race state of a concurrent role deletion: the
+	// membership keeps a role_id that no longer resolves in this organization.
+	// Such a membership authorizes nothing, so it cannot own a device either.
+	role := model.Role{OrganizationID: org.ID, Name: "temp", Kind: model.RoleKindMember}
+	require.NoError(t, st.DB.Create(&role).Error)
+	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).Model(&model.Membership{}).
+		Where("user_id = ?", bob.ID).Update("role_id", role.ID).Error)
+	require.NoError(t, store.WithoutTenantScope(st.DB).Delete(&model.Role{}, role.ID).Error)
+
+	_, err := svc.Assign(context.Background(), org.ID, dev.ID, alice.ID,
+		device.AssignInput{OwnerUserID: ptr(bob.ID)})
+	require.ErrorIs(t, err, device.ErrOwnerNotMember)
+
+	var stored model.Device
+	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).First(&stored, dev.ID).Error)
+	require.Nil(t, stored.OwnerUserID, "a refused assignment changes nothing")
+
+	// A role that exists in another organization is not this tenant's role
+	// either: the check is scoped, not just "some row with this id".
+	other := model.Organization{Name: "assign-other-org"}
+	require.NoError(t, st.DB.Create(&other).Error)
+	foreignRole := model.Role{OrganizationID: other.ID, Name: "member", Kind: model.RoleKindMember}
+	require.NoError(t, st.DB.Create(&foreignRole).Error)
+	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).Model(&model.Membership{}).
+		Where("user_id = ?", bob.ID).Update("role_id", foreignRole.ID).Error)
+	_, err = svc.Assign(context.Background(), org.ID, dev.ID, alice.ID,
+		device.AssignInput{OwnerUserID: ptr(bob.ID)})
+	require.ErrorIs(t, err, device.ErrOwnerNotMember, "a role outside the tenant does not authorize an owner")
 }
 
 func TestAssign_RejectsForeignOwner(t *testing.T) {

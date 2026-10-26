@@ -266,6 +266,20 @@ func RoleByIDTx(tx *gorm.DB, orgID, roleID uint) (*model.Role, error) {
 	return &role, nil
 }
 
+// RoleIDsTx returns the ids of the organization's role rows. Callers that judge
+// a membership by "role_id <> 0" must also require the id to resolve, because a
+// concurrent role deletion can commit between the reference count of
+// DeleteCustomTx and a role assignment, leaving a dangling role_id behind: such
+// a membership authorizes nothing (authz resolution fails closed), so it must
+// contribute nothing to any rule evaluation either.
+func RoleIDsTx(tx *gorm.DB, orgID uint) ([]uint, error) {
+	var ids []uint
+	if err := store.ScopedByOrg(tx, orgID).Model(&model.Role{}).Pluck("id", &ids).Error; err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
 // List returns every role of the organization, builtins first (seed order) and
 // custom roles after.
 func (s *RoleService) List(orgID uint) ([]model.Role, error) {

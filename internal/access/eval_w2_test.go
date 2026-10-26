@@ -38,6 +38,19 @@ func allowedIDs(t *testing.T, f *evalFixture, userID uint) (bool, []uint) {
 	return all, ids
 }
 
+// danglingRole leaves a membership pointing at a role row that no longer
+// exists: the state a concurrent role deletion can produce after the reference
+// count of DeleteCustomTx has passed but before the assignment commits. The row
+// is removed directly because the service refuses to delete a referenced role.
+func (f *evalFixture) danglingRole(t *testing.T, member model.Membership) {
+	t.Helper()
+	role := model.Role{OrganizationID: f.org.ID, Name: "temp-" + t.Name(), Kind: model.RoleKindMember}
+	require.NoError(t, f.st.DB.Create(&role).Error)
+	require.NoError(t, store.ScopedByOrg(f.st.DB, f.org.ID).Model(&model.Membership{}).
+		Where("id = ?", member.ID).Update("role_id", role.ID).Error)
+	require.NoError(t, store.WithoutTenantScope(f.st.DB).Delete(&model.Role{}, role.ID).Error)
+}
+
 // TestEval_OwnDeviceAlwaysVisible pins D2: a member reaches the device it owns
 // even when no rule mentions it, and a device owned by somebody else stays
 // invisible.
@@ -177,6 +190,52 @@ func TestEval_EveryoneTargetSkipsInactiveOwner(t *testing.T) {
 	var stored model.Device
 	require.NoError(t, store.ScopedByOrg(f.st.DB, f.org.ID).First(&stored, removed.ID).Error)
 	require.NotNil(t, stored.OwnerUserID, "the ownership reference stays as history")
+}
+
+// TestEval_DanglingRoleContributesNothing pins the fail-closed reading of "an
+// active member": a non-zero role_id whose role row no longer resolves (a
+// concurrent role deletion can leave one behind, because DeleteCustomTx counts
+// references without holding the assignment path's lock) must be treated like a
+// zero role_id in both expansion paths — the explicit user_group target and the
+// reserved everyone target. Such a member cannot authenticate, so their devices
+// must not become visible to others through a rule that names their group.
+func TestEval_DanglingRoleContributesNothing(t *testing.T) {
+	f := newEvalFixture(t)
+	alice := f.addMember(t, "alice@example.com", model.RoleKindMember)
+	bob := f.addMember(t, "bob@example.com", model.RoleKindMember)
+	carol := f.addMember(t, "carol@example.com", model.RoleKindMember)
+	viewers := f.addUserGroup(t, "viewers", alice)
+	targets := f.addUserGroup(t, "targets", bob, carol)
+	var everyone model.UserGroup
+	require.NoError(t, store.ScopedByOrg(f.st.DB, f.org.ID).
+		Where("kind = ?", model.UserGroupKindEveryone).First(&everyone).Error)
+
+	bobDevice := f.addDevice(t, "740", false)
+	carolDevice := f.addDevice(t, "741", false)
+	f.ownDevice(t, bobDevice, bob)
+	f.ownDevice(t, carolDevice, carol)
+	f.danglingRole(t, bob)
+
+	// Positive control: the fixture's rule machinery still reaches carol's
+	// device, so an empty result below cannot be blamed on a broken fixture.
+	f.removeDefaultRule(t)
+	f.addRule(t, viewers.ID, model.AccessTargetKindUserGroup, targets.ID)
+	_, ids := allowedIDs(t, f, alice.UserID)
+	require.Equal(t, []uint{carolDevice.ID}, ids,
+		"the explicit user_group target must skip a dangling role and keep the resolvable member")
+
+	// The reserved everyone target obeys the same rule.
+	require.NoError(t, store.ScopedByOrg(f.st.DB, f.org.ID).
+		Where("source_group_id = ? AND target_kind = ?", viewers.ID, model.AccessTargetKindUserGroup).
+		Delete(&model.AccessRule{}).Error)
+	everyoneRule := model.AccessRule{
+		OrganizationID: f.org.ID, SourceGroupID: viewers.ID,
+		TargetKind: model.AccessTargetKindUserGroup, TargetGroupID: everyone.ID,
+	}
+	require.NoError(t, store.ScopedByOrg(f.st.DB, f.org.ID).Create(&everyoneRule).Error)
+	_, ids = allowedIDs(t, f, alice.UserID)
+	require.NotContains(t, ids, bobDevice.ID, "a dangling role must not leak the device through everyone")
+	require.Contains(t, ids, carolDevice.ID, "resolvable members stay covered")
 }
 
 // TestEval_DisabledDeviceHiddenFromItsOwner pins the precedence: the stop

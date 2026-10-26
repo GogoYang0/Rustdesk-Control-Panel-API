@@ -6,6 +6,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
@@ -103,10 +104,11 @@ func (s *Service) AllowedDeviceIDs(ctx context.Context, orgID, userID uint) (boo
 // devicesOwnedByGroups expands user_group rule targets into device ids: the
 // devices owned by members of those groups. The reserved everyone group means
 // "every device owned by an active member" (D6) rather than every device, and an
-// owner whose membership is disabled, role-less or missing contributes nothing
-// — the same fail-closed rule the explicit-group branch and the caller itself
-// obey. Ownership rows survive deactivation (D13), so the membership filter is
-// what keeps an offboarded member's device out of everybody else's peer list.
+// owner whose membership is disabled, role-less, pointing at a deleted role or
+// missing contributes nothing — the same fail-closed rule the explicit-group
+// branch and the caller itself obey. Ownership rows survive deactivation (D13),
+// so the membership filter is what keeps an offboarded member's device out of
+// everybody else's peer list.
 func (s *Service) devicesOwnedByGroups(db *gorm.DB, orgID uint, groupIDs []uint) ([]uint, error) {
 	reserved := make(map[uint]bool, 1)
 	var everyone []uint
@@ -118,6 +120,14 @@ func (s *Service) devicesOwnedByGroups(db *gorm.DB, orgID uint, groupIDs []uint)
 		reserved[id] = true
 	}
 
+	// A dangling role_id (role deleted concurrently with an assignment) must be
+	// treated exactly like a zero one: the membership resolves to nothing, so it
+	// contributes no devices. An empty id set fails the IN clause closed.
+	roleIDs, err := authz.RoleIDsTx(db, orgID)
+	if err != nil {
+		return nil, err
+	}
+
 	var activeMembers []uint
 	activeLoaded := false
 
@@ -127,7 +137,7 @@ func (s *Service) devicesOwnedByGroups(db *gorm.DB, orgID uint, groupIDs []uint)
 		if reserved[id] {
 			if !activeLoaded {
 				if err := store.ScopedByOrg(db, orgID).Model(&model.Membership{}).
-					Where("disabled = ? AND role_id <> 0", false).
+					Where("disabled = ? AND role_id IN ?", false, roleIDs).
 					Pluck("user_id", &activeMembers).Error; err != nil {
 					return nil, err
 				}
@@ -164,7 +174,7 @@ func (s *Service) devicesOwnedByGroups(db *gorm.DB, orgID uint, groupIDs []uint)
 
 	var activeOwners []uint
 	if err := store.ScopedByOrg(db, orgID).Model(&model.Membership{}).
-		Where("user_id IN ? AND disabled = ? AND role_id <> 0", memberIDs, false).
+		Where("user_id IN ? AND disabled = ? AND role_id IN ?", memberIDs, false, roleIDs).
 		Pluck("user_id", &activeOwners).Error; err != nil {
 		return nil, err
 	}
