@@ -37,4 +37,7 @@ func registerDefaultScopedModels() {
 	RegisterScopedModel(&model.FileLog{})
 	RegisterScopedModel(&model.Strategy{})
 	RegisterScopedModel(&model.DeviceDisconnect{})
+	RegisterScopedModel(&model.ClientBuildProfile{})
+	RegisterScopedModel(&model.ClientBuild{})
+	RegisterScopedModel(&model.ClientBuildArtifact{})
 }

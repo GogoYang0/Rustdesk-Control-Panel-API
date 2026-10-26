@@ -14,5 +14,6 @@ func PersistentModels() []any {
 		&UserGroup{}, &UserGroupMember{}, &DeviceGroup{}, &AccessRule{},
 		&ControlRole{}, &ConnectionLog{}, &FileLog{}, &AuditNonce{},
 		&CompatLoginChallenge{}, &Strategy{}, &DeviceDisconnect{},
+		&ClientBuildProfile{}, &ClientBuild{}, &ClientBuildArtifact{},
 	}
 }
