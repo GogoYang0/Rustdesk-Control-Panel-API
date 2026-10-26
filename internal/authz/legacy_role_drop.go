@@ -54,7 +54,7 @@ func MigrateDropLegacyRole(db *gorm.DB) error {
 // mismatch into a startup failure instead of a silent half-migration.
 func dropLegacyRoleColumn(db *gorm.DB) error {
 	statement := "ALTER TABLE memberships DROP COLUMN role"
-	if db.Dialector.Name() == "postgres" {
+	if db.Name() == "postgres" {
 		statement = "ALTER TABLE memberships DROP COLUMN IF EXISTS role"
 	}
 	if err := db.Exec(statement).Error; err != nil {
