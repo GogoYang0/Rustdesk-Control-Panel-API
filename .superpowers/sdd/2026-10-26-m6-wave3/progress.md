@@ -16,7 +16,7 @@
 | T4 客户端审计上报 | ✅ 完成 | `56ba80d` |
 | T5 日志查询导出与保留期 | ✅ 完成 | `8f33e42` |
 | T6 compat 登录 2FA | ✅ 完成 | `71ed6aa` |
-| T7 文档与全仓验证 | ⏳ 未开始 | — |
+| T7 文档与全仓验证 | ✅ 完成 | 见下方提交 |
 
 ## Ruling 记录
 
@@ -159,3 +159,18 @@ gofmt -l internal cmd                          → 无输出
 - 失败计入 `Guard` 锁定计数；未启用 TOTP 的账号走 `email_code` 一律 401。
 - 变异验证 1（设备绑定）：移除 DeviceID/UUID 常量时间比对 → `TestLogin_2FAChallengeBoundToDevice` 转红。变异验证 2（`if false &&`）不转红，因为 UUID 分支仍拦截——说明两个条件都需要，已记录。
 - 测试基建：compat / CLI / rebind 三个脚手架补 `UserTOTP` 与 `CompatLoginChallenge` 表；harness 时钟保持**本地时基**（改 UTC 会让既有 `expires_at > time.Now()` 的字符串比较失真，revoke 用例转红）。
+
+### T7（文档与全仓验证）证据
+
+```
+npx @redocly/cli lint openapi.yaml       → valid（3 条既有告警：info/servers/healthz）
+go generate ./... && git status --porcelain -- gen openapi.yaml → 空（零漂移）
+go vet ./...                              → 无输出
+gofmt -l internal cmd                     → 无输出
+go test -count=1 ./...                    → 22 个包全绿（api 43.0s、compatapi 10.5s）
+顶层测试计数（^func Test，不含 t.Run）      → 810（波次 3 起点基线 748，+62）
+```
+- api-spec：新增 §3.12 控制角色（含「原生会话不执行」必读边界）、§3.13 客户端连接/文件日志、§4.1 两步登录说明、§4.5 客户端审计上报；版本历史补波次 2/3。
+- operations：新增 §2.5 控制角色运维、§2.6 compat 2FA 运维、§3.2 客户端日志运维；故障速查补 4 行。
+- deployment：新增「v0.10.0 控制角色/客户端审计/2FA」升级要点（无新配置键、新表与新列、default 角色播种、auth.secret 依赖）。
+- INDEX：台账登记波次 3。
