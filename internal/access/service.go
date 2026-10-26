@@ -809,11 +809,18 @@ func (s *Service) ListAccessRules(ctx context.Context, orgID uint) ([]RuleView, 
 		return views, nil
 	}
 	sourceIDs := make([]uint, 0, len(rules))
-	targetIDs := make([]uint, 0, len(rules))
+	deviceTargetIDs := make([]uint, 0, len(rules))
+	userTargetIDs := make([]uint, 0, len(rules))
 	for _, rule := range rules {
 		sourceIDs = append(sourceIDs, rule.SourceGroupID)
-		if rule.TargetKind == model.AccessTargetKindDeviceGroup && rule.TargetGroupID != 0 {
-			targetIDs = append(targetIDs, rule.TargetGroupID)
+		if rule.TargetGroupID == 0 {
+			continue
+		}
+		switch rule.TargetKind {
+		case model.AccessTargetKindDeviceGroup:
+			deviceTargetIDs = append(deviceTargetIDs, rule.TargetGroupID)
+		case model.AccessTargetKindUserGroup:
+			userTargetIDs = append(userTargetIDs, rule.TargetGroupID)
 		}
 	}
 	var userGroups []model.UserGroup
@@ -824,13 +831,22 @@ func (s *Service) ListAccessRules(ctx context.Context, orgID uint) ([]RuleView, 
 	for _, group := range userGroups {
 		sourceNames[group.ID] = group.Name
 	}
-	targetNames := make(map[uint]string, len(targetIDs))
-	if len(targetIDs) > 0 {
+	targetNames := make(map[uint]string, len(deviceTargetIDs)+len(userTargetIDs))
+	if len(deviceTargetIDs) > 0 {
 		var deviceGroups []model.DeviceGroup
-		if err := store.ScopedByOrg(db, orgID).Where("id IN ?", targetIDs).Find(&deviceGroups).Error; err != nil {
+		if err := store.ScopedByOrg(db, orgID).Where("id IN ?", deviceTargetIDs).Find(&deviceGroups).Error; err != nil {
 			return nil, err
 		}
 		for _, group := range deviceGroups {
+			targetNames[group.ID] = group.Name
+		}
+	}
+	if len(userTargetIDs) > 0 {
+		var groups []model.UserGroup
+		if err := store.ScopedByOrg(db, orgID).Where("id IN ?", userTargetIDs).Find(&groups).Error; err != nil {
+			return nil, err
+		}
+		for _, group := range groups {
 			targetNames[group.ID] = group.Name
 		}
 	}
@@ -858,11 +874,20 @@ func (s *Service) RuleViewByID(ctx context.Context, orgID, ruleID uint) (RuleVie
 	} else if !errors.Is(err, ErrGroupNotFound) {
 		return RuleView{}, err
 	}
-	if rule.TargetKind == model.AccessTargetKindDeviceGroup && rule.TargetGroupID != 0 {
-		if group, err := deviceGroupByID(db, orgID, rule.TargetGroupID); err == nil {
-			view.TargetGroupName = group.Name
-		} else if !errors.Is(err, ErrDeviceGroupNotFound) {
-			return RuleView{}, err
+	if rule.TargetGroupID != 0 {
+		switch rule.TargetKind {
+		case model.AccessTargetKindDeviceGroup:
+			if group, err := deviceGroupByID(db, orgID, rule.TargetGroupID); err == nil {
+				view.TargetGroupName = group.Name
+			} else if !errors.Is(err, ErrDeviceGroupNotFound) {
+				return RuleView{}, err
+			}
+		case model.AccessTargetKindUserGroup:
+			if group, err := groupByID(db, orgID, rule.TargetGroupID); err == nil {
+				view.TargetGroupName = group.Name
+			} else if !errors.Is(err, ErrGroupNotFound) {
+				return RuleView{}, err
+			}
 		}
 	}
 	return view, nil
@@ -881,7 +906,7 @@ func (s *Service) CreateAccessRule(ctx context.Context, orgID, actorID, sourceGr
 		if targetGroupID != 0 {
 			return nil, ErrInvalidRule
 		}
-	case model.AccessTargetKindDeviceGroup:
+	case model.AccessTargetKindDeviceGroup, model.AccessTargetKindUserGroup:
 		if targetGroupID == 0 {
 			return nil, ErrInvalidRule
 		}
@@ -902,6 +927,14 @@ func (s *Service) CreateAccessRule(ctx context.Context, orgID, actorID, sourceGr
 		if targetKind == model.AccessTargetKindDeviceGroup {
 			if _, err := deviceGroupByID(tx, orgID, targetGroupID); err != nil {
 				if errors.Is(err, ErrDeviceGroupNotFound) {
+					return ErrInvalidRule
+				}
+				return err
+			}
+		}
+		if targetKind == model.AccessTargetKindUserGroup {
+			if _, err := groupByID(tx, orgID, targetGroupID); err != nil {
+				if errors.Is(err, ErrGroupNotFound) {
 					return ErrInvalidRule
 				}
 				return err

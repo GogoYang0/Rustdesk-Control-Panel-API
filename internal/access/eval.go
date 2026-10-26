@@ -16,14 +16,22 @@ import (
 // still exclude disabled devices themselves (D8), because the bypass is not
 // filtered here.
 //
-// For an ordinary member the ids are the union (D2, never first-match) of every
-// device group targeted by a rule whose source is one of the member's effective
-// user groups: the explicit user_group_members rows plus the reserved everyone
-// group, whose membership is implicit. Devices in no group are covered only by
-// an all_devices rule; the 0 sentinel in target_group_id is branched on
-// target_kind and never treated as a group id. Disabled devices are filtered
-// here, and an inactive (missing, disabled or role-less) membership resolves to
-// the empty set.
+// For an ordinary member the ids are the union (D2, never first-match) of:
+//
+//   - the devices the member owns (D2 of the group-model wave: a member always
+//     reaches its own device unless it is stopped, so ownership does not depend
+//     on an administrator adding a rule);
+//   - every device group targeted by a rule whose source is one of the member's
+//     effective user groups: the explicit user_group_members rows plus the
+//     reserved everyone group, whose membership is implicit;
+//   - the devices owned by the members of a user_group target, skipping owners
+//     whose membership is disabled or missing (an inactive membership
+//     authorizes nothing, here as everywhere else).
+//
+// Devices in no group and owned by nobody are covered only by an all_devices
+// rule; the 0 sentinel in target_group_id is branched on target_kind and never
+// treated as a group id. Disabled devices are filtered here, and an inactive
+// (missing, disabled or role-less) membership resolves to the empty set.
 func (s *Service) AllowedDeviceIDs(ctx context.Context, orgID, userID uint) (bool, []uint, error) {
 	db := s.db.WithContext(ctx)
 	bypass, active, err := s.bypassMembership(db, orgID, userID)
@@ -34,12 +42,19 @@ func (s *Service) AllowedDeviceIDs(ctx context.Context, orgID, userID uint) (boo
 		return true, nil, nil
 	}
 
+	var owned []uint
+	if err := store.ScopedByOrg(db, orgID).Model(&model.Device{}).
+		Where("owner_user_id = ? AND disabled = ?", userID, false).
+		Pluck("id", &owned).Error; err != nil {
+		return false, nil, err
+	}
+
 	groupIDs, err := effectiveUserGroups(db, orgID, userID)
 	if err != nil {
 		return false, nil, err
 	}
 	if len(groupIDs) == 0 {
-		return false, []uint{}, nil
+		return false, dedupeIDs(owned), nil
 	}
 
 	var rules []model.AccessRule
@@ -49,28 +64,105 @@ func (s *Service) AllowedDeviceIDs(ctx context.Context, orgID, userID uint) (boo
 		Find(&rules).Error; err != nil {
 		return false, nil, err
 	}
-	targets := make([]uint, 0, len(rules))
+	var deviceGroupTargets, userGroupTargets []uint
 	for _, rule := range rules {
 		switch rule.TargetKind {
 		case model.AccessTargetKindAllDevices:
 			return true, nil, nil
 		case model.AccessTargetKindDeviceGroup:
 			if rule.TargetGroupID != 0 {
-				targets = append(targets, rule.TargetGroupID)
+				deviceGroupTargets = append(deviceGroupTargets, rule.TargetGroupID)
+			}
+		case model.AccessTargetKindUserGroup:
+			if rule.TargetGroupID != 0 {
+				userGroupTargets = append(userGroupTargets, rule.TargetGroupID)
 			}
 		}
 	}
-	if len(targets) == 0 {
-		return false, []uint{}, nil
+
+	ids := dedupeIDs(owned)
+	if len(deviceGroupTargets) > 0 {
+		var fromGroups []uint
+		if err := store.ScopedByOrg(db, orgID).Model(&model.Device{}).
+			Where("device_group_id IN ? AND disabled = ?", deviceGroupTargets, false).
+			Pluck("id", &fromGroups).Error; err != nil {
+			return false, nil, err
+		}
+		ids = append(ids, fromGroups...)
+	}
+	if len(userGroupTargets) > 0 {
+		fromOwners, err := s.devicesOwnedByGroups(db, orgID, userGroupTargets)
+		if err != nil {
+			return false, nil, err
+		}
+		ids = append(ids, fromOwners...)
+	}
+	return false, dedupeIDs(ids), nil
+}
+
+// devicesOwnedByGroups expands user_group rule targets into device ids: the
+// devices owned by members of those groups. The reserved everyone group means
+// "every owned device" (D6) rather than every device, and an owner whose
+// membership is disabled or missing contributes nothing — the same fail-closed
+// rule the caller itself obeys.
+func (s *Service) devicesOwnedByGroups(db *gorm.DB, orgID uint, groupIDs []uint) ([]uint, error) {
+	reserved := make(map[uint]bool, 1)
+	var everyone []uint
+	if err := store.ScopedByOrg(db, orgID).Model(&model.UserGroup{}).
+		Where("kind = ?", model.UserGroupKindEveryone).Pluck("id", &everyone).Error; err != nil {
+		return nil, err
+	}
+	for _, id := range everyone {
+		reserved[id] = true
 	}
 
 	var ids []uint
-	if err := store.ScopedByOrg(db, orgID).Model(&model.Device{}).
-		Where("device_group_id IN ? AND disabled = ?", targets, false).
-		Pluck("id", &ids).Error; err != nil {
-		return false, nil, err
+	explicit := make([]uint, 0, len(groupIDs))
+	for _, id := range groupIDs {
+		if reserved[id] {
+			var all []uint
+			if err := store.ScopedByOrg(db, orgID).Model(&model.Device{}).
+				Where("owner_user_id IS NOT NULL AND disabled = ?", false).
+				Pluck("id", &all).Error; err != nil {
+				return nil, err
+			}
+			ids = append(ids, all...)
+			continue
+		}
+		explicit = append(explicit, id)
 	}
-	return false, ids, nil
+	if len(explicit) == 0 {
+		return ids, nil
+	}
+
+	var memberIDs []uint
+	if err := store.ScopedByOrg(db, orgID).Model(&model.UserGroupMember{}).
+		Where("group_id IN ?", explicit).Pluck("user_id", &memberIDs).Error; err != nil {
+		return nil, err
+	}
+	memberIDs = dedupeIDs(memberIDs)
+	if len(memberIDs) == 0 {
+		return ids, nil
+	}
+
+	var activeOwners []uint
+	if err := store.ScopedByOrg(db, orgID).Model(&model.Membership{}).
+		Where("user_id IN ? AND disabled = ? AND role_id <> 0", memberIDs, false).
+		Pluck("user_id", &activeOwners).Error; err != nil {
+		return nil, err
+	}
+	activeOwners = dedupeIDs(activeOwners)
+	if len(activeOwners) == 0 {
+		return ids, nil
+	}
+
+	var fromOwners []uint
+	if err := store.ScopedByOrg(db, orgID).Model(&model.Device{}).
+		Where("owner_user_id IN ? AND disabled = ?", activeOwners, false).
+		Pluck("id", &fromOwners).Error; err != nil {
+		return nil, err
+	}
+	return dedupeIDs(append(ids, fromOwners...)), nil
 }
 
 // CanAccess reports whether the user may reach this one device. It is the
