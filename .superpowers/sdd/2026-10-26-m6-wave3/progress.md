@@ -14,7 +14,7 @@
 | T2 契约 + handler + 成员分配端点 | ✅ 完成 | `16ee672` |
 | T3 票据/会话快照接线 | ✅ 完成 | `898474a` |
 | T4 客户端审计上报 | ✅ 完成 | `56ba80d` |
-| T5 日志查询导出与保留期 | ⏳ 未开始 | — |
+| T5 日志查询导出与保留期 | ✅ 完成 | `8f33e42` |
 | T6 compat 登录 2FA | ⏳ 未开始 | — |
 | T7 文档与全仓验证 | ⏳ 未开始 | — |
 
@@ -121,3 +121,20 @@ ok  cmd/server          0.272s
 - 语义：`new` 建 open 行（唯一索引 `(org, rustdesk_id, conn_id, session_id)` 兜底重试）、`close` 只关自己那条（无匹配时写 orphan closed 行保留证据）、note 追加到最近一条 open 行（≤512）；`file` 的 `info` 原样存并解析 ip/name/num/files；`alarm` 走 `TxRecorder` 与 nonce 同事务落 `audit_logs`。
 - nonce：唯一索引 + `ON CONFLICT DO NOTHING`，重复 nonce 返回 200 幂等；`SweepNonces` 由 `audit-nonce-sweep` worker 每 10 分钟清理。
 - 变异验证：把 uuid 比对改成 `if true` → `TestIngest_RejectsUUIDMismatch` 转红；恢复后 logquery 与 compatapi 全绿。
+
+**R10 客户端日志保留期用独立 worker（`client-log-retention`），不并入审计保留期任务。**
+- 理由：审计保留期是「归档 → 校验 → 删行」三段的批处理，客户端日志没有归档面；并进去会让归档失败连带阻断日志清理。
+- 代价：多一个 worker；两者的天数共用 `organizations.audit_retention_days`，语义一致。
+
+### T5（查询/导出/保留期）验证证据
+
+```
+go test ./internal/logquery/ ./internal/api/ ./cmd/server/ -count=1
+ok  internal/logquery 0.433s   （16 个顶层测试）
+ok  internal/api     37.795s
+ok  cmd/server        0.242s
+go generate ./... 后 git status 无生成漂移（提交后复核）
+```
+- 契约 4 条路径：`GET connection-logs`、`GET connection-logs/export`、`GET file-logs`、`GET file-logs/export`；查询复用 `audit.read` 与 `audit_scope`。
+- 语义：`individual` 只看自己拥有设备（`device_id IN (SELECT id FROM devices WHERE owner_user_id=?)`），`UserID=0` 返回空页而不是全量；导出先计数，超 1000 行返回 400 要求收窄；CSV 单元格做 `= + - @` 前缀转义；导出前后写 `connection_log.export` / `file_log.export` 审计。
+- 变异验证：把 `applyViewer` 的 scope 判断改成 `if true` → `TestConnections_IndividualScopeOnlyOwnDevices` 转红；恢复后全绿、`git diff` 为空。
