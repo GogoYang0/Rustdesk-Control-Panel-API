@@ -1,6 +1,6 @@
 # 后端 API 规范（Backend API Specification）
 
-> 适用版本：v0.8.0（M4 角色模型与 Server Pro 对齐；已发布基线 v0.4.0）。本文档是对 `openapi.yaml`（契约 v0.8.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
+> 适用版本：v0.10.0（M6 波次 1：交互式验证码；上一基线 v0.9.0）。本文档是对 `openapi.yaml`（契约 v0.10.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
 > 本文档随版本演进持续更新——契约变更的 PR 必须同步更新 §3/§4。
 > 配套文档：[部署指南](deployment.md) · [运维指南](operations.md)
 
@@ -36,7 +36,7 @@
 { "code": "invalid_request", "message": "human readable", "data": null }
 ```
 
-`code` 取值（契约枚举）：`ok` `invalid_request` `unauthorized` `not_found` `conflict` `forbidden` `email_not_verified` `rate_limited` `internal` `approval_required` `two_factor_required`。`unauthorized` 映射 **401**（登录/刷新的凭据拒绝路径）；`internal` 映射 **500**（未预期的服务端错误，不向客户端泄露细节）。
+`code` 取值（契约枚举）：`ok` `invalid_request` `unauthorized` `not_found` `conflict` `forbidden` `email_not_verified` `rate_limited` `internal` `approval_required` `two_factor_required` `captcha_required` `captcha_invalid` `captcha_unavailable`。`unauthorized` 映射 **401**（登录/刷新的凭据拒绝路径）；`internal` 映射 **500**（未预期的服务端错误，不向客户端泄露细节）。
 
 `approval_required` 必须携带 `data.approval_id`（指向待审批请求），`two_factor_required` 必须携带 `data.challenge_token`（登录第二步挑战令牌，5 分钟有效）；其余错误码的 `data` 为 `null`。
 
