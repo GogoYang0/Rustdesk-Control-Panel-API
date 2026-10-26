@@ -367,13 +367,14 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 
 策略是**下发到被控端的客户端配置**，与「能否连接」（访问控制 §3.10）和「连上后能做什么」（控制角色 §3.12）是三件不同的事。它通过客户端每 30 秒一次的 `POST /api/heartbeat` 响应下发（§4.2），不是主动推送。
 
-- 端点：`GET|POST /orgs/{orgId}/strategies`、`PATCH|DELETE /orgs/{orgId}/strategies/{strategyId}`；读取要求组织成员，写入要求 `strategy.manage`（owner 全量、admin 由内置集合授予，**不可委派**）。
+- 端点：`GET|POST /orgs/{orgId}/strategies`、`GET|PATCH|DELETE /orgs/{orgId}/strategies/{strategyId}`；读取要求组织成员，写入要求 `strategy.manage`（owner 全量、admin 由内置集合授予，**不可委派**）。请求体拒绝未知字段（含客户端的 `extra`）：静默忽略会得到 201 而选项根本没存。
 - `config_options` 是 **20 个白名单键**的三态字符串映射（键名逐字匹配，大小写与空格敏感）：`enable-audio`、`enable-clipboard`、`enable-file-transfer`、`enable-file-copy-paste`、`enable-camera`、`enable-terminal`、`enable-tunnel`、`enable-remote-restart`、`enable-record-session`、`enable-block-input`、`enable-privacy-mode`、`enable-remote-modify`、`enable-remote-printer`、`enable-check-update`、`disable-change-id`、`disable-settings`、`disable-installation`、`disable-unlock-pin`、`disable-tcp-listen`、`disable-ab`。
 - **白名单就是安全边界**：客户端对收到的键**没有自己的白名单**（`handle_config_options` 直接写入本地配置），因此 `api-server`、`custom-rendezvous-server`、`relay-server`、`key`、`whitelist` 一类键一律 400——放行一个就等于把设备交给别人。值 ≤256 字符、不得含控制字符；空值的语义是「清除该键、回到客户端内置默认」。
 - 客户端会把下发的键标记为**固定**（`is_option_fixed`），用户无法在本机改回——这是策略生效的表现，不是 bug。
 - 三层分配（固定优先级，无叠加）：**设备 > 设备组 > 成员**（设备归属人的会籍）。`PUT .../devices/{deviceId}/strategy`、`PUT .../device-groups/{deviceGroupId}/strategy`、`PUT .../members/{userId}/strategy`，`strategy_id` 必填（显式 `null` 清除）。跨组织 id 一律 404。
-- `enabled=false` 是停用开关：保留行与分配，但心跳不下发；**停用会终止解析**，不会回落到更宽的层（避免把刚关掉的选项装回去）。
-- `version` 只在 `config_options` **实际变化时 +1**，作为心跳响应的 `modified_at`：客户端回传相同版本就不再下发。改名、停用、空转 PATCH 都不 bump。
+- `enabled=false` 是停用开关：保留行与分配，但心跳不下发；**停用会终止解析**，不会回落到更宽的层（避免把刚关掉的选项装回去）。停用/清空分配**不会撤销**客户端已经固定的选项——协议只按「收到的键」写入，撤销必须显式下发空值。
+- `version` 是**组织内单调递增**的下发代次（不是行内计数器），只在 `config_options` 实际变化或创建时分配，作为心跳响应的 `modified_at`；改名、停用、空转 PATCH 都不分配新版本。之所以不能按行计数：客户端只存一个数字（`strategy_timestamp`），两个策略的版本相同会让「改派到另一个策略」被误判为「已是最新」而**一次都不下发**。
+- **删除某个键 = 显式清除**：`config_options` 整体替换，被去掉的键会以空值（`""`）随下发回传一次并持续保留在 `cleared_keys` 里（重新加回该键则移出），否则客户端会一直保留旧值。
 - 删除策略在同一事务里清空设备/设备组/会籍上指向它的分配，并写审计 `strategy.delete`。
 
 ### 3.15 心跳断连（v0.10.0）
@@ -404,7 +405,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 > **v0.10.0 两步登录（TOTP）**：账号启用 TOTP 后，`POST /api/login` 的密码步骤不再直接发 token，而是返回 **200** `{"type":"email_check","tfa_type":"totp","secret":"<挑战>","user":{...}}`（客户端对任何非 `email_check` 的 `tfa_type` 显示「2FA code」，已核对 `src/ui/index.tis`）。第二步用 `{"type":"email_code","id","uuid","verificationCode","tfaCode","secret"}`（客户端两个字段都填，服务端 `tfaCode` 优先）换取 token。挑战 5 分钟有效、**单次消费**、绑定 `id + uuid`（换机器 401）、失败 5 次作废；失败同样计入登录锁定计数。未启用 TOTP 的账号走 `email_code` 一律 401（不允许绕过密码）。**与面板共用同一 TOTP 秘密与防重放步进**：同一 30 秒窗口内先在面板登录、再用同码登录客户端会被判重放，这是预期行为。`email_check`（邮件验证码）本版本未实现——面板的邮箱验证只用于注册激活。
 
 > **v0.10.0 `POST /api/devices/cli`（`--assign`）**：RustDesk 客户端 `rustdesk --assign` 的真实调用点（已核对上游 `core_main.rs`）。鉴权用**个人令牌**（`Authorization: Bearer rdt_...`，非 compat token）：令牌无效/过期/已撤销 → `401`；**有效权限 = 令牌申请集 ∩ 令牌所有者当前角色权限集**（实时重算），不含 `device.write` → `403`。
-> 请求体白名单（其余字段一律 `400`，错误信息含字段名——**不静默忽略**，因为静默忽略会让调用方误以为下发成功）：`id`（rustdesk id，必填）、`uuid`（接受但**不落库**，绑定只由登录路径维护）、`user_name`（本组织成员的邮箱，精确匹配；非成员与平台内不存在的邮箱返回**同一个** `404`，响应不可区分——`users` 表是跨组织全局的，区分开就等于给持令牌者一个全局账号探针）、`device_group_name`（本组织的设备组名，大小写不敏感，不存在 → `404`）、`device_name`（设备显示名，≤128 字符）、`note`（运维备注，≤255 字符）。`strategy_name`（v0.10.0 起支持，反转波次 2 的 D5）：本组织策略名，大小写不敏感，不存在 → `404`；解析发生在设备更新**之前**，名字错则整单失败，失败不会留下「备注改了、策略没分配」的半状态。仍不支持 `address_book_*`、`device_username`：这两类在本系统无对应概念。
+> 请求体白名单（其余字段一律 `400`，错误信息含字段名——**不静默忽略**，因为静默忽略会让调用方误以为下发成功）：`id`（rustdesk id，必填）、`uuid`（接受但**不落库**，绑定只由登录路径维护）、`user_name`（本组织成员的邮箱，精确匹配；非成员与平台内不存在的邮箱返回**同一个** `404`，响应不可区分——`users` 表是跨组织全局的，区分开就等于给持令牌者一个全局账号探针）、`device_group_name`（本组织的设备组名，大小写不敏感，不存在 → `404`）、`device_name`（设备显示名，≤128 字符）、`note`（运维备注，≤255 字符）。`strategy_name`（v0.10.0 起支持，反转波次 2 的 D5）：本组织策略名，大小写不敏感，不存在 → `404`；解析发生在设备更新**之前**，名字错则整单失败，失败不会留下「备注改了、策略没分配」的半状态。**该字段额外要求令牌具备 `strategy.manage`**（与三个分配端点同权）——`device.write` 可委派而 `strategy.manage` 不可，只校验前者会让自定义角色拿到目录明确不授予它的能力；缺权限返回 `403`。仍不支持 `address_book_*`、`device_username`：这两类在本系统无对应概念。
 > 成功 `200 {"code":"ok"}`。设备或目标用户/组不属于令牌所在组织 → `404`（与"不存在"不可区分）。写入走与管理面 `PATCH` **同一个事务化 service**：每个实际变化的字段各写一条审计（`device.assign`/`device.rename`/`device.group`/`device.note`），请求级不再补记 HTTP 审计。设备的所有写入都限制在令牌绑定的组织内，**不存在跨组织改设备的路径**。
 
 **设备认领语义**（重要，v0.4.0 事务化 + 绑定代数，v0.5.0 增加重置入口，v0.10.0 增加自动归属）：

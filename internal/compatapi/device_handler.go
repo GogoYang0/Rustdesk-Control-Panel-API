@@ -126,7 +126,7 @@ func parseConnIDs(raw []any) []int64 {
 			}
 			out = append(out, int64(n))
 		case int:
-			if n <= 0 {
+			if n <= 0 || int64(n) > math.MaxInt32 {
 				continue
 			}
 			out = append(out, int64(n))

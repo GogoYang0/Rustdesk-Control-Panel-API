@@ -71,3 +71,26 @@ func TestCLIAssign_StrategyNameEmptyIsBadRequest(t *testing.T) {
 	}, token)
 	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 }
+
+// TestCLIAssign_StrategyNeedsManagePermission: device.write is delegable and
+// strategy.manage is not, so the CLI path must not hand the non-delegable
+// capability to a token that only holds the former.
+func TestCLIAssign_StrategyNeedsManagePermission(t *testing.T) {
+	h := newCLIHarness(t)
+	dev := h.seedDevice(t, "cli-3004", "")
+	token := h.seedToken(t, h.owner.ID, []string{authz.PermDeviceWrite})
+
+	require.NoError(t, h.db.DB.Create(&model.Strategy{
+		OrganizationID: h.org.ID, Name: "Baseline", ConfigOptionsJSON: `{}`,
+		Version: 1, Enabled: true,
+	}).Error)
+
+	w := h.do(t, http.MethodPost, "/api/devices/cli", map[string]any{
+		"id": "cli-3004", "strategy_name": "Baseline",
+	}, token)
+	require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+
+	var stored model.Device
+	require.NoError(t, store.ScopedByOrg(h.db.DB, h.org.ID).First(&stored, dev.ID).Error)
+	require.Nil(t, stored.StrategyID)
+}

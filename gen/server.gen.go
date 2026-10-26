@@ -3746,6 +3746,9 @@ type ServerInterface interface {
 	// DeleteStrategy 删除客户端策略
 	// (DELETE /api/v1/orgs/{orgId}/strategies/{strategyId})
 	DeleteStrategy(c *gin.Context, orgId int64, strategyId int64)
+	// GetStrategy 读取单个客户端策略
+	// (GET /api/v1/orgs/{orgId}/strategies/{strategyId})
+	GetStrategy(c *gin.Context, orgId int64, strategyId int64)
 	// UpdateStrategy 更新客户端策略
 	// (PATCH /api/v1/orgs/{orgId}/strategies/{strategyId})
 	UpdateStrategy(c *gin.Context, orgId int64, strategyId int64)
@@ -6674,6 +6677,40 @@ func (siw *ServerInterfaceWrapper) DeleteStrategy(c *gin.Context) {
 	siw.Handler.DeleteStrategy(c, orgId, strategyId)
 }
 
+// GetStrategy operation middleware
+func (siw *ServerInterfaceWrapper) GetStrategy(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "strategyId" -------------
+	var strategyId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "strategyId", c.Param("strategyId"), &strategyId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter strategyId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetStrategy(c, orgId, strategyId)
+}
+
 // UpdateStrategy operation middleware
 func (siw *ServerInterfaceWrapper) UpdateStrategy(c *gin.Context) {
 
@@ -7038,6 +7075,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/strategies", wrapper.ListStrategies)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/strategies", wrapper.CreateStrategy)
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/strategies/:strategyId", wrapper.DeleteStrategy)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/strategies/:strategyId", wrapper.GetStrategy)
 	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/strategies/:strategyId", wrapper.UpdateStrategy)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId/strategy", wrapper.AssignMemberStrategy)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/user-groups", wrapper.ListUserGroups)

@@ -176,3 +176,40 @@ func TestStrategy_UpdateRequiresAField(t *testing.T) {
 	w = h.do(t, http.MethodPatch, base+"/"+itoa(created.Id), map[string]any{}, adminToken)
 	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 }
+
+// TestStrategy_GetOne covers the single-read endpoint the contract promises.
+func TestStrategy_GetOne(t *testing.T) {
+	h, orgID, _, _, _, _, adminToken, memberToken := m4Org(t)
+	base := "/api/v1/orgs/" + itoa(orgID) + "/strategies"
+
+	w := h.do(t, http.MethodPost, base, map[string]any{
+		"name": "Baseline", "config_options": map[string]string{"enable-audio": "N"},
+	}, adminToken)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	var created strategyView
+	decodeData(t, w, &created)
+
+	w = h.do(t, http.MethodGet, base+"/"+itoa(created.Id), nil, memberToken)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var got strategyView
+	decodeData(t, w, &got)
+	require.Equal(t, created.Id, got.Id)
+	require.Equal(t, "N", got.ConfigOptions["enable-audio"])
+
+	w = h.do(t, http.MethodGet, base+"/999999", nil, adminToken)
+	require.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
+}
+
+// TestStrategy_RejectsUnknownFields: the client's `extra` map is not part of the
+// contract. Silently dropping it would answer 201 for a payload whose options
+// were never stored — the same trap the CLI whitelist refuses.
+func TestStrategy_RejectsUnknownFields(t *testing.T) {
+	h, orgID, _, _, _, _, adminToken, _ := m4Org(t)
+	base := "/api/v1/orgs/" + itoa(orgID) + "/strategies"
+
+	w := h.do(t, http.MethodPost, base, map[string]any{
+		"name": "Baseline", "extra": map[string]string{"x": "y"},
+	}, adminToken)
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+	require.Contains(t, w.Body.String(), "extra")
+}

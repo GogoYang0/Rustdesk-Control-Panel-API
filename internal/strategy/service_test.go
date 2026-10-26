@@ -363,3 +363,13 @@ func TestAssign_WithoutRecorderFailsClosed(t *testing.T) {
 		svc.AssignDevice(context.Background(), f.org.ID, f.user.ID, f.device.ID, &s.ID),
 		strategy.ErrUnaudited)
 }
+
+// TestCreate_CaseFoldingCoversNonASCII: the uniqueness rule must fold the same
+// way the CLI lookup does. SQL LOWER() folds ASCII only on SQLite, which is why
+// the folded name is stored in name_key instead of being computed in SQL.
+func TestCreate_CaseFoldingCoversNonASCII(t *testing.T) {
+	f := newFixture(t)
+	f.create(t, "Ölwechsel", nil)
+	_, err := f.svc.Create(context.Background(), f.org.ID, f.user.ID, "ölwechsel", nil)
+	require.ErrorIs(t, err, strategy.ErrDuplicateName)
+}

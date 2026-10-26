@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
@@ -52,8 +53,15 @@ func (s *Service) RequestDisconnect(ctx context.Context, orgID, actorID, deviceI
 	var row model.DeviceDisconnect
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		scoped := store.ScopedByOrg(tx, orgID)
+		read := scoped
+		if tx.Name() != "sqlite" {
+			// Two concurrent requests both see zero pending rows otherwise and
+			// both insert; the loser would fire a second teardown minutes later
+			// on connections nobody asked about. The row lock serialises them.
+			read = read.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
 		var dev model.Device
-		if err := scoped.First(&dev, deviceID).Error; err != nil {
+		if err := read.First(&dev, deviceID).Error; err != nil {
 			return notFoundOr(err)
 		}
 
@@ -108,8 +116,13 @@ func (s *Service) TakePendingTx(tx *gorm.DB, orgID, deviceID uint, conns []int64
 	}
 	scoped := store.ScopedByOrg(tx, orgID)
 
+	// An expired request must not fire: the sweep runs every five minutes, so
+	// without this condition a heartbeat arriving in that window (or at any
+	// time, if the worker is down) could still tear down a connection the
+	// operator asked about long ago.
 	var row model.DeviceDisconnect
-	err := scoped.Where("device_id = ? AND status = ?", deviceID, model.DisconnectStatusPending).
+	err := scoped.Where("device_id = ? AND status = ? AND expires_at > ?",
+		deviceID, model.DisconnectStatusPending, s.now()).
 		Order("id").First(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil

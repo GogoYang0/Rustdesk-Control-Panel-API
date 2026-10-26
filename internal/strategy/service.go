@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
@@ -89,11 +91,17 @@ func (s *Service) Create(ctx context.Context, orgID, actorID uint, name string, 
 		} else if taken {
 			return ErrDuplicateName
 		}
+		version, verr := nextVersionTx(tx, orgID)
+		if verr != nil {
+			return verr
+		}
 		row = model.Strategy{
 			OrganizationID:    orgID,
 			Name:              clean,
+			NameKey:           strings.ToLower(clean),
 			ConfigOptionsJSON: blob,
-			Version:           1,
+			ClearedKeysJSON:   "[]",
+			Version:           version,
 			Enabled:           true,
 			CreatedAt:         s.now(),
 			UpdatedAt:         s.now(),
@@ -171,6 +179,7 @@ func (s *Service) Update(ctx context.Context, orgID, actorID, id uint, in Update
 					return ErrDuplicateName
 				}
 				updates["name"] = clean
+				updates["name_key"] = strings.ToLower(clean)
 				detail["from_name"] = row.Name
 				detail["to_name"] = clean
 				changed = true
@@ -187,9 +196,18 @@ func (s *Service) Update(ctx context.Context, orgID, actorID, id uint, in Update
 				return merr
 			}
 			if blob != row.ConfigOptionsJSON {
+				cleared, cerr := mergeClearedKeys(row.ClearedKeysJSON, row.ConfigOptionsJSON, normalized)
+				if cerr != nil {
+					return cerr
+				}
+				version, verr := nextVersionTx(tx, orgID)
+				if verr != nil {
+					return verr
+				}
 				updates["config_options_json"] = blob
-				updates["version"] = row.Version + 1
-				detail["version"] = row.Version + 1
+				updates["cleared_keys_json"] = cleared
+				updates["version"] = version
+				detail["version"] = version
 				detail["keys"] = NormalizeOptionKeys(normalized)
 				changed = true
 			}
@@ -240,7 +258,13 @@ func (s *Service) Delete(ctx context.Context, orgID, actorID, id uint) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		scoped := store.ScopedByOrg(tx, orgID)
 		var row model.Strategy
-		if err := scoped.First(&row, id).Error; err != nil {
+		read := scoped
+		if tx.Name() != "sqlite" {
+			// Serialise against a concurrent assignment, which locks the same
+			// row before pointing a device at it.
+			read = read.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		if err := read.First(&row, id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrNotFound
 			}
@@ -304,7 +328,15 @@ func (s *Service) assign(ctx context.Context, orgID, actorID uint, kind string, 
 
 		if strategyID != nil {
 			var row model.Strategy
-			if err := scoped.First(&row, *strategyID).Error; err != nil {
+			// Lock the strategy row so a concurrent Delete cannot remove it
+			// between this check and the assignment write: without the lock
+			// the device would keep a dangling id and silently fall back to a
+			// broader layer.
+			read := scoped
+			if tx.Name() != "sqlite" {
+				read = read.Clauses(clause.Locking{Strength: "UPDATE"})
+			}
+			if err := read.First(&row, *strategyID).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
 					return ErrNotFound
 				}
@@ -364,9 +396,11 @@ func notFoundOr(err error) error {
 }
 
 // strategyNameTaken reports whether another strategy in this organization
-// already uses the name, case-insensitively (the CLI resolves names that way).
+// already uses the name, case-insensitively. The comparison uses the stored
+// name_key rather than SQL LOWER(): SQLite folds ASCII only, so a value like
+// "Ölwechsel" would not match its own lower-cased form there.
 func strategyNameTaken(scoped *gorm.DB, name string, excludeID uint) (bool, error) {
-	query := scoped.Model(&model.Strategy{}).Where("LOWER(name) = ?", strings.ToLower(name))
+	query := scoped.Model(&model.Strategy{}).Where("name_key = ?", strings.ToLower(name))
 	if excludeID != 0 {
 		query = query.Where("id <> ?", excludeID)
 	}
@@ -385,6 +419,80 @@ func marshalOptions(options map[string]string) (string, error) {
 		options = map[string]string{}
 	}
 	blob, err := json.Marshal(options)
+	if err != nil {
+		return "", err
+	}
+	return string(blob), nil
+}
+
+// nextVersionTx allocates the next organization-wide delivery version.
+//
+// Versions must not repeat across strategies: the client persists one number
+// (`strategy_timestamp`) and cannot tell which strategy it came from, so two
+// strategies sharing a version would make a switch look like "already up to
+// date" — and the new options would never be delivered. The counter lives on
+// the organization row, and the UPDATE takes the row lock for the rest of the
+// transaction, so concurrent allocations serialise.
+func nextVersionTx(tx *gorm.DB, orgID uint) (int64, error) {
+	res := store.WithoutTenantScope(tx).Model(&model.Organization{}).
+		Where("id = ?", orgID).
+		UpdateColumn("strategy_version_seq", gorm.Expr("strategy_version_seq + 1"))
+	if res.Error != nil {
+		return 0, res.Error
+	}
+	if res.RowsAffected != 1 {
+		return 0, ErrNotFound
+	}
+	var org model.Organization
+	if err := store.WithoutTenantScope(tx).Select("strategy_version_seq").
+		First(&org, orgID).Error; err != nil {
+		return 0, err
+	}
+	return org.StrategyVersionSeq, nil
+}
+
+// mergeClearedKeys maintains the set of option keys the operator removed from
+// a strategy. The client applies only the keys it receives and marks them as
+// fixed, so a key that simply disappears from the map keeps its old value
+// forever; delivery therefore re-sends every cleared key as an empty value
+// (which the client treats as "clear this option"). Re-adding a key removes it
+// from the set.
+func mergeClearedKeys(storedJSON, oldOptionsJSON string, next map[string]string) (string, error) {
+	cleared := map[string]bool{}
+	if storedJSON != "" {
+		var list []string
+		if err := json.Unmarshal([]byte(storedJSON), &list); err != nil {
+			return "", err
+		}
+		for _, k := range list {
+			cleared[k] = true
+		}
+	}
+	previous := map[string]string{}
+	if oldOptionsJSON != "" {
+		if err := json.Unmarshal([]byte(oldOptionsJSON), &previous); err != nil {
+			return "", err
+		}
+	}
+	for k := range previous {
+		if _, still := next[k]; !still {
+			cleared[k] = true
+		}
+	}
+	for k := range next {
+		delete(cleared, k)
+	}
+	return marshalClearedKeys(cleared)
+}
+
+// marshalClearedKeys renders the set as a stable JSON array.
+func marshalClearedKeys(set map[string]bool) (string, error) {
+	keys := make([]string, 0, len(set))
+	for k := range set {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	blob, err := json.Marshal(keys)
 	if err != nil {
 		return "", err
 	}

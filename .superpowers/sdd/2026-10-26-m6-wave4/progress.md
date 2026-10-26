@@ -19,7 +19,7 @@
 | T3 生效解析 + 心跳下发 | ✅ 完成 | `afb5c64` + `4f5d05c` |
 | T4 断连 | ✅ 完成 | `fff8ecf` |
 | T5 分配 + CLI strategy_name | ✅ 完成 | `b42e35a` |
-| T6 文档 + 评审 | ⏳ 未开始 | — |
+| T6 文档 + 评审 | ✅ 完成 | 文档见 `12c9a07`，评审整改见下方提交 |
 
 ## Ruling 指针
 
@@ -141,3 +141,47 @@ go generate ./... 后 git status --porcelain -- gen openapi.yaml → 空
 - CLI：`cliAssignFields` 增加 `strategy_name`（反转波次 2 的 D5），解析大小写不敏感、未知 404、空串 400；成功写 `strategy.assign` 审计。
 - 变异验证（跨租户）：把 `assign` 里的「策略必须属于本组织」查询短路掉 → `TestAssign_RejectsForeignTargets` 转红。
 - 备注：`openapi.yaml` 的 Python 写入若不显式 `newline='\n'`，在 Windows 上会整文件转成 CRLF，导致锚点匹配与索引状态混乱；本任务已把工作副本统一为 LF 并复核 `git status` 干净。
+
+## 子代理独立评审与整改（PR 前，2026-10-26）
+
+评审范围 `1ef1e4d..12c9a07`（46 files，+4551/−51），输出「Critical / Important / Minor」分级与 Declined-to-judge 清单（20+ 条，全部对应既有裁定或设计非目标，已逐条核对）。
+
+### 已修复
+
+| 级别 | 问题 | 修复 |
+|---|---|---|
+| **C1** | 版本号按行计数，两个策略可同号：客户端只存一个数字，改派到另一策略会被判「已最新」而**一次都不下发**（评审用探针实证：`Deliver=false`） | **`version` 改为组织内单调序列**（`organizations.strategy_version_seq`，事务内 `UPDATE ... +1` 后回读，行锁串行分配）；回归用例 `TestDelivery_SwitchingStrategiesDelivers`。设计文档已补「评审修订」章节 |
+| **I1** | `TakePendingTx` 不查 `expires_at`，过期但未被清扫的请求仍能断连（清扫 5 分钟一轮） | 消费点加 `expires_at > now`；用例 `TestDisconnect_ExpiredRequestNotConsumed` |
+| **I2** | CLI `strategy_name` 只查 `device.write`（可委派），绕过不可委派的 `strategy.manage` | 抽出 `tokenPermissions`/`tokenHasPerm`，`strategy_name` 出现时额外要求 `strategy.manage`，403；用例 `TestCLIAssign_StrategyNeedsManagePermission` |
+| **I3** | 「先 COUNT pending 再 INSERT」在 PG/MySQL 并发下两个请求都能成功，留下第二条 pending（几分钟后误断新连接） | 读设备行时加 `FOR UPDATE`（sqlite 跳过，写锁天然串行）；并发用例 `TestDisconnect_ConcurrentRequestsLeaveOnePending` 断言「至多一条 pending」 |
+| **I4** | 大小写唯一只有应用层检查（DB 索引字节级），且 SQLite `LOWER()` 只折叠 ASCII，与 Go `EqualFold` 不一致 | 新列 `strategies.name_key`（`strings.ToLower`）+ 唯一索引 `(organization_id, name_key)`；查重改按 `name_key`；用例 `TestCreate_CaseFoldingCoversNonASCII`（Ölwechsel/ölwechsel） |
+| **I5** | 从 `config_options` 删键：客户端只写收到的键，旧值（且被标记 fixed）永久保留，而 API 返回 200 并 bump 版本 | 新列 `cleared_keys_json`：Update 时合并「被移除的键」，DeliveryFor 把它们以 `""` 随下发回传；重新加回自动移出。用例 `TestDelivery_RemovedKeyIsCleared` |
+| M1 | 设计列了 `GET /strategies/{strategyId}`，契约漏了 | 补 `getStrategy` 路径 + handler + 用例 |
+| M2 | 请求体未知字段（含客户端 `extra`）被静默丢弃 → 201 | 策略 Create/Update 改 `DisallowUnknownFields` 严格解码，400；用例 `TestStrategy_RejectsUnknownFields` |
+| M3 | 计划要求的并发用例、R4（停用终止解析）无用例 | 补 `TestDisconnect_ConcurrentRequestsLeaveOnePending` 与 `TestEffective_DisabledDeviceStrategyDoesNotFallThrough` |
+| M4 | `parseConnIDs` 的 `case int` 分支缺 i32 上界 | 补 `> math.MaxInt32` 检查 |
+| M5 | `strategyByName` 用 `context.Background()` 丢请求上下文 | 改收 `c.Request.Context()` |
+| M7 | assign 与 delete 并发可留悬空 `strategy_id`（解析层会静默回落到更宽层，与 R4 意图相反） | 两边都对策略行加 `FOR UPDATE`（sqlite 跳过） |
+| M9 | 测试死代码 `_ = foreign` | 删除 |
+| M11 | 生产装配构造两个 `strategy.Service` 实例（NewAdminAPI 的副本不回写 Deps） | `NewRouter` 里取 `admin.deps.Strategies` 传给 compat 层 |
+| M8 | 部署指南没提 `device_heartbeats.conn_ids` 这一最高写入量表的新列 | 已补（MySQL instant / PG 元数据变更的说明） |
+
+### 记录但未改代码（评审同意的低风险项）
+
+- **M6**：并发 PATCH 各自分配版本号（组织序列下已天然不同号），后写覆盖前者选项——最终状态一致、审计各记一条，可接受；若要严格可上乐观并发（`WHERE version=?`），记后续。
+- **M10**：断连请求没有读端点（`GET .../disconnects`）；运维目前靠审计或查库。设计未要求，记后续。
+- **伪造心跳消费断连**：无凭据心跳（设计 C16）下，知道 `(id, uuid)` 的人可把 pending 请求消费成假 `fulfilled`（响应对攻击者无用，但管理员的请求被作废）。已在运维指南 §2.7 排障表加一行；协议层修复（心跳引入凭据或客户端回执）超出本波次，记入设计文档「评审修订」。
+- **版本空间的文档**：api-spec §3.14、operations §2.7 已同步「组织内单调序列 / 删键=清除 / 停用不清除已固定选项」。
+
+### 整改后验证
+
+```
+npx @redocly/cli lint openapi.yaml → valid（3 条既有告警）
+go generate ./... 后 git status --porcelain -- gen openapi.yaml → 空（提交后复核）
+go vet ./...            → 无输出
+gofmt -l internal cmd   → 无输出
+go test -count=1 ./...  → 23 包全绿（api 49.1s、compatapi 12.8s、strategy 0.6s）
+顶层测试计数             → 899（波次 3 基线 810，+89）
+```
+
+**整改中踩到的坑**（已写进测试注释）：SQLite 把时间按字符串比较，compat 心跳测试原来用 `time.Now().UTC()` 播种 `expires_at`，在 UTC+8 主机上读回就是「已过期」（`15:26 < 23:26`），I1 的消费点校验把它抓了出来。播种必须与服务同一时钟基准。

@@ -134,7 +134,7 @@ go build -o panel ./cmd/server
 
 - **v0.10.0（客户端策略下发与心跳断连）升级要点**：
   - **无新增配置键**：策略内容存库，下发搭在客户端已有的 `POST /api/heartbeat` 上（客户端只要连得到 API server 就能拿到）。升级后行为与波次 3 一致。
-  - 新增表 `strategies` / `device_disconnects` 与新列 `devices.strategy_id`、`device_groups.strategy_id`、`memberships.strategy_id`、`device_heartbeats.conn_ids`，全部由 AutoMigrate 建表/加列/建索引（`devices`/`device_groups`/`memberships` 会各加一个索引，大表首启请避开业务高峰）。
+  - 新增表 `strategies` / `device_disconnects` 与新列 `devices.strategy_id`、`device_groups.strategy_id`、`memberships.strategy_id`、`device_heartbeats.conn_ids`，全部由 AutoMigrate 建表/加列/建索引（`devices`/`device_groups`/`memberships` 会各加一个索引，大表首启请避开业务高峰）。另给 `device_heartbeats` —— **最高写入量的表** —— 加一列 `conn_ids`，MySQL 上是 instant DDL，PostgreSQL 上是元数据变更，但请按大表操作安排窗口。
   - **没有默认策略、不回填**：升级后所有设备「无策略」，行为与升级前完全一致；需要下发的组织自行创建并分配。
   - 新增权限 `strategy.manage`、`device.disconnect`（均不可委派，owner 全量、admin 由内置集合授予）。内置集合每次启动重写，存量组织自动获得。
   - 新增 worker `disconnect-expiry`（每 5 分钟）清理超时未消费的断连请求。策略没有后台任务。

@@ -13,14 +13,18 @@ import (
 
 func seedPendingDisconnect(t *testing.T, h *harness, orgID, deviceID uint) model.DeviceDisconnect {
 	t.Helper()
+	// Local clock on purpose: the compat harness and the service compare
+	// expiry against time.Now(), and SQLite stores the raw string — seeding in
+	// UTC would read as already expired under a UTC+8 test host.
+	now := time.Now()
 	row := model.DeviceDisconnect{
 		OrganizationID: orgID,
 		DeviceID:       deviceID,
 		Reason:         "test",
 		RequestedBy:    1,
 		Status:         model.DisconnectStatusPending,
-		RequestedAt:    time.Now().UTC(),
-		ExpiresAt:      time.Now().UTC().Add(15 * time.Minute),
+		RequestedAt:    now,
+		ExpiresAt:      now.Add(15 * time.Minute),
 	}
 	require.NoError(t, store.ScopedByOrg(h.db.DB, orgID).Create(&row).Error)
 	return row

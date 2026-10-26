@@ -58,6 +58,45 @@ func (a *AdminAPI) writeStrategyError(c *gin.Context, err error, logMsg string) 
 	}
 }
 
+// bindStrategyJSON decodes a strategy payload rejecting unknown fields.
+//
+// The client protocol has an `extra` map and the contract deliberately does not
+// expose it; a plain ShouldBindJSON would drop it silently and answer 201, which
+// is exactly the "looks like it worked" failure the CLI whitelist refuses. A
+// typo in a field name must fail the request instead.
+func bindStrategyJSON(c *gin.Context, out any) error {
+	dec := json.NewDecoder(c.Request.Body)
+	dec.DisallowUnknownFields()
+	return dec.Decode(out)
+}
+
+// GetStrategy returns one strategy.
+func (a *AdminAPI) GetStrategy(c *gin.Context, orgId, strategyId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 || strategyId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid organization or strategy id")
+		return
+	}
+	if _, ok := a.membershipFor(c, uid, uint(orgId)); !ok {
+		return
+	}
+	row, err := a.deps.Strategies.Get(c.Request.Context(), uint(orgId), uint(strategyId))
+	if err != nil {
+		a.writeStrategyError(c, err, "get strategy failed")
+		return
+	}
+	out, rerr := strategyResponse(row)
+	if rerr != nil {
+		a.deps.Logger.Error("stored strategy is unreadable: " + rerr.Error())
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "stored strategy is unreadable")
+		return
+	}
+	c.JSON(http.StatusOK, gen.StrategyResponse{Code: gen.ErrorCodeOk, Message: "ok", Data: out})
+}
+
 // ListStrategies returns the organization's strategies. Any member may read
 // them: the console needs the list to render assignments.
 func (a *AdminAPI) ListStrategies(c *gin.Context, orgId int64) {
@@ -105,8 +144,8 @@ func (a *AdminAPI) CreateStrategy(c *gin.Context, orgId int64) {
 		return
 	}
 	var req gen.StrategyCreateRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid strategy payload")
+	if err := bindStrategyJSON(c, &req); err != nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid strategy payload: "+err.Error())
 		return
 	}
 	options := map[string]string{}
@@ -144,8 +183,8 @@ func (a *AdminAPI) UpdateStrategy(c *gin.Context, orgId, strategyId int64) {
 		return
 	}
 	var req gen.StrategyUpdateRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid strategy payload")
+	if err := bindStrategyJSON(c, &req); err != nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid strategy payload: "+err.Error())
 		return
 	}
 	if req.Name == nil && req.ConfigOptions == nil && req.Enabled == nil {

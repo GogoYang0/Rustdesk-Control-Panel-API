@@ -1140,6 +1140,42 @@ paths:
           $ref: "#/components/responses/Conflict"
 
   /api/v1/orgs/{orgId}/strategies/{strategyId}:
+    get:
+      operationId: getStrategy
+      summary: 读取单个客户端策略
+      description: |
+        返回一个策略的完整定义（含 `version` 与 `cleared_keys`）。任何组织成员可读；
+        跨组织 id 与不存在都返回 404。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: strategyId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 策略
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StrategyResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
     patch:
       operationId: updateStrategy
       summary: 更新客户端策略

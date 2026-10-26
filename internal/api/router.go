@@ -57,7 +57,11 @@ func NewRouter(d Deps) *gin.Engine {
 	// organization-scoped paths only.
 	mgmt := r.Group("")
 	mgmt.Use(requireAuthUnlessPublic(d.Issuer, d.Tokens))
-	gen.RegisterHandlersWithOptions(mgmt, NewAdminAPI(d), gen.GinServerOptions{
+	// NewAdminAPI resolves the services that need a transactional recorder;
+	// hand the same instances to the compat layer so production never runs two
+	// differently-wired copies of one domain.
+	admin := NewAdminAPI(d)
+	gen.RegisterHandlersWithOptions(mgmt, admin, gen.GinServerOptions{
 		// Path-parameter parse failures happen inside the generated wrapper,
 		// before any handler runs. The default wrapper answers {"msg": ...},
 		// which violates the contract's ErrorResponse; route it through the same
@@ -78,7 +82,7 @@ func NewRouter(d Deps) *gin.Engine {
 		Access:     d.Access,
 		Auditor:    d.Auditor,
 		TOTP:       d.TOTP,
-		Strategies: d.Strategies,
+		Strategies: admin.deps.Strategies,
 		Logger:     d.Logger,
 		Now:        d.Now,
 		AccessTTL:  d.CompatTTL,

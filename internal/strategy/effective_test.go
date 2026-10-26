@@ -194,3 +194,75 @@ func TestDelivery_RevalidatesStoredOptions(t *testing.T) {
 	require.ErrorIs(t, err, strategy.ErrUnknownOption)
 	require.False(t, d.Deliver)
 }
+
+// TestEffective_DisabledDeviceStrategyDoesNotFallThrough pins R4: a disabled
+// strategy at the device layer is an explicit "deliver nothing", not a reason
+// to apply the broader group policy.
+func TestEffective_DisabledDeviceStrategyDoesNotFallThrough(t *testing.T) {
+	f := newFixture(t)
+	devS := f.create(t, "DeviceOff", map[string]string{"enable-audio": "N"})
+	grpS := f.create(t, "GroupOn", map[string]string{"enable-camera": "N"})
+	f.pointDeviceAtGroup(t)
+	require.NoError(t, f.svc.AssignGroup(context.Background(), f.org.ID, f.user.ID, f.group.ID, &grpS.ID))
+	require.NoError(t, f.svc.AssignDevice(context.Background(), f.org.ID, f.user.ID, f.device.ID, &devS.ID))
+
+	disabled := false
+	_, err := f.svc.Update(context.Background(), f.org.ID, f.user.ID, devS.ID, strategyUpdateEnabled(disabled))
+	require.NoError(t, err)
+
+	got, err := f.svc.EffectiveForDevice(context.Background(), f.org.ID, f.device.ID)
+	require.NoError(t, err)
+	require.Nil(t, got, "the disabled device-level strategy must not hand over to the group layer")
+}
+
+// TestDelivery_SwitchingStrategiesDelivers is the regression for the version
+// space: the client stores one number, so two strategies must never share a
+// version or a switch would look like "already up to date".
+func TestDelivery_SwitchingStrategiesDelivers(t *testing.T) {
+	f := newFixture(t)
+	first := f.create(t, "First", map[string]string{"enable-audio": "N"})
+	require.NoError(t, f.svc.AssignDevice(context.Background(), f.org.ID, f.user.ID, f.device.ID, &first.ID))
+
+	d, err := f.svc.DeliveryFor(context.Background(), f.org.ID, f.device.ID, 0)
+	require.NoError(t, err)
+	require.True(t, d.Deliver)
+	require.Equal(t, first.Version, d.Version)
+
+	second := f.create(t, "Second", map[string]string{"enable-camera": "N"})
+	require.Greater(t, second.Version, first.Version, "versions must be unique across strategies")
+	require.NoError(t, f.svc.AssignDevice(context.Background(), f.org.ID, f.user.ID, f.device.ID, &second.ID))
+
+	// The client still echoes the version it stored from the first strategy.
+	d, err = f.svc.DeliveryFor(context.Background(), f.org.ID, f.device.ID, first.Version)
+	require.NoError(t, err)
+	require.True(t, d.Deliver, "switching strategies must deliver the new one")
+	require.Equal(t, second.Version, d.Version)
+	require.Equal(t, "N", d.Options["enable-camera"])
+	require.NotContains(t, d.Options, "enable-audio")
+}
+
+// TestDelivery_RemovedKeyIsCleared: the client only applies the keys it
+// receives, so dropping a key from the map must turn into an explicit empty
+// value, otherwise the old (fixed) option stays on the device forever.
+func TestDelivery_RemovedKeyIsCleared(t *testing.T) {
+	f := newFixture(t)
+	s := f.create(t, "Baseline", map[string]string{"enable-audio": "N", "enable-clipboard": "N"})
+	require.NoError(t, f.svc.AssignDevice(context.Background(), f.org.ID, f.user.ID, f.device.ID, &s.ID))
+
+	opts := map[string]string{"enable-audio": "N"}
+	updated, err := f.svc.Update(context.Background(), f.org.ID, f.user.ID, s.ID, strategyUpdateOptions(opts))
+	require.NoError(t, err)
+
+	d, err := f.svc.DeliveryFor(context.Background(), f.org.ID, f.device.ID, updated.Version-1)
+	require.NoError(t, err)
+	require.True(t, d.Deliver)
+	require.Equal(t, "", d.Options["enable-clipboard"], "a removed key must be sent as an explicit clear")
+
+	// Re-adding the key drops it from the cleared set.
+	back := map[string]string{"enable-audio": "N", "enable-clipboard": "Y"}
+	updated, err = f.svc.Update(context.Background(), f.org.ID, f.user.ID, s.ID, strategyUpdateOptions(back))
+	require.NoError(t, err)
+	d, err = f.svc.DeliveryFor(context.Background(), f.org.ID, f.device.ID, updated.Version-1)
+	require.NoError(t, err)
+	require.Equal(t, "Y", d.Options["enable-clipboard"])
+}

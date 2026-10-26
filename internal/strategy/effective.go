@@ -123,6 +123,20 @@ func (s *Service) DeliveryFor(ctx context.Context, orgID, deviceID uint, clientV
 			return Delivery{}, err
 		}
 	}
+	// Keys the operator removed are re-sent as empty values: the client applies
+	// only what it receives, so a key that merely disappears would keep its
+	// previous (fixed) value forever.
+	if row.ClearedKeysJSON != "" {
+		var cleared []string
+		if err := json.Unmarshal([]byte(row.ClearedKeysJSON), &cleared); err != nil {
+			return Delivery{}, err
+		}
+		for _, k := range cleared {
+			if _, set := options[k]; !set {
+				options[k] = ""
+			}
+		}
+	}
 	if _, err := NormalizeOptions(options); err != nil {
 		return Delivery{}, err
 	}

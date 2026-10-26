@@ -2,6 +2,7 @@ package strategy_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -139,4 +140,61 @@ func TestDisconnect_NoteConnsRecordsLatestHeartbeat(t *testing.T) {
 	var hb model.DeviceHeartbeat
 	require.NoError(t, store.ScopedByOrg(f.db, f.org.ID).First(&hb).Error)
 	require.JSONEq(t, "[7,8]", hb.ConnIDs)
+}
+
+// TestDisconnect_ExpiredRequestNotConsumed: the sweep runs every five minutes,
+// so a request that already passed its TTL must be refused at the consumption
+// point too — otherwise a late heartbeat could still tear a connection down.
+func TestDisconnect_ExpiredRequestNotConsumed(t *testing.T) {
+	f := newFixture(t)
+	row, err := f.svc.RequestDisconnect(context.Background(), f.org.ID, f.user.ID, f.device.ID, "stale")
+	require.NoError(t, err)
+	require.NoError(t, store.ScopedByOrg(f.db, f.org.ID).Model(&model.DeviceDisconnect{}).
+		Where("id = ?", row.ID).Update("expires_at", f.now.Add(-time.Minute)).Error)
+
+	require.NoError(t, f.db.Transaction(func(tx *gorm.DB) error {
+		conns, terr := f.svc.TakePendingTx(tx, f.org.ID, f.device.ID, []int64{4})
+		require.NoError(t, terr)
+		require.Empty(t, conns, "an expired request must not fire")
+		return nil
+	}))
+
+	var stored model.DeviceDisconnect
+	require.NoError(t, store.ScopedByOrg(f.db, f.org.ID).First(&stored, row.ID).Error)
+	require.Equal(t, model.DisconnectStatusPending, stored.Status)
+}
+
+// TestDisconnect_ConcurrentRequestsLeaveOnePending: two simultaneous requests
+// must not both win and leave two pending rows (the second would fire a
+// teardown minutes later on connections nobody asked about). The loser may be
+// refused with ErrDisconnectPending or fail on a busy SQLite write, so the
+// assertion is on the invariant: at most one pending row.
+func TestDisconnect_ConcurrentRequestsLeaveOnePending(t *testing.T) {
+	f := newFixture(t)
+	var wg sync.WaitGroup
+	results := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := f.svc.RequestDisconnect(context.Background(), f.org.ID, f.user.ID, f.device.ID, "race")
+			results <- err
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	okCount := 0
+	for err := range results {
+		if err == nil {
+			okCount++
+		}
+	}
+	require.LessOrEqual(t, okCount, 1, "two concurrent requests must not both succeed")
+
+	var pending int64
+	require.NoError(t, store.ScopedByOrg(f.db, f.org.ID).Model(&model.DeviceDisconnect{}).
+		Where("device_id = ? AND status = ?", f.device.ID, model.DisconnectStatusPending).
+		Count(&pending).Error)
+	require.LessOrEqual(t, pending, int64(1))
 }

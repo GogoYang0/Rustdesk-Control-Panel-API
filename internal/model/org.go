@@ -4,10 +4,14 @@ import "time"
 
 // Organization is the tenant root. Every business row carries its ID.
 type Organization struct {
-	ID        uint      `gorm:"primaryKey" json:"id"`
-	Name      string    `gorm:"size:128;not null" json:"name"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	// StrategyVersionSeq is the organization-wide monotonic counter behind
+	// strategies.version. See model.Strategy.Version for why versions must not
+	// repeat across strategies.
+	StrategyVersionSeq int64     `gorm:"not null;default:0" json:"-"`
+	ID                 uint      `gorm:"primaryKey" json:"id"`
+	Name               string    `gorm:"size:128;not null" json:"name"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 
 	// ProvisioningDisabled records an explicit deprovision. Without it the
 	// reconciler would see an organization without a server group and deploy

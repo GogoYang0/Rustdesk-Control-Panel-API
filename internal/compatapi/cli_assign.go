@@ -181,7 +181,15 @@ func (s *Server) cliAssign(c *gin.Context) {
 			compatError(c, http.StatusBadRequest, "strategy_name must be a non-empty string")
 			return
 		}
-		id, found, serr := s.strategyByName(token.OrganizationID, name)
+		// Assigning a strategy needs the same permission the management
+		// endpoints demand. device.write is delegable and strategy.manage is
+		// not, so checking only the former would let a custom role reach the
+		// capability the catalog withholds from it.
+		if !s.tokenHasPerm(token, authz.PermStrategyManage) {
+			compatError(c, http.StatusForbidden, "insufficient permissions")
+			return
+		}
+		id, found, serr := s.strategyByName(c.Request.Context(), token.OrganizationID, name)
 		if serr != nil {
 			compatError(c, http.StatusInternalServerError, "assign failed")
 			return
@@ -228,30 +236,40 @@ func (s *Server) cliAssign(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"code": "ok"})
 }
 
-// tokenHasDeviceWrite reports whether the token's holder still holds
-// device.write. The effective set is the intersection of the owner's live role
-// and the token's own codes: a token can never exceed its owner's role, and a
-// role that lost the permission takes it away from every token it issued.
-func (s *Server) tokenHasDeviceWrite(token *model.APIToken) bool {
+// tokenPermissions returns the token's effective permission set: the
+// intersection of the owner's live role and the token's own codes. A token can
+// never exceed its owner's role, and a role that lost a permission takes it
+// away from every token it issued.
+func (s *Server) tokenPermissions(token *model.APIToken) []string {
 	var membership model.Membership
 	err := store.WithoutTenantScope(s.deps.DB).
 		Where("organization_id = ? AND user_id = ?", token.OrganizationID, token.UserID).
 		First(&membership).Error
 	if err != nil || membership.Disabled {
-		return false
+		return nil
 	}
 	role, err := s.deps.Roles.Resolve(token.OrganizationID, membership)
 	if err != nil {
-		return false
+		return nil
 	}
-	perms := auth.IntersectPermissions(role.PermissionList(), token.PermissionList())
-	return authz.Has(perms, authz.PermDeviceWrite)
+	return auth.IntersectPermissions(role.PermissionList(), token.PermissionList())
+}
+
+// tokenHasPerm reports whether the token still carries the permission.
+func (s *Server) tokenHasPerm(token *model.APIToken, perm string) bool {
+	return authz.Has(s.tokenPermissions(token), perm)
+}
+
+// tokenHasDeviceWrite reports whether the token's holder still holds
+// device.write, the gate for `--assign`.
+func (s *Server) tokenHasDeviceWrite(token *model.APIToken) bool {
+	return s.tokenHasPerm(token, authz.PermDeviceWrite)
 }
 
 // strategyByName resolves a strategy by name, folding case in Go so the answer
 // matches the case-insensitive uniqueness rule the management API enforces.
-func (s *Server) strategyByName(orgID uint, name string) (uint, bool, error) {
-	rows, err := s.deps.Strategies.List(context.Background(), orgID)
+func (s *Server) strategyByName(ctx context.Context, orgID uint, name string) (uint, bool, error) {
+	rows, err := s.deps.Strategies.List(ctx, orgID)
 	if err != nil {
 		return 0, false, err
 	}
