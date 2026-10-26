@@ -90,8 +90,9 @@ func (e AddressBookGrantAccess) Valid() bool {
 
 // Defines values for AddressBookGrantKind.
 const (
-	AddressBookGrantKindEveryone AddressBookGrantKind = "everyone"
-	AddressBookGrantKindUser     AddressBookGrantKind = "user"
+	AddressBookGrantKindEveryone  AddressBookGrantKind = "everyone"
+	AddressBookGrantKindUser      AddressBookGrantKind = "user"
+	AddressBookGrantKindUserGroup AddressBookGrantKind = "user_group"
 )
 
 // Valid indicates whether the value is a known member of the AddressBookGrantKind enum.
@@ -100,6 +101,8 @@ func (e AddressBookGrantKind) Valid() bool {
 	case AddressBookGrantKindEveryone:
 		return true
 	case AddressBookGrantKindUser:
+		return true
+	case AddressBookGrantKindUserGroup:
 		return true
 	default:
 		return false
@@ -671,13 +674,16 @@ type AddressBookGrant struct {
 	// Access - read：只读（当前共享簿默认成员可读，显式 everyone/user 授权可覆盖）
 	// - write：可替换 peers/tags
 	// - full：可改名、删除簿、管理授权
-	Access      AddressBookGrantAccess `json:"access"`
-	CreatedAt   time.Time              `json:"created_at"`
-	CreatedBy   int64                  `json:"created_by"`
-	Id          int64                  `json:"id"`
-	SubjectKind AddressBookGrantKind   `json:"subject_kind"`
+	Access    AddressBookGrantAccess `json:"access"`
+	CreatedAt time.Time              `json:"created_at"`
+	CreatedBy int64                  `json:"created_by"`
+	Id        int64                  `json:"id"`
 
-	// SubjectUserId `user` 主体为用户 id；`everyone` 为 null
+	// SubjectGroupId `user_group` 主体为用户组 id；`user` 与 `everyone` 为 null
+	SubjectGroupId *int64               `json:"subject_group_id,omitempty"`
+	SubjectKind    AddressBookGrantKind `json:"subject_kind"`
+
+	// SubjectUserId `user` 主体为用户 id；`everyone` 与 `user_group` 为 null
 	SubjectUserId *int64 `json:"subject_user_id,omitempty"`
 }
 
@@ -715,10 +721,13 @@ type AddressBookGrantRequest struct {
 	// Access - read：只读（当前共享簿默认成员可读，显式 everyone/user 授权可覆盖）
 	// - write：可替换 peers/tags
 	// - full：可改名、删除簿、管理授权
-	Access      AddressBookGrantAccess `json:"access"`
-	SubjectKind AddressBookGrantKind   `json:"subject_kind"`
+	Access AddressBookGrantAccess `json:"access"`
 
-	// SubjectUserId `subject_kind=user` 时必填且必须是本组织成员；`everyone` 时必须省略或为 null
+	// SubjectGroupId `subject_kind=user_group` 时必填且必须是本组织的用户组；`user` 与 `everyone` 时必须省略或为 null
+	SubjectGroupId *int64               `json:"subject_group_id,omitempty"`
+	SubjectKind    AddressBookGrantKind `json:"subject_kind"`
+
+	// SubjectUserId `subject_kind=user` 时必填且必须是本组织成员；`everyone` 与 `user_group` 时必须省略或为 null
 	SubjectUserId *int64 `json:"subject_user_id,omitempty"`
 }
 
@@ -2566,7 +2575,10 @@ type UserGroupCreateRequest struct {
 
 // UserGroupDeleteData defines model for UserGroupDeleteData.
 type UserGroupDeleteData struct {
-	// RemovedRules 随组级联删除的访问规则数
+	// RemovedGrants 随组级联删除的共享地址簿授权数（以该组为授权主体）
+	RemovedGrants int `json:"removed_grants"`
+
+	// RemovedRules 随组级联删除的访问规则数（以该组为源，或以该组为 `user_group` 目标）
 	RemovedRules int `json:"removed_rules"`
 }
 

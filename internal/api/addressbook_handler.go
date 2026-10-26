@@ -442,6 +442,14 @@ func (a *AdminAPI) CreateAddressBookGrant(c *gin.Context, orgId int64, bookId in
 		}
 		subjectUserID = uint(*req.SubjectUserId)
 	}
+	var subjectGroupID uint
+	if req.SubjectGroupId != nil {
+		if *req.SubjectGroupId <= 0 {
+			abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "subject_group_id must be positive")
+			return
+		}
+		subjectGroupID = uint(*req.SubjectGroupId)
+	}
 	perms, ok := a.roleForBook(c, uid, orgId, bookId)
 	if !ok {
 		return
@@ -450,7 +458,7 @@ func (a *AdminAPI) CreateAddressBookGrant(c *gin.Context, orgId int64, bookId in
 		return
 	}
 
-	grant, created, err := a.books.UpsertGrant(uid, uint(orgId), uint(bookId), subjectUserID, 0,
+	grant, created, err := a.books.UpsertGrant(uid, uint(orgId), uint(bookId), subjectUserID, subjectGroupID,
 		string(req.SubjectKind), string(req.Access), perms)
 	if err != nil && mapGrantError(c, err) {
 		return
@@ -513,8 +521,9 @@ func mapGrantError(c *gin.Context, err error) bool {
 	return true
 }
 
-// grantToGen maps a grant row onto the contract shape. subject_user_id is
-// omitted for the everyone grant.
+// grantToGen maps a grant row onto the contract shape. The subject id that does
+// not identify the subject stays null: subject_user_id for everyone/user_group
+// grants, subject_group_id for user/everyone grants.
 func grantToGen(g *model.AddressBookGrant) gen.AddressBookGrant {
 	out := gen.AddressBookGrant{
 		Id:          int64(g.ID),
@@ -526,6 +535,10 @@ func grantToGen(g *model.AddressBookGrant) gen.AddressBookGrant {
 	if g.SubjectKind == model.GrantSubjectUser {
 		id := int64(g.SubjectUserID)
 		out.SubjectUserId = &id
+	}
+	if g.SubjectKind == model.GrantSubjectUserGroup && g.SubjectGroupID != 0 {
+		id := int64(g.SubjectGroupID)
+		out.SubjectGroupId = &id
 	}
 	return out
 }

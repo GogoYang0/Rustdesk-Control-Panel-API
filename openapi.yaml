@@ -4289,10 +4289,14 @@ components:
       type: object
       required:
         - removed_rules
+        - removed_grants
       properties:
         removed_rules:
           type: integer
-          description: 随组级联删除的访问规则数
+          description: 随组级联删除的访问规则数（以该组为源，或以该组为 `user_group` 目标）
+        removed_grants:
+          type: integer
+          description: 随组级联删除的共享地址簿授权数（以该组为授权主体）
 
     UserGroupDeleteResponse:
       type: object
@@ -5081,6 +5085,7 @@ components:
       enum:
         - user
         - everyone
+        - user_group
 
     AddressBookGrantAccess:
       type: string
@@ -5112,7 +5117,13 @@ components:
             - integer
             - "null"
           format: int64
-          description: "`user` 主体为用户 id；`everyone` 为 null"
+          description: "`user` 主体为用户 id；`everyone` 与 `user_group` 为 null"
+        subject_group_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: "`user_group` 主体为用户组 id；`user` 与 `everyone` 为 null"
         access:
           $ref: "#/components/schemas/AddressBookGrantAccess"
         created_by:
@@ -5135,7 +5146,13 @@ components:
             - integer
             - "null"
           format: int64
-          description: "`subject_kind=user` 时必填且必须是本组织成员；`everyone` 时必须省略或为 null"
+          description: "`subject_kind=user` 时必填且必须是本组织成员；`everyone` 与 `user_group` 时必须省略或为 null"
+        subject_group_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: "`subject_kind=user_group` 时必填且必须是本组织的用户组；`user` 与 `everyone` 时必须省略或为 null"
         access:
           $ref: "#/components/schemas/AddressBookGrantAccess"
 

@@ -23,6 +23,7 @@ func newGrantFixture(t *testing.T) (*Service, uint, uint, uint) {
 		&model.Organization{}, &model.Membership{},
 		&model.AddressBook{}, &model.AddressBookPeer{}, &model.AddressBookTag{},
 		&model.AddressBookGrant{},
+		&model.UserGroup{}, &model.UserGroupMember{},
 	))
 	org := model.Organization{Name: "grants-acme"}
 	require.NoError(t, st.DB.Create(&org).Error)
@@ -44,9 +45,9 @@ func TestAccessFor_UserGrantOverridesEveryone(t *testing.T) {
 		{SubjectKind: model.GrantSubjectEveryone, Access: model.GrantAccessRead},
 		{SubjectKind: model.GrantSubjectUser, SubjectUserID: 7, Access: model.GrantAccessFull},
 	}
-	require.Equal(t, AccessFull, AccessFor(nil, sharedBook(), 7, grants))
-	require.Equal(t, AccessRead, AccessFor(nil, sharedBook(), 8, grants))
-	require.Equal(t, AccessFull, AccessFor([]string{authz.PermAddressBook}, sharedBook(), 9, grants),
+	require.Equal(t, AccessFull, AccessFor(nil, sharedBook(), 7, nil, grants))
+	require.Equal(t, AccessRead, AccessFor(nil, sharedBook(), 8, nil, grants))
+	require.Equal(t, AccessFull, AccessFor([]string{authz.PermAddressBook}, sharedBook(), 9, nil, grants),
 		"the addressbook.write permission is full access")
 
 	// A user-specific grant caps a broader everyone grant.
@@ -54,21 +55,58 @@ func TestAccessFor_UserGrantOverridesEveryone(t *testing.T) {
 		{SubjectKind: model.GrantSubjectEveryone, Access: model.GrantAccessFull},
 		{SubjectKind: model.GrantSubjectUser, SubjectUserID: 7, Access: model.GrantAccessRead},
 	}
-	require.Equal(t, AccessRead, AccessFor(nil, sharedBook(), 7, capped))
-	require.Equal(t, AccessFull, AccessFor(nil, sharedBook(), 8, capped))
+	require.Equal(t, AccessRead, AccessFor(nil, sharedBook(), 7, nil, capped))
+	require.Equal(t, AccessFull, AccessFor(nil, sharedBook(), 8, nil, capped))
+}
+
+// TestAccessFor_UserGroupGrantHighestWins pins D8: a user_group grant applies
+// to the explicit members of the target group, and the effective level is the
+// highest of every subject that matches the caller.
+func TestAccessFor_UserGroupGrantHighestWins(t *testing.T) {
+	grants := []model.AddressBookGrant{
+		{SubjectKind: model.GrantSubjectUserGroup, SubjectGroupID: 11, Access: model.GrantAccessRead},
+		{SubjectKind: model.GrantSubjectUserGroup, SubjectGroupID: 12, Access: model.GrantAccessWrite},
+	}
+	require.Equal(t, AccessWrite, AccessFor(nil, sharedBook(), 7, []uint{11, 12}, grants))
+	require.Equal(t, AccessRead, AccessFor(nil, sharedBook(), 7, []uint{11}, grants))
+	require.Equal(t, AccessRead, AccessFor(nil, sharedBook(), 7, nil, grants),
+		"without a matching group the shared default stays read")
+	require.Equal(t, AccessRead, AccessFor(nil, sharedBook(), 7, []uint{99}, grants),
+		"only the caller's own groups count")
+
+	// A group grant unions with the everyone grant: the highest wins.
+	withEveryone := []model.AddressBookGrant{
+		{SubjectKind: model.GrantSubjectEveryone, Access: model.GrantAccessFull},
+		{SubjectKind: model.GrantSubjectUserGroup, SubjectGroupID: 11, Access: model.GrantAccessRead},
+	}
+	require.Equal(t, AccessFull, AccessFor(nil, sharedBook(), 7, []uint{11}, withEveryone))
+	require.Equal(t, AccessRead, AccessFor(nil, sharedBook(), 7, []uint{11}, []model.AddressBookGrant{
+		{SubjectKind: model.GrantSubjectUserGroup, SubjectGroupID: 11, Access: model.GrantAccessRead},
+	}))
+
+	// The explicit user grant keeps its precedence: it caps everything below it,
+	// group grants included (M2 semantics, unchanged).
+	capped := []model.AddressBookGrant{
+		{SubjectKind: model.GrantSubjectUserGroup, SubjectGroupID: 11, Access: model.GrantAccessFull},
+		{SubjectKind: model.GrantSubjectUser, SubjectUserID: 7, Access: model.GrantAccessRead},
+	}
+	require.Equal(t, AccessRead, AccessFor(nil, sharedBook(), 7, []uint{11}, capped))
+
+	// The builtin write permission outranks every grant.
+	require.Equal(t, AccessFull, AccessFor([]string{authz.PermAddressBook}, sharedBook(), 7, nil, grants))
 }
 
 func TestAccessFor_DefaultsAndPersonalPrivacy(t *testing.T) {
 	// Every member may read a shared book, even without grants (M2 behavior).
-	require.Equal(t, AccessRead, AccessFor(nil, sharedBook(), 42, nil))
-	require.Equal(t, AccessWrite, AccessFor(nil, sharedBook(), 42, []model.AddressBookGrant{
+	require.Equal(t, AccessRead, AccessFor(nil, sharedBook(), 42, nil, nil))
+	require.Equal(t, AccessWrite, AccessFor(nil, sharedBook(), 42, nil, []model.AddressBookGrant{
 		{SubjectKind: model.GrantSubjectEveryone, Access: model.GrantAccessWrite},
 	}))
 
 	personal := &model.AddressBook{ID: 2, Scope: model.AddressBookScopePersonal, OwnerID: ptr(7)}
-	require.Equal(t, AccessFull, AccessFor(nil, personal, 7, nil))
-	require.Equal(t, AccessNone, AccessFor(nil, personal, 8, nil))
-	require.Equal(t, AccessNone, AccessFor([]string{authz.PermAddressBook}, personal, 8, nil),
+	require.Equal(t, AccessFull, AccessFor(nil, personal, 7, nil, nil))
+	require.Equal(t, AccessNone, AccessFor(nil, personal, 8, nil, nil))
+	require.Equal(t, AccessNone, AccessFor([]string{authz.PermAddressBook}, personal, 8, nil, nil),
 		"the write permission must not open someone else's personal book")
 }
 
@@ -180,5 +218,82 @@ func TestGrants_EveryoneWriteReachesMembers(t *testing.T) {
 		model.GrantSubjectUser, model.GrantAccessRead, perms)
 	require.NoError(t, err)
 	_, err = svc.ReplacePeers(memberID, nil, orgID, book.ID, []PeerInput{{PeerID: "2"}})
+	require.ErrorIs(t, err, ErrForbidden)
+}
+
+// TestUpsertGrant_UserGroupSubject pins the group subject: the row stores the
+// group id (never a user id), the upsert is idempotent on the same group, and a
+// group outside the organization is refused.
+func TestUpsertGrant_UserGroupSubject(t *testing.T) {
+	svc, orgID, ownerID, memberID := newGrantFixture(t)
+	book, err := svc.Create(ownerID, orgID, model.AddressBookScopeShared, "team")
+	require.NoError(t, err)
+	perms := []string{authz.PermAddressBook}
+
+	group := model.UserGroup{OrganizationID: orgID, Name: "ops", Kind: model.UserGroupKindCustom}
+	require.NoError(t, svc.db.Create(&group).Error)
+	otherOrg := model.Organization{Name: "grants-other"}
+	require.NoError(t, svc.db.Create(&otherOrg).Error)
+	foreign := model.UserGroup{OrganizationID: otherOrg.ID, Name: "foreign", Kind: model.UserGroupKindCustom}
+	require.NoError(t, svc.db.Create(&foreign).Error)
+
+	grant, created, err := svc.UpsertGrant(ownerID, orgID, book.ID, 0, group.ID,
+		model.GrantSubjectUserGroup, model.GrantAccessWrite, perms)
+	require.NoError(t, err)
+	require.True(t, created)
+	require.Equal(t, model.GrantSubjectUserGroup, grant.SubjectKind)
+	require.EqualValues(t, group.ID, grant.SubjectGroupID)
+	require.Zero(t, grant.SubjectUserID, "a group subject never stores a user id")
+
+	updated, created, err := svc.UpsertGrant(ownerID, orgID, book.ID, memberID, group.ID,
+		model.GrantSubjectUserGroup, model.GrantAccessFull, perms)
+	require.NoError(t, err)
+	require.False(t, created, "the same group upserts the same row")
+	require.EqualValues(t, grant.ID, updated.ID)
+	require.Equal(t, model.GrantAccessFull, updated.Access)
+	require.Zero(t, updated.SubjectUserID, "a stray subject_user_id is normalized away")
+
+	list, err := svc.ListGrants(ownerID, orgID, book.ID, perms)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+
+	_, _, err = svc.UpsertGrant(ownerID, orgID, book.ID, 0, 0,
+		model.GrantSubjectUserGroup, model.GrantAccessRead, perms)
+	require.ErrorIs(t, err, ErrInvalidGrant, "a group subject needs a group id")
+
+	_, _, err = svc.UpsertGrant(ownerID, orgID, book.ID, 0, foreign.ID,
+		model.GrantSubjectUserGroup, model.GrantAccessRead, perms)
+	require.ErrorIs(t, err, ErrGrantSubjectNotFound, "another organization's group is not a subject")
+}
+
+// TestGrants_UserGroupReachesItsMembers walks the group grant through the
+// service: the member of the granted group gains the level, a member outside it
+// does not.
+func TestGrants_UserGroupReachesItsMembers(t *testing.T) {
+	svc, orgID, ownerID, memberID := newGrantFixture(t)
+	book, err := svc.Create(ownerID, orgID, model.AddressBookScopeShared, "team")
+	require.NoError(t, err)
+	perms := []string{authz.PermAddressBook}
+
+	group := model.UserGroup{OrganizationID: orgID, Name: "ops", Kind: model.UserGroupKindCustom}
+	require.NoError(t, svc.db.Create(&group).Error)
+	require.NoError(t, svc.db.Create(&model.UserGroupMember{
+		OrganizationID: orgID, GroupID: group.ID, UserID: memberID,
+	}).Error)
+
+	// Without the grant the member can read but not write.
+	_, err = svc.ReplacePeers(memberID, nil, orgID, book.ID, []PeerInput{{PeerID: "1"}})
+	require.ErrorIs(t, err, ErrForbidden)
+
+	_, _, err = svc.UpsertGrant(ownerID, orgID, book.ID, 0, group.ID,
+		model.GrantSubjectUserGroup, model.GrantAccessWrite, perms)
+	require.NoError(t, err)
+	_, err = svc.ReplacePeers(memberID, nil, orgID, book.ID, []PeerInput{{PeerID: "1"}})
+	require.NoError(t, err)
+
+	// A user outside the group keeps the default read level.
+	outsider := model.Membership{OrganizationID: orgID, UserID: 9, RoleID: 3}
+	require.NoError(t, svc.db.Create(&outsider).Error)
+	_, err = svc.ReplacePeers(9, nil, orgID, book.ID, []PeerInput{{PeerID: "2"}})
 	require.ErrorIs(t, err, ErrForbidden)
 }

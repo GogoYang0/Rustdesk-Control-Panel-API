@@ -26,11 +26,14 @@ const (
 // Grant errors mapped to HTTP statuses by the handler.
 var (
 	// ErrInvalidGrant reports an unknown subject kind or access level.
-	ErrInvalidGrant = errors.New("invalid grant: subject_kind must be user or everyone and access must be read, write or full")
+	ErrInvalidGrant = errors.New("invalid grant: subject_kind must be user, everyone or user_group and access must be read, write or full")
 	// ErrGrantNotShared reports grant management on a personal book.
 	ErrGrantNotShared = errors.New("grants only apply to shared address books")
 	// ErrSubjectNotMember reports a user grant for someone outside the tenant.
 	ErrSubjectNotMember = errors.New("grant subject is not a member of this organization")
+	// ErrGrantSubjectNotFound reports a user_group subject that does not exist
+	// in the organization.
+	ErrGrantSubjectNotFound = errors.New("grant subject group not found")
 	// ErrGrantNotFound reports a grant id outside this book.
 	ErrGrantNotFound = errors.New("grant not found")
 )
@@ -71,9 +74,12 @@ func accessFromGrant(raw string) Access {
 // Personal books stay owner-only. Shared books keep the M2 default — every
 // member may read — and grants can only raise it, except that an explicit user
 // grant takes precedence over the everyone grant (a user-specific read grant
-// deliberately caps a broadly granted write/full). The builtin addressbook
-// write permission (owner/admin, or a custom role holding it) is always full.
-func AccessFor(perms []string, book *model.AddressBook, userID uint, grants []model.AddressBookGrant) Access {
+// deliberately caps a broadly granted write/full). A user_group grant applies
+// when the caller is an explicit member of that group (groupIDs is the caller's
+// group set, resolved by the caller); between the everyone and the group grants
+// the highest level wins (D8). The builtin addressbook write permission
+// (owner/admin, or a custom role holding it) is always full.
+func AccessFor(perms []string, book *model.AddressBook, userID uint, groupIDs []uint, grants []model.AddressBookGrant) Access {
 	if book == nil {
 		return AccessNone
 	}
@@ -87,33 +93,64 @@ func AccessFor(perms []string, book *model.AddressBook, userID uint, grants []mo
 		return AccessFull
 	}
 
-	everyone := AccessRead
+	groups := make(map[uint]bool, len(groupIDs))
+	for _, id := range groupIDs {
+		groups[id] = true
+	}
+
+	shared := AccessRead
 	for _, g := range grants {
 		switch g.SubjectKind {
 		case model.GrantSubjectUser:
 			if g.SubjectUserID == userID && userID != 0 {
 				return accessFromGrant(g.Access)
 			}
+		case model.GrantSubjectUserGroup:
+			if g.SubjectGroupID != 0 && groups[g.SubjectGroupID] {
+				if level := accessFromGrant(g.Access); accessRank(level) > accessRank(shared) {
+					shared = level
+				}
+			}
 		case model.GrantSubjectEveryone:
-			if level := accessFromGrant(g.Access); accessRank(level) > accessRank(everyone) {
-				everyone = level
+			if level := accessFromGrant(g.Access); accessRank(level) > accessRank(shared) {
+				shared = level
 			}
 		}
 	}
-	return everyone
+	return shared
 }
 
 // accessFor loads the grants of a book and resolves the caller's level.
 func (s *Service) accessFor(userID, orgID uint, book *model.AddressBook, perms []string) (Access, error) {
 	if book.Scope != model.AddressBookScopeShared {
 		// Personal books never consult grants: ownership alone decides.
-		return AccessFor(perms, book, userID, nil), nil
+		return AccessFor(perms, book, userID, nil, nil), nil
 	}
 	grants, err := s.grantsFor(orgID, book.ID)
 	if err != nil {
 		return AccessNone, err
 	}
-	return AccessFor(perms, book, userID, grants), nil
+	groupIDs, err := s.userGroupIDs(orgID, userID)
+	if err != nil {
+		return AccessNone, err
+	}
+	return AccessFor(perms, book, userID, groupIDs, grants), nil
+}
+
+// userGroupIDs returns the ids of the user's explicit user groups in the
+// organization. A failed lookup fails closed: the caller resolves to the
+// default shared level instead of a level granted through a group the caller
+// may not belong to.
+func (s *Service) userGroupIDs(orgID, userID uint) ([]uint, error) {
+	if userID == 0 {
+		return nil, nil
+	}
+	var ids []uint
+	if err := store.ScopedByOrg(s.db, orgID).Model(&model.UserGroupMember{}).
+		Where("user_id = ?", userID).Pluck("group_id", &ids).Error; err != nil {
+		return nil, fmt.Errorf("load user groups: %w", err)
+	}
+	return ids, nil
 }
 
 // grantsFor returns every grant of one book inside the tenant scope.
@@ -161,17 +198,41 @@ func (s *Service) ListGrants(userID, orgID, bookID uint, perms []string) ([]mode
 // UpsertGrant creates or replaces one subject's grant on a shared book and
 // reports whether a new row was inserted. The unique (book, kind, user, group)
 // index makes the upsert atomic on all three dialects. subjectGroupID is the
-// user group of a user_group grant and 0 for the user and everyone kinds.
+// user group of a user_group grant and 0 for the user and everyone kinds;
+// subjectUserID is normalized to 0 for the everyone and user_group kinds, so a
+// single subject always maps onto one row.
 func (s *Service) UpsertGrant(userID, orgID, bookID, subjectUserID, subjectGroupID uint, subjectKind, accessLevel string, perms []string) (*model.AddressBookGrant, bool, error) {
-	if subjectKind != model.GrantSubjectUser && subjectKind != model.GrantSubjectEveryone {
+	switch subjectKind {
+	case model.GrantSubjectUser:
+	case model.GrantSubjectEveryone:
+	case model.GrantSubjectUserGroup:
+	default:
 		return nil, false, ErrInvalidGrant
 	}
 	if accessLevel != model.GrantAccessRead && accessLevel != model.GrantAccessWrite && accessLevel != model.GrantAccessFull {
 		return nil, false, ErrInvalidGrant
 	}
-	if subjectKind == model.GrantSubjectEveryone {
+	switch subjectKind {
+	case model.GrantSubjectEveryone:
 		subjectUserID = 0
-	} else {
+		subjectGroupID = 0
+	case model.GrantSubjectUserGroup:
+		if subjectGroupID == 0 {
+			return nil, false, ErrInvalidGrant
+		}
+		subjectUserID = 0
+		var count int64
+		if err := store.ScopedByOrg(s.db, orgID).Model(&model.UserGroup{}).
+			Where("id = ?", subjectGroupID).Count(&count).Error; err != nil {
+			return nil, false, err
+		}
+		if count == 0 {
+			// A subject group outside the tenant is indistinguishable from a
+			// missing one.
+			return nil, false, ErrGrantSubjectNotFound
+		}
+	case model.GrantSubjectUser:
+		subjectGroupID = 0
 		if subjectUserID == 0 {
 			return nil, false, ErrInvalidGrant
 		}

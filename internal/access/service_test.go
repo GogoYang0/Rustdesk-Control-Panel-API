@@ -2,6 +2,7 @@ package access_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -51,7 +52,7 @@ func TestAccess_ReservedUserGroupGuard(t *testing.T) {
 	_, err = svc.RenameUserGroup(ctx, org.ID, 1, everyone.ID, "staff")
 	require.ErrorIs(t, err, access.ErrReservedGroup)
 
-	_, err = svc.DeleteUserGroup(ctx, org.ID, 1, everyone.ID)
+	_, _, err = svc.DeleteUserGroup(ctx, org.ID, 1, everyone.ID)
 	require.ErrorIs(t, err, access.ErrReservedGroup)
 
 	_, _, err = svc.ReplaceUserGroupMembers(ctx, org.ID, 1, everyone.ID, []uint{2})
@@ -144,8 +145,10 @@ func TestAccess_DeleteUserGroupCascades(t *testing.T) {
 	}
 	require.NoError(t, st.DB.Create(&rule).Error)
 
-	_, err = svc.DeleteUserGroup(ctx, org.ID, 1, group.ID)
+	removedRules, removedGrants, err := svc.DeleteUserGroup(ctx, org.ID, 1, group.ID)
 	require.NoError(t, err)
+	require.Equal(t, 1, removedRules)
+	require.Zero(t, removedGrants)
 
 	var groups int64
 	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).
@@ -178,6 +181,89 @@ func TestAccess_DeleteUserGroupCascades(t *testing.T) {
 	require.EqualValues(t, 1, defaultRules)
 }
 
+// TestAccess_DeleteUserGroupCascadesTargetsGrantsAndKeepsOwnership pins D9 with
+// the wave-2 relations: a group named as a user_group rule target and as an
+// address-book grant subject is cleaned up in the same transaction, while
+// device ownership (D14) is left alone.
+func TestAccess_DeleteUserGroupCascadesTargetsGrantsAndKeepsOwnership(t *testing.T) {
+	ctx := context.Background()
+	st, svc, org, user := newGroupFixture(t)
+	everyone := everyoneGroup(t, st, org.ID)
+
+	group, err := svc.CreateUserGroup(ctx, org.ID, 1, "Team")
+	require.NoError(t, err)
+	oth, err := svc.CreateUserGroup(ctx, org.ID, 1, "Other")
+	require.NoError(t, err)
+
+	// Both rule directions: group as source, and group as user_group target.
+	sourceRule := model.AccessRule{
+		OrganizationID: org.ID, SourceGroupID: group.ID,
+		TargetKind: model.AccessTargetKindAllDevices,
+	}
+	require.NoError(t, st.DB.Create(&sourceRule).Error)
+	targetRule := model.AccessRule{
+		OrganizationID: org.ID, SourceGroupID: everyone.ID,
+		TargetKind: model.AccessTargetKindUserGroup, TargetGroupID: group.ID,
+	}
+	require.NoError(t, st.DB.Create(&targetRule).Error)
+	// A rule targeting a different group stays.
+	keepRule := model.AccessRule{
+		OrganizationID: org.ID, SourceGroupID: oth.ID,
+		TargetKind: model.AccessTargetKindUserGroup, TargetGroupID: oth.ID,
+	}
+	require.NoError(t, st.DB.Create(&keepRule).Error)
+
+	book := model.AddressBook{OrganizationID: org.ID, Name: "team-book", Scope: model.AddressBookScopeShared}
+	require.NoError(t, st.DB.Create(&book).Error)
+	grant := model.AddressBookGrant{
+		OrganizationID: org.ID, BookID: book.ID,
+		SubjectKind: model.GrantSubjectUserGroup, SubjectGroupID: group.ID,
+		Access: model.GrantAccessRead,
+	}
+	require.NoError(t, st.DB.Create(&grant).Error)
+
+	// D14: ownership survives the group it might have been granted through.
+	device := model.Device{
+		OrganizationID: org.ID, RustdeskID: "1001", Name: "laptop",
+		OwnerUserID: &user.ID,
+	}
+	require.NoError(t, st.DB.Create(&device).Error)
+
+	removedRules, removedGrants, err := svc.DeleteUserGroup(ctx, org.ID, 1, group.ID)
+	require.NoError(t, err)
+	require.Equal(t, 2, removedRules, "both the source rule and the target rule are cascaded")
+	require.Equal(t, 1, removedGrants)
+
+	var rules int64
+	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).Model(&model.AccessRule{}).
+		Where("source_group_id = ? OR (target_kind = ? AND target_group_id = ?)",
+			group.ID, model.AccessTargetKindUserGroup, group.ID).Count(&rules).Error)
+	require.Zero(t, rules)
+
+	var grants int64
+	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).Model(&model.AddressBookGrant{}).
+		Where("subject_kind = ? AND subject_group_id = ?",
+			model.GrantSubjectUserGroup, group.ID).Count(&grants).Error)
+	require.Zero(t, grants)
+
+	var remainingRule int64
+	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).Model(&model.AccessRule{}).
+		Where("id = ?", keepRule.ID).Count(&remainingRule).Error)
+	require.EqualValues(t, 1, remainingRule, "rules about other groups stay")
+
+	var stored model.Device
+	require.NoError(t, store.ScopedByOrg(st.DB, org.ID).First(&stored, device.ID).Error)
+	require.NotNil(t, stored.OwnerUserID)
+	require.EqualValues(t, user.ID, *stored.OwnerUserID, "deleting a group must not clear device ownership")
+
+	var groupAudit model.AuditLog
+	require.NoError(t, store.WithoutTenantScope(st.DB).Model(&model.AuditLog{}).
+		Where("action = ? AND target_id = ?", "access.user_group.delete", fmt.Sprint(group.ID)).
+		First(&groupAudit).Error)
+	require.Contains(t, groupAudit.Detail, `"removed_grants":1`)
+	require.Contains(t, groupAudit.Detail, `"deleted_rules":2`)
+}
+
 // TestAccess_UserGroupCrossTenantNotFound pins tenant scoping: a group id that
 // belongs to another organization is indistinguishable from a missing one.
 func TestAccess_UserGroupCrossTenantNotFound(t *testing.T) {
@@ -191,7 +277,7 @@ func TestAccess_UserGroupCrossTenantNotFound(t *testing.T) {
 	_, err = svc.RenameUserGroup(ctx, orgA.ID, 1, groupB.ID, "hijacked")
 	require.ErrorIs(t, err, access.ErrGroupNotFound)
 
-	_, err = svc.DeleteUserGroup(ctx, orgA.ID, 1, groupB.ID)
+	_, _, err = svc.DeleteUserGroup(ctx, orgA.ID, 1, groupB.ID)
 	require.ErrorIs(t, err, access.ErrGroupNotFound)
 
 	_, _, err = svc.ReplaceUserGroupMembers(ctx, orgA.ID, 1, groupB.ID, nil)
