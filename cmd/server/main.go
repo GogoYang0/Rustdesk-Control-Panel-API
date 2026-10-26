@@ -131,6 +131,22 @@ func main() {
 		lg.Fatal("migrate access permission", zap.Error(err))
 	}
 
+	// v0.10.0 drops the legacy memberships.role string column: role_id is the
+	// only authorization source, and leaving the string behind invites reading
+	// authorization from it again. The order is load-bearing — MigrateRoles
+	// above is what still can read the column and map it onto role_id.
+	if err := authz.MigrateDropLegacyRole(st.DB); err != nil {
+		lg.Fatal("drop legacy membership role", zap.Error(err))
+	}
+
+	// The grant uniqueness index gains the user group as its fourth column.
+	// AutoMigrate leaves an index of the same name alone, so the old shape is
+	// replaced explicitly; until then every user_group grant of one book would
+	// collide on the 0 sentinel.
+	if err := addressbook.MigrateGrantSubjectIndex(st.DB); err != nil {
+		lg.Fatal("rebuild grant subject index", zap.Error(err))
+	}
+
 	// Every organization needs its everyone group and the all-devices rule or
 	// its members would see no devices at all after the upgrade.
 	if err := access.Migrate(st.DB); err != nil {

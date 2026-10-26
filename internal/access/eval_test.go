@@ -48,7 +48,6 @@ func (f *evalFixture) addMember(t *testing.T, email, kind string) model.Membersh
 	membership := model.Membership{
 		OrganizationID: f.org.ID,
 		UserID:         user.ID,
-		Role:           kind,
 		RoleID:         role.ID,
 	}
 	require.NoError(t, f.st.DB.Create(&membership).Error)
@@ -227,7 +226,7 @@ func TestAccess_AdminBypass(t *testing.T) {
 	for _, manager := range []model.Membership{owner, admin} {
 		all, ids, err := f.svc.AllowedDeviceIDs(context.Background(), f.org.ID, manager.UserID)
 		require.NoError(t, err)
-		require.True(t, all, "kind %s must bypass group rules", manager.Role)
+		require.True(t, all, "role %d must bypass group rules", manager.RoleID)
 		require.Empty(t, ids)
 
 		allowed, err := f.svc.CanAccess(context.Background(), f.org.ID, manager.UserID, device.ID)
@@ -303,7 +302,7 @@ func TestAccess_UnresolvedRoleFailsClosed(t *testing.T) {
 	user := model.User{Email: "norole@example.com", PasswordHash: "x", EmailVerified: true}
 	require.NoError(t, f.st.DB.Create(&user).Error)
 	require.NoError(t, f.st.DB.Create(&model.Membership{
-		OrganizationID: f.org.ID, UserID: user.ID, Role: model.RoleOwner,
+		OrganizationID: f.org.ID, UserID: user.ID, RoleID: 1,
 	}).Error)
 	device := f.addDevice(t, "800", false)
 
@@ -319,7 +318,7 @@ func TestAccess_UnresolvedRoleFailsClosed(t *testing.T) {
 	ghost := model.User{Email: "ghostrole@example.com", PasswordHash: "x", EmailVerified: true}
 	require.NoError(t, f.st.DB.Create(&ghost).Error)
 	require.NoError(t, f.st.DB.Create(&model.Membership{
-		OrganizationID: f.org.ID, UserID: ghost.ID, Role: model.RoleOwner, RoleID: 999999,
+		OrganizationID: f.org.ID, UserID: ghost.ID, RoleID: 999999,
 	}).Error)
 	all, ids, err = f.svc.AllowedDeviceIDs(context.Background(), f.org.ID, ghost.ID)
 	require.NoError(t, err)

@@ -126,7 +126,8 @@ func (a *AdminAPI) RenameUserGroup(c *gin.Context, orgId int64, groupId int64) {
 	})
 }
 
-// DeleteUserGroup removes a custom user group and reports cascaded rules.
+// DeleteUserGroup removes a custom user group and reports what it cascaded:
+// access rules and shared-address-book grants that named the group.
 func (a *AdminAPI) DeleteUserGroup(c *gin.Context, orgId int64, groupId int64) {
 	uid, ok := requireUserID(c)
 	if !ok {
@@ -139,7 +140,7 @@ func (a *AdminAPI) DeleteUserGroup(c *gin.Context, orgId int64, groupId int64) {
 	if !a.requirePerm(c, uid, uint(orgId), authz.PermAccessManage) {
 		return
 	}
-	cascaded, err := a.deps.Access.DeleteUserGroup(c.Request.Context(), uint(orgId), uid, uint(groupId))
+	removedRules, removedGrants, err := a.deps.Access.DeleteUserGroup(c.Request.Context(), uint(orgId), uid, uint(groupId))
 	if err != nil {
 		a.writeAccessError(c, err, "delete user group failed")
 		return
@@ -148,7 +149,7 @@ func (a *AdminAPI) DeleteUserGroup(c *gin.Context, orgId int64, groupId int64) {
 	c.JSON(http.StatusOK, gen.UserGroupDeleteResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
-		Data:    gen.UserGroupDeleteData{RemovedRules: cascaded},
+		Data:    gen.UserGroupDeleteData{RemovedRules: removedRules, RemovedGrants: removedGrants},
 	})
 }
 
@@ -411,10 +412,12 @@ func (a *AdminAPI) ReplaceDeviceGroupDevices(c *gin.Context, orgId int64, device
 }
 
 // accessRuleToAPI maps one rule view onto the contract shape. all_devices rules
-// carry a null target id and an empty target name.
+// carry a null target id and an empty target name; both group-target kinds carry
+// the id and the resolved name, so a client can round-trip the rule.
 func accessRuleToAPI(view access.RuleView) gen.AccessRule {
 	var targetID *int64
-	if view.Rule.TargetKind == model.AccessTargetKindDeviceGroup {
+	if view.Rule.TargetKind == model.AccessTargetKindDeviceGroup ||
+		view.Rule.TargetKind == model.AccessTargetKindUserGroup {
 		id := int64(view.Rule.TargetGroupID)
 		targetID = &id
 	}

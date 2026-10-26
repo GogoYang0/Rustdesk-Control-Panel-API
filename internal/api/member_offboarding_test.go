@@ -15,7 +15,7 @@ import (
 func seedMember(t *testing.T, h *harness, orgID int64, userID uint, role string) {
 	t.Helper()
 	require.NoError(t, store.ScopedByOrg(h.db.DB, uint(orgID)).Create(&model.Membership{
-		OrganizationID: uint(orgID), UserID: userID, RoleID: h.roleID(t, uint(orgID), role), Role: role,
+		OrganizationID: uint(orgID), UserID: userID, RoleID: h.roleID(t, uint(orgID), role),
 	}).Error)
 }
 

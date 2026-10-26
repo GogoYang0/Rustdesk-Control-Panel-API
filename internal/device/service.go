@@ -13,6 +13,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
@@ -26,6 +27,14 @@ var ErrDeviceDisabled = errors.New("device is disabled")
 
 // ErrInvalidInput reports client input that does not satisfy the contract.
 var ErrInvalidInput = errors.New("invalid device input")
+
+// ErrOwnerNotMember reports an assignment target that holds no active
+// membership in the device's organization.
+var ErrOwnerNotMember = errors.New("owner is not an active member")
+
+// ErrDeviceGroupNotFound reports a requested device group that does not exist
+// in the organization.
+var ErrDeviceGroupNotFound = errors.New("device group not found")
 
 // Field limits mirror the contract and the column sizes.
 const (
@@ -470,8 +479,65 @@ func (s *Service) ResetBinding(ctx context.Context, orgID, deviceID, actorID uin
 // drives it. Repeating the current state is a successful no-op with no audit
 // row. A service without a recorder refuses the mutation.
 func (s *Service) SetDisabled(ctx context.Context, orgID, deviceID, actorID uint, disabled bool) (*model.Device, error) {
+	return s.Update(ctx, orgID, deviceID, actorID, UpdateInput{Disabled: &disabled})
+}
+
+// AssignInput carries the optional fields of an ownership/annotation update.
+// A nil pointer leaves the field alone; a pointer to 0 clears the owner.
+type AssignInput struct {
+	OwnerUserID *uint
+	Note        *string
+}
+
+// Assign updates the owner and the note of one device. The owner must be an
+// active member of the same organization: ownership decides which devices a
+// user reaches, so pointing it at somebody who cannot authenticate would hide
+// the device from every non-administrator. Setting the same value twice writes
+// no audit row, and a service without a recorder refuses the mutation.
+func (s *Service) Assign(ctx context.Context, orgID, deviceID, actorID uint, in AssignInput) (*model.Device, error) {
+	return s.Update(ctx, orgID, deviceID, actorID, UpdateInput{OwnerUserID: in.OwnerUserID, Note: in.Note})
+}
+
+// maxNoteLen matches the size:255 column of model.Device.Note.
+const maxNoteLen = 255
+
+// UpdateInput carries the fields of one device update. A nil pointer leaves the
+// field alone; OwnerUserID pointed at 0 clears the owner. DeviceGroupID never
+// clears: a device is moved from one group to another (the management API owns
+// the explicit ungrouping).
+type UpdateInput struct {
+	Disabled      *bool
+	OwnerUserID   *uint
+	Note          *string
+	Name          *string
+	DeviceGroupID *uint
+}
+
+// Update applies every requested change to one device inside a single audited
+// transaction: a request that names several fields either takes effect in full
+// or not at all, and each changed field writes its own audit row
+// (device.assign, device.note, device.rename, device.group,
+// device.disable/device.enable). Disabling revokes the device's active compat
+// sessions in the same transaction. Fields left at their current value write no
+// audit row, and a service without a recorder refuses the whole mutation. It
+// never touches the client binding: that belongs to the login path alone.
+func (s *Service) Update(ctx context.Context, orgID, deviceID, actorID uint, in UpdateInput) (*model.Device, error) {
 	if orgID == 0 {
 		return nil, fmt.Errorf("%w: organization is required", ErrInvalidInput)
+	}
+	if in.Note != nil && len([]rune(*in.Note)) > maxNoteLen {
+		return nil, fmt.Errorf("%w: note exceeds %d characters", ErrInvalidInput, maxNoteLen)
+	}
+	if in.Name != nil {
+		if *in.Name == "" {
+			return nil, fmt.Errorf("%w: name is required", ErrInvalidInput)
+		}
+		if len([]rune(*in.Name)) > maxNameLen {
+			return nil, fmt.Errorf("%w: name exceeds %d characters", ErrInvalidInput, maxNameLen)
+		}
+	}
+	if in.DeviceGroupID != nil && *in.DeviceGroupID == 0 {
+		return nil, fmt.Errorf("%w: device_group_id is required", ErrInvalidInput)
 	}
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -488,50 +554,201 @@ func (s *Service) SetDisabled(ctx context.Context, orgID, deviceID, actorID uint
 			}
 			return err
 		}
-		if dev.Disabled == disabled {
-			return nil
-		}
 
 		now := s.now()
-		updates := map[string]any{"disabled": disabled, "updated_at": now}
-		var revoked int64
-		if disabled {
-			updates["disabled_at"] = now
-			updates["disabled_by"] = actorID
-			n, err := revokeDeviceSessions(tx, orgID, dev.RustdeskID, now)
-			if err != nil {
-				return fmt.Errorf("revoke compat sessions: %w", err)
+		updates := map[string]any{}
+
+		ownerChanged := false
+		var ownerFrom, ownerTo any
+		if in.OwnerUserID != nil {
+			next := *in.OwnerUserID
+			if next != 0 {
+				// The target must be an active member whose role still resolves: a
+				// dangling role_id authorizes nothing (authz resolution fails
+				// closed), so pointing ownership at it would hide the device
+				// from every non-administrator. The role set is a subquery of
+				// the same statement, so the check cannot straddle a concurrent
+				// role deletion.
+				var count int64
+				if err := store.ScopedByOrg(tx, orgID).Model(&model.Membership{}).
+					Where("user_id = ? AND disabled = ? AND role_id IN (?)", next, false,
+						authz.ResolvableRoleIDs(tx, orgID)).
+					Count(&count).Error; err != nil {
+					return err
+				}
+				if count == 0 {
+					return ErrOwnerNotMember
+				}
 			}
-			revoked = n
-		} else {
-			updates["disabled_at"] = nil
-			updates["disabled_by"] = uint(0)
+			if !sameOwner(dev.OwnerUserID, next) {
+				ownerChanged = true
+				ownerFrom, ownerTo = nullableID(dev.OwnerUserID), nullableID(&next)
+				if next == 0 {
+					updates["owner_user_id"] = nil
+				} else {
+					updates["owner_user_id"] = next
+				}
+			}
 		}
-		result := store.ScopedByOrg(tx, orgID).Model(&model.Device{}).
-			Where("id = ?", dev.ID).
-			Updates(updates)
-		if result.Error != nil {
-			return result.Error
+
+		noteChanged := false
+		previousNote := dev.Note
+		if in.Note != nil && dev.Note != *in.Note {
+			noteChanged = true
+			updates["note"] = *in.Note
 		}
-		if result.RowsAffected == 0 {
+
+		disabledChanged := false
+		var revoked int64
+		if in.Disabled != nil && dev.Disabled != *in.Disabled {
+			disabledChanged = true
+			updates["disabled"] = *in.Disabled
+			if *in.Disabled {
+				updates["disabled_at"] = now
+				updates["disabled_by"] = actorID
+				n, err := revokeDeviceSessions(tx, orgID, dev.RustdeskID, now)
+				if err != nil {
+					return fmt.Errorf("revoke compat sessions: %w", err)
+				}
+				revoked = n
+			} else {
+				updates["disabled_at"] = nil
+				updates["disabled_by"] = uint(0)
+			}
+		}
+
+		renameChanged := false
+		previousName := dev.Name
+		if in.Name != nil && dev.Name != *in.Name {
+			renameChanged = true
+			updates["name"] = *in.Name
+		}
+
+		groupChanged := false
+		var groupFrom, groupTo any
+		if in.DeviceGroupID != nil && (dev.DeviceGroupID == nil || *dev.DeviceGroupID != *in.DeviceGroupID) {
+			// The group is resolved by the caller, so a dangling id can only
+			// arrive from a race with a group deletion. The row is read with a
+			// write lock on the served dialects, which serialises against
+			// DeleteDeviceGroup: either the deletion has not committed yet and
+			// waits for this transaction (its own ungrouping sweep then sees the
+			// device), or the locked current read reports the group as gone.
+			groupRead := store.ScopedByOrg(tx, orgID).Select("id").Where("id = ?", *in.DeviceGroupID)
+			if tx.Name() != "sqlite" {
+				groupRead = groupRead.Clauses(clause.Locking{Strength: "UPDATE"})
+			}
+			var group model.DeviceGroup
+			err := groupRead.First(&group).Error
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrDeviceGroupNotFound
+			}
+			if err != nil {
+				return err
+			}
+			groupChanged = true
+			groupFrom = nullableID(dev.DeviceGroupID)
+			groupTo = nullableID(in.DeviceGroupID)
+			updates["device_group_id"] = *in.DeviceGroupID
+		}
+
+		if !ownerChanged && !noteChanged && !disabledChanged && !renameChanged && !groupChanged {
+			return nil
+		}
+		updates["updated_at"] = now
+
+		res := store.ScopedByOrg(tx, orgID).Model(&model.Device{}).
+			Where("id = ?", dev.ID).Updates(updates)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
 			return ErrDeviceNotFound
 		}
 
-		action := "device.enable"
-		if disabled {
-			action = "device.disable"
+		if ownerChanged {
+			if err := s.record(tx, audit.Entry{
+				OrganizationID: orgID,
+				ActorUserID:    actorID,
+				Action:         "device.assign",
+				TargetType:     "device",
+				TargetID:       fmt.Sprint(dev.ID),
+				Detail: map[string]any{
+					"rustdesk_id": dev.RustdeskID,
+					"from":        ownerFrom,
+					"to":          ownerTo,
+				},
+			}); err != nil {
+				return err
+			}
 		}
-		return s.record(tx, audit.Entry{
-			OrganizationID: orgID,
-			ActorUserID:    actorID,
-			Action:         action,
-			TargetType:     "device",
-			TargetID:       fmt.Sprint(dev.ID),
-			Detail: map[string]any{
-				"rustdesk_id":      dev.RustdeskID,
-				"revoked_sessions": revoked,
-			},
-		})
+		if noteChanged {
+			if err := s.record(tx, audit.Entry{
+				OrganizationID: orgID,
+				ActorUserID:    actorID,
+				Action:         "device.note",
+				TargetType:     "device",
+				TargetID:       fmt.Sprint(dev.ID),
+				Detail: map[string]any{
+					"rustdesk_id": dev.RustdeskID,
+					"previous":    previousNote,
+					"note":        *in.Note,
+				},
+			}); err != nil {
+				return err
+			}
+		}
+		if disabledChanged {
+			action := "device.enable"
+			if *in.Disabled {
+				action = "device.disable"
+			}
+			if err := s.record(tx, audit.Entry{
+				OrganizationID: orgID,
+				ActorUserID:    actorID,
+				Action:         action,
+				TargetType:     "device",
+				TargetID:       fmt.Sprint(dev.ID),
+				Detail: map[string]any{
+					"rustdesk_id":      dev.RustdeskID,
+					"revoked_sessions": revoked,
+				},
+			}); err != nil {
+				return err
+			}
+		}
+		if renameChanged {
+			if err := s.record(tx, audit.Entry{
+				OrganizationID: orgID,
+				ActorUserID:    actorID,
+				Action:         "device.rename",
+				TargetType:     "device",
+				TargetID:       fmt.Sprint(dev.ID),
+				Detail: map[string]any{
+					"rustdesk_id": dev.RustdeskID,
+					"from":        previousName,
+					"to":          *in.Name,
+				},
+			}); err != nil {
+				return err
+			}
+		}
+		if groupChanged {
+			if err := s.record(tx, audit.Entry{
+				OrganizationID: orgID,
+				ActorUserID:    actorID,
+				Action:         "device.group",
+				TargetType:     "device",
+				TargetID:       fmt.Sprint(dev.ID),
+				Detail: map[string]any{
+					"rustdesk_id": dev.RustdeskID,
+					"from":        groupFrom,
+					"to":          groupTo,
+				},
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -542,6 +759,24 @@ func (s *Service) SetDisabled(ctx context.Context, orgID, deviceID, actorID uint
 		return nil, fmt.Errorf("load device: %w", err)
 	}
 	return &stored, nil
+}
+
+// sameOwner reports whether the stored owner already is the requested one.
+func sameOwner(current *uint, next uint) bool {
+	if next == 0 {
+		return current == nil
+	}
+	return current != nil && *current == next
+}
+
+// nullableID renders a nullable reference for an audit detail. A zero pointer
+// renders as nil because 0 is never a valid id: it means "nobody" or "no
+// group".
+func nullableID(v *uint) any {
+	if v == nil || *v == 0 {
+		return nil
+	}
+	return *v
 }
 
 // revokeDeviceSessions revokes the active compat sessions bound to a rustdesk

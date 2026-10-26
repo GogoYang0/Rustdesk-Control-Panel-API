@@ -17,6 +17,7 @@ import (
 const (
 	AccessRuleTargetKindAllDevices  AccessRuleTargetKind = "all_devices"
 	AccessRuleTargetKindDeviceGroup AccessRuleTargetKind = "device_group"
+	AccessRuleTargetKindUserGroup   AccessRuleTargetKind = "user_group"
 )
 
 // Valid indicates whether the value is a known member of the AccessRuleTargetKind enum.
@@ -25,6 +26,8 @@ func (e AccessRuleTargetKind) Valid() bool {
 	case AccessRuleTargetKindAllDevices:
 		return true
 	case AccessRuleTargetKindDeviceGroup:
+		return true
+	case AccessRuleTargetKindUserGroup:
 		return true
 	default:
 		return false
@@ -90,8 +93,9 @@ func (e AddressBookGrantAccess) Valid() bool {
 
 // Defines values for AddressBookGrantKind.
 const (
-	AddressBookGrantKindEveryone AddressBookGrantKind = "everyone"
-	AddressBookGrantKindUser     AddressBookGrantKind = "user"
+	AddressBookGrantKindEveryone  AddressBookGrantKind = "everyone"
+	AddressBookGrantKindUser      AddressBookGrantKind = "user"
+	AddressBookGrantKindUserGroup AddressBookGrantKind = "user_group"
 )
 
 // Valid indicates whether the value is a known member of the AddressBookGrantKind enum.
@@ -100,6 +104,8 @@ func (e AddressBookGrantKind) Valid() bool {
 	case AddressBookGrantKindEveryone:
 		return true
 	case AddressBookGrantKindUser:
+		return true
+	case AddressBookGrantKindUserGroup:
 		return true
 	default:
 		return false
@@ -567,13 +573,16 @@ type AccessRule struct {
 	// SourceGroupName 源用户组名（含内置 `everyone`）
 	SourceGroupName string `json:"source_group_name"`
 
-	// TargetGroupId 设备组 id；`all_devices` 时为 null
+	// TargetGroupId 目标组 id（设备组或用户组，按 `target_kind` 解释）；`all_devices` 时为 null
 	TargetGroupId *int64 `json:"target_group_id"`
 
-	// TargetGroupName 设备组名；`all_devices` 时为空字符串
+	// TargetGroupName 目标组名；`all_devices` 时为空字符串
 	TargetGroupName string `json:"target_group_name"`
 
 	// TargetKind - device_group：规则指向一个设备组（`target_group_id` 必填）
+	// - user_group：规则指向一个用户组，展开为该组显式成员所拥有的设备
+	//   （v0.10.0；`target_group_id` 必填）。目标为内置 `everyone` 组时语义是
+	//   「所有由**有效成员**归属的设备」（停用/无角色/已移除会籍的归属人贡献空集）
 	// - all_devices：规则指向组织内全部设备（`target_group_id` 必须为空）
 	TargetKind AccessRuleTargetKind `json:"target_kind"`
 }
@@ -583,10 +592,13 @@ type AccessRuleCreateRequest struct {
 	// SourceGroupId 本组织的用户组 id（含 `everyone`）
 	SourceGroupId int64 `json:"source_group_id"`
 
-	// TargetGroupId 设备组 id；`device_group` 时必填，`all_devices` 时不得给出
+	// TargetGroupId 目标组 id（设备组或用户组）；`device_group`/`user_group` 时必填，`all_devices` 时不得给出
 	TargetGroupId *int64 `json:"target_group_id,omitempty"`
 
 	// TargetKind - device_group：规则指向一个设备组（`target_group_id` 必填）
+	// - user_group：规则指向一个用户组，展开为该组显式成员所拥有的设备
+	//   （v0.10.0；`target_group_id` 必填）。目标为内置 `everyone` 组时语义是
+	//   「所有由**有效成员**归属的设备」（停用/无角色/已移除会籍的归属人贡献空集）
 	// - all_devices：规则指向组织内全部设备（`target_group_id` 必须为空）
 	TargetKind AccessRuleTargetKind `json:"target_kind"`
 }
@@ -634,7 +646,10 @@ type AccessRuleResponse struct {
 }
 
 // AccessRuleTargetKind - device_group：规则指向一个设备组（`target_group_id` 必填）
-// - all_devices：规则指向组织内全部设备（`target_group_id` 必须为空）
+//   - user_group：规则指向一个用户组，展开为该组显式成员所拥有的设备
+//     （v0.10.0；`target_group_id` 必填）。目标为内置 `everyone` 组时语义是
+//     「所有由**有效成员**归属的设备」（停用/无角色/已移除会籍的归属人贡献空集）
+//   - all_devices：规则指向组织内全部设备（`target_group_id` 必须为空）
 type AccessRuleTargetKind string
 
 // AddressBook defines model for AddressBook.
@@ -671,13 +686,16 @@ type AddressBookGrant struct {
 	// Access - read：只读（当前共享簿默认成员可读，显式 everyone/user 授权可覆盖）
 	// - write：可替换 peers/tags
 	// - full：可改名、删除簿、管理授权
-	Access      AddressBookGrantAccess `json:"access"`
-	CreatedAt   time.Time              `json:"created_at"`
-	CreatedBy   int64                  `json:"created_by"`
-	Id          int64                  `json:"id"`
-	SubjectKind AddressBookGrantKind   `json:"subject_kind"`
+	Access    AddressBookGrantAccess `json:"access"`
+	CreatedAt time.Time              `json:"created_at"`
+	CreatedBy int64                  `json:"created_by"`
+	Id        int64                  `json:"id"`
 
-	// SubjectUserId `user` 主体为用户 id；`everyone` 为 null
+	// SubjectGroupId `user_group` 主体为用户组 id；`user` 与 `everyone` 为 null
+	SubjectGroupId *int64               `json:"subject_group_id,omitempty"`
+	SubjectKind    AddressBookGrantKind `json:"subject_kind"`
+
+	// SubjectUserId `user` 主体为用户 id；`everyone` 与 `user_group` 为 null
 	SubjectUserId *int64 `json:"subject_user_id,omitempty"`
 }
 
@@ -715,10 +733,13 @@ type AddressBookGrantRequest struct {
 	// Access - read：只读（当前共享簿默认成员可读，显式 everyone/user 授权可覆盖）
 	// - write：可替换 peers/tags
 	// - full：可改名、删除簿、管理授权
-	Access      AddressBookGrantAccess `json:"access"`
-	SubjectKind AddressBookGrantKind   `json:"subject_kind"`
+	Access AddressBookGrantAccess `json:"access"`
 
-	// SubjectUserId `subject_kind=user` 时必填且必须是本组织成员；`everyone` 时必须省略或为 null
+	// SubjectGroupId `subject_kind=user_group` 时必填且必须是本组织的用户组；`user` 与 `everyone` 时必须省略或为 null
+	SubjectGroupId *int64               `json:"subject_group_id,omitempty"`
+	SubjectKind    AddressBookGrantKind `json:"subject_kind"`
+
+	// SubjectUserId `subject_kind=user` 时必填且必须是本组织成员；`everyone` 与 `user_group` 时必须省略或为 null
 	SubjectUserId *int64 `json:"subject_user_id,omitempty"`
 }
 
@@ -1181,12 +1202,22 @@ type Device struct {
 	DeviceGroupId *int64 `json:"device_group_id"`
 
 	// Disabled 设备是否已被停用（停用期间拒绝认领、心跳与票据兑换）
-	Disabled   bool         `json:"disabled"`
-	Id         int64        `json:"id"`
-	LastSeenAt *time.Time   `json:"last_seen_at"`
-	Name       string       `json:"name"`
-	RustdeskId string       `json:"rustdesk_id"`
-	Status     DeviceStatus `json:"status"`
+	Disabled   bool       `json:"disabled"`
+	Id         int64      `json:"id"`
+	LastSeenAt *time.Time `json:"last_seen_at"`
+	Name       string     `json:"name"`
+
+	// Note 运维备注（管理面或客户端 --assign 写入）
+	Note *string `json:"note,omitempty"`
+
+	// OwnerEmail 归属人邮箱（只读展示用）；未归属或用户已不存在时为 null
+	OwnerEmail *string `json:"owner_email,omitempty"`
+
+	// OwnerUserId 设备归属的用户 id；null 表示未归属。归属人始终能在客户端看到并连接该设备
+	// （设备停用或会籍停用时除外），组→组规则也按归属展开。
+	OwnerUserId *int64       `json:"owner_user_id,omitempty"`
+	RustdeskId  string       `json:"rustdesk_id"`
+	Status      DeviceStatus `json:"status"`
 }
 
 // DeviceStatus defines model for Device.Status.
@@ -1196,12 +1227,6 @@ type DeviceStatus string
 type DeviceCreateRequest struct {
 	Name       string `json:"name"`
 	RustdeskId string `json:"rustdesk_id"`
-}
-
-// DeviceDisableRequest defines model for DeviceDisableRequest.
-type DeviceDisableRequest struct {
-	// Disabled true 停用设备，false 恢复
-	Disabled bool `json:"disabled"`
 }
 
 // DeviceGroup defines model for DeviceGroup.
@@ -1387,6 +1412,20 @@ type DeviceResponse struct {
 	Code    ErrorCode `json:"code"`
 	Data    Device    `json:"data"`
 	Message string    `json:"message"`
+}
+
+// DeviceUpdateRequest 按字段更新设备，至少一个字段。`disabled` 与两个归属字段可同时出现，
+// 各自校验并各自写一条审计。
+type DeviceUpdateRequest struct {
+	// Disabled true 停用设备，false 恢复
+	Disabled *bool `json:"disabled,omitempty"`
+
+	// Note 运维备注；`null` 视作清空
+	Note *string `json:"note,omitempty"`
+
+	// OwnerUserId 归属人 id；`null` 清空归属，`0` 非法。目标必须是本组织的有效成员，
+	// 否则 404。
+	OwnerUserId *int64 `json:"owner_user_id,omitempty"`
 }
 
 // EmailVerificationRequest defines model for EmailVerificationRequest.
@@ -2548,7 +2587,10 @@ type UserGroupCreateRequest struct {
 
 // UserGroupDeleteData defines model for UserGroupDeleteData.
 type UserGroupDeleteData struct {
-	// RemovedRules 随组级联删除的访问规则数
+	// RemovedGrants 随组级联删除的共享地址簿授权数（以该组为授权主体）
+	RemovedGrants int `json:"removed_grants"`
+
+	// RemovedRules 随组级联删除的访问规则数（以该组为源，或以该组为 `user_group` 目标）
 	RemovedRules int `json:"removed_rules"`
 }
 
@@ -2846,8 +2888,8 @@ type ReplaceDeviceGroupDevicesJSONRequestBody = DeviceGroupDevicesRequest
 // CreateDeviceJSONRequestBody defines body for CreateDevice for application/json ContentType.
 type CreateDeviceJSONRequestBody = DeviceCreateRequest
 
-// SetDeviceDisabledJSONRequestBody defines body for SetDeviceDisabled for application/json ContentType.
-type SetDeviceDisabledJSONRequestBody = DeviceDisableRequest
+// UpdateDeviceJSONRequestBody defines body for UpdateDevice for application/json ContentType.
+type UpdateDeviceJSONRequestBody = DeviceUpdateRequest
 
 // ResetDeviceBindingJSONRequestBody defines body for ResetDeviceBinding for application/json ContentType.
 type ResetDeviceBindingJSONRequestBody = DeviceRebindRequest
@@ -3037,9 +3079,9 @@ type ServerInterface interface {
 	// CreateDevice 注册设备
 	// (POST /api/v1/orgs/{orgId}/devices)
 	CreateDevice(c *gin.Context, orgId int64)
-	// SetDeviceDisabled 停用或恢复设备
+	// UpdateDevice 更新设备（停用/恢复、归属、备注）
 	// (PATCH /api/v1/orgs/{orgId}/devices/{deviceId})
-	SetDeviceDisabled(c *gin.Context, orgId int64, deviceId int64)
+	UpdateDevice(c *gin.Context, orgId int64, deviceId int64)
 	// DeviceHeartbeat 设备心跳
 	// (POST /api/v1/orgs/{orgId}/devices/{deviceId}/heartbeat)
 	DeviceHeartbeat(c *gin.Context, orgId int64, deviceId int64)
@@ -4632,8 +4674,8 @@ func (siw *ServerInterfaceWrapper) CreateDevice(c *gin.Context) {
 	siw.Handler.CreateDevice(c, orgId)
 }
 
-// SetDeviceDisabled operation middleware
-func (siw *ServerInterfaceWrapper) SetDeviceDisabled(c *gin.Context) {
+// UpdateDevice operation middleware
+func (siw *ServerInterfaceWrapper) UpdateDevice(c *gin.Context) {
 
 	var err error
 	_ = err
@@ -4663,7 +4705,7 @@ func (siw *ServerInterfaceWrapper) SetDeviceDisabled(c *gin.Context) {
 		}
 	}
 
-	siw.Handler.SetDeviceDisabled(c, orgId, deviceId)
+	siw.Handler.UpdateDevice(c, orgId, deviceId)
 }
 
 // DeviceHeartbeat operation middleware
@@ -5748,7 +5790,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/auth/resend-verification", wrapper.ResendVerification)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/heartbeat", wrapper.DeviceHeartbeat)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/rebind", wrapper.ResetDeviceBinding)
-	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId", wrapper.SetDeviceDisabled)
+	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId", wrapper.UpdateDevice)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/sessions", wrapper.ListSessions)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/sessions/:sessionId", wrapper.GetSession)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/policies", wrapper.ListPolicies)

@@ -107,7 +107,8 @@ func TestRecycle_WriteGrantCanDeleteButNotPurge(t *testing.T) {
 	perms := []string{authz.PermAddressBook}
 	_, err = svc.ReplacePeers(ownerID, perms, orgID, book.ID, []PeerInput{{PeerID: "1"}})
 	require.NoError(t, err)
-	_, _, err = svc.UpsertGrant(ownerID, orgID, book.ID, memberID, model.GrantSubjectUser, model.GrantAccessWrite, perms)
+	_, _, err = svc.UpsertGrant(ownerID, orgID, book.ID, memberID, 0,
+		model.GrantSubjectUser, model.GrantAccessWrite, perms)
 	require.NoError(t, err)
 
 	require.NoError(t, svc.DeletePeer(memberID, nil, orgID, book.ID, "1"))
@@ -243,7 +244,7 @@ func TestGrants_DeleteBookRemovesGrants(t *testing.T) {
 	svc, orgID, ownerID, memberID := newGrantFixture(t)
 	book, err := svc.Create(ownerID, orgID, model.AddressBookScopeShared, "team")
 	require.NoError(t, err)
-	_, _, err = svc.UpsertGrant(ownerID, orgID, book.ID, memberID,
+	_, _, err = svc.UpsertGrant(ownerID, orgID, book.ID, memberID, 0,
 		model.GrantSubjectUser, model.GrantAccessRead, []string{authz.PermAddressBook})
 	require.NoError(t, err)
 

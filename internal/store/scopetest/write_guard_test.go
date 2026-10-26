@@ -23,7 +23,7 @@ func TestScopedUpdate_RejectsTenantColumnChange(t *testing.T) {
 	require.NoError(t, db.Create(&orgA).Error)
 	require.NoError(t, db.Create(&orgB).Error)
 
-	m := model.Membership{OrganizationID: orgA.ID, UserID: 1, Role: model.RoleMember}
+	m := model.Membership{OrganizationID: orgA.ID, UserID: 1, RoleID: 3}
 	require.NoError(t, db.Create(&m).Error)
 
 	err := store.ScopedByOrg(db, orgA.ID).
@@ -49,20 +49,20 @@ func TestScopedUpdate_RejectsTenantColumnInMap(t *testing.T) {
 	require.NoError(t, db.Create(&orgA).Error)
 	require.NoError(t, db.Create(&orgB).Error)
 
-	m := model.Membership{OrganizationID: orgA.ID, UserID: 2, Role: model.RoleMember}
+	m := model.Membership{OrganizationID: orgA.ID, UserID: 2, RoleID: 3}
 	require.NoError(t, db.Create(&m).Error)
 
 	err := store.ScopedByOrg(db, orgA.ID).
 		Model(&model.Membership{}).
 		Where("id = ?", m.ID).
-		Updates(map[string]any{"organization_id": orgB.ID, "role": model.RoleAdmin}).Error
+		Updates(map[string]any{"organization_id": orgB.ID, "role_id": uint(2)}).Error
 	require.Error(t, err, "a map update carrying organization_id must be rejected")
 	require.ErrorIs(t, err, store.ErrTenantColumnWrite)
 
 	var reloaded model.Membership
 	require.NoError(t, store.WithoutTenantScope(db).Where("id = ?", m.ID).First(&reloaded).Error)
 	require.Equal(t, orgA.ID, reloaded.OrganizationID)
-	require.Equal(t, model.RoleMember, reloaded.Role, "the whole statement must be rejected, not partially applied")
+	require.Equal(t, uint(3), reloaded.RoleID, "the whole statement must be rejected, not partially applied")
 }
 
 // Ordinary updates inside the tenant keep working — the guard must not turn
@@ -74,17 +74,17 @@ func TestScopedUpdate_AllowsNonTenantColumns(t *testing.T) {
 	org := model.Organization{Name: "write-guard-ok"}
 	require.NoError(t, db.Create(&org).Error)
 
-	m := model.Membership{OrganizationID: org.ID, UserID: 3, Role: model.RoleMember}
+	m := model.Membership{OrganizationID: org.ID, UserID: 3, RoleID: 3}
 	require.NoError(t, db.Create(&m).Error)
 
 	require.NoError(t, store.ScopedByOrg(db, org.ID).
 		Model(&model.Membership{}).
 		Where("id = ?", m.ID).
-		Update("role", model.RoleAdmin).Error)
+		Update("role_id", uint(2)).Error)
 
 	var reloaded model.Membership
 	require.NoError(t, store.WithoutTenantScope(db).Where("id = ?", m.ID).First(&reloaded).Error)
-	require.Equal(t, model.RoleAdmin, reloaded.Role)
+	require.Equal(t, uint(2), reloaded.RoleID)
 }
 
 // The explicit transfer channel is the only way through. It exists so that a
@@ -98,7 +98,7 @@ func TestAllowTenantTransfer_PermitsTenantColumn(t *testing.T) {
 	require.NoError(t, db.Create(&orgA).Error)
 	require.NoError(t, db.Create(&orgB).Error)
 
-	m := model.Membership{OrganizationID: orgA.ID, UserID: 4, Role: model.RoleMember}
+	m := model.Membership{OrganizationID: orgA.ID, UserID: 4, RoleID: 3}
 	require.NoError(t, db.Create(&m).Error)
 
 	store.RegisterTransferRecorder(func(*gorm.DB, store.TransferAudit) error { return nil })
@@ -129,7 +129,7 @@ func TestScopedUpdate_CrossTenantHandleStillGuarded(t *testing.T) {
 	require.NoError(t, db.Create(&orgA).Error)
 	require.NoError(t, db.Create(&orgB).Error)
 
-	m := model.Membership{OrganizationID: orgA.ID, UserID: 5, Role: model.RoleMember}
+	m := model.Membership{OrganizationID: orgA.ID, UserID: 5, RoleID: 3}
 	require.NoError(t, db.Create(&m).Error)
 
 	err := store.WithoutTenantScope(db).

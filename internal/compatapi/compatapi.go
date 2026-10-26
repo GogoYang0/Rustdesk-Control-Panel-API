@@ -14,6 +14,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/access"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/addressbook"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/limit"
 )
@@ -44,7 +45,13 @@ type Deps struct {
 	// Access owns device visibility and reachability. The peer list and (in
 	// the ticket task) ticket issue/redemption share this one evaluation; nil
 	// falls back to a read-only service on the same DB.
-	Access    *access.Service
+	Access *access.Service
+	// Tokens authenticates the personal token the client's `--assign` call
+	// carries; nil falls back to a service on the same DB.
+	Tokens *auth.TokenService
+	// Roles resolves the token owner's live role for the `--assign`
+	// authorization; nil falls back to a service on the same DB.
+	Roles     *authz.RoleService
 	Now       func() time.Time
 	AccessTTL time.Duration
 }
@@ -84,6 +91,12 @@ func Mount(r gin.IRouter, d Deps) *Server {
 		// which is all the compat endpoints need.
 		d.Access = access.NewService(d.DB, nil, nil)
 	}
+	if d.Tokens == nil && d.DB != nil {
+		d.Tokens = auth.NewTokenService(d.DB, d.Now)
+	}
+	if d.Roles == nil && d.DB != nil {
+		d.Roles = authz.NewRoleService(d.DB)
+	}
 	if d.AccessTTL == 0 {
 		d.AccessTTL = 720 * time.Hour
 	}
@@ -92,6 +105,10 @@ func Mount(r gin.IRouter, d Deps) *Server {
 	g := r.Group("/api")
 	g.POST("/login", s.login)
 	g.GET("/login-options", s.loginOptions)
+	// The client's `--assign` call: authenticated by a personal token, not by
+	// the compat session, so it mounts beside /login instead of in the authed
+	// group (D4).
+	g.POST("/devices/cli", s.cliAssign)
 	// The client sends heartbeat/sysinfo without a bearer token (official
 	// protocol); the device binding comes from the most recent active
 	// session carrying the same uuid (裁定 C16).

@@ -23,7 +23,7 @@ func TestScopedUpdate_RejectsTenantColumnInPointerMap(t *testing.T) {
 	require.NoError(t, db.Create(&orgA).Error)
 	require.NoError(t, db.Create(&orgB).Error)
 
-	m := model.Membership{OrganizationID: orgA.ID, UserID: 10, Role: model.RoleMember}
+	m := model.Membership{OrganizationID: orgA.ID, UserID: 10, RoleID: 3}
 	require.NoError(t, db.Create(&m).Error)
 
 	payload := map[string]any{"organization_id": orgB.ID}
@@ -44,7 +44,7 @@ func TestScopedUpdate_AllowsOmittedTenantColumn(t *testing.T) {
 	org := model.Organization{Name: "guard-omit"}
 	require.NoError(t, db.Create(&org).Error)
 
-	m := model.Membership{OrganizationID: org.ID, UserID: 11, Role: model.RoleMember}
+	m := model.Membership{OrganizationID: org.ID, UserID: 11, RoleID: 3}
 	require.NoError(t, db.Create(&m).Error)
 
 	// The loaded row carries OrganizationID; omitting it must make the write legal.
@@ -52,11 +52,11 @@ func TestScopedUpdate_AllowsOmittedTenantColumn(t *testing.T) {
 		Model(&model.Membership{}).
 		Where("id = ?", m.ID).
 		Omit("organization_id").
-		Updates(model.Membership{OrganizationID: org.ID, Role: model.RoleAdmin}).Error)
+		Updates(model.Membership{OrganizationID: org.ID, RoleID: 2}).Error)
 
 	var reloaded model.Membership
 	require.NoError(t, store.WithoutTenantScope(db).Where("id = ?", m.ID).First(&reloaded).Error)
-	require.Equal(t, model.RoleAdmin, reloaded.Role)
+	require.Equal(t, uint(2), reloaded.RoleID)
 	require.Equal(t, org.ID, reloaded.OrganizationID)
 }
 
@@ -69,14 +69,14 @@ func TestScopedUpdate_RejectsExplicitlySelectedZeroTenantColumn(t *testing.T) {
 	org := model.Organization{Name: "guard-select-zero"}
 	require.NoError(t, db.Create(&org).Error)
 
-	m := model.Membership{OrganizationID: org.ID, UserID: 12, Role: model.RoleMember}
+	m := model.Membership{OrganizationID: org.ID, UserID: 12, RoleID: 3}
 	require.NoError(t, db.Create(&m).Error)
 
 	err := store.ScopedByOrg(db, org.ID).
 		Model(&model.Membership{}).
 		Where("id = ?", m.ID).
 		Select("organization_id").
-		Updates(model.Membership{Role: model.RoleAdmin}).Error
+		Updates(model.Membership{RoleID: 2}).Error
 	require.Error(t, err, "an explicitly selected tenant column with a zero value must not be written")
 	require.ErrorIs(t, err, store.ErrTenantColumnWrite)
 }
@@ -91,7 +91,7 @@ func TestScopedUpdate_RejectsTenantColumnThroughQuotedTableName(t *testing.T) {
 	require.NoError(t, db.Create(&orgA).Error)
 	require.NoError(t, db.Create(&orgB).Error)
 
-	m := model.Membership{OrganizationID: orgA.ID, UserID: 13, Role: model.RoleMember}
+	m := model.Membership{OrganizationID: orgA.ID, UserID: 13, RoleID: 3}
 	require.NoError(t, db.Create(&m).Error)
 
 	err := store.WithoutTenantScope(db).
@@ -115,8 +115,8 @@ func TestAllowTenantTransfer_DoesNotOutliveTheStatement(t *testing.T) {
 	require.NoError(t, db.Create(&orgA).Error)
 	require.NoError(t, db.Create(&orgB).Error)
 
-	first := model.Membership{OrganizationID: orgA.ID, UserID: 14, Role: model.RoleMember}
-	second := model.Membership{OrganizationID: orgA.ID, UserID: 15, Role: model.RoleMember}
+	first := model.Membership{OrganizationID: orgA.ID, UserID: 14, RoleID: 3}
+	second := model.Membership{OrganizationID: orgA.ID, UserID: 15, RoleID: 3}
 	require.NoError(t, db.Create(&first).Error)
 	require.NoError(t, db.Create(&second).Error)
 
@@ -153,7 +153,7 @@ func TestScopedUpdate_RejectsTenantColumnInDoublePointerMap(t *testing.T) {
 	require.NoError(t, db.Create(&orgA).Error)
 	require.NoError(t, db.Create(&orgB).Error)
 
-	m := model.Membership{OrganizationID: orgA.ID, UserID: 16, Role: model.RoleMember}
+	m := model.Membership{OrganizationID: orgA.ID, UserID: 16, RoleID: 3}
 	require.NoError(t, db.Create(&m).Error)
 
 	inner := map[string]any{"organization_id": orgB.ID}
@@ -177,10 +177,10 @@ func TestScopedUpdate_RejectsTenantColumnInSliceSave(t *testing.T) {
 	require.NoError(t, db.Create(&orgA).Error)
 	require.NoError(t, db.Create(&orgB).Error)
 
-	m := model.Membership{OrganizationID: orgA.ID, UserID: 17, Role: model.RoleMember}
+	m := model.Membership{OrganizationID: orgA.ID, UserID: 17, RoleID: 3}
 	require.NoError(t, db.Create(&m).Error)
 
-	rows := []model.Membership{{ID: m.ID, OrganizationID: orgB.ID, UserID: 17, Role: model.RoleMember}}
+	rows := []model.Membership{{ID: m.ID, OrganizationID: orgB.ID, UserID: 17, RoleID: 3}}
 	err := store.ScopedByOrg(db, orgA.ID).Save(&rows).Error
 	require.Error(t, err, "a slice save must not bypass the guard")
 	require.ErrorIs(t, err, store.ErrTenantColumnWrite)
@@ -195,14 +195,14 @@ func TestScopedUpdate_AllowsOmittedTenantColumnInMap(t *testing.T) {
 	org := model.Organization{Name: "guard-map-omit"}
 	require.NoError(t, db.Create(&org).Error)
 
-	m := model.Membership{OrganizationID: org.ID, UserID: 18, Role: model.RoleMember}
+	m := model.Membership{OrganizationID: org.ID, UserID: 18, RoleID: 3}
 	require.NoError(t, db.Create(&m).Error)
 
 	require.NoError(t, store.ScopedByOrg(db, org.ID).
 		Model(&model.Membership{}).
 		Where("id = ?", m.ID).
 		Omit("organization_id").
-		Updates(map[string]any{"organization_id": org.ID, "role": model.RoleAdmin}).Error)
+		Updates(map[string]any{"organization_id": org.ID, "role_id": uint(2)}).Error)
 }
 
 // An unaudited transfer is refused before it can touch a row.
@@ -215,7 +215,7 @@ func TestAllowTenantTransfer_RequiresRecorderAndReason(t *testing.T) {
 	require.NoError(t, db.Create(&orgA).Error)
 	require.NoError(t, db.Create(&orgB).Error)
 
-	m := model.Membership{OrganizationID: orgA.ID, UserID: 19, Role: model.RoleMember}
+	m := model.Membership{OrganizationID: orgA.ID, UserID: 19, RoleID: 3}
 	require.NoError(t, db.Create(&m).Error)
 
 	store.RegisterTransferRecorder(nil)
@@ -252,7 +252,7 @@ func TestAllowTenantTransfer_AuditFailureSurfaces(t *testing.T) {
 	require.NoError(t, db.Create(&orgA).Error)
 	require.NoError(t, db.Create(&orgB).Error)
 
-	m := model.Membership{OrganizationID: orgA.ID, UserID: 20, Role: model.RoleMember}
+	m := model.Membership{OrganizationID: orgA.ID, UserID: 20, RoleID: 3}
 	require.NoError(t, db.Create(&m).Error)
 
 	auditErr := errors.New("audit store unavailable")
@@ -290,7 +290,7 @@ func TestAllowTenantTransfer_RejectsAuditSourceMismatch(t *testing.T) {
 	require.NoError(t, db.Create(&orgA).Error)
 	require.NoError(t, db.Create(&orgB).Error)
 
-	m := model.Membership{OrganizationID: orgA.ID, UserID: 21, Role: model.RoleMember}
+	m := model.Membership{OrganizationID: orgA.ID, UserID: 21, RoleID: 3}
 	require.NoError(t, db.Create(&m).Error)
 
 	recorded := false
@@ -331,7 +331,7 @@ func TestAllowTenantTransfer_RejectsUnscopedWrite(t *testing.T) {
 	require.NoError(t, db.Create(&orgA).Error)
 	require.NoError(t, db.Create(&orgB).Error)
 
-	m := model.Membership{OrganizationID: orgA.ID, UserID: 22, Role: model.RoleMember}
+	m := model.Membership{OrganizationID: orgA.ID, UserID: 22, RoleID: 3}
 	require.NoError(t, db.Create(&m).Error)
 
 	store.RegisterTransferRecorder(func(*gorm.DB, store.TransferAudit) error { return nil })
@@ -364,7 +364,7 @@ func TestAllowTenantTransfer_RejectsUpsertTenantColumn(t *testing.T) {
 	require.NoError(t, db.Create(&orgA).Error)
 	require.NoError(t, db.Create(&orgB).Error)
 
-	victim := model.Membership{OrganizationID: orgB.ID, UserID: 23, Role: model.RoleMember}
+	victim := model.Membership{OrganizationID: orgB.ID, UserID: 23, RoleID: 3}
 	require.NoError(t, db.Create(&victim).Error)
 
 	store.RegisterTransferRecorder(func(*gorm.DB, store.TransferAudit) error { return nil })
@@ -374,7 +374,7 @@ func TestAllowTenantTransfer_RejectsUpsertTenantColumn(t *testing.T) {
 		store.TransferAudit{OrganizationID: orgA.ID, Reason: "test"},
 		func(tx *gorm.DB) error {
 			// The id collides with org B's row, so the DO UPDATE lands on it.
-			row := model.Membership{ID: victim.ID, OrganizationID: orgA.ID, UserID: 23, Role: model.RoleMember}
+			row := model.Membership{ID: victim.ID, OrganizationID: orgA.ID, UserID: 23, RoleID: 3}
 			return store.ScopedByOrg(tx, orgA.ID).
 				Clauses(clause.OnConflict{
 					Columns:   []clause.Column{{Name: "id"}},
@@ -401,7 +401,7 @@ func TestAllowTenantTransfer_RejectsSliceSaveTenantColumn(t *testing.T) {
 	require.NoError(t, db.Create(&orgA).Error)
 	require.NoError(t, db.Create(&orgB).Error)
 
-	victim := model.Membership{OrganizationID: orgB.ID, UserID: 24, Role: model.RoleMember}
+	victim := model.Membership{OrganizationID: orgB.ID, UserID: 24, RoleID: 3}
 	require.NoError(t, db.Create(&victim).Error)
 
 	store.RegisterTransferRecorder(func(*gorm.DB, store.TransferAudit) error { return nil })
@@ -410,7 +410,7 @@ func TestAllowTenantTransfer_RejectsSliceSaveTenantColumn(t *testing.T) {
 	err := store.AllowTenantTransfer(db,
 		store.TransferAudit{OrganizationID: orgA.ID, Reason: "test"},
 		func(tx *gorm.DB) error {
-			rows := []model.Membership{{ID: victim.ID, OrganizationID: orgA.ID, UserID: 24, Role: model.RoleMember}}
+			rows := []model.Membership{{ID: victim.ID, OrganizationID: orgA.ID, UserID: 24, RoleID: 3}}
 			return store.ScopedByOrg(tx, orgA.ID).Save(&rows).Error
 		})
 	require.ErrorIs(t, err, store.ErrTenantColumnWrite,
@@ -428,10 +428,10 @@ func TestScopedUpdate_AllowsEchoingScopedOrganizationID(t *testing.T) {
 	org := model.Organization{Name: "guard-echo"}
 	require.NoError(t, db.Create(&org).Error)
 
-	m := model.Membership{OrganizationID: org.ID, UserID: 21, Role: model.RoleMember}
+	m := model.Membership{OrganizationID: org.ID, UserID: 21, RoleID: 3}
 	require.NoError(t, db.Create(&m).Error)
 
-	loaded := model.Membership{OrganizationID: org.ID, Role: model.RoleAdmin}
+	loaded := model.Membership{OrganizationID: org.ID, RoleID: 2}
 	require.NoError(t, store.ScopedByOrg(db, org.ID).
 		Model(&model.Membership{}).
 		Where("id = ?", m.ID).
@@ -439,14 +439,14 @@ func TestScopedUpdate_AllowsEchoingScopedOrganizationID(t *testing.T) {
 
 	var reloaded model.Membership
 	require.NoError(t, store.WithoutTenantScope(db).Where("id = ?", m.ID).First(&reloaded).Error)
-	require.Equal(t, model.RoleAdmin, reloaded.Role)
+	require.Equal(t, uint(2), reloaded.RoleID)
 	require.Equal(t, org.ID, reloaded.OrganizationID, "the echoed id stays the same")
 
 	// WithoutTenantScope still refuses everything: the echo is only allowed
 	// when it matches the scoped organization.
 	other := model.Organization{Name: "guard-echo-other"}
 	require.NoError(t, db.Create(&other).Error)
-	echoing := model.Membership{OrganizationID: org.ID, Role: model.RoleMember}
+	echoing := model.Membership{OrganizationID: org.ID, RoleID: 3}
 	err := store.WithoutTenantScope(db).
 		Model(&model.Membership{}).
 		Where("id = ?", m.ID).
@@ -462,8 +462,8 @@ func TestScopedUpdate_AllowsEchoingScopedOrganizationID(t *testing.T) {
 // value by the Model's field name returns an invalid value and the write
 // would sail through (CWE-863).
 type aliasedOrgDTO struct {
-	Org  uint   `gorm:"column:organization_id"`
-	Role string `gorm:"column:role"`
+	Org    uint `gorm:"column:organization_id"`
+	RoleID uint `gorm:"column:role_id"`
 }
 
 func TestScopedUpdate_RejectsTenantColumnThroughAliasedDTOField(t *testing.T) {
@@ -475,10 +475,10 @@ func TestScopedUpdate_RejectsTenantColumnThroughAliasedDTOField(t *testing.T) {
 	require.NoError(t, db.Create(&orgA).Error)
 	require.NoError(t, db.Create(&orgB).Error)
 
-	m := model.Membership{OrganizationID: orgA.ID, UserID: 22, Role: model.RoleMember}
+	m := model.Membership{OrganizationID: orgA.ID, UserID: 22, RoleID: 3}
 	require.NoError(t, db.Create(&m).Error)
 
-	dto := aliasedOrgDTO{Org: orgB.ID, Role: model.RoleAdmin}
+	dto := aliasedOrgDTO{Org: orgB.ID, RoleID: 2}
 	err := store.ScopedByOrg(db, orgA.ID).
 		Model(&model.Membership{}).
 		Where("id = ?", m.ID).
@@ -489,7 +489,7 @@ func TestScopedUpdate_RejectsTenantColumnThroughAliasedDTOField(t *testing.T) {
 	// Select("OrganizationID") names the column through the Model's field
 	// name while the payload field is aliased: the select check is by
 	// database column name, so this variant is guarded too.
-	dto2 := aliasedOrgDTO{Org: orgB.ID, Role: model.RoleAdmin}
+	dto2 := aliasedOrgDTO{Org: orgB.ID, RoleID: 2}
 	err = store.ScopedByOrg(db, orgA.ID).
 		Model(&model.Membership{}).
 		Where("id = ?", m.ID).

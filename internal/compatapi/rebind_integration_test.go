@@ -73,7 +73,7 @@ func newRebindHarness(t *testing.T) *rebindHarness {
 	h.org = model.Organization{Name: "rebind-org"}
 	require.NoError(t, st.DB.Create(&h.org).Error)
 	require.NoError(t, st.DB.Create(&model.Membership{
-		OrganizationID: h.org.ID, UserID: h.user.ID, Role: model.RoleOwner,
+		OrganizationID: h.org.ID, UserID: h.user.ID, RoleID: 1,
 	}).Error)
 	return h
 }

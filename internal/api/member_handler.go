@@ -360,9 +360,6 @@ func (a *AdminAPI) UpdateMemberRole(c *gin.Context, orgId int64, userId int64) {
 		updates := map[string]any{}
 		if newRole != nil {
 			updates["role_id"] = newRole.ID
-			// The legacy string column is no longer read (staged migration) and is
-			// bounded to 16 bytes: store the kind, not a custom display name.
-			updates["role"] = newRole.Kind
 		}
 		if disableTo != nil {
 			updates["disabled"] = *disableTo
@@ -454,7 +451,6 @@ func (a *AdminAPI) UpdateMemberRole(c *gin.Context, orgId int64, userId int64) {
 	}
 	if newRole != nil {
 		target.RoleID = newRole.ID
-		target.Role = newRole.Name
 	}
 	if disableTo != nil {
 		target.Disabled = *disableTo
@@ -526,7 +522,9 @@ func (a *AdminAPI) respondMember(c *gin.Context, m *model.Membership) {
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not load member")
 		return
 	}
-	name := m.Role
+	// The role row is the only source; a missing row leaves the name empty
+	// instead of guessing from the legacy string (fail closed).
+	name := ""
 	if role, err := a.deps.Roles.RoleByID(m.OrganizationID, m.RoleID); err == nil {
 		name = role.Name
 	}

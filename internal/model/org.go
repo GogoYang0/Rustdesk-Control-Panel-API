@@ -29,9 +29,10 @@ const (
 
 // Membership links a user to an organization with an in-org role.
 //
-// RoleID is the authorization source: it points at a Role row of the same
-// organization (builtin or custom). Role is the legacy string kept for a staged
-// migration only — after MigrateRoles runs it is no longer read.
+// RoleID is the single authorization source: it points at a Role row of the
+// same organization (builtin or custom). The legacy role string that carried
+// the role before v0.10.0 was dropped once every membership had been mapped
+// onto role_id (see authz.MigrateDropLegacyRole).
 //
 // A disabled membership blocks management and compat authentication for that
 // organization without deleting the row: history (devices, sessions, audits)
@@ -41,7 +42,6 @@ type Membership struct {
 	OrganizationID uint       `gorm:"uniqueIndex:idx_membership_org_user;not null" json:"organization_id"`
 	UserID         uint       `gorm:"uniqueIndex:idx_membership_org_user;not null" json:"user_id"`
 	RoleID         uint       `gorm:"not null;default:0;index" json:"role_id"`
-	Role           string     `gorm:"size:16;not null" json:"role"`
 	Disabled       bool       `gorm:"not null;default:false" json:"disabled"`
 	DisabledAt     *time.Time `json:"disabled_at,omitempty"`
 	DisabledBy     uint       `gorm:"not null;default:0" json:"disabled_by,omitempty"`
