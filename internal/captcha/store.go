@@ -31,10 +31,9 @@ type usedEntry struct {
 // was evicted mid-flight can neither promote nor drop a newer one for the same
 // key.
 type Reservation struct {
-	key      string
-	gen      uint64
-	ttl      time.Duration
-	verified bool
+	key string
+	gen uint64
+	ttl time.Duration
 }
 
 // newUsedStore bounds the table; see makeRoomLocked for the eviction policy.

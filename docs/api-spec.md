@@ -86,7 +86,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | 端点 | 说明 |
 |---|---|
 | `POST /api/v1/auth/login` | 邮箱+密码；启用验证码时先校验 `captcha`（v0.10.0）；未验证邮箱返回 `email_not_verified`；连续失败触发 LoginGuard 锁定（429，键含用户名规范化） |
-| `GET /api/v1/auth/captcha` | 公开：返回当前验证码提供商与挑战（v0.10.0）；未启用时 `enabled=false`；独立 IP 限流（429） |
+| `GET /api/v1/auth/captcha` | 公开：返回当前验证码提供商与挑战（v0.10.0）；未启用时 `enabled=false`（不耗限流桶）；**启用时**独立 IP 限流（429） |
 | `POST /api/v1/auth/refresh` | 刷新令牌轮换：旧 refresh 即刻撤销，重放旧令牌会**整族撤销**（重放检测） |
 | `POST /api/v1/auth/verify-email` | 邮箱验证（一次性令牌，邮件下发） |
 | `POST /api/v1/auth/resend-verification` | 重发验证邮件（结果不明时令牌保留，可重试） |
