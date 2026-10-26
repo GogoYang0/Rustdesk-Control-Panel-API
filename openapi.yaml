@@ -55,6 +55,11 @@ info:
     设备组）。普通成员的 `GET /api/peers` 只返回规则允许的设备，票据签发与
     兑换按同一判定拒绝（返回 404，不泄露设备存在性）。`Permission` 新增
     `access.manage`（owner 拥有；admin 由内置集合授予；不可委派）。
+
+    0.10.0 新增**客户端策略下发与心跳断连**：`/orgs/{orgId}/strategies` 系列端点
+    维护 `config_options`（20 个白名单键），策略按「设备 > 设备组 > 成员」三层
+    生效，经 `POST /api/heartbeat` 响应下发给客户端；`Permission` 新增
+    `strategy.manage`、`device.disconnect`（均不可委派）。
 servers:
   - url: http://localhost:8080
     description: 本地开发
@@ -1049,6 +1054,174 @@ paths:
                 $ref: "#/components/schemas/OkResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/strategies:
+    get:
+      operationId: listStrategies
+      summary: 列出客户端策略
+      description: |
+        返回组织的策略，按名称升序。任何组织成员可读（控制台渲染分配需要列表）。
+
+        **Strategy 是配置下发，不是授权**：它改被控端客户端选项（音频、剪贴板、
+        文件传输等），与「能否连接」（访问控制）和「连上后能做什么」（控制角色）
+        是三件不同的事。下发经客户端 30 秒一次的 `POST /api/heartbeat` 完成。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 策略列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StrategyListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+    post:
+      operationId: createStrategy
+      summary: 创建客户端策略
+      description: |
+        需要 `strategy.manage`（owner 全量、admin 由内置集合授予，不可委派）。
+        名称去首尾空白后 1–64 字符，组织内**不区分大小写**唯一（CLI 按名解析，
+        `Ops` 与 `ops` 并存会让解析歧义），重名返回 409。
+
+        `config_options` 只接受白名单键（见 `Strategy.config_options` 说明）；
+        未知键、超过 50 个键、值超过 256 字符或含控制字符均整单 400——客户端
+        对收到的键**没有自己的白名单**，漏一个网络类键（如 `api-server`）就等于
+        把设备交给别人。新策略 `version=1`、`enabled=true`。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StrategyCreateRequest"
+      responses:
+        "201":
+          description: 已创建的策略
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StrategyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/strategies/{strategyId}:
+    patch:
+      operationId: updateStrategy
+      summary: 更新客户端策略
+      description: |
+        需要 `strategy.manage`。按字段更新（`name` / `config_options` /
+        `enabled`），至少给出一项。
+
+        `version` **只在 `config_options` 实际变化时 +1**：它是客户端判断「是否
+        重新套用」的依据，改名或空转的 PATCH 不应触发一次全量下发。
+        `enabled=false` 是停用开关——保留行与分配，但心跳不再下发；重新启用
+        也不改写版本（客户端手上的选项没变）。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: strategyId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StrategyUpdateRequest"
+      responses:
+        "200":
+          description: 更新后的策略
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StrategyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+    delete:
+      operationId: deleteStrategy
+      summary: 删除客户端策略
+      description: |
+        需要 `strategy.manage`。同一事务内清空设备、设备组与会籍上指向该策略的
+        分配（悬空 id 会读作「已分配」却解析不到任何行），并写审计。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: strategyId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -4768,6 +4941,120 @@ components:
             - "null"
           format: int64
           description: 目标控制角色 id；`null` 表示回到组织内置 default 角色
+
+    Strategy:
+      type: object
+      required:
+        - id
+        - name
+        - config_options
+        - version
+        - enabled
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          maxLength: 64
+        config_options:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            下发给客户端的选项键值。**只允许以下 20 个键**（大小写与空格敏感，
+            必须逐字匹配）：
+
+            `enable-audio`、`enable-clipboard`、`enable-file-transfer`、
+            `enable-file-copy-paste`、`enable-camera`、`enable-terminal`、
+            `enable-tunnel`、`enable-remote-restart`、`enable-record-session`、
+            `enable-block-input`、`enable-privacy-mode`、`enable-remote-modify`、
+            `enable-remote-printer`、`enable-check-update`、`disable-change-id`、
+            `disable-settings`、`disable-installation`、`disable-unlock-pin`、
+            `disable-tcp-listen`、`disable-ab`。
+
+            值按客户端原样字符串下发：开关类用 `Y`/`N`；**空值**表示清除该键、
+            回到客户端内置默认。客户端会把下发的键标记为「固定」，用户无法在
+            本机改回。
+
+            网络类键（`api-server`、`custom-rendezvous-server`、`relay-server`、
+            `key`、`whitelist` 等）一律拒绝：它们能改设备指向的服务器或密钥，
+            等于设备接管。
+        version:
+          type: integer
+          format: int64
+          description: 下发版本；作为心跳响应的 `modified_at` 交给客户端比对
+        enabled:
+          type: boolean
+          description: false 表示停用（保留行与分配，但心跳不下发）
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    StrategyCreateRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        config_options:
+          type: object
+          additionalProperties:
+            type: string
+          description: 省略或空对象表示「不下发任何选项」（占位策略）
+
+    StrategyUpdateRequest:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        config_options:
+          type: object
+          additionalProperties:
+            type: string
+        enabled:
+          type: boolean
+
+    StrategyListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Strategy"
+
+    StrategyResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/Strategy"
 
     UserGroupKind:
       type: string

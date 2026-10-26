@@ -2679,6 +2679,95 @@ type SessionResponse struct {
 // - denied：签发阶段被策略拒绝（仅 panel 来源，用于留痕）
 type SessionStatus string
 
+// Strategy defines model for Strategy.
+type Strategy struct {
+	// ConfigOptions 下发给客户端的选项键值。**只允许以下 20 个键**（大小写与空格敏感，
+	// 必须逐字匹配）：
+	//
+	// `enable-audio`、`enable-clipboard`、`enable-file-transfer`、
+	// `enable-file-copy-paste`、`enable-camera`、`enable-terminal`、
+	// `enable-tunnel`、`enable-remote-restart`、`enable-record-session`、
+	// `enable-block-input`、`enable-privacy-mode`、`enable-remote-modify`、
+	// `enable-remote-printer`、`enable-check-update`、`disable-change-id`、
+	// `disable-settings`、`disable-installation`、`disable-unlock-pin`、
+	// `disable-tcp-listen`、`disable-ab`。
+	//
+	// 值按客户端原样字符串下发：开关类用 `Y`/`N`；**空值**表示清除该键、
+	// 回到客户端内置默认。客户端会把下发的键标记为「固定」，用户无法在
+	// 本机改回。
+	//
+	// 网络类键（`api-server`、`custom-rendezvous-server`、`relay-server`、
+	// `key`、`whitelist` 等）一律拒绝：它们能改设备指向的服务器或密钥，
+	// 等于设备接管。
+	ConfigOptions map[string]string `json:"config_options"`
+	CreatedAt     time.Time         `json:"created_at"`
+
+	// Enabled false 表示停用（保留行与分配，但心跳不下发）
+	Enabled   bool      `json:"enabled"`
+	Id        int64     `json:"id"`
+	Name      string    `json:"name"`
+	UpdatedAt time.Time `json:"updated_at"`
+
+	// Version 下发版本；作为心跳响应的 `modified_at` 交给客户端比对
+	Version int64 `json:"version"`
+}
+
+// StrategyCreateRequest defines model for StrategyCreateRequest.
+type StrategyCreateRequest struct {
+	// ConfigOptions 省略或空对象表示「不下发任何选项」（占位策略）
+	ConfigOptions *map[string]string `json:"config_options,omitempty"`
+	Name          string             `json:"name"`
+}
+
+// StrategyListResponse defines model for StrategyListResponse.
+type StrategyListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode  `json:"code"`
+	Data    []Strategy `json:"data"`
+	Message string     `json:"message"`
+}
+
+// StrategyResponse defines model for StrategyResponse.
+type StrategyResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode `json:"code"`
+	Data    Strategy  `json:"data"`
+	Message string    `json:"message"`
+}
+
+// StrategyUpdateRequest defines model for StrategyUpdateRequest.
+type StrategyUpdateRequest struct {
+	ConfigOptions *map[string]string `json:"config_options,omitempty"`
+	Enabled       *bool              `json:"enabled,omitempty"`
+	Name          *string            `json:"name,omitempty"`
+}
+
 // TOTPCodeRequest defines model for TOTPCodeRequest.
 type TOTPCodeRequest struct {
 	// Code 6 位 TOTP 码或恢复码
@@ -3276,6 +3365,12 @@ type CreateRoleJSONRequestBody = RoleCreateRequest
 // UpdateRoleJSONRequestBody defines body for UpdateRole for application/json ContentType.
 type UpdateRoleJSONRequestBody = RoleUpdateRequest
 
+// CreateStrategyJSONRequestBody defines body for CreateStrategy for application/json ContentType.
+type CreateStrategyJSONRequestBody = StrategyCreateRequest
+
+// UpdateStrategyJSONRequestBody defines body for UpdateStrategy for application/json ContentType.
+type UpdateStrategyJSONRequestBody = StrategyUpdateRequest
+
 // IssueTicketJSONRequestBody defines body for IssueTicket for application/json ContentType.
 type IssueTicketJSONRequestBody = TicketCreateRequest
 
@@ -3533,6 +3628,18 @@ type ServerInterface interface {
 	// GetSession 会话详情（含事件序列）
 	// (GET /api/v1/orgs/{orgId}/sessions/{sessionId})
 	GetSession(c *gin.Context, orgId int64, sessionId int64)
+	// ListStrategies 列出客户端策略
+	// (GET /api/v1/orgs/{orgId}/strategies)
+	ListStrategies(c *gin.Context, orgId int64)
+	// CreateStrategy 创建客户端策略
+	// (POST /api/v1/orgs/{orgId}/strategies)
+	CreateStrategy(c *gin.Context, orgId int64)
+	// DeleteStrategy 删除客户端策略
+	// (DELETE /api/v1/orgs/{orgId}/strategies/{strategyId})
+	DeleteStrategy(c *gin.Context, orgId int64, strategyId int64)
+	// UpdateStrategy 更新客户端策略
+	// (PATCH /api/v1/orgs/{orgId}/strategies/{strategyId})
+	UpdateStrategy(c *gin.Context, orgId int64, strategyId int64)
 	// IssueTicket 签发连接票据
 	// (POST /api/v1/orgs/{orgId}/tickets)
 	IssueTicket(c *gin.Context, orgId int64)
@@ -6238,6 +6345,124 @@ func (siw *ServerInterfaceWrapper) GetSession(c *gin.Context) {
 	siw.Handler.GetSession(c, orgId, sessionId)
 }
 
+// ListStrategies operation middleware
+func (siw *ServerInterfaceWrapper) ListStrategies(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListStrategies(c, orgId)
+}
+
+// CreateStrategy operation middleware
+func (siw *ServerInterfaceWrapper) CreateStrategy(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateStrategy(c, orgId)
+}
+
+// DeleteStrategy operation middleware
+func (siw *ServerInterfaceWrapper) DeleteStrategy(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "strategyId" -------------
+	var strategyId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "strategyId", c.Param("strategyId"), &strategyId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter strategyId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteStrategy(c, orgId, strategyId)
+}
+
+// UpdateStrategy operation middleware
+func (siw *ServerInterfaceWrapper) UpdateStrategy(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "strategyId" -------------
+	var strategyId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "strategyId", c.Param("strategyId"), &strategyId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter strategyId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UpdateStrategy(c, orgId, strategyId)
+}
+
 // IssueTicket operation middleware
 func (siw *ServerInterfaceWrapper) IssueTicket(c *gin.Context) {
 
@@ -6565,6 +6790,10 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/control-roles/:roleId", wrapper.DeleteControlRole)
 	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/control-roles/:roleId", wrapper.UpdateControlRole)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId/control-role", wrapper.AssignMemberControlRole)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/strategies", wrapper.ListStrategies)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/strategies", wrapper.CreateStrategy)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/strategies/:strategyId", wrapper.DeleteStrategy)
+	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/strategies/:strategyId", wrapper.UpdateStrategy)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/user-groups", wrapper.ListUserGroups)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/user-groups", wrapper.CreateUserGroup)
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/user-groups/:groupId", wrapper.DeleteUserGroup)

@@ -21,6 +21,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/provision"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/session"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/strategy"
 )
 
 // Deps carries everything the HTTP layer needs.
@@ -73,6 +74,11 @@ type Deps struct {
 	// LogQuery reads the client-reported connection/file logs. NewAdminAPI
 	// derives it from DB when nil.
 	LogQuery *logquery.Service
+
+	// Strategies owns client strategies, their assignments and disconnect
+	// requests. NewAdminAPI derives it from DB and the transactional auditor
+	// when nil.
+	Strategies *strategy.Service
 
 	// Tokens mints and validates personal API tokens. NewRouter derives it from
 	// DB when nil so tests and the entrypoint share the same wiring.
@@ -172,6 +178,12 @@ func NewAdminAPI(d Deps) *AdminAPI {
 	}
 	if d.LogQuery == nil {
 		d.LogQuery = logquery.NewService(d.DB)
+	}
+	if d.Strategies == nil {
+		// Same fail-closed rule as Access: without a transactional recorder
+		// every strategy mutation is refused rather than committed unaudited.
+		recorder, _ := d.Auditor.(audit.TxRecorder)
+		d.Strategies = strategy.NewService(d.DB, recorder, d.Now)
 	}
 	if d.TOTP == nil {
 		d.TOTP = auth.NewTOTPService(d.DB, d.AuthSecret, d.Now)
