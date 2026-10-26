@@ -15,7 +15,7 @@
 | T3 票据/会话快照接线 | ✅ 完成 | `898474a` |
 | T4 客户端审计上报 | ✅ 完成 | `56ba80d` |
 | T5 日志查询导出与保留期 | ✅ 完成 | `8f33e42` |
-| T6 compat 登录 2FA | ⏳ 未开始 | — |
+| T6 compat 登录 2FA | ✅ 完成 | `71ed6aa` |
 | T7 文档与全仓验证 | ⏳ 未开始 | — |
 
 ## Ruling 记录
@@ -138,3 +138,24 @@ go generate ./... 后 git status 无生成漂移（提交后复核）
 - 契约 4 条路径：`GET connection-logs`、`GET connection-logs/export`、`GET file-logs`、`GET file-logs/export`；查询复用 `audit.read` 与 `audit_scope`。
 - 语义：`individual` 只看自己拥有设备（`device_id IN (SELECT id FROM devices WHERE owner_user_id=?)`），`UserID=0` 返回空页而不是全量；导出先计数，超 1000 行返回 400 要求收窄；CSV 单元格做 `= + - @` 前缀转义；导出前后写 `connection_log.export` / `file_log.export` 审计。
 - 变异验证：把 `applyViewer` 的 scope 判断改成 `if true` → `TestConnections_IndividualScopeOnlyOwnDevices` 转红；恢复后全绿、`git diff` 为空。
+
+**R11 compat 2FA 复用 `auth.TOTPService.VerifyLogin`（TOTP 与恢复码都接受），只实现 TOTP，不做 `email_check`。**
+- 理由：客户端对任何非 `email_check` 的 `tfa_type` 都显示「2FA code」（`src/ui/index.tis`），复用服务能少一套加密/重放逻辑。
+- 代价：恢复码也能从客户端登录；与面板共用 `UserTOTP.LastStep`，同一 30 秒窗口内两处登录会互相判重放（安全语义正确，文档要写明）。
+
+**R12 挑战记录第一步解析出的组织，第二步重新解析会籍。**
+- 理由：客户端第二步只回传 `user.name`（email），不带 `#orgID` 后缀；不存组织就无法还原多组织账号的目标组织。
+- 代价：两步之间若会籍被停用，第二步按 fail closed 拒绝。
+
+### T6（compat TOTP 两步登录）验证证据
+
+```
+go test ./internal/compatapi/ -count=1        → ok 7.8s（含 8 个新增 2FA 用例）
+go test ./internal/api/ ./cmd/server/ -count=1 → 全绿
+gofmt -l internal cmd                          → 无输出
+```
+- 第一步：密码通过且 `Enabled` 为真 → 200 `{type:"email_check", tfa_type:"totp", secret, user}`，不发 token、不建会话、不绑定设备；`Enabled` 读失败按 500 fail closed。
+- 第二步：`type=="email_code"` → 校验 `secret`（SHA-256 存库）、TTL 5 分钟、单次消费、设备 id+uuid 常量时间比对、失败 5 次作废；验证码走 TOTP（`LastStep` 防重放），成功后与密码路径共用 `finishLogin`。
+- 失败计入 `Guard` 锁定计数；未启用 TOTP 的账号走 `email_code` 一律 401。
+- 变异验证 1（设备绑定）：移除 DeviceID/UUID 常量时间比对 → `TestLogin_2FAChallengeBoundToDevice` 转红。变异验证 2（`if false &&`）不转红，因为 UUID 分支仍拦截——说明两个条件都需要，已记录。
+- 测试基建：compat/C LI/rebind 三个脚手架补 `UserTOTP` 与 `CompatibilityLoginChallenge` 表；harness 时钟保持**本地时基**（改 UTC 会让既有 `expires_at > time.Now()` 的字符串比较失真，revoke 用例转红）。
