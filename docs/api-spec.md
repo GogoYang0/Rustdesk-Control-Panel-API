@@ -148,7 +148,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `POST /api/v1/orgs/{orgId}/devices` | 注册设备（`device.write` 权限） |
 | `POST .../devices/{deviceId}/heartbeat` | 管理端手动心跳（`source=api`，30s 窗口合并） |
 | `POST .../devices/{deviceId}/rebind` | 重置绑定（`device.write`；`reason` 必填 1..500） |
-| `PATCH .../devices/{deviceId}` | 停用/恢复设备（v0.8.0，`device.write`）：`{disabled}`，停用在同一事务撤销该设备的活跃 compat 会话并写 `device.disable` 审计（恢复写 `device.enable`）；重复设置同一状态为 200 no-op。停用期间该设备拒绝客户端认领、compat 登录、心跳与系统信息（后者静默丢弃），票据兑换返回 409；v0.9.0 起签发停用设备的票据返回 404，且 compat `GET /api/peers` 不返回停用设备（见 §3.10） |
+| `PATCH .../devices/{deviceId}` | 更新设备（v0.8.0 起支持 `disabled`；v0.10.0 扩展为 `DeviceUpdateRequest`，`device.write`）：请求体至少一个字段，**同一请求要么全部生效、要么全部不生效**（单事务）。`disabled`：停用在同一事务撤销该设备的活跃 compat 会话并写 `device.disable` 审计（恢复写 `device.enable`）；停用期间该设备拒绝客户端认领、compat 登录、心跳与系统信息（后者静默丢弃），票据兑换返回 409；v0.9.0 起签发停用设备的票据返回 404，且 compat `GET /api/peers` 不返回停用设备（见 §3.10）。`owner_user_id`：设置/清空归属（`null` 清空、`0` 非法，目标必须是本组织有效成员否则 404）。`note`：运维备注，`null` 或空串清空，≤255 字符。每个实际变化的字段各写一条审计（`device.assign`/`device.note`），重复设置同值为 200 no-op 不写审计 |
 
 > **v0.5.0 起设备换机/重装的恢复流程有管理面入口**：管理员列出设备 → 调 `rebind` 填理由 →
 > 客户端重新登录自动重新认领。**仍不提供 `DELETE` 设备**（硬删除会留下心跳/会话/审计悬空引用；
@@ -163,6 +163,16 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 > `PUT .../device-groups/{deviceGroupId}/devices` 全量替换维护；**删除设备组时系统会把关联设备的
 > `device_group_id` 置为 `null`**（每台设备最多属于一个设备组，换组即从原组移出）；
 > 管理面设备列表对该字段只读，语义见 §3.10。
+
+> **v0.10.0 设备归属（`Device.owner_user_id` / `owner_email` / `note`）**：归属是**用户维度**的事实
+> （`devices.owner_user_id` 可空列），它决定「谁在客户端能看到并连接这台设备」——归属人**始终可见并
+> 可连接自己的设备**（设备停用或会籍停用时除外），无需任何规则；归属不会绕过绑定，也**不因心跳/系统
+> 信息上报而变更**。写入口两条，语义与审计完全一致：管理面 `PATCH`（`owner_user_id` 可被 `null`
+> 清空、`0` 非法，目标必须是本组织「有效成员」——会籍未停用且角色可解析，否则 404）与客户端
+> `--assign`（§4.1）。`owner_email` 为只读展示字段：归属人用户行已不存在时为 `null`（归属本身保留为
+> 历史）。**成员被移除或停用不会自动清空归属**（历史可追溯，管理面仍显示邮箱），其可见性按会籍
+> fail closed（本人不可见、组→组规则也不可见）。改派只需再 `PATCH` 一次 `owner_user_id`，旧归属人
+> 立即不再通过归属看到该设备。
 
 ### 3.4 地址簿
 
@@ -186,10 +196,11 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 - color 越界（<0 或 >uint32）返回 400，不会被截断
 - 审计：替换/创建/删除会产生审计条目（含 actor 与组织）
 
-> **v0.8.0 共享簿授权**：授权主体为 `user`（`subject_user_id` 必填且须为本组织成员）或 `everyone`（无 subject id），访问级别 `read`/`write`/`full`。
+> **v0.8.0 共享簿授权**：授权主体为 `user`（`subject_user_id` 必填且须为本组织成员）、`everyone`（无 subject id）或 v0.10.0 起的 `user_group`（`subject_group_id` 必填且须为本组织的用户组，否则 404），访问级别 `read`/`write`/`full`。
 > 共享簿默认**所有成员可读**（保持 M2 行为），授权只升不降：`everyone` 授权可把全体成员升到 write/full；**显式 user 授权优先于 everyone**，因此可用 user=`read` 把某成员重新收紧。
+> `user_group` 授权对该组的**显式成员**生效（`everyone` 组的隐式成员身份不参与授权）：有效级别取所有命中主体（`everyone`、命中的各 `user_group`）中的**最高档**；显式 user 授权仍然优先（可把某成员从组授权的高档重新收紧）。
 > `addressbook.write` 权限（owner/admin 与持有该码的自定义角色）始终是 full。`write` 可替换 peers/tags；`full` 还可改名、删除簿、管理授权。个人簿没有授权概念（400）。
-> 同一主体重复 POST 为更新（200），首次创建为 201。
+> 同一主体重复 POST 为更新（200），首次创建为 201。**删除用户组时**，以该组为主体的授权在同一事务级联删除，删除响应 `removed_grants` 报告条数（§3.10）。
 
 > **v0.8.0 回收站（D9）**：**所有删除入口都是软删除**——管理面 `DELETE .../peers/{peerId}`，以及客户端整本同步（`PUT .../peers`、legacy `/api/ab` 推送）中缺失的条目。软删除行保留 `(book_id, peer_id)` 身份与 opaque `hash`/`note`，因此再次添加同 id 会**原地恢复**并覆盖字段，而不是新建行。
 > 回收站保留 30 天，由后台清扫每小时永久删除过期行（系统动作，`deleted_by=0`）；`full` 访问可手动永久删除。恢复会 bump `revision`（内容变化），永久删除不改变 live 内容、不动 `revision`。
@@ -293,28 +304,30 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 
 ### 3.10 访问控制（v0.9.0）
 
-> 契约 v0.9.0：用户组、设备组与「只有 allow」的组规则。语义与 RustDesk Server Pro 的 Access Control 对齐：**规则只决定能否连接**；连上后的动作权限（Control Role）与客户端策略下发（Strategy）不在本版本。
+> 契约 v0.9.0：用户组、设备组与「只有 allow」的组规则。语义与 RustDesk Server Pro 的 Access Control 对齐：**规则只决定能否连接**；连上后的动作权限（Control Role）与客户端策略下发（Strategy）不在本版本。v0.10.0 扩充：规则目标新增 `user_group`、设备可归属到用户（§3.3）。
 
 | 端点 | 权限 | 说明 |
 |---|---|---|
 | `GET/POST .../user-groups` | `access.manage` | 列表（含内置 `everyone`，带 `kind` 与 `member_ids`）/ 创建自定义组 |
-| `PATCH/DELETE .../user-groups/{groupId}` | `access.manage` | 改名 / 删除（`everyone` 409；删除级联成员与以该组为源的规则，逐条审计） |
+| `PATCH/DELETE .../user-groups/{groupId}` | `access.manage` | 改名 / 删除（`everyone` 409；删除级联成员、以该组为源的规则、以该组为 `user_group` 目标的规则，以及以该组为主体的地址簿授权，逐条审计，响应报 `removed_rules` 与 `removed_grants`；**不影响设备归属**） |
 | `PUT .../user-groups/{groupId}/members` | `access.manage` | **全量替换**成员；任一 id 非本组织成员 → 400 整单拒绝 |
 | `GET/POST .../device-groups` | `access.manage` | 列表（含 `device_ids`）/ 创建 |
 | `PATCH/DELETE .../device-groups/{deviceGroupId}` | `access.manage` | 改名 / 删除（设备回到未分组，指向该组的规则同事务级联删除） |
 | `PUT .../device-groups/{deviceGroupId}/devices` | `access.manage` | **全量替换**设备；目标设备从原组移入本组（每台设备最多属于一个设备组） |
-| `GET/POST .../access-rules` | `access.manage` | 列表（源组名 + 目标类型/组名）/ 创建（`target_kind`=`device_group`/`all_devices`） |
+| `GET/POST .../access-rules` | `access.manage` | 列表（源组名 + 目标类型/组名）/ 创建（`target_kind`=`device_group`/`all_devices`/`user_group`） |
 | `DELETE .../access-rules/{ruleId}` | `access.manage` | 删除规则 |
 
 判定语义：
 
-- **只有 allow，多条并集**：成员通过显式所属的用户组 ∪ 内置 `everyone` 组获得规则；目标为设备组或全部设备，多条同时命中取**并集**（不是首个命中）。
+- **只有 allow，多条并集**：成员通过显式所属的用户组 ∪ 内置 `everyone` 组获得规则；目标为设备组、用户组或全部设备，多条同时命中取**并集**（不是首个命中）。
 - **设备只属于一个设备组**：`devices.device_group_id` 由设备组全量替换维护；未分组设备（`null`）只被 `all_devices` 规则覆盖。
+- **`user_group` 目标（v0.10.0）**：目标组**显式成员**所拥有的设备（按 `devices.owner_user_id` 展开）。目标成员的会籍停用/缺失时其设备不通过该规则可见（本人仍可见自己的设备）；`everyone` 作为**目标**时语义为「所有有归属的设备」，未归属设备不因此可见（与 `all_devices` 仍有区别）。
+- **本人设备始终可见（v0.10.0）**：普通成员的无规则兜底包含**自己拥有的设备**（归属见 §3.3），因此「登录后只看到自己那台」无需任何规则；停用设备或停用会籍仍不例外。
 - **`everyone` 是保留名 + 隐式成员**：每个组织恰有一个，不可改名/删除，成员不可编辑；`all_devices` 规则存 `target_group_id=0` 哨兵，契约层映射为 `null`。
 - **默认规则可删除**：组织创建（及存量组织启动收敛）时生成 `everyone → all_devices`；它是普通可删除行，删除后重启不会复活，再建精确规则即完成收紧。
 - **管理员绕过**：会籍角色 `owner`/`admin`（按 `role_id` 解析）不受组规则限制，管理面设备列表与票据签发/兑换均为全量；绕过不看是否持有 `access.manage`。
 - **停用优先**：停用的设备与停用/无角色的会籍一律不可达，先于规则判定。
-- **两处执行点**：compat `GET /api/peers`（§4.1）只返回判定允许且未停用的设备；票据签发（按签发人）与兑换（按兑换人）各判一次——**一般访问拒绝返回 `404`**，但兑换一张有效票据且目标设备已停用时返回 `409 conflict` 并记 `device_disabled` 审计（见 §3.6）。已建立的连接不因规则变更中断。
+- **两处执行点**：compat `GET /api/peers`（§4.1）只返回判定允许且未停用的设备；票据签发（按签发人）与兑换（按兑换人）各判一次——**一般访问拒绝返回 `404`**，但兑换一张有效票据且目标设备已停用时返回 `409 conflict` 并记 `device_disabled` 审计（见 §3.6）。已建立的连接不因规则变更中断；**归属变更也不撤销已建立的 compat 会话**（与「规则变更不中断连接」一致，需要立即收权时改用停用设备）。
 - **审计**：组/规则写操作为 `access.user_group.*` / `access.device_group.*` / `access.rule.*`；票据访问拒绝为 `session.ticket.denied`，`Detail` 含 `reason`（`access_control`|`device_disabled`）、`stage`（`issue`|`redeem`）、`device_id`（兑换含 `ticket_id`）。签发阶段遇到停用设备也记 `access_control`（判定层先于管理员绕过拒绝）。
 
 ### 3.11 验证码（v0.10.0）
@@ -340,15 +353,21 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 
 | 端点 | 说明 |
 |---|---|
-| `POST /api/login` | `{username, password, id, uuid, org?}`。`id`=rustdesk 设备 id，`uuid`=客户端实例 uuid。登录成功 = 签发 compat token + **认领设备** |
+| `POST /api/login` | `{username, password, id, uuid, org?}`。`id`=rustdesk 设备 id，`uuid`=客户端实例 uuid。登录成功 = 签发 compat token + **认领设备** + **自动归属**（设备未归属时归给登录用户，v0.10.0） |
+| `POST /api/devices/cli` | 客户端 `--assign` 调用点（v0.10.0，**个人令牌 + `device.write`**，不走 compat 会话）：见下 |
 | `GET /api/login-options` | 登录能力协商（当前返回空列表） |
 | `POST /api/logout` | 撤销当前 compat 会话 |
 | `POST /api/currentUser` | 当前用户信息（需 Bearer） |
 | `GET /api/peers` | 设备列表（需 Bearer）：v0.4.0 起按会话所属组织隔离；v0.9.0 起按访问规则过滤并隐藏停用设备，owner/admin 返回组织内全部**未停用**设备（见 §3.10） |
 
-**设备认领语义**（重要，v0.4.0 事务化 + 绑定代数，v0.5.0 增加重置入口）：
+> **v0.10.0 `POST /api/devices/cli`（`--assign`）**：RustDesk 客户端 `rustdesk --assign` 的真实调用点（已核对上游 `core_main.rs`）。鉴权用**个人令牌**（`Authorization: Bearer rdt_...`，非 compat token）：令牌无效/过期/已撤销 → `401`；**有效权限 = 令牌申请集 ∩ 令牌所有者当前角色权限集**（实时重算），不含 `device.write` → `403`。
+> 请求体白名单（其余字段一律 `400`，错误信息含字段名——**不静默忽略**，因为静默忽略会让调用方误以为下发成功）：`id`（rustdesk id，必填）、`uuid`（接受但**不落库**，绑定只由登录路径维护）、`user_name`（本组织成员的邮箱，精确匹配，非成员/不存在 → `404`）、`device_group_name`（本组织的设备组名，大小写不敏感，不存在 → `404`）、`device_name`（设备显示名，≤128 字符）、`note`（运维备注，≤255 字符）。不支持 `strategy_name`、`address_book_*`、`device_username`：Strategy 未实现（波次 5），后两类在本系统无对应概念。
+> 成功 `200 {"code":"ok"}`。设备或目标用户/组不属于令牌所在组织 → `404`（与"不存在"不可区分）。写入走与管理面 `PATCH` **同一个事务化 service**：每个实际变化的字段各写一条审计（`device.assign`/`device.rename`/`device.group`/`device.note`），请求级不再补记 HTTP 审计。设备的所有写入都限制在令牌绑定的组织内，**不存在跨组织改设备的路径**。
+
+**设备认领语义**（重要，v0.4.0 事务化 + 绑定代数，v0.5.0 增加重置入口，v0.10.0 增加自动归属）：
 
 - 设备 `rustdesk_id` 首次登录时绑定提交的 `uuid`（`BoundUUID`）；之后不同 uuid 登录同一 id → 403 `device is already bound`
+- **登录自动归属（v0.10.0）**：认领成功（含复用既有绑定）后，若设备**尚无归属人**则把 `owner_user_id` 置为本次登录用户（与认领同一事务）；**已归属他人的设备绝不被登录改写**（条件 UPDATE `owner_user_id IS NULL`），管理员改派过的归属保持不动。该归属不经 `--assign` 也可生效——这正是「成员登录后只看到自己那台设备」的默认路径（§3.10）。自动归属不单独写审计（登录路径本身不写领域审计；改派与清空由管理面 `PATCH` 或 `--assign` 完成，二者都留痕）
 - **解绑只能走管理面 `POST .../devices/{deviceId}/rebind`**（owner/admin，`reason` 必填随审计留存）：清 `BoundUUID` + `binding_generation` **无条件 +1** + 同一事务写 `device.binding.reset` 审计。重复调用每次成功且代数继续 +1；审计写失败则绑定不变（fail closed）。**禁止直接改 `bound_uuid` 而不动代数**——那会让旧会话仍能驱动设备。重置不吊销旧机 token，重新认领是**先到先得**：要让新机赢得认领，先让旧机退出登录/离线
 - **认领与会话在同一事务**（#40）：认领成功但会话落库失败会整体回滚——不存在「已绑定但无会话」或「有会话无绑定」的中间态；被拒绝的认领（403）不会留下任何会话行
 - **绑定代数**：每次绑定变更（首次认领、管理员改绑）使 `binding_generation` +1；登录会话快照当时的代数，`heartbeat`/`sysinfo` 校验会话代数与设备当前代数一致——**旧代数会话的活动被丢弃**（不落库、不推进 `last_seen_at`）。绑定的所有权语义因此不依赖 uuid 的保密性
@@ -413,6 +432,7 @@ compat 地址簿**只服务个人地址簿**（`EnsurePersonalBook`），共享�
 - v0.7.0 为**加性变更**：新增 `GET/PUT /orgs/{orgId}/provisioning` 与 `ProvisioningStatus.cleanup_pending`；既有端点请求/响应形状与字段不变
 - v0.9.0 为**加性变更**（新增 user-groups/device-groups/access-rules 端点、`access.manage` 权限目录项与 `Device.device_group_id` 字段），但**票据访问语义有变化**：签发/兑换新增访问控制判定（拒绝 `404 not_found`），停用设备的签发由成功变为 `404`（兑换仍为 `409`）；客户端需处理该分支
 - v0.10.0 为**加性变更**：新增 `GET /auth/captcha`、三个公开凭据请求的可选 `captcha` 字段与三个错误码。**行为变化仅在被部署显式启用验证码后生效**（默认关闭）：启用时三个入口新增 400/503 分支，客户端必须先取挑战；compat `/api/login` 不变
+- v0.10.0（波次 2，组模型下半场）同样是**加性变更**：新增 compat `POST /api/devices/cli`、`Device.owner_user_id/owner_email/note` 三个字段、`AccessRule.target_kind` 的 `user_group` 取值、`AddressBookGrant(.Request).subject_group_id` 与 `AddressBookGrantKind.user_group`、`UserGroupDeleteData.removed_grants`；`PATCH .../devices/{deviceId}` 的 `operationId` 由 `setDeviceDisabled` 更名为 `updateDevice`（**重新生成客户端类型时方法名会变**，请求体形状不变）。**行为变化**：普通成员默认可见自己归属的设备（无需规则）；`memberships.role` 字符串列被一次性删除（数据库级不可回滚点，见[部署指南 §4.2](deployment.md)）
 - v0.4.0 的既有端点请求/响应形状与字段零变更，但 **`ErrorCode` 新增了 `approval_required`**（所有响应共用的 `code` 类型）——对穷尽式 `switch` 或严格枚举解码的客户端属于 **breaking**，重新生成类型后必须处理该分支（0.x 阶段按 C10 以 minor 承载，见 §3.6）
 - v0.10.0 同样**新增了三个 `ErrorCode` 值**（`captcha_required`/`captcha_invalid`/`captcha_unavailable`），并且给 `/auth/login`、`/auth/2fa/verify`、`/invitations/accept` 补上了 `503` 响应声明——对穷尽式 `switch` 或严格枚举解码的客户端与 v0.4.0 同理属于 **breaking**：重新生成类型后必须处理这三个错误码与 503 分支，**即使部署未启用验证码**（枚举是共用的 `code` 类型）
 - **契约变更的 PR 必须同步更新本文档 §3/§4 与 `openapi.yaml`**，并保证 `go generate` 零漂移

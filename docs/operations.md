@@ -94,6 +94,28 @@
 
 **排查**：普通成员客户端设备列表为空 → 检查该成员所在用户组是否被规则覆盖、`everyone → 全部设备` 是否已被删除、设备是否处于停用状态；管理员看不到某设备 → 先查管理面设备列表（全量），规则只影响客户端可见性与票据准入。
 
+### 2.3.1 设备归属运维（v0.10.0）
+
+**归属是什么**：`devices.owner_user_id`，一台设备最多归一名本组织成员。它决定两件事：**归属人本人始终能在客户端看到并连接自己的设备**（无需任何规则，停用设备/停用会籍除外），以及 `用户组 → 用户组` 规则按目标组成员的归属展开设备集合。
+
+**三种归属来源**：
+1. **登录自动归属**（默认路径）：设备尚未归属时，首个登录成功的用户成为归属人；**已归属他人的设备不会被登录改写**（管理员改派过的归属保持不动，除非管理员再次改派）。
+2. **管理面改派**：`PATCH /api/v1/orgs/{orgId}/devices/{deviceId}`，`{"owner_user_id": <userId>}` 改派、`{"owner_user_id": null}` 清空；目标必须是本组织的有效成员（会籍未停用且角色可解析），否则 404。改派与清空各写一条 `device.assign` 审计（`Detail` 含 `from`/`to`）。
+3. **客户端 `--assign`**：`rustdesk --assign --user-name user@example.com --device-name ... --note ...` 按客户端配置的 API 服务器调用 `POST /api/devices/cli`，需要**个人令牌**（`device.write`）。字段白名单外的参数（`--strategy`、`--address-book-*`、`--device-username`）会被 `400` 明确拒绝——这是有意行为，不是兼容性缺陷。
+
+**常见运维与排查**：
+
+| 场景 | 处理 |
+|---|---|
+| 成员看不到自己的设备 | ① 管理面确认该设备的 `owner_user_id` 是不是本人（登录自动归属只在**设备无归属**时生效，设备可能已被改派给他人）；② 设备是否被停用；③ 该成员的会籍是否被停用；④ 改派：`PATCH` 该设备 `owner_user_id` 为本人 |
+| 成员换机后仍看到旧设备 | 归属不变更：清空 `{"owner_user_id": null}` 或改派给新使用者；`rebind` 只换绑定不换归属 |
+| 一台共用机反复被不同人登录 | 归属保持第一次登录的用户（不会被后来者抢走）；需要改派时由管理员显式 `PATCH`，或先清空再由登录自动归属 |
+| 成员离职后设备归属仍在 | 归属**故意保留**（历史可追溯，管理面 `owner_email` 继续显示）：离职成员会籍停用后本人不可见，且其设备也不会通过 `用户组 → 用户组` 规则对他人可见；要交给接任者请显式改派 |
+| `--assign` 返回 404 | 设备/用户/组不在该令牌绑定的组织内，或名称/邮箱不匹配（组名大小写不敏感，邮箱精确匹配）；跨组织操作在契约上不存在 |
+| 改派后旧归属人仍在会话中 | 归属变更**不撤销已建立的连接**（与规则变更一致）；需要立即收权请停用设备（`disabled`，会撤销活跃 compat 会话） |
+
+**删除用户组时**：以该组为源/目标的规则与以该组为主体的地址簿授权同事务级联删除（响应报 `removed_rules` / `removed_grants`）；**设备归属不受影响**（归属是用户维度，删组不清归属）。
+
 ### 2.4 验证码运维（v0.10.0）
 
 **启用前置**：选定 `captcha.provider`（默认 `altcha`），注入对应秘密（`PANEL_CAPTCHA_ALTCHA_KEY` / `PANEL_CAPTCHA_GEETEST_KEY` / `PANEL_CAPTCHA_CAP_SECRET`），并把 `captcha.enabled=true`。启用后 `POST /api/v1/auth/login`、`POST /api/v1/auth/2fa/verify`、`POST /api/v1/invitations/accept` 全部要求 `GET /api/v1/auth/captcha` 发放的挑战；compat `POST /api/login`（原生客户端，**不带 `/api/v1` 前缀**）不受影响。
@@ -237,6 +259,7 @@ Prometheus 指标端点属后续硬化项（见 #31 描述遗留清单）。
 | panel 启动即退出 | 启动序列某步 Fatal：看日志第一行（配置/DB/邮件校验，见部署指南 §4.1） |
 | 审计序列断号 | 先确认是否落在已归档清理区间（`audit.retention.archive`/`audit.retention.purge` + 归档 JSONL/`.sha256` 交叉核对，§3）；保留窗口内的非预期断号立即排查，确认 DB 访问权限是否受控（应用账号以外的写入途径、是否有直连改表） |
 | 普通成员客户端设备列表为空 | 访问控制（§2.3）：成员所在用户组是否有规则覆盖、`everyone → 全部设备` 是否已删除、设备是否停用；票据签发/兑换被拒 `404` 同因 |
+| 成员看不到**自己的**设备 | 设备归属（§2.3.1）：`owner_user_id` 是否指向本人（登录自动归属只在设备无归属时生效，可能已被改派）、设备是否停用、该成员会籍是否停用；改派用管理面 `PATCH` |
 | 管理面 `POST /api/v1/auth/login` / `POST /api/v1/auth/2fa/verify` / `POST /api/v1/invitations/accept` 报 400 `captcha_required`/`captcha_invalid` | 验证码（§2.4）：客户端需先 `GET /api/v1/auth/captcha`；挑战过期/已用/答案错都归为 invalid，重新取挑战再试。compat `POST /api/login` 不接验证码，无需取挑战 |
 | 上述三个管理面入口报 503 `captcha_unavailable` | 提供商不可达且 `failMode=closed`（§2.4）：检查网络/提供商状态/秘密配置；确认后可临时 `open` 或停用验证码 |
 | 全员登录被限流 429 | 挑战端点与登录各有一个独立的 5/min/IP 桶：排查是否有客户端在循环刷 `/api/v1/auth/captcha`；正常用户刷新一两次不会触发 |
