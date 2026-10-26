@@ -1743,6 +1743,276 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
 
+  /api/v1/orgs/{orgId}/connection-logs:
+    get:
+      operationId: listConnectionLogs
+      summary: 查询客户端连接日志
+      description: |
+        按 `started_at desc, id desc` 分页返回客户端上报的连接记录（`audit.read`）。
+        数据来自原生客户端 `POST /api/audit/conn`，不是面板签发的会话记录（后者见
+        sessions）。可见范围由角色 `audit_scope` 决定：`global` 全组织；`individual`
+        只看自己拥有设备（`devices.owner_user_id`）的记录。列表轮询不写审计。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: deviceId
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: rustdeskId
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: 含下界（UTC），比较 `started_at`
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: 含上界（UTC），比较 `started_at`
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: 连接日志页
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectionLogListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/orgs/{orgId}/connection-logs/export:
+    get:
+      operationId: exportConnectionLogs
+      summary: 导出连接日志 CSV
+      description: |
+        与查询相同的过滤条件，单次最多 1000 行（超出返回 400）。CSV 列：
+        `started_at, ended_at, status, rustdesk_id, device_id, ip, conn_id, session_id,
+        note, conn_audit_ref`。导出动作写审计 `connection_log.export`。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: deviceId
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: rustdeskId
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: CSV 文件
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+          content:
+            text/csv:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/orgs/{orgId}/file-logs:
+    get:
+      operationId: listFileLogs
+      summary: 查询客户端文件传输日志
+      description: |
+        按 `created_at desc, id desc` 分页返回客户端上报的文件传输记录（`audit.read`）。
+        数据来自原生客户端 `POST /api/audit/file`。可见范围与连接日志一致。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: deviceId
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: rustdeskId
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: 含下界（UTC），比较 `created_at`
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: 含上界（UTC），比较 `created_at`
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: 文件日志页
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileLogListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/orgs/{orgId}/file-logs/export:
+    get:
+      operationId: exportFileLogs
+      summary: 导出文件传输日志 CSV
+      description: |
+        与查询相同的过滤条件，单次最多 1000 行（超出返回 400）。CSV 列：
+        `created_at, direction, rustdesk_id, device_id, peer_id, conn_id, path, is_file,
+        file_count, ip, name, files`。导出动作写审计 `file_log.export`。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: deviceId
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: rustdeskId
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: CSV 文件
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+          content:
+            text/csv:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
   /api/v1/orgs/{orgId}/audit-retention:
     get:
       operationId: getAuditRetention
@@ -4923,6 +5193,189 @@ components:
         created_at:
           type: string
           format: date-time
+
+    ConnectionLog:
+      type: object
+      description: |
+        客户端上报的一条连接记录（`POST /api/audit/conn`）。`new` 建行、`close` 关闭；
+        与面板签发的 session 是两套记录，后者见 `Session`。
+      required:
+        - id
+        - organization_id
+        - device_id
+        - rustdesk_id
+        - conn_id
+        - session_id
+        - status
+        - started_at
+        - created_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        organization_id:
+          type: integer
+          format: int64
+        device_id:
+          type: integer
+          format: int64
+        rustdesk_id:
+          type: string
+        conn_id:
+          type: integer
+          format: int64
+        session_id:
+          type: integer
+          format: int64
+        ip:
+          type: string
+        status:
+          type: string
+          enum:
+            - open
+            - closed
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        note:
+          type: string
+          maxLength: 512
+        conn_audit_ref:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    ConnectionLogPage:
+      type: object
+      required:
+        - items
+        - page
+        - page_size
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConnectionLog"
+        page:
+          type: integer
+        page_size:
+          type: integer
+          format: int64
+        total:
+          type: integer
+          format: int64
+
+    ConnectionLogListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/ConnectionLogPage"
+
+    FileLog:
+      type: object
+      description: |
+        客户端上报的一条文件传输记录（`POST /api/audit/file`）。`files` 是上游截断到
+        10 项的 `[name, size]` 数组；`info` 为客户端原始 JSON 文本，便于排障。
+      required:
+        - id
+        - organization_id
+        - device_id
+        - rustdesk_id
+        - direction
+        - created_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        organization_id:
+          type: integer
+          format: int64
+        device_id:
+          type: integer
+          format: int64
+        rustdesk_id:
+          type: string
+        peer_id:
+          type: string
+        conn_id:
+          type: integer
+          format: int64
+        direction:
+          type: string
+          enum:
+            - send
+            - receive
+        path:
+          type: string
+        is_file:
+          type: boolean
+        file_count:
+          type: integer
+        files:
+          type: array
+          items:
+            type: array
+            items: {}
+        ip:
+          type: string
+        name:
+          type: string
+        info:
+          type: string
+          description: 客户端上传的原始 info JSON 文本
+        created_at:
+          type: string
+          format: date-time
+
+    FileLogPage:
+      type: object
+      required:
+        - items
+        - page
+        - page_size
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/FileLog"
+        page:
+          type: integer
+        page_size:
+          type: integer
+          format: int64
+        total:
+          type: integer
+          format: int64
+
+    FileLogListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/FileLogPage"
 
     AuditLogPage:
       type: object

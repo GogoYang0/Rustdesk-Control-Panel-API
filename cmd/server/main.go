@@ -428,6 +428,20 @@ func main() {
 		lg.Fatal("register audit nonce sweep", zap.Error(err))
 	}
 
+	// Client connection/file logs follow the organization's audit retention
+	// window (0 = keep forever). They are evidence rather than an archive, so
+	// the cutoff is the only bound: no JSONL pass precedes the delete.
+	if err := sched.Register(worker.Task{
+		Name:       "client-log-retention",
+		Interval:   time.Hour,
+		RunOnStart: true,
+		Run: func(ctx context.Context) (int64, error) {
+			return logquery.Prune(ctx, st.DB, time.Now())
+		},
+	}); err != nil {
+		lg.Fatal("register client log retention sweep", zap.Error(err))
+	}
+
 	if cfg.Logcollect.RetentionSweepInterval > 0 {
 		if err := sched.Register(worker.Task{
 			Name:     "logcollect-retention",

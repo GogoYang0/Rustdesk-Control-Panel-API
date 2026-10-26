@@ -17,6 +17,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/captcha"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/controlrole"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logquery"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/provision"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/session"
@@ -68,6 +69,10 @@ type Deps struct {
 	// ControlRoles owns in-session roles and member assignments. NewAdminAPI
 	// derives it from DB and the transactional auditor when nil.
 	ControlRoles *controlrole.Service
+
+	// LogQuery reads the client-reported connection/file logs. NewAdminAPI
+	// derives it from DB when nil.
+	LogQuery *logquery.Service
 
 	// Tokens mints and validates personal API tokens. NewRouter derives it from
 	// DB when nil so tests and the entrypoint share the same wiring.
@@ -164,6 +169,9 @@ func NewAdminAPI(d Deps) *AdminAPI {
 		// role mutation is refused rather than committed unaudited.
 		recorder, _ := d.Auditor.(audit.TxRecorder)
 		d.ControlRoles = controlrole.NewService(d.DB, recorder, d.Now)
+	}
+	if d.LogQuery == nil {
+		d.LogQuery = logquery.NewService(d.DB)
 	}
 	if d.TOTP == nil {
 		d.TOTP = auth.NewTOTPService(d.DB, d.AuthSecret, d.Now)

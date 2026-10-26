@@ -193,6 +193,24 @@ func (e ApprovalStatus) Valid() bool {
 	}
 }
 
+// Defines values for ConnectionLogStatus.
+const (
+	ConnectionLogStatusClosed ConnectionLogStatus = "closed"
+	ConnectionLogStatusOpen   ConnectionLogStatus = "open"
+)
+
+// Valid indicates whether the value is a known member of the ConnectionLogStatus enum.
+func (e ConnectionLogStatus) Valid() bool {
+	switch e {
+	case ConnectionLogStatusClosed:
+		return true
+	case ConnectionLogStatusOpen:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ControlPermissionState.
 const (
 	Disable   ControlPermissionState = "disable"
@@ -298,6 +316,24 @@ func (e ErrorCode) Valid() bool {
 	case ErrorCodeTwoFactorRequired:
 		return true
 	case ErrorCodeUnauthorized:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for FileLogDirection.
+const (
+	Receive FileLogDirection = "receive"
+	Send    FileLogDirection = "send"
+)
+
+// Valid indicates whether the value is a known member of the FileLogDirection enum.
+func (e FileLogDirection) Valid() bool {
+	switch e {
+	case Receive:
+		return true
+	case Send:
 		return true
 	default:
 		return false
@@ -1232,6 +1268,56 @@ type CaptchaProof struct {
 	Response map[string]string `json:"response"`
 }
 
+// ConnectionLog 客户端上报的一条连接记录（`POST /api/audit/conn`）。`new` 建行、`close` 关闭；
+// 与面板签发的 session 是两套记录，后者见 `Session`。
+type ConnectionLog struct {
+	ConnAuditRef   *string             `json:"conn_audit_ref,omitempty"`
+	ConnId         int64               `json:"conn_id"`
+	CreatedAt      time.Time           `json:"created_at"`
+	DeviceId       int64               `json:"device_id"`
+	EndedAt        *time.Time          `json:"ended_at,omitempty"`
+	Id             int64               `json:"id"`
+	Ip             *string             `json:"ip,omitempty"`
+	Note           *string             `json:"note,omitempty"`
+	OrganizationId int64               `json:"organization_id"`
+	RustdeskId     string              `json:"rustdesk_id"`
+	SessionId      int64               `json:"session_id"`
+	StartedAt      time.Time           `json:"started_at"`
+	Status         ConnectionLogStatus `json:"status"`
+}
+
+// ConnectionLogStatus defines model for ConnectionLog.Status.
+type ConnectionLogStatus string
+
+// ConnectionLogListResponse defines model for ConnectionLogListResponse.
+type ConnectionLogListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode         `json:"code"`
+	Data    ConnectionLogPage `json:"data"`
+	Message string            `json:"message"`
+}
+
+// ConnectionLogPage defines model for ConnectionLogPage.
+type ConnectionLogPage struct {
+	Items    []ConnectionLog `json:"items"`
+	Page     int             `json:"page"`
+	PageSize int64           `json:"page_size"`
+	Total    int64           `json:"total"`
+}
+
 // ControlPermissionState 单项权限的三态（对齐 RustDesk Server Pro）：
 // - use_client：不覆盖被控端本地设置
 // - enable：显式启用（覆盖本地设置）
@@ -1622,6 +1708,60 @@ type ErrorResponse struct {
 	// 客户端用它调用 `POST /auth/2fa/verify` 完成第二步登录。
 	Data    *map[string]interface{} `json:"data,omitempty"`
 	Message string                  `json:"message"`
+}
+
+// FileLog 客户端上报的一条文件传输记录（`POST /api/audit/file`）。`files` 是上游截断到
+// 10 项的 `[name, size]` 数组；`info` 为客户端原始 JSON 文本，便于排障。
+type FileLog struct {
+	ConnId    *int64           `json:"conn_id,omitempty"`
+	CreatedAt time.Time        `json:"created_at"`
+	DeviceId  int64            `json:"device_id"`
+	Direction FileLogDirection `json:"direction"`
+	FileCount *int             `json:"file_count,omitempty"`
+	Files     *[][]interface{} `json:"files,omitempty"`
+	Id        int64            `json:"id"`
+
+	// Info 客户端上传的原始 info JSON 文本
+	Info           *string `json:"info,omitempty"`
+	Ip             *string `json:"ip,omitempty"`
+	IsFile         *bool   `json:"is_file,omitempty"`
+	Name           *string `json:"name,omitempty"`
+	OrganizationId int64   `json:"organization_id"`
+	Path           *string `json:"path,omitempty"`
+	PeerId         *string `json:"peer_id,omitempty"`
+	RustdeskId     string  `json:"rustdesk_id"`
+}
+
+// FileLogDirection defines model for FileLog.Direction.
+type FileLogDirection string
+
+// FileLogListResponse defines model for FileLogListResponse.
+type FileLogListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode   `json:"code"`
+	Data    FileLogPage `json:"data"`
+	Message string      `json:"message"`
+}
+
+// FileLogPage defines model for FileLogPage.
+type FileLogPage struct {
+	Items    []FileLog `json:"items"`
+	Page     int       `json:"page"`
+	PageSize int64     `json:"page_size"`
+	Total    int64     `json:"total"`
 }
 
 // Invitation defines model for Invitation.
@@ -2941,6 +3081,28 @@ type ExportAuditLogsParams struct {
 	To          *time.Time `form:"to,omitempty" json:"to,omitempty"`
 }
 
+// ListConnectionLogsParams defines parameters for ListConnectionLogs.
+type ListConnectionLogsParams struct {
+	DeviceId   *int64  `form:"deviceId,omitempty" json:"deviceId,omitempty"`
+	RustdeskId *string `form:"rustdeskId,omitempty" json:"rustdeskId,omitempty"`
+
+	// From 含下界（UTC），比较 `started_at`
+	From *time.Time `form:"from,omitempty" json:"from,omitempty"`
+
+	// To 含上界（UTC），比较 `started_at`
+	To       *time.Time `form:"to,omitempty" json:"to,omitempty"`
+	Page     *int       `form:"page,omitempty" json:"page,omitempty"`
+	PageSize *int       `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
+// ExportConnectionLogsParams defines parameters for ExportConnectionLogs.
+type ExportConnectionLogsParams struct {
+	DeviceId   *int64     `form:"deviceId,omitempty" json:"deviceId,omitempty"`
+	RustdeskId *string    `form:"rustdeskId,omitempty" json:"rustdeskId,omitempty"`
+	From       *time.Time `form:"from,omitempty" json:"from,omitempty"`
+	To         *time.Time `form:"to,omitempty" json:"to,omitempty"`
+}
+
 // ListDevicesParams defines parameters for ListDevices.
 type ListDevicesParams struct {
 	// Q 按名称或 rustdesk_id 大小写不敏感子串匹配
@@ -2950,6 +3112,28 @@ type ListDevicesParams struct {
 	Bound    *bool `form:"bound,omitempty" json:"bound,omitempty"`
 	Page     *int  `form:"page,omitempty" json:"page,omitempty"`
 	PageSize *int  `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
+// ListFileLogsParams defines parameters for ListFileLogs.
+type ListFileLogsParams struct {
+	DeviceId   *int64  `form:"deviceId,omitempty" json:"deviceId,omitempty"`
+	RustdeskId *string `form:"rustdeskId,omitempty" json:"rustdeskId,omitempty"`
+
+	// From 含下界（UTC），比较 `created_at`
+	From *time.Time `form:"from,omitempty" json:"from,omitempty"`
+
+	// To 含上界（UTC），比较 `created_at`
+	To       *time.Time `form:"to,omitempty" json:"to,omitempty"`
+	Page     *int       `form:"page,omitempty" json:"page,omitempty"`
+	PageSize *int       `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
+// ExportFileLogsParams defines parameters for ExportFileLogs.
+type ExportFileLogsParams struct {
+	DeviceId   *int64     `form:"deviceId,omitempty" json:"deviceId,omitempty"`
+	RustdeskId *string    `form:"rustdeskId,omitempty" json:"rustdeskId,omitempty"`
+	From       *time.Time `form:"from,omitempty" json:"from,omitempty"`
+	To         *time.Time `form:"to,omitempty" json:"to,omitempty"`
 }
 
 // ListLogEventsParams defines parameters for ListLogEvents.
@@ -3232,6 +3416,12 @@ type ServerInterface interface {
 	// SetAuditRetention 设置审计保留期
 	// (PUT /api/v1/orgs/{orgId}/audit-retention)
 	SetAuditRetention(c *gin.Context, orgId int64)
+	// ListConnectionLogs 查询客户端连接日志
+	// (GET /api/v1/orgs/{orgId}/connection-logs)
+	ListConnectionLogs(c *gin.Context, orgId int64, params ListConnectionLogsParams)
+	// ExportConnectionLogs 导出连接日志 CSV
+	// (GET /api/v1/orgs/{orgId}/connection-logs/export)
+	ExportConnectionLogs(c *gin.Context, orgId int64, params ExportConnectionLogsParams)
 	// ListControlRoles 列出控制角色
 	// (GET /api/v1/orgs/{orgId}/control-roles)
 	ListControlRoles(c *gin.Context, orgId int64)
@@ -3274,6 +3464,12 @@ type ServerInterface interface {
 	// ResetDeviceBinding 重置设备绑定
 	// (POST /api/v1/orgs/{orgId}/devices/{deviceId}/rebind)
 	ResetDeviceBinding(c *gin.Context, orgId int64, deviceId int64)
+	// ListFileLogs 查询客户端文件传输日志
+	// (GET /api/v1/orgs/{orgId}/file-logs)
+	ListFileLogs(c *gin.Context, orgId int64, params ListFileLogsParams)
+	// ExportFileLogs 导出文件传输日志 CSV
+	// (GET /api/v1/orgs/{orgId}/file-logs/export)
+	ExportFileLogs(c *gin.Context, orgId int64, params ExportFileLogsParams)
 	// CreateInvitation 邀请成员加入组织
 	// (POST /api/v1/orgs/{orgId}/invitations)
 	CreateInvitation(c *gin.Context, orgId int64)
@@ -4626,6 +4822,142 @@ func (siw *ServerInterfaceWrapper) SetAuditRetention(c *gin.Context) {
 	siw.Handler.SetAuditRetention(c, orgId)
 }
 
+// ListConnectionLogs operation middleware
+func (siw *ServerInterfaceWrapper) ListConnectionLogs(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListConnectionLogsParams
+
+	// ------------- Optional query parameter "deviceId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "deviceId", c.Request.URL.Query(), &params.DeviceId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "rustdeskId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "rustdeskId", c.Request.URL.Query(), &params.RustdeskId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter rustdeskId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "from" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "from", c.Request.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter from: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "to" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "to", c.Request.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter to: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "page" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "page", c.Request.URL.Query(), &params.Page, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter page: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "pageSize" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "pageSize", c.Request.URL.Query(), &params.PageSize, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter pageSize: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListConnectionLogs(c, orgId, params)
+}
+
+// ExportConnectionLogs operation middleware
+func (siw *ServerInterfaceWrapper) ExportConnectionLogs(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ExportConnectionLogsParams
+
+	// ------------- Optional query parameter "deviceId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "deviceId", c.Request.URL.Query(), &params.DeviceId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "rustdeskId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "rustdeskId", c.Request.URL.Query(), &params.RustdeskId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter rustdeskId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "from" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "from", c.Request.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter from: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "to" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "to", c.Request.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter to: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ExportConnectionLogs(c, orgId, params)
+}
+
 // ListControlRoles operation middleware
 func (siw *ServerInterfaceWrapper) ListControlRoles(c *gin.Context) {
 
@@ -5081,6 +5413,142 @@ func (siw *ServerInterfaceWrapper) ResetDeviceBinding(c *gin.Context) {
 	}
 
 	siw.Handler.ResetDeviceBinding(c, orgId, deviceId)
+}
+
+// ListFileLogs operation middleware
+func (siw *ServerInterfaceWrapper) ListFileLogs(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListFileLogsParams
+
+	// ------------- Optional query parameter "deviceId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "deviceId", c.Request.URL.Query(), &params.DeviceId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "rustdeskId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "rustdeskId", c.Request.URL.Query(), &params.RustdeskId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter rustdeskId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "from" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "from", c.Request.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter from: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "to" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "to", c.Request.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter to: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "page" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "page", c.Request.URL.Query(), &params.Page, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter page: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "pageSize" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "pageSize", c.Request.URL.Query(), &params.PageSize, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter pageSize: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListFileLogs(c, orgId, params)
+}
+
+// ExportFileLogs operation middleware
+func (siw *ServerInterfaceWrapper) ExportFileLogs(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ExportFileLogsParams
+
+	// ------------- Optional query parameter "deviceId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "deviceId", c.Request.URL.Query(), &params.DeviceId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "rustdeskId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "rustdeskId", c.Request.URL.Query(), &params.RustdeskId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter rustdeskId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "from" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "from", c.Request.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter from: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "to" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "to", c.Request.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter to: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ExportFileLogs(c, orgId, params)
 }
 
 // CreateInvitation operation middleware
@@ -6109,6 +6577,10 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/access-rules/:ruleId", wrapper.DeleteAccessRule)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-logs", wrapper.ListAuditLogs)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-logs/export", wrapper.ExportAuditLogs)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/connection-logs", wrapper.ListConnectionLogs)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/connection-logs/export", wrapper.ExportConnectionLogs)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/file-logs", wrapper.ListFileLogs)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/file-logs/export", wrapper.ExportFileLogs)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-retention", wrapper.GetAuditRetention)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/audit-retention", wrapper.SetAuditRetention)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/provisioning", wrapper.GetProvisioning)
