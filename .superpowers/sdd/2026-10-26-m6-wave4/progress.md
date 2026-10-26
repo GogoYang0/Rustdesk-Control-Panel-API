@@ -18,7 +18,7 @@
 | T2 白名单 + CRUD | ✅ 完成 | `f001fda` |
 | T3 生效解析 + 心跳下发 | ✅ 完成 | `afb5c64` + `4f5d05c` |
 | T4 断连 | ✅ 完成 | `fff8ecf` |
-| T5 分配 + CLI strategy_name | ⏳ 未开始 | — |
+| T5 分配 + CLI strategy_name | ✅ 完成 | `b42e35a` |
 | T6 文档 + 评审 | ⏳ 未开始 | — |
 
 ## Ruling 指针
@@ -119,3 +119,25 @@ go generate ./... 后 git status --porcelain -- gen openapi.yaml → 空
 - worker：`disconnect-expiry` 每 5 分钟扫描 `expires_at <= now` 的 pending 行，标记 expired 并写系统审计。
 - 变异验证 1（空连接不消耗）：删掉 `len(conns)==0` 早退 → `TestDisconnect_NoConnsKeepsPending` 转红。
 - 变异验证 2（连接号校验）：`float64` 分支改成无校验直接转换 → `TestHeartbeat_IgnoresInvalidConnIDs` 转红。
+
+**R8 分配端点与设备更新共用「未给出字段」的严格语义。**
+- 理由：`PUT .../strategy` 的 `strategy_id` 是必填项（可显式为 `null`）；空体 `{}` 返回 400 而不是「清除」。控制角色分配在波次 3 已经踩过这个坑（空体静默清空）。生成的结构体分不出「缺失」与「null」，因此按原始 map 判键存在。
+- 代价：调用方必须显式传 `{"strategy_id": null}` 才能清除。
+
+**R9 CLI 的 `strategy_name` 在设备更新之前解析，分配在更新之后执行。**
+- 理由：名字解析失败（404）必须让整个 `--assign` 失败，不能留下「备注改了、策略没分配」的半状态。分配本身是第二步事务，失败返回 500 并记日志——设备更新已提交这一点在响应里无法回滚，但分配失败的概率极低（单行 UPDATE），且失败原因会进日志。
+- 代价：极端情况下可能出现「设备信息已更新、策略未分配」，需要运维重跑一次 `--assign`。
+
+### T5 证据
+
+```
+go test ./internal/api/ -run TestStrategyAssign_       → ok（3 个用例）
+go test ./internal/compatapi/ -run TestCLIAssign_     → ok（5 个用例，含 2 个既有回归）
+go test ./internal/api/ ./internal/compatapi/ ./internal/strategy/ -count=1 → 全绿
+go generate ./... 后 git status --porcelain -- gen openapi.yaml → 空
+```
+
+- 契约：3 条 `PUT .../strategy` 路径（device / device-group / member）+ `StrategyAssignmentRequest`；`Device` / `DeviceGroup` / `Member` 三个 schema 增加可空 `strategy_id` 并回读（设备列表、设备组列表、成员列表都已断言）。
+- CLI：`cliAssignFields` 增加 `strategy_name`（反转波次 2 的 D5），解析大小写不敏感、未知 404、空串 400；成功写 `strategy.assign` 审计。
+- 变异验证（跨租户）：把 `assign` 里的「策略必须属于本组织」查询短路掉 → `TestAssign_RejectsForeignTargets` 转红。
+- 备注：`openapi.yaml` 的 Python 写入若不显式 `newline='\n'`，在 Windows 上会整文件转成 CRLF，导致锚点匹配与索引状态混乱；本任务已把工作副本统一为 LF 并复核 `git status` 干净。
