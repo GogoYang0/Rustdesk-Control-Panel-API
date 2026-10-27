@@ -156,3 +156,50 @@ func (s *Service) markConflict(ctx context.Context, identityID uint, now time.Ti
 	return s.db.WithContext(ctx).Model(&model.UserIdentity{}).
 		Where("id = ?", identityID).Update("conflict_at", now).Error
 }
+
+// ListIdentities returns the caller's external bindings, newest first.
+func (s *Service) ListIdentities(ctx context.Context, userID uint) ([]model.UserIdentity, error) {
+	var rows []model.UserIdentity
+	if err := s.db.WithContext(ctx).
+		Where("user_id = ?", userID).Order("id DESC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// Unlink removes one of the caller's bindings. It refuses the unlink that would
+// leave the account with no way to sign in: without a password, without
+// passkeys and without another identity there is no self-service recovery
+// (design §6, endpoint 6).
+//
+// The refusal is a predicate on the DELETE itself, so two concurrent unlinks
+// cannot both burn the last two credentials of a passwordless account.
+func (s *Service) Unlink(ctx context.Context, userID, identityID uint) error {
+	res := s.db.WithContext(ctx).
+		Where("id = ? AND user_id = ?", identityID, userID).
+		Where(
+			"EXISTS (SELECT 1 FROM users WHERE users.id = user_identities.user_id AND password_hash <> '')" +
+				" OR EXISTS (SELECT 1 FROM user_passkeys WHERE user_passkeys.user_id = user_identities.user_id)" +
+				" OR (SELECT COUNT(*) FROM user_identities AS u2 WHERE u2.user_id = user_identities.user_id) > 1",
+		).
+		Delete(&model.UserIdentity{})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 1 {
+		return nil
+	}
+
+	// Distinguish "not yours" from "refused": ownership is part of the lookup.
+	var identity model.UserIdentity
+	err := s.db.WithContext(ctx).
+		Where("id = ? AND user_id = ?", identityID, userID).
+		First(&identity).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ErrIdentityNotFound
+	}
+	if err != nil {
+		return err
+	}
+	return ErrLastCredential
+}

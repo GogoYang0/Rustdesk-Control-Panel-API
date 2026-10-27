@@ -2391,6 +2391,62 @@ type FileLogPage struct {
 	Total    int64     `json:"total"`
 }
 
+// Identity defines model for Identity.
+type Identity struct {
+	// ConflictAt 非空表示绑定已冲突，SSO 拒绝直到管理员 reset
+	ConflictAt *time.Time `json:"conflict_at,omitempty"`
+
+	// Email 绑定时的 IdP 邮箱（不是账户邮箱的权威来源）
+	Email       string     `json:"email"`
+	Id          int64      `json:"id"`
+	Issuer      string     `json:"issuer"`
+	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
+	LinkedAt    time.Time  `json:"linked_at"`
+	Provider    string     `json:"provider"`
+
+	// Subject IdP 侧的主体标识，仅对账户本人可见
+	Subject string `json:"subject"`
+}
+
+// IdentityList defines model for IdentityList.
+type IdentityList struct {
+	// ActiveProvider 当前部署启用的外部身份源（oidc / 空串）
+	ActiveProvider string     `json:"active_provider"`
+	Identities     []Identity `json:"identities"`
+}
+
+// IdentityListResponse defines model for IdentityListResponse.
+type IdentityListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode    `json:"code"`
+	Data    IdentityList `json:"data"`
+	Message string       `json:"message"`
+}
+
+// IdentityUnlinkRequest defines model for IdentityUnlinkRequest.
+type IdentityUnlinkRequest struct {
+	IdentityId int64 `json:"identity_id"`
+
+	// Password 当前密码（与 stepup_token 二选一）
+	Password *string `json:"password,omitempty"`
+
+	// StepupToken passkey step-up 令牌（与 password 二选一）
+	StepupToken *string `json:"stepup_token,omitempty"`
+}
+
 // Invitation defines model for Invitation.
 type Invitation struct {
 	Email     openapi_types.Email `json:"email"`
@@ -4211,6 +4267,9 @@ type RegenerateRecoveryCodesJSONRequestBody = TOTPDisableRequest
 // VerifyTOTPJSONRequestBody defines body for VerifyTOTP for application/json ContentType.
 type VerifyTOTPJSONRequestBody = TOTPVerifyRequest
 
+// UnlinkIdentityJSONRequestBody defines body for UnlinkIdentity for application/json ContentType.
+type UnlinkIdentityJSONRequestBody = IdentityUnlinkRequest
+
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
 
@@ -4399,6 +4458,12 @@ type ServerInterface interface {
 	// GetCaptchaChallenge 获取交互式验证码挑战
 	// (GET /api/v1/auth/captcha)
 	GetCaptchaChallenge(c *gin.Context)
+	// GetIdentities 查看外部身份绑定
+	// (GET /api/v1/auth/identity)
+	GetIdentities(c *gin.Context)
+	// UnlinkIdentity 解绑外部身份
+	// (POST /api/v1/auth/identity/unlink)
+	UnlinkIdentity(c *gin.Context)
 	// Login 邮箱密码登录
 	// (POST /api/v1/auth/login)
 	Login(c *gin.Context)
@@ -4858,6 +4923,32 @@ func (siw *ServerInterfaceWrapper) GetCaptchaChallenge(c *gin.Context) {
 	}
 
 	siw.Handler.GetCaptchaChallenge(c)
+}
+
+// GetIdentities operation middleware
+func (siw *ServerInterfaceWrapper) GetIdentities(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetIdentities(c)
+}
+
+// UnlinkIdentity operation middleware
+func (siw *ServerInterfaceWrapper) UnlinkIdentity(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UnlinkIdentity(c)
 }
 
 // Login operation middleware
@@ -8851,6 +8942,8 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/auth/oidc/start", wrapper.StartOIDCLogin)
 	router.GET(options.BaseURL+"/api/v1/auth/oidc/callback", wrapper.HandleOIDCCallback)
 	router.POST(options.BaseURL+"/api/v1/auth/oidc/exchange", wrapper.ExchangeOIDCLogin)
+	router.GET(options.BaseURL+"/api/v1/auth/identity", wrapper.GetIdentities)
+	router.POST(options.BaseURL+"/api/v1/auth/identity/unlink", wrapper.UnlinkIdentity)
 	router.GET(options.BaseURL+"/api/v1/auth/captcha", wrapper.GetCaptchaChallenge)
 	router.POST(options.BaseURL+"/api/v1/auth/refresh", wrapper.RefreshTokens)
 	router.GET(options.BaseURL+"/api/v1/auth/tokens", wrapper.ListTokens)

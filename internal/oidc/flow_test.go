@@ -42,7 +42,7 @@ func newFlowService(t *testing.T) (*Service, *testClock) {
 	}
 	sqlDB.SetMaxOpenConns(1)
 
-	if err := st.DB.AutoMigrate(&model.User{}, &model.ExternalLoginFlow{}, &model.UserIdentity{}); err != nil {
+	if err := st.DB.AutoMigrate(&model.User{}, &model.ExternalLoginFlow{}, &model.UserIdentity{}, &model.UserPasskey{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 

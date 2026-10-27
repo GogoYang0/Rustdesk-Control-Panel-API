@@ -299,6 +299,74 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/v1/auth/identity:
+    get:
+      operationId: getIdentities
+      summary: 查看外部身份绑定
+      description: |
+        需要登录（JWT）。返回当前账户的全部外部身份绑定（按绑定时间倒序），
+        以及 `active_provider`（当前部署启用的外部身份源）。
+        `conflict_at` 非空表示该绑定已被标记冲突：SSO 会拒绝它，
+        需要管理员 reset 后才能重绑（设计 O4/O14）。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 绑定列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IdentityListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          description: 外部身份源未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/identity/unlink:
+    post:
+      operationId: unlinkIdentity
+      summary: 解绑外部身份
+      description: |
+        需要登录（JWT）+ 二次证明：`stepup_token`（passkey step-up）或当前密码，
+        **二者给其一**（都给或缺一 → 400）。
+
+        拒绝会锁死账户的解绑：账户没有密码、没有 passkey、且这是唯一一条绑定
+        时返回 409 —— 此类账户没有任何线上自救通道。
+        `identity_id` 不属于当前账户时返回 404（不区分“不存在”与“不是你的”）。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IdentityUnlinkRequest"
+      responses:
+        "200":
+          description: 已解绑
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
   /api/v1/auth/captcha:
     get:
       operationId: getCaptchaChallenge
@@ -5654,6 +5722,87 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
 
   schemas:
+    Identity:
+      type: object
+      required:
+        - id
+        - provider
+        - issuer
+        - subject
+        - email
+        - linked_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        provider:
+          type: string
+        issuer:
+          type: string
+        subject:
+          type: string
+          description: IdP 侧的主体标识，仅对账户本人可见
+        email:
+          type: string
+          description: 绑定时的 IdP 邮箱（不是账户邮箱的权威来源）
+        linked_at:
+          type: string
+          format: date-time
+        last_login_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        conflict_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+          description: 非空表示绑定已冲突，SSO 拒绝直到管理员 reset
+
+    IdentityList:
+      type: object
+      required:
+        - active_provider
+        - identities
+      properties:
+        active_provider:
+          type: string
+          description: 当前部署启用的外部身份源（oidc / 空串）
+        identities:
+          type: array
+          items:
+            $ref: "#/components/schemas/Identity"
+
+    IdentityListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/IdentityList"
+
+    IdentityUnlinkRequest:
+      type: object
+      required:
+        - identity_id
+      properties:
+        identity_id:
+          type: integer
+          format: int64
+        stepup_token:
+          type: string
+          description: passkey step-up 令牌（与 password 二选一）
+        password:
+          type: string
+          description: 当前密码（与 stepup_token 二选一）
+
     OIDCExchangeRequest:
       type: object
       required:
