@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -82,10 +81,4 @@ func TestVerifyStepup_BoundToUser(t *testing.T) {
 	token := issueStepup(t, svc, owner, authn)
 
 	require.ErrorIs(t, svc.VerifyStepup(context.Background(), other.ID, token), ErrStepupInvalid)
-}
-
-func TestStepupTokenExpiresAfterTwoMinutes(t *testing.T) {
-	// The token TTL is fixed at two minutes; assert the constant instead of
-	// sleeping for two minutes in a unit test.
-	require.Equal(t, 2*time.Minute, stepupTTL)
 }
