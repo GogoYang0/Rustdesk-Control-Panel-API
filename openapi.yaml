@@ -1032,6 +1032,58 @@ paths:
         "409":
           $ref: "#/components/responses/Conflict"
 
+  /api/v1/orgs/{orgId}/members/{userId}/passkeys/reset:
+    post:
+      operationId: resetMemberPasskeys
+      summary: 重置成员的 passkey
+      description: |
+        管理员清空成员的 WebAuthn 凭据（`member.manage`），写审计 `user.passkey.reset`。
+        守卫与 `2fa/reset` 一致：不能重置自己；重置 owner 需要 `org.admin`；
+        目标同属其他组织时拒绝（账户级因子不能由单租户管理员处置）；事务内复判。
+
+        额外一条：目标账户**没有密码**时返回 409 —— 清空凭据会让它彻底无法登录。
+        用于用户丢失认证器但仍有密码的场景。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已重置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/Internal"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /api/v1/orgs/{orgId}/members/{userId}/2fa/reset:
     post:
       operationId: resetMemberTOTP

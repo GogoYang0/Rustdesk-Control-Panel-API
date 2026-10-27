@@ -4560,6 +4560,9 @@ type ServerInterface interface {
 	// AssignMemberControlRole 分配成员的控制角色
 	// (PUT /api/v1/orgs/{orgId}/members/{userId}/control-role)
 	AssignMemberControlRole(c *gin.Context, orgId int64, userId int64)
+	// ResetMemberPasskeys 重置成员的 passkey
+	// (POST /api/v1/orgs/{orgId}/members/{userId}/passkeys/reset)
+	ResetMemberPasskeys(c *gin.Context, orgId int64, userId int64)
 	// AssignMemberStrategy 分配成员的默认客户端策略
 	// (PUT /api/v1/orgs/{orgId}/members/{userId}/strategy)
 	AssignMemberStrategy(c *gin.Context, orgId int64, userId int64)
@@ -7683,6 +7686,40 @@ func (siw *ServerInterfaceWrapper) AssignMemberControlRole(c *gin.Context) {
 	siw.Handler.AssignMemberControlRole(c, orgId, userId)
 }
 
+// ResetMemberPasskeys operation middleware
+func (siw *ServerInterfaceWrapper) ResetMemberPasskeys(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "userId" -------------
+	var userId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", c.Param("userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter userId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ResetMemberPasskeys(c, orgId, userId)
+}
+
 // AssignMemberStrategy operation middleware
 func (siw *ServerInterfaceWrapper) AssignMemberStrategy(c *gin.Context) {
 
@@ -8633,6 +8670,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/members", wrapper.ListMembers)
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId", wrapper.RemoveMember)
 	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId", wrapper.UpdateMemberRole)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId/passkeys/reset", wrapper.ResetMemberPasskeys)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId/2fa/reset", wrapper.ResetMemberTOTP)
 	router.GET(options.BaseURL+"/api/v1/permissions", wrapper.ListPermissions)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/roles", wrapper.ListRoles)

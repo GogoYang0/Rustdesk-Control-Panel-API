@@ -117,7 +117,7 @@ func (s *Server) login(c *gin.Context) {
 	var user model.User
 	err := store.WithoutTenantScope(s.deps.DB).Where("email = ?", email).First(&user).Error
 	hashToCheck := dummyCompatHash()
-	if err == nil {
+	if err == nil && user.PasswordHash != "" {
 		hashToCheck = user.PasswordHash
 	}
 	valid := false
