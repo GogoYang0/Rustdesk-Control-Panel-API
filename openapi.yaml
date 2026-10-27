@@ -393,6 +393,12 @@ paths:
                 $ref: "#/components/schemas/OkResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "409":
+          description: 账户没有本地密码（passkey-only），无法启用或维护 TOTP
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
 
@@ -420,6 +426,12 @@ paths:
                 $ref: "#/components/schemas/TOTPRecoveryCodesResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "409":
+          description: 账户没有本地密码（passkey-only），无法启用或维护 TOTP
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
 
@@ -726,8 +738,8 @@ paths:
         - 带 `challenge_token`：密码已通过、账户开启了 TOTP，此时用 passkey 代替
           TOTP 完成第二步；`allowCredentials` 限定为该账户的凭据。账户没有凭据时 409。
         - 带 `email`：只把 `allowCredentials` 收窄到该邮箱的凭据；**邮箱不存在或
-          账户没有凭据时仍返回 200 且 `allowCredentials` 为空数组**（不构成账户
-          存在性 oracle），`email` 只是提示。
+          账户没有凭据时仍返回 200**，并退化为可发现凭据 ceremony（不返回
+          `allowCredentials`，不构成账户存在性 oracle）。`email` 只是提示。
         - 都不带：可发现凭据（usernameless）流程，由认证器选择账户。
 
         受 per-IP 限流；`email` 分支额外按账户计失败窗口。
@@ -5838,8 +5850,10 @@ components:
           description: |
             错误上下文；多数错误为 null。`code=approval_required` 时带
             `approval_id`（int64，待审批请求 id），客户端据此跳转审批中心。
-            `code=two_factor_required` 时带 `challenge_token`（短期挑战令牌），
-            客户端用它调用 `POST /auth/2fa/verify` 完成第二步登录。
+            `code=two_factor_required` 时带 `challenge_token`（短期挑战令牌）与
+            `methods`（字符串数组：`totp`，以及该账户已绑定 passkey 时的
+            `passkey`）。客户端用 `challenge_token` 调用 `POST /auth/2fa/verify`
+            或 `POST /auth/passkey/login/begin` 完成第二步。
 
     LoginRequest:
       type: object

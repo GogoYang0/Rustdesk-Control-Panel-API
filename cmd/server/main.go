@@ -205,6 +205,16 @@ func main() {
 		}
 	}
 
+	// Disabling webauthn later would lock out every account without a password,
+	// so surface the count now (design D17).
+	var passwordless int64
+	if err := st.DB.Model(&model.User{}).Where("password_hash = ?", "").Count(&passwordless).Error; err != nil {
+		lg.Warn("could not count passwordless accounts", zap.Error(err))
+	} else if passwordless > 0 {
+		lg.Warn("passwordless accounts exist; disabling webauthn will lock them out",
+			zap.Int64("count", passwordless))
+	}
+
 	deviceSvc := device.NewService(st.DB, auditor, nil)
 	orch := &provision.DockerOrchestrator{
 		OrgLabel:  cfg.Provision.OrgLabel,

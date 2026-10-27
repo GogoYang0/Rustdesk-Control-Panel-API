@@ -2329,8 +2329,10 @@ type ErrorResponse struct {
 
 	// Data 错误上下文；多数错误为 null。`code=approval_required` 时带
 	// `approval_id`（int64，待审批请求 id），客户端据此跳转审批中心。
-	// `code=two_factor_required` 时带 `challenge_token`（短期挑战令牌），
-	// 客户端用它调用 `POST /auth/2fa/verify` 完成第二步登录。
+	// `code=two_factor_required` 时带 `challenge_token`（短期挑战令牌）与
+	// `methods`（字符串数组：`totp`，以及该账户已绑定 passkey 时的
+	// `passkey`）。客户端用 `challenge_token` 调用 `POST /auth/2fa/verify`
+	// 或 `POST /auth/passkey/login/begin` 完成第二步。
 	Data    *map[string]interface{} `json:"data,omitempty"`
 	Message string                  `json:"message"`
 }

@@ -45,6 +45,16 @@ func TestRename_ValidatesOwnershipAndName(t *testing.T) {
 	require.Equal(t, "Kitchen laptop", renamed.Name)
 }
 
+func TestRename_ToSameNameSucceeds(t *testing.T) {
+	svc, _, db := newRegistrationService(t, 10)
+	u := newTestUser(t, db, "passkey-rename-same")
+	created := registerPasskey(t, svc, u, testauth.New(t, svc.cfg.RPID, svc.cfg.Origin), "Same")
+
+	renamed, err := svc.Rename(context.Background(), u.ID, created.ID, "Same")
+	require.NoError(t, err)
+	require.Equal(t, "Same", renamed.Name)
+}
+
 func TestDelete_LastCredentialOfPasswordlessAccount(t *testing.T) {
 	svc, _, db := newRegistrationService(t, 10)
 	u := newTestUser(t, db, "passkey-last")

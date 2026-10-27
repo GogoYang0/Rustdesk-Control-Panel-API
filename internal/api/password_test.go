@@ -78,6 +78,13 @@ func TestPasswordRemove_WrongPasswordRejected(t *testing.T) {
 		"stepup_token": stepup,
 	}, jwt)
 	require.Equal(t, http.StatusUnauthorized, w.Code, w.Body.String())
+
+	// A failed attempt must not burn the assertion: the same token still works.
+	w = h.do(t, http.MethodPost, "/api/v1/auth/password/remove", map[string]any{
+		"password":     "password123",
+		"stepup_token": stepup,
+	}, jwt)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 }
 
 func TestPasswordRemove_ThenPasswordLoginFailsGenerically(t *testing.T) {

@@ -66,7 +66,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `captcha_required` | 400 | 已启用验证码但请求未携带 `captcha`（v0.10.0） |
 | `captcha_invalid` | 400 | 挑战缺失、过期、已用或答案错误；提供商判定失败（响应不区分账号是否存在） |
 | `captcha_unavailable` | 503 | 验证码提供商不可达且 `failMode=closed`（启用验证码时） |
-| `internal` | 500 | 未预期的服务端错误（不向客户端泄露细节） |
+| `internal` | 500（唯一例外：passkey 未启用时 12 个端点返回 503，响应体 code 仍为 `internal`） | 未预期的服务端错误（不向客户端泄露细节） |
 
 ### 2.4 分页
 
@@ -399,7 +399,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 
 **绑定不改变密码登录的因子要求**：只有启用 TOTP 时 `/auth/login` 才返回
 `two_factor_required`；`data.methods` 列出可用因子（`totp`，以及该账户有
-passkey 时的 `passkey`）。想让 passkey 成为强制要求，要么删除密码
+passkey 时的 `passkey`）；该字段是 0.11.0 对既有 401 响应体唯一的增补。想让 passkey 成为强制要求，要么删除密码
 （见下），要么先启用 TOTP。
 
 **无密码账户**：`POST /auth/password/remove` 把 `password_hash` 置空，之后

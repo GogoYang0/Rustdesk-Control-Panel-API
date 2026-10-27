@@ -79,6 +79,23 @@ func TestResetMemberPasskeys_Guards(t *testing.T) {
 	require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
 }
 
+func TestResetMemberPasskeys_CrossOrgTargetRefused(t *testing.T) {
+	h, _, orgID, member, ownerToken, _ := adminPasskeyFixture(t)
+
+	// Give the target a second organization: an account-level factor cannot be
+	// reset by an administrator of only one tenant (CWE-269).
+	memberJWT := h.login(t, "m4-member@example.com", "password123")
+	otherOrg := createOrg(t, h, memberJWT, "passkey-second-org")
+	require.NotZero(t, otherOrg)
+
+	w := h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgID)+"/members/"+itoa(int64(member.ID))+"/passkeys/reset", nil, ownerToken)
+	require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+
+	var count int64
+	require.NoError(t, h.db.DB.Model(&model.UserPasskey{}).Where("user_id = ?", member.ID).Count(&count).Error)
+	require.EqualValues(t, 1, count)
+}
+
 func TestResetMemberPasskeys_PasswordlessTargetConflicts(t *testing.T) {
 	h, _, orgID, member, ownerToken, _ := adminPasskeyFixture(t)
 	require.NoError(t, h.db.DB.Model(&model.User{}).Where("id = ?", member.ID).Update("password_hash", "").Error)

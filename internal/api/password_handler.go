@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -13,6 +14,9 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/passkey"
 )
+
+// minPasswordLength mirrors the floor the invitation flow enforces.
+const minPasswordLength = 8
 
 // RemovePassword turns the account into a passkey-only account. Every
 // precondition is checked before the step-up token is burned, so a failed
@@ -69,6 +73,14 @@ func (a *AdminAPI) RemovePassword(c *gin.Context) {
 		return
 	}
 
+	// The password check is a credential oracle like /auth/2fa/disable, so it
+	// reserves from the authenticated management bucket first (CWE-307).
+	ip := c.ClientIP()
+	account := fmt.Sprint(uid)
+	if !a.totpManageGuard.AllowIP(ip) || !a.totpManageGuard.Reserve(account, ip) {
+		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "too many attempts")
+		return
+	}
 	valid, err := auth.VerifyPassword(user.PasswordHash, req.Password)
 	if err != nil || !valid {
 		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "invalid credentials")
@@ -78,6 +90,7 @@ func (a *AdminAPI) RemovePassword(c *gin.Context) {
 		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "step-up token rejected")
 		return
 	}
+	a.totpManageGuard.Reset(account, ip)
 
 	if err := a.deps.DB.Model(&model.User{}).Where("id = ?", uid).Update("password_hash", "").Error; err != nil {
 		a.deps.Logger.Error("remove password failed")
@@ -95,6 +108,7 @@ func (a *AdminAPI) RemovePassword(c *gin.Context) {
 		Data: gen.PasswordRemoveResult{Warnings: []string{
 			"compat_login_disabled",
 			"keep_a_second_passkey",
+			"accept_invitation_requires_password",
 		}},
 	})
 }

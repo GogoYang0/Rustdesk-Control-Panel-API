@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/gen"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
@@ -109,6 +110,10 @@ func (a *AdminAPI) FinishPasskeyRegistration(c *gin.Context) {
 		return
 	}
 
+	a.deps.Logger.Info("passkey registered",
+		zap.Uint("user_id", uid), zap.Uint("passkey_id", created.ID),
+		zap.String("aaguid", created.AAGUID), zap.String("transports", created.Transports))
+
 	c.JSON(http.StatusCreated, gen.PasskeyResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
@@ -195,10 +200,6 @@ func (a *AdminAPI) BeginPasskeyLogin(c *gin.Context) {
 	account := ""
 	if req.Email != nil {
 		account = strings.ToLower(strings.TrimSpace(*req.Email))
-		if account != "" && a.passkeyGuard.Locked(account, ip) {
-			abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "account temporarily locked")
-			return
-		}
 	}
 
 	var user *model.User
@@ -271,19 +272,16 @@ func (a *AdminAPI) FinishPasskeyLogin(c *gin.Context) {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "credential is not valid JSON")
 		return
 	}
-	ip := c.ClientIP()
-	if !a.passkeyGuard.AllowIP(ip) {
-		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "too many passkey attempts")
-		return
-	}
-
 	user, _, err := svc.FinishLogin(c.Request.Context(), req.CeremonyToken, body)
 	switch {
+	case errors.Is(err, passkey.ErrCloneWarning):
+		a.deps.Logger.Warn("passkey signature counter regressed", zap.Uint("user_id", user.ID))
+		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "passkey login rejected")
+		return
 	case errors.Is(err, passkey.ErrCeremonyNotFound),
 		errors.Is(err, passkey.ErrCeremonyExpired),
 		errors.Is(err, passkey.ErrCeremonyUsed),
-		errors.Is(err, passkey.ErrAssertionFailed),
-		errors.Is(err, passkey.ErrCloneWarning):
+		errors.Is(err, passkey.ErrAssertionFailed):
 		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "passkey login rejected")
 		return
 	case err != nil:
@@ -303,6 +301,8 @@ func (a *AdminAPI) FinishPasskeyLogin(c *gin.Context) {
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "login failed")
 		return
 	}
+	a.deps.Logger.Info("passkey login succeeded",
+		zap.Uint("user_id", user.ID), zap.String("mode", "passkey"))
 	c.JSON(http.StatusOK, gen.TokenResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
@@ -390,6 +390,8 @@ func (a *AdminAPI) RenamePasskey(c *gin.Context, passkeyId int64) {
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not rename passkey")
 		return
 	}
+	a.deps.Logger.Info("passkey renamed",
+		zap.Uint("user_id", uid), zap.Uint("passkey_id", updated.ID))
 	c.JSON(http.StatusOK, gen.PasskeyResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
@@ -425,6 +427,7 @@ func (a *AdminAPI) DeletePasskey(c *gin.Context, passkeyId int64) {
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not delete passkey")
 		return
 	}
+	a.deps.Logger.Info("passkey deleted", zap.Uint("user_id", uid), zap.Uint("passkey_id", uint(passkeyId)))
 	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
 }
 
@@ -506,6 +509,7 @@ func (a *AdminAPI) FinishPasskeyStepup(c *gin.Context) {
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not finish step-up")
 		return
 	}
+	a.deps.Logger.Info("passkey step-up succeeded", zap.Uint("user_id", uid))
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, gen.StepupTokenResponse{
 		Code:    gen.ErrorCodeOk,

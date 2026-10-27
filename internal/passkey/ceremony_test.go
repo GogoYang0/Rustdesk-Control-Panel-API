@@ -81,6 +81,23 @@ func TestConsumeCeremony_Expired(t *testing.T) {
 	require.ErrorIs(t, err, ErrCeremonyExpired)
 }
 
+// TestConsumeCeremony_ExpiresExactlyAtTTL pins the comparison: the conditional
+// update must use "expires_at > now", so a ceremony is dead at its expiry
+// instant, not one tick later.
+func TestConsumeCeremony_ExpiresExactlyAtTTL(t *testing.T) {
+	s, clock := newCeremonyService(t)
+	handle := beginTestCeremony(t, s, model.CeremonyLogin)
+
+	clock.at = clock.at.Add(s.cfg.CeremonyTTL)
+
+	_, _, err := s.consumeCeremony(context.Background(), handle, model.CeremonyLogin)
+	require.ErrorIs(t, err, ErrCeremonyExpired)
+
+	var row model.WebAuthnCeremony
+	require.NoError(t, s.db.Where("handle = ?", handle).First(&row).Error)
+	require.Nil(t, row.ConsumedAt, "a rejected ceremony must not be burned")
+}
+
 func TestConsumeCeremony_WrongPurpose(t *testing.T) {
 	s, _ := newCeremonyService(t)
 	handle := beginTestCeremony(t, s, model.CeremonyRegister)

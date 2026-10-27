@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"context"
+	"encoding/base64"
 	"net/http"
 	"testing"
 	"time"
@@ -13,6 +14,8 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/passkey"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/passkey/testauth"
 )
+
+func b64url(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 
 func passkeyLoginHarness(t *testing.T) (*harness, *passkey.Service, model.User, string) {
 	t.Helper()
@@ -104,7 +107,26 @@ func TestPasskeyLogin_EmailHint(t *testing.T) {
 	authn := testauth.New(t, passkeyRPID, passkeyOrigin)
 	seedPasskey(t, svc, u, authn)
 
-	begin := beginLoginHTTP(t, h, map[string]any{"email": u.Email})
+	w0 := h.do(t, http.MethodPost, "/api/v1/auth/passkey/login/begin", map[string]any{"email": u.Email}, "")
+	require.Equal(t, http.StatusOK, w0.Code, w0.Body.String())
+	var narrowed struct {
+		CeremonyToken string `json:"ceremony_token"`
+		Options       struct {
+			PublicKey struct {
+				Challenge        string `json:"challenge"`
+				AllowCredentials []struct {
+					Id string `json:"id"`
+				} `json:"allowCredentials"`
+			} `json:"publicKey"`
+		} `json:"options"`
+	}
+	decodeData(t, w0, &narrowed)
+	// D16: the hint must actually narrow the list to this account's credential.
+	require.Len(t, narrowed.Options.PublicKey.AllowCredentials, 1)
+	require.Equal(t, b64url(authn.CredentialID()), narrowed.Options.PublicKey.AllowCredentials[0].Id)
+	begin := ceremonyView{CeremonyToken: narrowed.CeremonyToken}
+	begin.Options.PublicKey.Challenge = narrowed.Options.PublicKey.Challenge
+
 	w := h.do(t, http.MethodPost, "/api/v1/auth/passkey/login/finish", map[string]any{
 		"ceremony_token": begin.CeremonyToken,
 		"credential": mustDecode(t, authn.Assertion(t, begin.Options.PublicKey.Challenge, 1,

@@ -2,6 +2,7 @@ package passkey
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -29,20 +30,22 @@ func (s *Service) Rename(ctx context.Context, userID, passkeyID uint, name strin
 	if trimmed == "" || len(trimmed) > maxPasskeyNameLen {
 		return nil, ErrInvalidName
 	}
-	res := s.db.WithContext(ctx).Model(&model.UserPasskey{}).
-		Where("id = ? AND user_id = ?", passkeyID, userID).
-		Update("name", trimmed)
-	if res.Error != nil {
-		return nil, res.Error
-	}
-	if res.RowsAffected == 0 {
+	// Existence is checked with a SELECT: MySQL reports the *changed* row count,
+	// so renaming a credential to its current name would look like a miss.
+	var row model.UserPasskey
+	err := s.db.WithContext(ctx).Where("id = ? AND user_id = ?", passkeyID, userID).First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrPasskeyNotFound
 	}
-
-	var row model.UserPasskey
-	if err := s.db.WithContext(ctx).Where("id = ?", passkeyID).First(&row).Error; err != nil {
+	if err != nil {
 		return nil, err
 	}
+	if err := s.db.WithContext(ctx).Model(&model.UserPasskey{}).
+		Where("id = ? AND user_id = ?", passkeyID, userID).
+		Update("name", trimmed).Error; err != nil {
+		return nil, err
+	}
+	row.Name = trimmed
 	return &row, nil
 }
 
