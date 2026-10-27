@@ -367,6 +367,54 @@ paths:
         "429":
           $ref: "#/components/responses/TooManyRequests"
 
+  /api/v1/orgs/{orgId}/members/{userId}/identity/reset:
+    post:
+      operationId: resetMemberIdentity
+      summary: 重置成员的外部身份绑定
+      description: |
+        管理员清空成员的外部身份绑定（需要 `member.manage`），写审计
+        `user.identity.reset`。守卫与 `2fa/reset`、`passkeys/reset` 一致：
+        不能重置自己；重置 owner 需要 `org.admin`；目标同属其他组织时拒绝；
+        事务内复判。
+
+        例外（设计 O14）：目标没有本地凭据（无密码、无 passkey）且仍有
+        **未冲突**的绑定时返回 409 —— 清空绑定会让它彻底无法登录；
+        但全部绑定都已标记 `conflict_at` 时，SSO 本来就登不进，
+        此时 reset 是管理员唯一的修复手段，予以放行。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已重置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/Internal"
   /api/v1/auth/captcha:
     get:
       operationId: getCaptchaChallenge

@@ -4746,6 +4746,9 @@ type ServerInterface interface {
 	// AssignMemberControlRole 分配成员的控制角色
 	// (PUT /api/v1/orgs/{orgId}/members/{userId}/control-role)
 	AssignMemberControlRole(c *gin.Context, orgId int64, userId int64)
+	// ResetMemberIdentity 重置成员的外部身份绑定
+	// (POST /api/v1/orgs/{orgId}/members/{userId}/identity/reset)
+	ResetMemberIdentity(c *gin.Context, orgId int64, userId int64)
 	// ResetMemberPasskeys 重置成员的 passkey
 	// (POST /api/v1/orgs/{orgId}/members/{userId}/passkeys/reset)
 	ResetMemberPasskeys(c *gin.Context, orgId int64, userId int64)
@@ -7980,6 +7983,40 @@ func (siw *ServerInterfaceWrapper) AssignMemberControlRole(c *gin.Context) {
 	siw.Handler.AssignMemberControlRole(c, orgId, userId)
 }
 
+// ResetMemberIdentity operation middleware
+func (siw *ServerInterfaceWrapper) ResetMemberIdentity(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "userId" -------------
+	var userId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", c.Param("userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter userId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ResetMemberIdentity(c, orgId, userId)
+}
+
 // ResetMemberPasskeys operation middleware
 func (siw *ServerInterfaceWrapper) ResetMemberPasskeys(c *gin.Context) {
 
@@ -8944,6 +8981,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/auth/oidc/exchange", wrapper.ExchangeOIDCLogin)
 	router.GET(options.BaseURL+"/api/v1/auth/identity", wrapper.GetIdentities)
 	router.POST(options.BaseURL+"/api/v1/auth/identity/unlink", wrapper.UnlinkIdentity)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId/identity/reset", wrapper.ResetMemberIdentity)
 	router.GET(options.BaseURL+"/api/v1/auth/captcha", wrapper.GetCaptchaChallenge)
 	router.POST(options.BaseURL+"/api/v1/auth/refresh", wrapper.RefreshTokens)
 	router.GET(options.BaseURL+"/api/v1/auth/tokens", wrapper.ListTokens)
