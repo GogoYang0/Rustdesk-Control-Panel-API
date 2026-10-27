@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -26,6 +27,9 @@ type Config struct {
 	Captcha     CaptchaConfig     `mapstructure:"captcha"`
 	ClientBuild ClientBuildConfig `mapstructure:"clientbuild"`
 	WebAuthn    WebAuthnConfig    `mapstructure:"webauthn"`
+	OIDC        OIDCConfig        `mapstructure:"oidc"`
+	External    ExternalConfig    `mapstructure:"external"`
+	LDAP        LDAPConfig        `mapstructure:"ldap"`
 }
 
 // CaptchaConfig enables the interactive captcha in front of the public
@@ -248,6 +252,14 @@ func Load(path string) (*Config, error) {
 	if err := v.BindEnv("clientbuild.bundle.key", "PANEL_CLIENTBUILD_BUNDLE_KEY"); err != nil {
 		return nil, fmt.Errorf("bind client build bundle key: %w", err)
 	}
+	// OIDC is opt-in and single-provider; its secret is environment-only.
+	v.SetDefault("oidc.enabled", false)
+	v.SetDefault("oidc.providername", defaultOIDCProviderName)
+	v.SetDefault("oidc.scopes", []string{"openid", "profile", "email"})
+	v.SetDefault("oidc.clockskew", defaultOIDCClockSkew)
+	v.SetDefault("oidc.statettl", defaultOIDCStateTTL)
+	v.SetDefault("external.requirelocalsecondfactor", false)
+	v.SetDefault("ldap.enabled", false)
 	// Passkeys are opt-in; the RP identity is deployment-wide and has no secrets.
 	v.SetDefault("webauthn.enabled", false)
 	v.SetDefault("webauthn.rpName", defaultWebAuthnDisplayName)
@@ -275,6 +287,15 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 	if err := validateWebAuthn(cfg.WebAuthn); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+	}
+	// Read the client secret only from the environment: a value in the tracked
+	// file would be a leaked credential (design O8).
+	cfg.OIDC.ClientSecret = os.Getenv("PANEL_OIDC_CLIENT_SECRET")
+	if err := validateOIDC(cfg.OIDC, cfg.Web.BaseURL); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+	}
+	if err := validateProviders(cfg.OIDC, cfg.LDAP); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 	if err := validateLogcollect(cfg.Logcollect); err != nil {
