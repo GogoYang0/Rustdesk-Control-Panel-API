@@ -355,11 +355,14 @@ func validateCaptcha(cfg CaptchaConfig) error {
 		}
 	case "cap":
 		u, err := url.Parse(strings.TrimSpace(cfg.Cap.InstanceURL))
+		if err != nil || u.Host == "" {
+			return fmt.Errorf("captcha.cap.instanceUrl must be a valid URL when the cap provider is enabled")
+		}
 		// PANEL_CAPTCHA_CAP_SECRET is sent to <instanceUrl>/siteverify: a
 		// plaintext link on a public host would broadcast it, so http is only
 		// tolerated for loopback instances.
 		secure := u.Scheme == "https" || u.Scheme == "http" && isLoopbackHost(u.Hostname())
-		if err != nil || u.Host == "" || !secure {
+		if !secure {
 			return fmt.Errorf("captcha.cap.instanceUrl must be an https URL (http only for loopback hosts) when the cap provider is enabled")
 		}
 		if strings.TrimSpace(cfg.Cap.SiteKey) == "" {

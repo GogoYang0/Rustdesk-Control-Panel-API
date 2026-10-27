@@ -51,7 +51,17 @@ func Build(opts Options) (*Service, error) {
 	}
 	client := opts.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: defaultVerifyTimeout}
+		client = &http.Client{
+			Timeout: defaultVerifyTimeout,
+			// Verify requests carry the provider secret in their body. A 307/308
+			// would re-send that body to the redirect target — an attacker in
+			// control of the configured instance (or a misconfigured scheme)
+			// could relay it. Verification endpoints do not legitimately
+			// redirect, so redirects are refused outright.
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
 	}
 
 	var provider Provider

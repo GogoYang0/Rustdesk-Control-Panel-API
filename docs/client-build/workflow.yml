@@ -100,7 +100,8 @@ jobs:
           unknown = [p for p in selected if p not in full]
           if unknown or not selected:
               raise SystemExit(f"unknown or empty platforms: {unknown or selected}")
-          print("matrix=" + json.dumps({"include": [full[p] for p in selected]}))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write("matrix=" + json.dumps({"include": [full[p] for p in selected]}) + "\n")
           PY
 
       - name: Share bundle with platform jobs
