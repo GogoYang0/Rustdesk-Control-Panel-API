@@ -42,24 +42,6 @@ func (s *Service) beginCeremony(ctx context.Context, purpose model.CeremonyPurpo
 	return handle, nil
 }
 
-// loadCeremony reads a ceremony without consuming it, for callers that only
-// need its metadata (the login begin step resolves the user first).
-func (s *Service) loadCeremony(ctx context.Context, handle string, purpose model.CeremonyPurpose) (model.WebAuthnCeremony, webauthn.SessionData, error) {
-	var row model.WebAuthnCeremony
-	err := s.db.WithContext(ctx).Where("handle = ? AND purpose = ?", handle, purpose).First(&row).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return row, webauthn.SessionData{}, ErrCeremonyNotFound
-	}
-	if err != nil {
-		return row, webauthn.SessionData{}, err
-	}
-	var session webauthn.SessionData
-	if err := json.Unmarshal([]byte(row.SessionJSON), &session); err != nil {
-		return row, session, fmt.Errorf("decode ceremony session: %w", err)
-	}
-	return row, session, nil
-}
-
 // consumeCeremony burns a ceremony in one conditional UPDATE, so two concurrent
 // finishes can never both succeed.
 func (s *Service) consumeCeremony(ctx context.Context, handle string, purpose model.CeremonyPurpose) (model.WebAuthnCeremony, webauthn.SessionData, error) {

@@ -140,10 +140,17 @@ func (a *Authenticator) authData(flags byte, signCount uint32) []byte {
 func (a *Authenticator) coseKey(t *testing.T) []byte {
 	t.Helper()
 
-	x := make([]byte, 32)
-	y := make([]byte, 32)
-	a.key.PublicKey.X.FillBytes(x)
-	a.key.PublicKey.Y.FillBytes(y)
+	// Uncompressed SEC1 point: 0x04 || X(32) || Y(32). PublicKey.Bytes replaces
+	// the deprecated X/Y big.Int fields (Go 1.26).
+	point, err := a.key.PublicKey.Bytes()
+	if err != nil {
+		t.Fatalf("encode public key: %v", err)
+	}
+	if len(point) != 65 || point[0] != 4 {
+		t.Fatalf("unexpected uncompressed point length %d", len(point))
+	}
+	x := point[1:33]
+	y := point[33:65]
 
 	// COSE_Key: kty=EC2(2), alg=ES256(-7), crv=P-256(1), x, y.
 	encoded, err := cbor.Marshal(map[int]any{1: 2, 3: -7, -1: 1, -2: x, -3: y})

@@ -128,6 +128,11 @@ func (a *AdminAPI) SetPassword(c *gin.Context) {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "new_password and stepup_token are required")
 		return
 	}
+	// Same floor as the invitation flow; checked before the step-up is burned.
+	if len(req.NewPassword) < minPasswordLength {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "password must be at least 8 characters")
+		return
+	}
 	user, err := a.loadUser(uid)
 	if err != nil {
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not set password")

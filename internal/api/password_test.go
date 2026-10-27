@@ -153,6 +153,17 @@ func TestPasswordSet_OnlyWhenAbsent(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 }
 
+func TestPasswordSet_EnforcesMinimumLength(t *testing.T) {
+	h, _, u, jwt := passkeyLoginHarness(t)
+	require.NoError(t, h.db.DB.Model(&model.User{}).Where("id = ?", u.ID).Update("password_hash", "").Error)
+
+	w := h.do(t, http.MethodPost, "/api/v1/auth/password/set", map[string]any{
+		"new_password": "short",
+		"stepup_token": "irrelevant",
+	}, jwt)
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+}
+
 func TestPasswordSet_InvalidStepupRejected(t *testing.T) {
 	h, _, u, jwt := passkeyLoginHarness(t)
 	require.NoError(t, h.db.DB.Model(&model.User{}).Where("id = ?", u.ID).Update("password_hash", "").Error)

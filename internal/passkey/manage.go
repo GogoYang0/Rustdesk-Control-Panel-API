@@ -61,7 +61,7 @@ func (s *Service) Delete(ctx context.Context, userID, passkeyID uint) error {
 		}
 
 		query := tx.Model(&model.UserPasskey{}).Where("user_id = ?", userID)
-		if tx.Dialector.Name() != "sqlite" {
+		if tx.Name() != "sqlite" {
 			query = query.Clauses(clause.Locking{Strength: "UPDATE"})
 		}
 		var rows []model.UserPasskey
