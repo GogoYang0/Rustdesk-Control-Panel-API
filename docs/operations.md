@@ -336,6 +336,14 @@ Prometheus 指标端点属后续硬化项（见 #31 描述遗留清单）。
 `org.admin`；目标同属其他组织时拒绝。审计 `user.passkey.reset` 记录删除条数。
 **目标没有密码时返回 409**：清空凭据会让账户彻底无法登录。
 
+**transports 列类型变更（v0.11.0，text → varchar(255)）**：MySQL 8/9 拒绝
+TEXT 列带默认值（error 1101），旧列定义在 MySQL 上无法完成启动迁移——本版本
+把列改为 `varchar(255)`。注册入口同时按集合语义去重 transports 并限制编码后
+长度 ≤255 字节。**PG 升级注意**：若历史行存在超过 255 字节的 transports
+（正常认证器不会），`ALTER` 会报错而非截断——启动迁移失败时按
+`SELECT id FROM user_passkeys WHERE length(transports) > 255` 找到行、手工
+清理后重启即可；MySQL 上不存在此类存量行（表建不出来）。
+
 **无密码账户丢失全部 passkey（唯一需要改库的场景）**：
 
 1. 先确认没有别的出路：该账户是否绑定了另一个 passkey；再看
