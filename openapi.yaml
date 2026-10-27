@@ -156,8 +156,9 @@ paths:
       operationId: listAuthProviders
       summary: 列出可用的登录方式
       description: |
-        未认证。返回部署级启用的外部身份源；本版本（5b-1）两者恒为 false，
-        5b-2/5b-3 点亮后前端据此显示入口。
+        未认证。返回部署级启用的外部身份源：`oidc` 反映 `oidc.enabled`（同时给出
+        `name` 作为按钮文案），`ldap` 在本版本恒为 false（未实现，配置开启会启动失败）。
+        前端据此显示「使用 {name} 登录」入口。
       tags:
         - auth
       security: []
@@ -168,6 +169,48 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AuthProvidersResponse"
+
+  /api/v1/auth/oidc/start:
+    post:
+      operationId: startOIDCLogin
+      summary: 开始 OIDC 登录
+      description: |
+        未认证。返回浏览器必须跳转的 `authorization_url`。流程为
+        Authorization Code + PKCE(S256) + nonce；`state` 一次性（默认 10 分钟）。
+        回调地址固定为 `{web.baseURL}/api/v1/auth/oidc/callback`，不接受请求指定。
+
+        `redirect_path` 是登录成功后前端回到的站内路径：必须以 `/` 开头，且不含
+        `//`、反斜杠、`:`、`..`、百分号编码的分隔符（`%2f`/`%5c`），长度 ≤256；
+        缺省为 `/`。非法值返回 400 且不会创建流程行。
+
+        `oidc.enabled=false` 或 IdP 的 discovery 不可达时返回 503 —— 不降级为
+        密码登录，也不返回 500。
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OIDCStartRequest"
+      responses:
+        "200":
+          description: 授权请求
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OIDCStartResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: OIDC 未启用或 IdP 不可达
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /api/v1/auth/captcha:
     get:
@@ -5524,6 +5567,41 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
 
   schemas:
+    OIDCStartRequest:
+      type: object
+      properties:
+        redirect_path:
+          type: string
+          maxLength: 256
+          description: 登录成功后回到的站内路径；缺省 `/`
+
+    OIDCStart:
+      type: object
+      required:
+        - authorization_url
+        - state
+      properties:
+        authorization_url:
+          type: string
+          description: 浏览器应跳转的 IdP 授权地址（含 state / nonce / PKCE challenge）
+        state:
+          type: string
+          description: 一次性 state；仅供客户端关联，无需回传
+
+    OIDCStartResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/OIDCStart"
+
     AuthProviderStatus:
       type: object
       required:

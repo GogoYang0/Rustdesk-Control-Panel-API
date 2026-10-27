@@ -2654,6 +2654,42 @@ type MemberUpdateRequest struct {
 	RoleId *int64 `json:"role_id,omitempty"`
 }
 
+// OIDCStart defines model for OIDCStart.
+type OIDCStart struct {
+	// AuthorizationUrl 浏览器应跳转的 IdP 授权地址（含 state / nonce / PKCE challenge）
+	AuthorizationUrl string `json:"authorization_url"`
+
+	// State 一次性 state；仅供客户端关联，无需回传
+	State string `json:"state"`
+}
+
+// OIDCStartRequest defines model for OIDCStartRequest.
+type OIDCStartRequest struct {
+	// RedirectPath 登录成功后回到的站内路径；缺省 `/`
+	RedirectPath *string `json:"redirect_path,omitempty"`
+}
+
+// OIDCStartResponse defines model for OIDCStartResponse.
+type OIDCStartResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode `json:"code"`
+	Data    OIDCStart `json:"data"`
+	Message string    `json:"message"`
+}
+
 // OkResponse defines model for OkResponse.
 type OkResponse struct {
 	// Code 机器可读错误码：
@@ -4163,6 +4199,9 @@ type VerifyTOTPJSONRequestBody = TOTPVerifyRequest
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
 
+// StartOIDCLoginJSONRequestBody defines body for StartOIDCLogin for application/json ContentType.
+type StartOIDCLoginJSONRequestBody = OIDCStartRequest
+
 // BeginPasskeyLoginJSONRequestBody defines body for BeginPasskeyLogin for application/json ContentType.
 type BeginPasskeyLoginJSONRequestBody = PasskeyLoginBeginRequest
 
@@ -4345,6 +4384,9 @@ type ServerInterface interface {
 	// Login 邮箱密码登录
 	// (POST /api/v1/auth/login)
 	Login(c *gin.Context)
+	// StartOIDCLogin 开始 OIDC 登录
+	// (POST /api/v1/auth/oidc/start)
+	StartOIDCLogin(c *gin.Context)
 	// BeginPasskeyLogin 开始 passkey 登录
 	// (POST /api/v1/auth/passkey/login/begin)
 	BeginPasskeyLogin(c *gin.Context)
@@ -4805,6 +4847,19 @@ func (siw *ServerInterfaceWrapper) Login(c *gin.Context) {
 	}
 
 	siw.Handler.Login(c)
+}
+
+// StartOIDCLogin operation middleware
+func (siw *ServerInterfaceWrapper) StartOIDCLogin(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.StartOIDCLogin(c)
 }
 
 // BeginPasskeyLogin operation middleware
@@ -8713,6 +8768,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/healthz", wrapper.GetHealthz)
 	router.POST(options.BaseURL+"/api/v1/auth/login", wrapper.Login)
 	router.GET(options.BaseURL+"/api/v1/auth/providers", wrapper.ListAuthProviders)
+	router.POST(options.BaseURL+"/api/v1/auth/oidc/start", wrapper.StartOIDCLogin)
 	router.GET(options.BaseURL+"/api/v1/auth/captcha", wrapper.GetCaptchaChallenge)
 	router.POST(options.BaseURL+"/api/v1/auth/refresh", wrapper.RefreshTokens)
 	router.GET(options.BaseURL+"/api/v1/auth/tokens", wrapper.ListTokens)
