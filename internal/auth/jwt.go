@@ -13,6 +13,7 @@ const (
 	tokenTypeAccess    = "access"
 	tokenTypeCompat    = "compat"
 	tokenTypeChallenge = "2fa"
+	tokenTypeStepup    = "stepup"
 )
 
 // Issuer mints access JWTs and opaque refresh tokens.
@@ -185,6 +186,58 @@ func (i *Issuer) ParseChallenge(token string) (uint, error) {
 		return 0, fmt.Errorf("wrong token type %q", typ)
 	}
 	return parseUintClaim(claims["sub"])
+}
+
+// IssueStepup mints a two-minute token that authorizes exactly one sensitive
+// action after a fresh passkey assertion. The ceremony handle it carries is
+// consumed server side, so the token cannot be replayed.
+func (i *Issuer) IssueStepup(userID uint, handle string, ttl time.Duration) (string, error) {
+	if handle == "" {
+		return "", fmt.Errorf("stepup token requires a ceremony handle")
+	}
+	now := time.Now()
+	claims := jwt.MapClaims{
+		"sub": fmt.Sprint(userID),
+		"typ": tokenTypeStepup,
+		"cid": handle,
+		"iat": now.Unix(),
+		"exp": now.Add(ttl).Unix(),
+	}
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(i.secret)
+	if err != nil {
+		return "", fmt.Errorf("sign stepup token: %w", err)
+	}
+	return token, nil
+}
+
+// ParseStepup validates a step-up token and returns the user and the ceremony
+// handle it was bound to. Access and challenge tokens are rejected.
+func (i *Issuer) ParseStepup(token string) (uint, string, error) {
+	parsed, err := jwt.Parse(token, func(t *jwt.Token) (any, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method %v", t.Header["alg"])
+		}
+		return i.secret, nil
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithExpirationRequired())
+	if err != nil {
+		return 0, "", fmt.Errorf("parse stepup token: %w", err)
+	}
+	claims, ok := parsed.Claims.(jwt.MapClaims)
+	if !ok || !parsed.Valid {
+		return 0, "", fmt.Errorf("invalid stepup token")
+	}
+	if typ, _ := claims["typ"].(string); typ != tokenTypeStepup {
+		return 0, "", fmt.Errorf("wrong token type %q", typ)
+	}
+	uid, err := parseUintClaim(claims["sub"])
+	if err != nil {
+		return 0, "", err
+	}
+	handle, _ := claims["cid"].(string)
+	if handle == "" {
+		return 0, "", fmt.Errorf("missing ceremony handle")
+	}
+	return uid, handle, nil
 }
 
 // parseUintClaim converts a numeric or string claim into a uint.

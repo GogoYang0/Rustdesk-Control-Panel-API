@@ -427,3 +427,89 @@ func (a *AdminAPI) DeletePasskey(c *gin.Context, passkeyId int64) {
 	}
 	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
 }
+
+// BeginPasskeyStepup starts a fresh assertion for a sensitive action.
+func (a *AdminAPI) BeginPasskeyStepup(c *gin.Context) {
+	svc, ok := a.passkeysEnabled(c)
+	if !ok {
+		return
+	}
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	user, err := a.loadUser(uid)
+	if err != nil {
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not start step-up")
+		return
+	}
+	token, options, err := svc.BeginStepup(c.Request.Context(), user)
+	switch {
+	case errors.Is(err, passkey.ErrNoCredentials):
+		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "this account has no passkey")
+		return
+	case err != nil:
+		a.deps.Logger.Error("begin passkey stepup failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not start step-up")
+		return
+	}
+	payload, err := jsonObject(options)
+	if err != nil {
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not start step-up")
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gen.PasskeyCeremonyResponse{
+		Code:    gen.ErrorCodeOk,
+		Message: "ok",
+		Data:    gen.PasskeyCeremony{CeremonyToken: token, Options: payload},
+	})
+}
+
+// FinishPasskeyStepup returns a single-use two-minute step-up token.
+func (a *AdminAPI) FinishPasskeyStepup(c *gin.Context) {
+	svc, ok := a.passkeysEnabled(c)
+	if !ok {
+		return
+	}
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	var req gen.PasskeyLoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.CeremonyToken == "" || len(req.Credential) == 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "ceremony_token and credential are required")
+		return
+	}
+	body, err := json.Marshal(req.Credential)
+	if err != nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "credential is not valid JSON")
+		return
+	}
+	user, err := a.loadUser(uid)
+	if err != nil {
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not finish step-up")
+		return
+	}
+
+	stepup, err := svc.FinishStepup(c.Request.Context(), user, req.CeremonyToken, body)
+	switch {
+	case errors.Is(err, passkey.ErrCeremonyNotFound),
+		errors.Is(err, passkey.ErrCeremonyExpired),
+		errors.Is(err, passkey.ErrCeremonyUsed),
+		errors.Is(err, passkey.ErrAssertionFailed),
+		errors.Is(err, passkey.ErrCloneWarning):
+		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "step-up rejected")
+		return
+	case err != nil:
+		a.deps.Logger.Error("finish passkey stepup failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not finish step-up")
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gen.StepupTokenResponse{
+		Code:    gen.ErrorCodeOk,
+		Message: "ok",
+		Data:    gen.StepupToken{StepupToken: stepup, ExpiresIn: 120},
+	})
+}

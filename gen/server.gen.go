@@ -2836,6 +2836,46 @@ type PasskeyResponse struct {
 	Message string    `json:"message"`
 }
 
+// PasswordRemoveRequest defines model for PasswordRemoveRequest.
+type PasswordRemoveRequest struct {
+	Password    string `json:"password"`
+	StepupToken string `json:"stepup_token"`
+}
+
+// PasswordRemoveResponse defines model for PasswordRemoveResponse.
+type PasswordRemoveResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode            `json:"code"`
+	Data    PasswordRemoveResult `json:"data"`
+	Message string               `json:"message"`
+}
+
+// PasswordRemoveResult defines model for PasswordRemoveResult.
+type PasswordRemoveResult struct {
+	// Warnings 连带影响说明：`compat_login_disabled` 表示原生客户端将无法再用该账户登录；
+	// `keep_a_second_passkey` 表示恢复只能依赖另一个 passkey。
+	Warnings []string `json:"warnings"`
+}
+
+// PasswordSetRequest defines model for PasswordSetRequest.
+type PasswordSetRequest struct {
+	NewPassword string `json:"new_password"`
+	StepupToken string `json:"stepup_token"`
+}
+
 // Permission defines model for Permission.
 type Permission struct {
 	// Code 权限码，如 `member.manage`
@@ -3416,6 +3456,34 @@ type SessionResponse struct {
 // - closed：已结束
 // - denied：签发阶段被策略拒绝（仅 panel 来源，用于留痕）
 type SessionStatus string
+
+// StepupToken defines model for StepupToken.
+type StepupToken struct {
+	// ExpiresIn 有效期（秒），固定 120
+	ExpiresIn   int64  `json:"expires_in"`
+	StepupToken string `json:"stepup_token"`
+}
+
+// StepupTokenResponse defines model for StepupTokenResponse.
+type StepupTokenResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode   `json:"code"`
+	Data    StepupToken `json:"data"`
+	Message string      `json:"message"`
+}
 
 // Strategy defines model for Strategy.
 type Strategy struct {
@@ -4052,8 +4120,17 @@ type FinishPasskeyLoginJSONRequestBody = PasskeyLoginRequest
 // FinishPasskeyRegistrationJSONRequestBody defines body for FinishPasskeyRegistration for application/json ContentType.
 type FinishPasskeyRegistrationJSONRequestBody = PasskeyRegistrationRequest
 
+// FinishPasskeyStepupJSONRequestBody defines body for FinishPasskeyStepup for application/json ContentType.
+type FinishPasskeyStepupJSONRequestBody = PasskeyLoginRequest
+
 // RenamePasskeyJSONRequestBody defines body for RenamePasskey for application/json ContentType.
 type RenamePasskeyJSONRequestBody = PasskeyNameRequest
+
+// RemovePasswordJSONRequestBody defines body for RemovePassword for application/json ContentType.
+type RemovePasswordJSONRequestBody = PasswordRemoveRequest
+
+// SetPasswordJSONRequestBody defines body for SetPassword for application/json ContentType.
+type SetPasswordJSONRequestBody = PasswordSetRequest
 
 // RefreshTokensJSONRequestBody defines body for RefreshTokens for application/json ContentType.
 type RefreshTokensJSONRequestBody = RefreshRequest
@@ -4228,6 +4305,12 @@ type ServerInterface interface {
 	// FinishPasskeyRegistration 完成绑定 passkey
 	// (POST /api/v1/auth/passkey/register/finish)
 	FinishPasskeyRegistration(c *gin.Context)
+	// BeginPasskeyStepup 开始 step-up 断言
+	// (POST /api/v1/auth/passkey/stepup/begin)
+	BeginPasskeyStepup(c *gin.Context)
+	// FinishPasskeyStepup 完成 step-up 断言
+	// (POST /api/v1/auth/passkey/stepup/finish)
+	FinishPasskeyStepup(c *gin.Context)
 	// ListPasskeys 列出我的 passkey
 	// (GET /api/v1/auth/passkeys)
 	ListPasskeys(c *gin.Context)
@@ -4237,6 +4320,12 @@ type ServerInterface interface {
 	// RenamePasskey 重命名 passkey
 	// (PATCH /api/v1/auth/passkeys/{passkeyId})
 	RenamePasskey(c *gin.Context, passkeyId int64)
+	// RemovePassword 删除本地密码（转为 passkey-only）
+	// (POST /api/v1/auth/password/remove)
+	RemovePassword(c *gin.Context)
+	// SetPassword 恢复本地密码
+	// (POST /api/v1/auth/password/set)
+	SetPassword(c *gin.Context)
 	// RefreshTokens 轮换 refresh 令牌
 	// (POST /api/v1/auth/refresh)
 	RefreshTokens(c *gin.Context)
@@ -4712,6 +4801,32 @@ func (siw *ServerInterfaceWrapper) FinishPasskeyRegistration(c *gin.Context) {
 	siw.Handler.FinishPasskeyRegistration(c)
 }
 
+// BeginPasskeyStepup operation middleware
+func (siw *ServerInterfaceWrapper) BeginPasskeyStepup(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.BeginPasskeyStepup(c)
+}
+
+// FinishPasskeyStepup operation middleware
+func (siw *ServerInterfaceWrapper) FinishPasskeyStepup(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.FinishPasskeyStepup(c)
+}
+
 // ListPasskeys operation middleware
 func (siw *ServerInterfaceWrapper) ListPasskeys(c *gin.Context) {
 
@@ -4773,6 +4888,32 @@ func (siw *ServerInterfaceWrapper) RenamePasskey(c *gin.Context) {
 	}
 
 	siw.Handler.RenamePasskey(c, passkeyId)
+}
+
+// RemovePassword operation middleware
+func (siw *ServerInterfaceWrapper) RemovePassword(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RemovePassword(c)
+}
+
+// SetPassword operation middleware
+func (siw *ServerInterfaceWrapper) SetPassword(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.SetPassword(c)
 }
 
 // RefreshTokens operation middleware
@@ -8476,6 +8617,10 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/auth/2fa/disable", wrapper.DisableTOTP)
 	router.POST(options.BaseURL+"/api/v1/auth/2fa/recovery-codes", wrapper.RegenerateRecoveryCodes)
 	router.POST(options.BaseURL+"/api/v1/auth/2fa/verify", wrapper.VerifyTOTP)
+	router.POST(options.BaseURL+"/api/v1/auth/passkey/stepup/begin", wrapper.BeginPasskeyStepup)
+	router.POST(options.BaseURL+"/api/v1/auth/passkey/stepup/finish", wrapper.FinishPasskeyStepup)
+	router.POST(options.BaseURL+"/api/v1/auth/password/remove", wrapper.RemovePassword)
+	router.POST(options.BaseURL+"/api/v1/auth/password/set", wrapper.SetPassword)
 	router.GET(options.BaseURL+"/api/v1/auth/passkeys", wrapper.ListPasskeys)
 	router.DELETE(options.BaseURL+"/api/v1/auth/passkeys/:passkeyId", wrapper.DeletePasskey)
 	router.PATCH(options.BaseURL+"/api/v1/auth/passkeys/:passkeyId", wrapper.RenamePasskey)

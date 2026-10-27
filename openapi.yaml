@@ -445,6 +445,153 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/v1/auth/passkey/stepup/begin:
+    post:
+      operationId: beginPasskeyStepup
+      summary: 开始 step-up 断言
+      description: |
+        需要登录（JWT）。为敏感操作（删除/恢复本地密码）发起一次新鲜断言。
+        账户没有 passkey 时 409；断言有效期 5 分钟。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 断言挑战
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasskeyCeremonyResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/passkey/stepup/finish:
+    post:
+      operationId: finishPasskeyStepup
+      summary: 完成 step-up 断言
+      description: |
+        需要登录（JWT）。校验断言后返回 2 分钟、**一次一用**的 `stepup_token`。
+        该令牌只能授权一个敏感动作；重放返回 401。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasskeyLoginRequest"
+      responses:
+        "200":
+          description: step-up 令牌
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StepupTokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/password/remove:
+    post:
+      operationId: removePassword
+      summary: 删除本地密码（转为 passkey-only）
+      description: |
+        需要登录（JWT）+ 一次**新鲜的 passkey 断言**（`stepup_token`，2 分钟、一次一用）。
+        四项前置条件全部满足才执行：当前密码正确；stepup 有效；已绑定 passkey ≥ 2；
+        账户没有任何 TOTP 配置（含未启用的 pending 行）。
+
+        成功后 `password_hash` 置空，密码登录返回通用 `unauthorized`，只能走 passkey。
+        **没有线上自救通道**：删除后若丢失全部 passkey，只能由部署方按运维手册处理。
+        响应 `warnings` 列出连带影响（compat 登录不可用等）。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordRemoveRequest"
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasswordRemoveResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/password/set:
+    post:
+      operationId: setPassword
+      summary: 恢复本地密码
+      description: |
+        需要登录（JWT）+ 一次新鲜的 passkey 断言。仅当账户**当前没有密码**时可用
+        （已有密码返回 409；本版本不提供改密）。用于 passkey-only 账户恢复密码登录。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordSetRequest"
+      responses:
+        "200":
+          description: 已设置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /api/v1/auth/passkeys:
     get:
       operationId: listPasskeys
@@ -5373,6 +5520,82 @@ components:
           type: string
         data:
           $ref: "#/components/schemas/PasskeyCeremony"
+
+    StepupToken:
+      type: object
+      required:
+        - stepup_token
+        - expires_in
+      properties:
+        stepup_token:
+          type: string
+        expires_in:
+          type: integer
+          format: int64
+          description: 有效期（秒），固定 120
+
+    StepupTokenResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/StepupToken"
+
+    PasswordRemoveRequest:
+      type: object
+      required:
+        - password
+        - stepup_token
+      properties:
+        password:
+          type: string
+        stepup_token:
+          type: string
+
+    PasswordRemoveResult:
+      type: object
+      required:
+        - warnings
+      properties:
+        warnings:
+          type: array
+          description: |
+            连带影响说明：`compat_login_disabled` 表示原生客户端将无法再用该账户登录；
+            `keep_a_second_passkey` 表示恢复只能依赖另一个 passkey。
+          items:
+            type: string
+
+    PasswordRemoveResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/PasswordRemoveResult"
+
+    PasswordSetRequest:
+      type: object
+      required:
+        - new_password
+        - stepup_token
+      properties:
+        new_password:
+          type: string
+        stepup_token:
+          type: string
 
     PasskeyList:
       type: object
