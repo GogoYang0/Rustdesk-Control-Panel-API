@@ -1,6 +1,6 @@
 # 运维指南（Operations Guide）
 
-> 适用版本：v0.11.0（M6 波次 5b-1 Passkey、5b-2 OIDC；上一基线 v0.10.0）。本文档随版本演进持续更新——每次发布前必须复核一遍。
+> 适用版本：v0.11.0（M6 波次 5b-1 Passkey、5b-2 OIDC、5b-3 LDAP；上一基线 v0.10.0）。本文档随版本演进持续更新——每次发布前必须复核一遍。
 > 配套文档：[部署指南](deployment.md) · [后端 API 规范](api-spec.md)
 
 ---
@@ -397,4 +397,29 @@ IdP discovery 返回的完全一致）、`{web.baseURL}` 是否可达、IdP 证�
 **日志字段**：自服务绑定/登录/解绑只写结构化日志（`user_id`、`provider`、
 `identity_id`、`error_code`），不进 `audit_logs`；secret/code/id_token/ticket
 原文不出现在任何日志。管理员 reset 是唯一进审计表的外部身份事件。
+
+## 12. LDAP 目录运维（v0.11.0）
+
+**401 与 503 的分流**：401「用户名或密码错误」= 目录工作正常、凭据被拒——
+查目录侧账号状态与密码；503「目录服务不可用」= 面板到目录的链路或配置问题——
+按序查：`host:port` 可达性（`ldapsearch -H ldaps://host -x -s base -b ''`）、
+证书链（LDAPS）、`transport`/`allowInsecure` 组合、服务账号是否被锁。**绝不能**
+因为 503 被误报成密码错而让用户反复重试。
+
+**目录改名后重新绑定**：`subject` 是 `usernameAttribute` 的值（L7），目录侧
+改了它 = 旧绑定不命中。启动日志出现 `identities are bound to a different
+ldap host`（换主机）或用户报 401（改用户名）时：管理员调用
+`POST /orgs/{orgId}/members/{userId}/identity/reset` 清空绑定，用户重新登录
+一次即按新值绑定。reset 写审计 `user.identity.reset`。
+
+**`mail` 属性缺失**：登录返回 403「directory account has no mail attribute」。
+处置：在目录侧给该账号补 `mail`（必须与面板账户邮箱一致），无需面板侧操作。
+
+**bind 账号密码轮换**：服务账号密码只在 `PANEL_LDAP_BIND_PASSWORD`。轮换
+四步：目录侧设置新密码 → 更新环境变量 → 重启面板 → 删除旧密码。轮换窗口内
+登录返回 503（不是 401），不要在窗口内尝试排查用户凭据。
+
+**日志边界**：登录日志只含 `username`、结果与 `error_code`；目录密码、用户
+DN、bind 密码不落任何日志或审计。多次 401 会进入与密码登录同一失败窗口
+（同 IP + 同用户名），达到阈值后 429。
 

@@ -430,3 +430,57 @@ SSO 只绑定**已存在**的面板账户，迁移按四步走：管理员邀请
 - **冒烟**：至少用一个真实 IdP 手工走一次 start → 登录 → 回调 → exchange；
   检查浏览器地址栏与历史记录里没有 token。
 
+## 13. LDAP 目录登录（v0.11.0）
+
+与 OIDC 互斥（同开启动失败）。服务账号只读 + 搜索即可，**不要**给写权限；
+bind 密码只从环境变量读：
+
+```bash
+export PANEL_LDAP_BIND_PASSWORD='...'
+```
+
+```yaml
+ldap:
+  enabled: true
+  providerName: "目录账号"      # 登录按钮文案
+  host: "ad.corp.example.com"
+  port: 636
+  transport: "ldaps"            # ldaps | starttls | none（none 必须 allowInsecure: true）
+  insecureSkipVerify: false     # true 仅限自签测试目录，启动会 WARN
+  baseDN: "dc=corp,dc=example,dc=com"
+  scope: "sub"                  # one | sub
+  bindDN: "cn=panel-readonly,ou=svc,dc=corp,dc=example,dc=com"
+  userFilter: "(objectClass=person)"
+  usernameAttribute: "sAMAccountName"   # OpenLDAP 用 uid
+  mailAttribute: "mail"
+  timeout: 10s
+```
+
+| 键 | 约束 |
+|---|---|
+| `host`/`baseDN`/`bindDN`/`PANEL_LDAP_BIND_PASSWORD` | 必填 |
+| `port` | 1–65535 |
+| `transport` | `ldaps`（默认）/`starttls`/`none`；`none` 必须 `allowInsecure: true`，两者都会启动 WARN |
+| `usernameAttribute`/`mailAttribute` | `^[A-Za-z][A-Za-z0-9-]*$` |
+| `userFilter` | 括号配对、≤512、至少一个属性条件 |
+| `scope` | `one`/`sub` |
+| `timeout` | (0, 30s] |
+
+**AD 对照**：`usernameAttribute: sAMAccountName`；AD 默认拒绝匿名搜索（所以
+必须配服务账号）；LDAPS 需要完整证书链——`insecureSkipVerify: true` 只是排查
+工具，不是解法。**OpenLDAP 对照**：`uid` + `(objectClass=inetOrgPerson)`，
+StartTLS 用 389 端口。
+
+### 上线顺序（无 JIT）
+
+与 OIDC 相同：管理员邀请建号 → 用户设密码接受邀请 → 用户在目录里能登录 →
+登录页用目录账号登录完成绑定。目录邮箱（`mail`）必须与面板账户邮箱一致；
+缺失 `mail` 的目录账号登录会得到 403。
+
+### 行为要点
+
+- 目录不可达：503「目录服务不可用」，**不降级**为密码登录；`timeout` 到点即断。
+- filter 写宽了（命中多条）→ 全员 401，这是有意的 fail closed（L6）。
+- 换目录主机 = 换绑定命名空间：旧行不命中不删除，启动打 WARN，需管理员 reset。
+- 每次登录一条连接、无连接池（v1 取舍；量级是几十毫秒）。
+
