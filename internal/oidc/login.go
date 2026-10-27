@@ -127,3 +127,23 @@ func ErrorCode(err error) string {
 		return "oidc_failed"
 	}
 }
+
+// PeekStateForTicket reads the state a live ticket belongs to, without
+// consuming it. The HTTP layer uses it to bind the ticket to the browser that
+// ran the callback before spending the ticket (CWE-352: a forwarded callback or
+// ticket alone must not log a different browser in).
+func (s *Service) PeekStateForTicket(ctx context.Context, ticket string) (string, error) {
+	if ticket == "" {
+		return "", ErrInvalidTicket
+	}
+	sum := sha256.Sum256([]byte(ticket))
+	var flow model.ExternalLoginFlow
+	err := s.db.WithContext(ctx).Select("state").
+		Where("ticket_hash = ? AND ticket_consumed_at IS NULL AND ticket_expires_at > ?",
+			hex.EncodeToString(sum[:]), s.cfg.Now()).
+		First(&flow).Error
+	if err != nil {
+		return "", ErrInvalidTicket
+	}
+	return flow.State, nil
+}

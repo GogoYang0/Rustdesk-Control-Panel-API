@@ -14,6 +14,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
+	"gorm.io/gorm/clause"
 )
 
 // errIdentityResetLockout refuses a reset that would leave the account with no
@@ -51,8 +52,14 @@ func (a *AdminAPI) ResetMemberIdentity(c *gin.Context, orgId int64, userId int64
 		if err := a.assertResettableFactor(tx, c, orgID, targetID); err != nil {
 			return err
 		}
+		// Lock the account row so concurrent credential removals (password,
+		// passkeys, identities) serialize on the same lock.
+		read := tx
+		if tx.Name() != "sqlite" {
+			read = read.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
 		var target model.User
-		if err := store.WithoutTenantScope(tx).Where("id = ?", targetID).First(&target).Error; err != nil {
+		if err := store.WithoutTenantScope(read).Where("id = ?", targetID).First(&target).Error; err != nil {
 			return err
 		}
 		var passkeys int64

@@ -61,6 +61,19 @@ func (a *AdminAPI) StartOIDCLogin(c *gin.Context) {
 		return
 	}
 
+	// Bind the flow to this browser: the callback and the exchange only accept
+	// the request that carries this cookie, so a harvested callback or ticket
+	// cannot log anyone else in (CWE-352).
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     oidcFlowCookie,
+		Value:    state,
+		Path:     "/",
+		MaxAge:   int(svc.StateTTL().Seconds()) + 120,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, gen.OIDCStartResponse{
 		Code:    gen.ErrorCodeOk,

@@ -22,11 +22,13 @@ import (
 // Maintenance runs at most once per second, so a burst of inserts cannot turn
 // into a full-table scan on every request.
 type LoginGuard struct {
-	mu       sync.Mutex
-	limiters map[string]*ipEntry
-	failures map[string]*failureWindow
-	now      func() time.Time
-	lastGC   time.Time
+	ipRatePerMinute int
+	ipBurst         int
+	mu              sync.Mutex
+	limiters        map[string]*ipEntry
+	failures        map[string]*failureWindow
+	now             func() time.Time
+	lastGC          time.Time
 }
 
 type ipEntry struct {
@@ -53,10 +55,23 @@ const (
 // NewLoginGuard creates a login guard with empty rate and failure tracking tables.
 func NewLoginGuard() *LoginGuard {
 	return &LoginGuard{
-		limiters: map[string]*ipEntry{},
-		failures: map[string]*failureWindow{},
-		now:      time.Now,
+		ipRatePerMinute: ipRatePerMinute,
+		ipBurst:         ipBurst,
+		limiters:        map[string]*ipEntry{},
+		failures:        map[string]*failureWindow{},
+		now:             time.Now,
 	}
+}
+
+// NewLoginGuardWithLimits creates a guard with explicit per-IP limits for
+// endpoints whose legitimate flow costs several requests. The OIDC endpoints
+// spend one token each on start, callback and exchange, so the login-sized
+// bucket would 429 the second user behind a shared NAT address.
+func NewLoginGuardWithLimits(ratePerMinute, burst int) *LoginGuard {
+	g := NewLoginGuard()
+	g.ipRatePerMinute = ratePerMinute
+	g.ipBurst = burst
+	return g
 }
 
 // AllowIP reports whether the IP may attempt another credential check.
@@ -72,7 +87,7 @@ func (g *LoginGuard) AllowIP(ip string) bool {
 		if len(g.limiters) >= maxLimiters {
 			g.evictLRULocked()
 		}
-		entry = &ipEntry{lim: rate.NewLimiter(rate.Every(time.Minute/ipRatePerMinute), ipBurst)}
+		entry = &ipEntry{lim: rate.NewLimiter(rate.Every(time.Minute/time.Duration(g.ipRatePerMinute)), g.ipBurst)}
 		g.limiters[ip] = entry
 	}
 	entry.last = now

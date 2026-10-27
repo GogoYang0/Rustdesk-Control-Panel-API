@@ -14,6 +14,22 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/oidc"
 )
 
+// oidcFlowCookie binds one OIDC flow to the browser that started it.
+const oidcFlowCookie = "oidc_flow"
+
+// clearOIDCFlowCookie drops the binding once it is no longer needed.
+func clearOIDCFlowCookie(c *gin.Context) {
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     oidcFlowCookie,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
 // HandleOIDCCallback receives the IdP redirect. Every outcome is a 302 back to
 // the SPA: a browser lands here, so an API-shaped error would strand the user on
 // a blank page. The query carries either a one-shot ticket or a fixed code.
@@ -41,6 +57,14 @@ func (a *AdminAPI) HandleOIDCCallback(c *gin.Context, params gen.HandleOIDCCallb
 	// text is deliberately dropped: it is untrusted input and can describe the
 	// deployment.
 	if params.Error != nil || code == "" {
+		a.redirectOIDCError(c, svc, state, "oidc_failed")
+		return
+	}
+
+	// The state must be the one this browser was handed at /start: without the
+	// cookie check a forwarded callback URL would log the receiver in as the
+	// original user (login CSRF).
+	if cookie, err := c.Cookie(oidcFlowCookie); err != nil || cookie != state {
 		a.redirectOIDCError(c, svc, state, "oidc_failed")
 		return
 	}
@@ -97,6 +121,20 @@ func (a *AdminAPI) ExchangeOIDCLogin(c *gin.Context) {
 		return
 	}
 
+	// The ticket is bound to the browser that received the callback redirect:
+	// a forwarded ticket must not be spendable by anyone else.
+	flowState, err := svc.PeekStateForTicket(c.Request.Context(), req.Ticket)
+	if err != nil {
+		clearOIDCFlowCookie(c)
+		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "ticket rejected")
+		return
+	}
+	if cookie, cerr := c.Cookie(oidcFlowCookie); cerr != nil || cookie != flowState {
+		clearOIDCFlowCookie(c)
+		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "ticket rejected")
+		return
+	}
+
 	user, err := svc.ExchangeTicket(c.Request.Context(), req.Ticket)
 	if err != nil {
 		// One message for expired, replayed and forged tickets: distinguishing
@@ -104,6 +142,7 @@ func (a *AdminAPI) ExchangeOIDCLogin(c *gin.Context) {
 		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "ticket rejected")
 		return
 	}
+	clearOIDCFlowCookie(c)
 	a.finalizeExternalLogin(c, user, model.IdentityProviderOIDC)
 }
 

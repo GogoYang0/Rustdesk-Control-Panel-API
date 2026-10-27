@@ -18,6 +18,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/clientbuild"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/controlrole"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/limit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logquery"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/oidc"
@@ -255,15 +256,17 @@ func NewAdminAPI(d Deps) *AdminAPI {
 
 		totpManageGuard: newLoginGuard(),
 		passkeyGuard:    newLoginGuard(),
-		oidcGuard:       newLoginGuard(),
-		books:           addressbook.NewService(d.DB),
-		tickets:         tickets,
-		totp:            d.TOTP,
-		retention:       d.Retention,
-		captcha:         d.Captcha,
-		clientBuilds:    d.ClientBuilds,
-		passkeys:        d.Passkeys,
-		oidc:            d.OIDC,
-		captchaGuard:    newLoginGuard(),
+		// Three tokens per SSO login (start, callback, exchange): the bucket must
+		// fit several logins per shared NAT address, unlike the password bucket.
+		oidcGuard:    limit.NewLoginGuardWithLimits(30, 30),
+		books:        addressbook.NewService(d.DB),
+		tickets:      tickets,
+		totp:         d.TOTP,
+		retention:    d.Retention,
+		captcha:      d.Captcha,
+		clientBuilds: d.ClientBuilds,
+		passkeys:     d.Passkeys,
+		oidc:         d.OIDC,
+		captchaGuard: newLoginGuard(),
 	}
 }

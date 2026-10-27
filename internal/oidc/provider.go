@@ -22,6 +22,12 @@ import (
 // cannot pin request goroutines.
 const discoveryTimeout = 10 * time.Second
 
+// tokenTimeout bounds the code exchange and the JWKS fetch inside Verify: the
+// request context carries no deadline of its own, and the callback endpoint is
+// unauthenticated, so a slow IdP would otherwise hold one goroutine and one
+// connection per attempt forever.
+const tokenTimeout = 10 * time.Second
+
 // Config is the resolved, already-validated OIDC configuration.
 type Config struct {
 	ProviderName string
@@ -68,6 +74,10 @@ func NewService(db *gorm.DB, cfg Config, log *zap.Logger) *Service {
 
 // ProviderName is the label the login page shows.
 func (s *Service) ProviderName() string { return s.cfg.ProviderName }
+
+// StateTTL is how long a login flow stays alive; the flow cookie outlives it by
+// the ticket window.
+func (s *Service) StateTTL() time.Duration { return s.cfg.StateTTL }
 
 // EnsureProvider discovers the IdP once and caches the result. Failures are
 // not cached: a single IdP outage must not disable SSO for the process
@@ -133,6 +143,8 @@ func (s *Service) ExchangeCode(ctx context.Context, code, verifier string) (*oid
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := context.WithTimeout(ctx, tokenTimeout)
+	defer cancel()
 	token, err := p.oauth.Exchange(ctx, code, oauth2.VerifierOption(verifier))
 	if err != nil {
 		return nil, fmt.Errorf("%w: code exchange failed: %v", ErrLoginFailed, err)

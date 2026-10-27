@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 )
@@ -49,6 +50,7 @@ type Server struct {
 
 	LastTokenForm url.Values
 
+	mu         sync.Mutex
 	srv        *httptest.Server
 	key        *rsa.PrivateKey
 	foreignKey *rsa.PrivateKey
@@ -152,7 +154,9 @@ func (s *Server) serveToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
+	s.mu.Lock()
 	s.LastTokenForm = r.PostForm
+	s.mu.Unlock()
 	if s.TokenStatus != 0 {
 		http.Error(w, "injected token failure", s.TokenStatus)
 		return
