@@ -94,6 +94,23 @@ func (s *Service) ExchangeTicket(ctx context.Context, ticket string) (model.User
 	return user, nil
 }
 
+// RedirectPathFor reads the site path recorded for a state without consuming
+// it. The callback uses it to build an error redirect when the flow never
+// completes; an unknown state falls back to "/".
+func (s *Service) RedirectPathFor(ctx context.Context, state string) string {
+	if state == "" {
+		return "/"
+	}
+	var flow model.ExternalLoginFlow
+	if err := s.db.WithContext(ctx).Select("redirect_path").Where("state = ?", state).First(&flow).Error; err != nil {
+		return "/"
+	}
+	if flow.RedirectPath == "" {
+		return "/"
+	}
+	return flow.RedirectPath
+}
+
 // ErrorCode maps a failure onto the fixed code the SPA receives in the query
 // string. Everything that is not one of the three special cases collapses into
 // oidc_failed: the client cannot act differently on the rest, and the details

@@ -2654,6 +2654,12 @@ type MemberUpdateRequest struct {
 	RoleId *int64 `json:"role_id,omitempty"`
 }
 
+// OIDCExchangeRequest defines model for OIDCExchangeRequest.
+type OIDCExchangeRequest struct {
+	// Ticket 回调重定向里的一次性 ticket
+	Ticket string `json:"ticket"`
+}
+
 // OIDCStart defines model for OIDCStart.
 type OIDCStart struct {
 	// AuthorizationUrl 浏览器应跳转的 IdP 授权地址（含 state / nonce / PKCE challenge）
@@ -4027,6 +4033,15 @@ type TooManyRequests = ErrorResponse
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = ErrorResponse
 
+// HandleOIDCCallbackParams defines parameters for HandleOIDCCallback.
+type HandleOIDCCallbackParams struct {
+	State *string `form:"state,omitempty" json:"state,omitempty"`
+	Code  *string `form:"code,omitempty" json:"code,omitempty"`
+
+	// Error IdP 的错误码；只用于判定失败，不记录原文
+	Error *string `form:"error,omitempty" json:"error,omitempty"`
+}
+
 // ListTokensParams defines parameters for ListTokens.
 type ListTokensParams struct {
 	OrganizationId int64 `form:"organizationId" json:"organizationId"`
@@ -4198,6 +4213,9 @@ type VerifyTOTPJSONRequestBody = TOTPVerifyRequest
 
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
+
+// ExchangeOIDCLoginJSONRequestBody defines body for ExchangeOIDCLogin for application/json ContentType.
+type ExchangeOIDCLoginJSONRequestBody = OIDCExchangeRequest
 
 // StartOIDCLoginJSONRequestBody defines body for StartOIDCLogin for application/json ContentType.
 type StartOIDCLoginJSONRequestBody = OIDCStartRequest
@@ -4384,6 +4402,12 @@ type ServerInterface interface {
 	// Login 邮箱密码登录
 	// (POST /api/v1/auth/login)
 	Login(c *gin.Context)
+	// HandleOIDCCallback OIDC 回调
+	// (GET /api/v1/auth/oidc/callback)
+	HandleOIDCCallback(c *gin.Context, params HandleOIDCCallbackParams)
+	// ExchangeOIDCLogin 用 ticket 换取令牌
+	// (POST /api/v1/auth/oidc/exchange)
+	ExchangeOIDCLogin(c *gin.Context)
 	// StartOIDCLogin 开始 OIDC 登录
 	// (POST /api/v1/auth/oidc/start)
 	StartOIDCLogin(c *gin.Context)
@@ -4847,6 +4871,62 @@ func (siw *ServerInterfaceWrapper) Login(c *gin.Context) {
 	}
 
 	siw.Handler.Login(c)
+}
+
+// HandleOIDCCallback operation middleware
+func (siw *ServerInterfaceWrapper) HandleOIDCCallback(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params HandleOIDCCallbackParams
+
+	// ------------- Optional query parameter "state" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "state", c.Request.URL.Query(), &params.State, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter state: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "code" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "code", c.Request.URL.Query(), &params.Code, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter code: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "error" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "error", c.Request.URL.Query(), &params.Error, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter error: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.HandleOIDCCallback(c, params)
+}
+
+// ExchangeOIDCLogin operation middleware
+func (siw *ServerInterfaceWrapper) ExchangeOIDCLogin(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ExchangeOIDCLogin(c)
 }
 
 // StartOIDCLogin operation middleware
@@ -8769,6 +8849,8 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/auth/login", wrapper.Login)
 	router.GET(options.BaseURL+"/api/v1/auth/providers", wrapper.ListAuthProviders)
 	router.POST(options.BaseURL+"/api/v1/auth/oidc/start", wrapper.StartOIDCLogin)
+	router.GET(options.BaseURL+"/api/v1/auth/oidc/callback", wrapper.HandleOIDCCallback)
+	router.POST(options.BaseURL+"/api/v1/auth/oidc/exchange", wrapper.ExchangeOIDCLogin)
 	router.GET(options.BaseURL+"/api/v1/auth/captcha", wrapper.GetCaptchaChallenge)
 	router.POST(options.BaseURL+"/api/v1/auth/refresh", wrapper.RefreshTokens)
 	router.GET(options.BaseURL+"/api/v1/auth/tokens", wrapper.ListTokens)

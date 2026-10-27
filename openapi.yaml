@@ -212,6 +212,93 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/v1/auth/oidc/callback:
+    get:
+      operationId: handleOIDCCallback
+      summary: OIDC 回调
+      description: |
+        未认证。IdP 重定向到这里。成功时 302 到
+        `{web.baseURL}{redirect_path}?ticket=…`，失败时 302 到同一路径并带
+        `?error=<oidc_failed|no_account|email_unverified|identity_conflict>`。
+
+        URL 中**不出现任何 token**（access/refresh/id_token 都不进查询串）；
+        ticket 有效期 60 秒、一次一用。请求里的 `redirect_uri` 被忽略，
+        `Location` 只由 `web.baseURL` 与启动时校验过的站内路径拼成。
+        IdP 返回的 `error`/`error_description` 原文不回显、不入日志。
+      tags:
+        - auth
+      security: []
+      parameters:
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: code
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: error
+          in: query
+          required: false
+          schema:
+            type: string
+          description: IdP 的错误码；只用于判定失败，不记录原文
+      responses:
+        "302":
+          description: 重定向回前端（带 ticket 或固定错误码）
+          headers:
+            Location:
+              schema:
+                type: string
+        "503":
+          description: OIDC 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/oidc/exchange:
+    post:
+      operationId: exchangeOIDCLogin
+      summary: 用 ticket 换取令牌
+      description: |
+        未认证。把回调带回来的 ticket 换成与密码登录相同的 token 对。
+        ticket 一次有效（60 秒），重放或伪造一律 401。
+
+        `external.requireLocalSecondFactor=true` 且该账户**已启用** TOTP 时，
+        返回 401 `two_factor_required` 与 `challenge_token`（`methods:["totp"]`），
+        客户端继续调用 `POST /auth/2fa/verify`；未启用 TOTP 的账户直接发 token。
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OIDCExchangeRequest"
+      responses:
+        "200":
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: OIDC 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /api/v1/auth/captcha:
     get:
       operationId: getCaptchaChallenge
@@ -5567,6 +5654,15 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
 
   schemas:
+    OIDCExchangeRequest:
+      type: object
+      required:
+        - ticket
+      properties:
+        ticket:
+          type: string
+          description: 回调重定向里的一次性 ticket
+
     OIDCStartRequest:
       type: object
       properties:
