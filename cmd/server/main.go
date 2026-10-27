@@ -34,6 +34,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logquery"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/oidc"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/passkey"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/provision"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/session"
@@ -213,6 +214,33 @@ func main() {
 	} else if passwordless > 0 {
 		lg.Warn("passwordless accounts exist; disabling webauthn will lock them out",
 			zap.Int64("count", passwordless))
+	}
+
+	// OIDC is opt-in and single-provider. Discovery happens lazily on the first
+	// request, so an unreachable IdP delays nothing here and recovers without a
+	// restart (design O9).
+	var oidcSvc *oidc.Service
+	if cfg.OIDC.Enabled {
+		oidcSvc = oidc.NewService(st.DB, oidc.Config{
+			ProviderName: cfg.OIDC.ProviderName,
+			Issuer:       cfg.OIDC.Issuer,
+			ClientID:     cfg.OIDC.ClientID,
+			ClientSecret: cfg.OIDC.ClientSecret,
+			Scopes:       cfg.OIDC.Scopes,
+			ClockSkew:    cfg.OIDC.ClockSkew,
+			StateTTL:     cfg.OIDC.StateTTL,
+			CallbackURL:  strings.TrimRight(cfg.Web.BaseURL, "/") + "/api/v1/auth/oidc/callback",
+		}, lg)
+
+		// Identities bound under a previous issuer simply never match again.
+		// Deleting them would destroy the rollback path, so the operator gets a
+		// count and the batch procedure in operations.md instead (design O11).
+		if stale, err := oidcSvc.StaleIssuerCount(context.Background()); err != nil {
+			lg.Warn("could not count identities from a previous oidc issuer", zap.Error(err))
+		} else if stale > 0 {
+			lg.Warn("identities are bound to a different oidc issuer and will not match; see operations.md",
+				zap.Int64("count", stale), zap.String("current_issuer", cfg.OIDC.Issuer))
+		}
 	}
 
 	deviceSvc := device.NewService(st.DB, auditor, nil)
@@ -508,6 +536,17 @@ func main() {
 	}); err != nil {
 		lg.Fatal("register client build advance", zap.Error(err))
 	}
+	if oidcSvc != nil {
+		if err := sched.Register(worker.Task{
+			Name:     "external-login-flow-sweep",
+			Interval: 10 * time.Minute,
+			Run: func(ctx context.Context) (int64, error) {
+				return oidcSvc.Sweep(ctx, time.Now().Add(-10*time.Minute))
+			},
+		}); err != nil {
+			lg.Fatal("register external login flow sweep", zap.Error(err))
+		}
+	}
 	if passkeySvc != nil {
 		if err := sched.Register(worker.Task{
 			Name:     "webauthn-ceremony-sweep",
@@ -561,28 +600,30 @@ func main() {
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		Handler: api.NewRouter(api.Deps{
-			DB:             st.DB,
-			Auth:           authSvc,
-			Devices:        deviceSvc,
-			ProvisionQueue: provQueue,
-			Provisioning:   provSvc,
-			OrgsPerUser:    cfg.Provision.MaxOrgsPerUser,
-			Issuer:         issuer,
-			Auditor:        auditor,
-			Access:         access.NewService(st.DB, auditor, nil),
-			Logger:         lg,
-			Mailer:         mailer,
-			Tickets:        sessionSvc,
-			AccessTTL:      cfg.Auth.AccessTTL,
-			RefreshTTL:     cfg.Auth.RefreshTTL,
-			InvitationTTL:  7 * 24 * time.Hour,
-			WebBaseURL:     cfg.Web.BaseURL,
-			CompatTTL:      cfg.Compat.AccessTTL,
-			AuthSecret:     cfg.Auth.Secret,
-			Retention:      retentionSvc,
-			Captcha:        captchaSvc,
-			ClientBuilds:   clientBuildSvc,
-			Passkeys:       passkeySvc,
+			DB:                       st.DB,
+			Auth:                     authSvc,
+			Devices:                  deviceSvc,
+			ProvisionQueue:           provQueue,
+			Provisioning:             provSvc,
+			OrgsPerUser:              cfg.Provision.MaxOrgsPerUser,
+			Issuer:                   issuer,
+			Auditor:                  auditor,
+			Access:                   access.NewService(st.DB, auditor, nil),
+			Logger:                   lg,
+			Mailer:                   mailer,
+			Tickets:                  sessionSvc,
+			AccessTTL:                cfg.Auth.AccessTTL,
+			RefreshTTL:               cfg.Auth.RefreshTTL,
+			InvitationTTL:            7 * 24 * time.Hour,
+			WebBaseURL:               cfg.Web.BaseURL,
+			CompatTTL:                cfg.Compat.AccessTTL,
+			AuthSecret:               cfg.Auth.Secret,
+			Retention:                retentionSvc,
+			Captcha:                  captchaSvc,
+			ClientBuilds:             clientBuildSvc,
+			Passkeys:                 passkeySvc,
+			OIDC:                     oidcSvc,
+			RequireLocalSecondFactor: cfg.External.RequireLocalSecondFactor,
 		}),
 	}
 

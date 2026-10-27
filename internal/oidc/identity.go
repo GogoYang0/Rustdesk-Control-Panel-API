@@ -203,3 +203,15 @@ func (s *Service) Unlink(ctx context.Context, userID, identityID uint) error {
 	}
 	return ErrLastCredential
 }
+
+// StaleIssuerCount reports how many identities are bound under an issuer other
+// than the configured one. A deployment that switched IdP keeps the old rows:
+// they simply never match again, and this count is what the startup warning
+// shows the operator (design O11).
+func (s *Service) StaleIssuerCount(ctx context.Context) (int64, error) {
+	var count int64
+	err := s.db.WithContext(ctx).Model(&model.UserIdentity{}).
+		Where("provider = ? AND issuer <> ?", model.IdentityProviderOIDC, s.cfg.Issuer).
+		Count(&count).Error
+	return count, err
+}
