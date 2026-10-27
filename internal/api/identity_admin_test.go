@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -38,11 +39,13 @@ func TestResetMemberIdentity_OwnerResetsMember(t *testing.T) {
 	require.NoError(t, h.db.DB.Model(&model.UserIdentity{}).Where("user_id = ?", member.ID).Count(&count).Error)
 	require.Zero(t, count)
 
-	var audits int64
+	var auditRow model.AuditLog
 	// audit_logs is tenant-scoped: the raw handle needs an explicit bypass.
 	require.NoError(t, store.WithoutTenantScope(h.db.DB).Model(&model.AuditLog{}).
-		Where("action = ?", "user.identity.reset").Count(&audits).Error)
-	require.EqualValues(t, 1, audits)
+		Where("action = ?", "user.identity.reset").First(&auditRow).Error)
+	// The O14 exception is judged on conflict_at, so the audit must record it:
+	// without the flag an operator cannot tell a repair from a lockout later.
+	require.Contains(t, fmt.Sprint(auditRow.Detail), "conflict_at")
 }
 
 func TestResetMemberIdentity_Guards(t *testing.T) {

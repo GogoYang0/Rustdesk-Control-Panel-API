@@ -7,6 +7,9 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 )
@@ -118,7 +121,7 @@ func (s *Service) bindNewIdentity(ctx context.Context, c identityClaims, now tim
 
 	var existing model.UserIdentity
 	err := s.db.WithContext(ctx).
-		Where("user_id = ? AND provider = ? AND issuer = ?", user.ID, model.IdentityProviderOIDC, c.Issuer).
+		Where("user_id = ? AND provider = ? AND issuer = ? AND subject <> ?", user.ID, model.IdentityProviderOIDC, c.Issuer, c.Subject).
 		First(&existing).Error
 	switch {
 	case err == nil:
@@ -172,36 +175,54 @@ func (s *Service) ListIdentities(ctx context.Context, userID uint) ([]model.User
 // passkeys and without another identity there is no self-service recovery
 // (design §6, endpoint 6).
 //
-// The refusal is a predicate on the DELETE itself, so two concurrent unlinks
-// cannot both burn the last two credentials of a passwordless account.
+// The whole decision runs in one transaction, and the account row is locked
+// first (SELECT ... FOR UPDATE on dialects that support it): two concurrent
+// unlinks of a passwordless account's last two credentials therefore serialize
+// instead of both passing a stale count. The lock also keeps the count out of
+// the DELETE statement — MySQL rejects a same-table subquery there outright
+// (ER_UPDATE_TABLE_USED), which is exactly the dialect-only failure the
+// handover warns about.
 func (s *Service) Unlink(ctx context.Context, userID, identityID uint) error {
-	res := s.db.WithContext(ctx).
-		Where("id = ? AND user_id = ?", identityID, userID).
-		Where(
-			"EXISTS (SELECT 1 FROM users WHERE users.id = user_identities.user_id AND password_hash <> '')" +
-				" OR EXISTS (SELECT 1 FROM user_passkeys WHERE user_passkeys.user_id = user_identities.user_id)" +
-				" OR (SELECT COUNT(*) FROM user_identities AS u2 WHERE u2.user_id = user_identities.user_id) > 1",
-		).
-		Delete(&model.UserIdentity{})
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 1 {
-		return nil
-	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		read := tx
+		if tx.Name() != "sqlite" {
+			read = read.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
 
-	// Distinguish "not yours" from "refused": ownership is part of the lookup.
-	var identity model.UserIdentity
-	err := s.db.WithContext(ctx).
-		Where("id = ? AND user_id = ?", identityID, userID).
-		First(&identity).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return ErrIdentityNotFound
-	}
-	if err != nil {
-		return err
-	}
-	return ErrLastCredential
+		var user model.User
+		if err := read.Where("id = ?", userID).First(&user).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrIdentityNotFound
+			}
+			return err
+		}
+
+		var identity model.UserIdentity
+		if err := read.Where("id = ? AND user_id = ?", identityID, userID).First(&identity).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrIdentityNotFound
+			}
+			return err
+		}
+
+		if !auth.HasPassword(user) {
+			// The password cannot vouch for this account; only a passkey or a
+			// second binding can remain afterwards.
+			var passkeys, others int64
+			if err := tx.Model(&model.UserPasskey{}).Where("user_id = ?", userID).Count(&passkeys).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&model.UserIdentity{}).
+				Where("user_id = ? AND id <> ?", userID, identityID).Count(&others).Error; err != nil {
+				return err
+			}
+			if passkeys == 0 && others == 0 {
+				return ErrLastCredential
+			}
+		}
+
+		return tx.Where("id = ? AND user_id = ?", identityID, userID).Delete(&model.UserIdentity{}).Error
+	})
 }
 
 // StaleIssuerCount reports how many identities are bound under an issuer other

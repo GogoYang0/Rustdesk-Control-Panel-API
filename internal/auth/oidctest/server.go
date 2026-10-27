@@ -28,7 +28,11 @@ type Server struct {
 	Issuer   string
 	ClientID string
 
-	Nonce         string
+	Nonce string
+	// NoncesByCode maps an authorization code to the nonce its ID token must
+	// carry: concurrency tests run several flows whose nonces must not bleed
+	// into each other.
+	NoncesByCode  map[string]string
 	Sub           string
 	Email         string
 	EmailVerified any           // true, "true", []any{"true"} or nil to omit
@@ -158,7 +162,7 @@ func (s *Server) serveToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	idToken, err := s.signIDToken()
+	idToken, err := s.signIDToken(r.PostForm.Get("code"))
 	if err != nil {
 		http.Error(w, "sign: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -171,7 +175,7 @@ func (s *Server) serveToken(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) signIDToken() (string, error) {
+func (s *Server) signIDToken(code string) (string, error) {
 	now := time.Now()
 	issuer := s.IssuerClaim
 	if issuer == "" {
@@ -193,7 +197,9 @@ func (s *Server) signIDToken() (string, error) {
 		"iat": now.Unix(),
 		"exp": now.Add(ttl).Unix(),
 	}
-	if s.Nonce != "" {
+	if nonce, ok := s.NoncesByCode[code]; ok {
+		claims["nonce"] = nonce
+	} else if s.Nonce != "" {
 		claims["nonce"] = s.Nonce
 	}
 	if s.Email != "" {

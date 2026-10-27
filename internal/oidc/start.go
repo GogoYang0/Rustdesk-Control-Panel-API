@@ -99,8 +99,13 @@ func SanitizeRedirectPath(raw string) (string, error) {
 	if strings.Contains(target, "..") {
 		return "", ErrInvalidRedirect
 	}
-	if strings.ContainsAny(target, "\r\n\t") {
-		return "", ErrInvalidRedirect
+	for _, r := range target {
+		// Control bytes are invisible in a URL but fatal later: the http layer
+		// refuses to write a Location header containing them, so the failure
+		// would surface as a broken browser redirect instead of a 400 here.
+		if r < 0x20 || r == 0x7f {
+			return "", ErrInvalidRedirect
+		}
 	}
 	// path.Clean also collapses duplicate slashes in the path component.
 	if cleaned := path.Clean(target); cleaned == "." || !strings.HasPrefix(cleaned, "/") {

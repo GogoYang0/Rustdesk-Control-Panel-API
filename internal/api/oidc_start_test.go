@@ -122,6 +122,8 @@ func TestOIDCStart_RejectsOpenRedirect(t *testing.T) {
 		"https://evil.com",
 		`/\evil.com`,
 		"/%2F%2Fevil.com",
+		"/%5C%5Cevil.com",
+		"/a\x0bb",
 		"/a/../../b",
 		"javascript:alert(1)",
 		"/a\nb",

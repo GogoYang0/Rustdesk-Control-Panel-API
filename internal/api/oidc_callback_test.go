@@ -149,6 +149,24 @@ func TestOIDCCallback_StateReplayIsRefused(t *testing.T) {
 	require.Equal(t, "oidc_failed", q.Get("error"))
 }
 
+// TestOIDCCallback_RateLimited pins the guard on the callback: without it an
+// unauthenticated caller can hammer the state lookup and drive outbound token
+// exchanges against the IdP (the guard covers start and exchange already).
+func TestOIDCCallback_RateLimited(t *testing.T) {
+	h, _ := oidcHarness(t, false)
+
+	sawLimit := false
+	for i := 0; i < 15; i++ {
+		w := h.do(t, http.MethodGet, "/api/v1/auth/oidc/callback?state=missing-"+string(rune('a'+i))+"&code=x", nil, "")
+		if w.Code == http.StatusTooManyRequests {
+			sawLimit = true
+			break
+		}
+		require.Equal(t, http.StatusFound, w.Code, w.Body.String())
+	}
+	require.True(t, sawLimit, "callback never hit the per-IP limit")
+}
+
 func TestOIDCCallback_IdPErrorRedirectsToFixedCode(t *testing.T) {
 	h, _ := oidcHarness(t, false)
 

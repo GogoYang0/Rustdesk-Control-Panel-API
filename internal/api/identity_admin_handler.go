@@ -68,6 +68,14 @@ func (a *AdminAPI) ResetMemberIdentity(c *gin.Context, orgId int64, userId int64
 		if !hadLocal && working > 0 {
 			return errIdentityResetLockout
 		}
+		// The O14 exception is judged on conflict_at; recording it lets an
+		// operator tell a repair (everything conflicted) from a lockout risk
+		// when reading the audit trail later.
+		var conflicted int64
+		if err := tx.Model(&model.UserIdentity{}).
+			Where("user_id = ? AND conflict_at IS NOT NULL", targetID).Count(&conflicted).Error; err != nil {
+			return err
+		}
 
 		res := tx.Where("user_id = ?", targetID).Delete(&model.UserIdentity{})
 		if res.Error != nil {
@@ -86,6 +94,7 @@ func (a *AdminAPI) ResetMemberIdentity(c *gin.Context, orgId int64, userId int64
 			Detail: map[string]any{
 				"removed":              res.RowsAffected,
 				"had_local_credential": hadLocal,
+				"conflict_at":          conflicted > 0,
 			},
 		})
 	})

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -361,5 +363,80 @@ func TestErrorCode(t *testing.T) {
 	}
 	if got := ErrorCode(errors.New("boom")); got != "oidc_failed" {
 		t.Fatalf("unknown error maps to %q, want oidc_failed", got)
+	}
+}
+
+// TestFinishCallback_ConcurrentFirstBind pins the race two browsers create when
+// the same mailbox signs in for the first time twice at once: both attempts
+// succeed, exactly one identity row exists (the unique-key loser re-reads and
+// finds its own account).
+func TestFinishCallback_ConcurrentFirstBind(t *testing.T) {
+	svc, fake, _ := newLoginHarness(t)
+	u := seedUser(t, svc, "oidc-race-bind@example.com", true)
+
+	state1, nonce1 := beginCallback(t, svc, "/")
+	state2, nonce2 := beginCallback(t, svc, "/")
+	// Each flow echoes its own authorize-time nonce, like a real IdP.
+	fake.NoncesByCode = map[string]string{
+		"code-" + state1: nonce1,
+		"code-" + state2: nonce2,
+	}
+	fake.Sub = "subject-race"
+	fake.Email = u.Email
+	fake.EmailVerified = true
+
+	var wg sync.WaitGroup
+	var errs [2]error
+	run := func(i int, state string) {
+		defer wg.Done()
+		_, errs[i] = svc.FinishCallback(context.Background(), state, "code-"+state)
+	}
+	wg.Add(2)
+	go run(0, state1)
+	go run(1, state2)
+	wg.Wait()
+
+	if errs[0] != nil || errs[1] != nil {
+		t.Fatalf("both first logins must succeed, got %v / %v", errs[0], errs[1])
+	}
+	var count int64
+	if err := svc.db.Model(&model.UserIdentity{}).Where("user_id = ?", u.ID).Count(&count).Error; err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("identity rows = %d, want exactly 1", count)
+	}
+}
+
+// TestExchangeTicket_Concurrent pins the ticket's single-use guarantee under
+// concurrency: one winner, one loser, one token pair ever issued.
+func TestExchangeTicket_Concurrent(t *testing.T) {
+	svc, fake, _ := newLoginHarness(t)
+	u := seedUser(t, svc, "oidc-race-ticket@example.com", true)
+
+	state, nonce := beginCallback(t, svc, "/")
+	fake.Nonce = nonce
+	fake.Sub = "subject-ticket-race"
+	fake.Email = u.Email
+	fake.EmailVerified = true
+	res, err := svc.FinishCallback(context.Background(), state, "code-1")
+	if err != nil {
+		t.Fatalf("FinishCallback: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	var wins atomic.Int64
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := svc.ExchangeTicket(context.Background(), res.Ticket); err == nil {
+				wins.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := wins.Load(); got != 1 {
+		t.Fatalf("successful exchanges = %d, want exactly 1", got)
 	}
 }

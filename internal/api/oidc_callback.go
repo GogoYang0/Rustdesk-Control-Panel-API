@@ -24,6 +24,11 @@ func (a *AdminAPI) HandleOIDCCallback(c *gin.Context, params gen.HandleOIDCCallb
 		return
 	}
 
+	if !a.oidcGuard.AllowIP(c.ClientIP()) {
+		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "too many sign-in attempts")
+		return
+	}
+
 	state := ""
 	if params.State != nil {
 		state = *params.State
