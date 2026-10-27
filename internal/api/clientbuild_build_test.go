@@ -44,7 +44,7 @@ func TestClientBuild_BuildHTTP(t *testing.T) {
 	build := createBuildHTTP(t, h, orgID, adminToken, profile.Id, []string{"linux-x64", "windows-x64"})
 	require.Equal(t, gen.ClientBuildDetailStatus("pending"), build.Status)
 	require.Equal(t, "https://panel.example.com", build.Manifest.ApiServer)
-	require.Equal(t, "relay.example.com:21117", build.Manifest.Server)
+	require.Equal(t, "relay.example.com:21116", build.Manifest.Server)
 	require.Equal(t, []gen.ClientBuildDetailPlatforms{"windows-x64", "linux-x64"}, build.Platforms)
 
 	w := h.do(t, http.MethodPost, "/api/v1/orgs/"+itoa(orgID)+"/client-builds",

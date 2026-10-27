@@ -211,6 +211,11 @@ func (s *Service) extractArtifact(
 	defer reader.Close()
 	prefix := fmt.Sprintf("panel-client-%d-%s", buildID, platform)
 	allowed := platformExtensions[platform]
+	maxEntries := len(allowed)
+	expected := make(map[string]bool, len(allowed))
+	for _, ext := range allowed {
+		expected[prefix+ext] = true
+	}
 	var out []stagedArtifact
 	for _, entry := range reader.File {
 		name := entry.Name
@@ -221,12 +226,11 @@ func (s *Service) extractArtifact(
 			path.IsAbs(name) || path.Clean(name) != name {
 			return nil, fmt.Errorf("zip entry path is invalid")
 		}
-		if !strings.HasPrefix(name, prefix) {
-			return nil, fmt.Errorf("artifact file name is invalid")
+		if len(out) >= maxEntries {
+			return nil, fmt.Errorf("artifact contains too many files")
 		}
-		ext := path.Ext(name)
-		if !containsString(allowed, ext) {
-			return nil, fmt.Errorf("artifact file type is invalid")
+		if !expected[name] {
+			return nil, fmt.Errorf("artifact file name is invalid")
 		}
 		if seen[name] {
 			return nil, fmt.Errorf("artifact file name is duplicated")
@@ -324,7 +328,10 @@ func (s *Service) failBuild(ctx context.Context, build *model.ClientBuild, reaso
 }
 
 func (s *Service) failIngest(ctx context.Context, build *model.ClientBuild, reason string) error {
-	if err := s.failBuild(ctx, build, reason); err != nil {
+	// The ingest context may be canceled by IngestTimeout; the failure status
+	// must still be persisted with a fresh deadline.
+	statusCtx := context.WithoutCancel(ctx)
+	if err := s.failBuild(statusCtx, build, reason); err != nil {
 		return err
 	}
 	return fmt.Errorf("ingest failed: %s", reason)
@@ -393,15 +400,6 @@ func (s *Service) OpenArtifact(ctx context.Context, orgID, buildID, artifactID, 
 func containsPlatform(platforms []string, platform string) bool {
 	for _, p := range platforms {
 		if p == platform {
-			return true
-		}
-	}
-	return false
-}
-
-func containsString(values []string, value string) bool {
-	for _, item := range values {
-		if item == value {
 			return true
 		}
 	}

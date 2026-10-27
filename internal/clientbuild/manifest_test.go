@@ -15,7 +15,7 @@ func testManifest(t *testing.T) Manifest {
 		LogoSHA256: "0123456789abcdef", LogoWidth: 256, LogoHeight: 256,
 	}
 	sg := &model.ServerGroup{
-		HbbsPort: 21116, PubKey: "dGVzdC1rZXktMDEyMzQ1Njc4OWFiY2RlZmdoaWo=",
+		HbbsPort: 21115, PubKey: "dGVzdC1rZXktMDEyMzQ1Njc4OWFiY2RlZmdoaWo=",
 	}
 	m, err := NewManifest(42, profile, sg, "relay.example.com", "https://panel.example.com",
 		"1.5.0", []string{"linux-x64", "windows-x64"})
@@ -28,7 +28,7 @@ func TestNewManifest(t *testing.T) {
 	require.Equal(t, 1, m.SchemaVersion)
 	require.EqualValues(t, 42, m.BuildID)
 	require.Equal(t, "Acme", m.AppName)
-	require.Equal(t, "relay.example.com:21117", m.Server)
+	require.Equal(t, "relay.example.com:21116", m.Server)
 	require.Equal(t, "https://panel.example.com", m.APIServer)
 	require.Equal(t, "dGVzdC1rZXktMDEyMzQ1Njc4OWFiY2RlZmdoaWo=", m.ServerKey)
 	require.Equal(t, "1.5.0", m.UpstreamVersion)
@@ -38,7 +38,7 @@ func TestNewManifest(t *testing.T) {
 	require.Equal(t, 256, m.Logo.Width)
 
 	profileNoLogo := &model.ClientBuildProfile{AppName: "Acme"}
-	sg := &model.ServerGroup{HbbsPort: 21116, PubKey: "dGVzdC1rZXktMDEyMzQ1Njc4OWFiY2RlZmdoaWo="}
+	sg := &model.ServerGroup{HbbsPort: 21115, PubKey: "dGVzdC1rZXktMDEyMzQ1Njc4OWFiY2RlZmdoaWo="}
 	plain, err := NewManifest(7, profileNoLogo, sg, "relay.example.com", "https://panel.example.com",
 		"1.5.0", []string{"linux-x64"})
 	require.NoError(t, err)
@@ -68,7 +68,7 @@ func TestManifestJSONRoundTrip(t *testing.T) {
 
 func TestManifestRejectsIncompleteLogo(t *testing.T) {
 	profile := &model.ClientBuildProfile{AppName: "Acme", LogoPath: "logos/1/2.png"}
-	sg := &model.ServerGroup{HbbsPort: 21116, PubKey: "dGVzdC1rZXktMDEyMzQ1Njc4OWFiY2RlZmdoaWo="}
+	sg := &model.ServerGroup{HbbsPort: 21115, PubKey: "dGVzdC1rZXktMDEyMzQ1Njc4OWFiY2RlZmdoaWo="}
 	_, err := NewManifest(7, profile, sg, "relay.example.com", "https://panel.example.com",
 		"1.5.0", []string{"linux-x64"})
 	require.Error(t, err)

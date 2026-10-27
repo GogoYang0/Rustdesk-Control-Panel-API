@@ -14,6 +14,13 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/clientbuild"
 )
 
+// clearWriteDeadline removes the server-wide 60s WriteTimeout for streamed
+// artifacts and bundles; those endpoints legitimately take minutes for a large
+// package, and http.ServeContent cannot extend the deadline itself.
+func clearWriteDeadline(c *gin.Context) {
+	_ = http.NewResponseController(c.Writer).SetWriteDeadline(time.Time{})
+}
+
 func (a *AdminAPI) clientBuildService(c *gin.Context) (*clientbuild.Service, bool) {
 	if a.clientBuilds == nil {
 		c.Set(contextAuditRecorded, true)
@@ -294,14 +301,14 @@ func (a *AdminAPI) GetClientBuildProfileLogo(c *gin.Context, orgId, profileId in
 	}
 	defer logo.File.Close()
 	etag := `"` + logo.SHA256 + `"`
-	if c.GetHeader("If-None-Match") == etag {
-		c.Status(http.StatusNotModified)
-		return
-	}
 	c.Header("ETag", etag)
 	c.Header("Cache-Control", "private, max-age=60")
 	c.Header("X-Content-Type-Options", "nosniff")
 	c.Header("Content-Type", "image/png")
+	if c.GetHeader("If-None-Match") == etag {
+		c.Status(http.StatusNotModified)
+		return
+	}
 	http.ServeContent(c.Writer, c.Request, "", time.Time{}, logo.File)
 }
 
@@ -503,6 +510,8 @@ func (a *AdminAPI) DownloadClientBuildArtifact(c *gin.Context, orgId, buildId, a
 	c.Header("X-Content-Type-Options", "nosniff")
 	c.Header("Content-Disposition", mime.FormatMediaType("attachment",
 		map[string]string{"filename": file.Artifact.FileName}))
+	c.Header("Cache-Control", "private, no-store")
+	clearWriteDeadline(c)
 	http.ServeContent(c.Writer, c.Request, file.Artifact.FileName, file.Artifact.CreatedAt, file.File)
 }
 
@@ -533,5 +542,6 @@ func (a *AdminAPI) DownloadClientBuildBundle(c *gin.Context, buildId int64, para
 	c.Header("Content-Type", "application/gzip")
 	c.Header("Cache-Control", "no-store")
 	c.Header("Content-Disposition", `inline; filename="bundle.tar.gz"`)
+	clearWriteDeadline(c)
 	http.ServeContent(c.Writer, c.Request, "bundle.tar.gz", time.Time{}, file)
 }

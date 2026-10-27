@@ -10,6 +10,7 @@ import (
 
 	"go.uber.org/zap"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
@@ -66,15 +67,6 @@ func (s *Service) CreateProfile(ctx context.Context, orgID, actorID uint, in Pro
 	if err != nil {
 		return nil, err
 	}
-	scoped := store.ScopedByOrg(s.db.WithContext(ctx), orgID)
-	var count int64
-	if err := scoped.Model(&model.ClientBuildProfile{}).Count(&count).Error; err != nil {
-		return nil, err
-	}
-	if count >= int64(s.cfg.MaxProfilesPerOrg) {
-		return nil, fmt.Errorf("%w: organization already has %d profiles", ErrQuotaExceeded, count)
-	}
-
 	row := model.ClientBuildProfile{
 		OrganizationID: orgID,
 		Name:           name,
@@ -85,6 +77,19 @@ func (s *Service) CreateProfile(ctx context.Context, orgID, actorID uint, in Pro
 		UpdatedAt:      s.now(),
 	}
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var lockedOrg model.Organization
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").
+			First(&lockedOrg, orgID).Error; err != nil {
+			return err
+		}
+		var count int64
+		if err := store.ScopedByOrg(tx, orgID).Model(&model.ClientBuildProfile{}).
+			Count(&count).Error; err != nil {
+			return err
+		}
+		if count >= int64(s.cfg.MaxProfilesPerOrg) {
+			return fmt.Errorf("%w: organization already has %d profiles", ErrQuotaExceeded, count)
+		}
 		if err := store.ScopedByOrg(tx, orgID).Create(&row).Error; err != nil {
 			if errors.Is(err, gorm.ErrDuplicatedKey) {
 				return ErrDuplicateName
@@ -204,6 +209,11 @@ func (s *Service) DeleteProfile(ctx context.Context, orgID, actorID, id uint) er
 		return err
 	}
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var lockedOrg model.Organization
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").
+			First(&lockedOrg, orgID).Error; err != nil {
+			return err
+		}
 		scoped := store.ScopedByOrg(tx, orgID)
 		var active int64
 		if err := scoped.Model(&model.ClientBuild{}).

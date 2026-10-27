@@ -38,7 +38,15 @@ func (s *Service) Advance(ctx context.Context) (int64, error) {
 	var changed int64
 	var errs []error
 
-	n, err := s.advancePending(ctx)
+	// Timeouts run before claims: a pending build that already exceeded
+	// pendingTimeout must fail rather than be claimed and dispatched with a
+	// fresh bundle token.
+	n, err := s.advanceTimeouts(ctx)
+	changed += n
+	if err != nil {
+		errs = append(errs, err)
+	}
+	n, err = s.advancePending(ctx)
 	changed += n
 	if err != nil {
 		errs = append(errs, err)
@@ -49,11 +57,6 @@ func (s *Service) Advance(ctx context.Context) (int64, error) {
 		errs = append(errs, err)
 	}
 	n, err = s.advanceActive(ctx)
-	changed += n
-	if err != nil {
-		errs = append(errs, err)
-	}
-	n, err = s.advanceTimeouts(ctx)
 	changed += n
 	if err != nil {
 		errs = append(errs, err)
@@ -291,7 +294,10 @@ func (s *Service) advanceActive(ctx context.Context) (int64, error) {
 			errs = append(errs, err)
 			continue
 		}
-		if err := s.ingestRun(ctx, &current); err != nil {
+		ingestCtx, cancel := context.WithTimeout(ctx, s.cfg.IngestTimeout)
+		err = s.ingestRun(ingestCtx, &current)
+		cancel()
+		if err != nil {
 			errs = append(errs, err)
 			continue
 		}

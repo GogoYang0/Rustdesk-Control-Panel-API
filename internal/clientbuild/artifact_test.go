@@ -146,12 +146,20 @@ func TestIngest_ValidationFailures(t *testing.T) {
 		max   int64
 	}{
 		{"only exe", []zipEntry{{Name: "panel-client-1-windows-x64.exe", Body: []byte("x")}}, 0},
+		{"only zip", []zipEntry{{Name: "panel-client-1-windows-x64.zip", Body: []byte("x")}}, 0},
 		{"zip slip", []zipEntry{{Name: "../evil.AppImage", Body: []byte("x")}}, 0},
 		{"backslash", []zipEntry{{Name: `dir\evil.AppImage`, Body: []byte("x")}}, 0},
 		{"directory", []zipEntry{{Name: "dir/", Body: nil, Mode: os.ModeDir | 0o755}}, 0},
 		{"symlink", []zipEntry{{Name: "link.AppImage", Body: []byte("/etc/passwd"), Mode: os.ModeSymlink | 0o777}}, 0},
 		{"wrong extension", []zipEntry{{Name: "panel-client-1-windows-x64.dmg", Body: []byte("x")}}, 0},
 		{"duplicate", []zipEntry{{Name: "panel-client-1-windows-x64.exe", Body: []byte("x")}, {Name: "panel-client-1-windows-x64.exe", Body: []byte("y")}}, 0},
+		{"suffix", []zipEntry{{Name: "panel-client-1-linux-x64-custom.AppImage", Body: []byte("x")}}, 0},
+		{"control char", []zipEntry{{Name: "panel-client-1-linux-x64\x01.AppImage", Body: []byte("x")}}, 0},
+		{"too many", []zipEntry{
+			{Name: "panel-client-1-windows-x64.exe", Body: []byte("x")},
+			{Name: "panel-client-1-windows-x64.zip", Body: []byte("x")},
+			{Name: "panel-client-1-windows-x64.exe", Body: []byte("y")},
+		}, 0},
 		{"oversize", []zipEntry{{Name: "panel-client-1-linux-x64.AppImage", Body: []byte("12345")}}, 4},
 	}
 	for _, tc := range cases {
@@ -159,12 +167,9 @@ func TestIngest_ValidationFailures(t *testing.T) {
 			f := newFixture(t)
 			p := f.createProfile(t, "Acme", "Acme")
 			platform := "windows-x64"
-			if tc.name == "oversize" || tc.name == "zip slip" || tc.name == "backslash" ||
-				tc.name == "directory" || tc.name == "symlink" {
+			switch tc.name {
+			case "oversize", "zip slip", "backslash", "directory", "symlink", "suffix", "control char":
 				platform = "linux-x64"
-			}
-			if tc.name == "only exe" || tc.name == "wrong extension" || tc.name == "duplicate" {
-				platform = "windows-x64"
 			}
 			if tc.max > 0 {
 				f.svc.cfg.MaxArtifactBytes = tc.max

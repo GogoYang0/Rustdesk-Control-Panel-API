@@ -13,6 +13,7 @@ import (
 
 	"go.uber.org/zap"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
@@ -50,7 +51,7 @@ func (s *Service) CreateBuild(ctx context.Context, orgID, actorID, profileID uin
 	if err != nil {
 		return nil, err
 	}
-	normalized, err := ValidatePlatforms(platforms, SupportedPlatforms)
+	normalized, err := ValidatePlatforms(platforms, s.cfg.Platforms)
 	if err != nil {
 		return nil, err
 	}
@@ -97,16 +98,6 @@ func (s *Service) CreateBuild(ctx context.Context, orgID, actorID, profileID uin
 	if err := ValidateServerKey(sg.PubKey); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrServerNotReady, err)
 	}
-	var active int64
-	if err := store.ScopedByOrg(s.db.WithContext(ctx), orgID).Model(&model.ClientBuild{}).
-		Where("status NOT IN ?", []string{
-			model.ClientBuildStatusSucceeded, model.ClientBuildStatusFailed, model.ClientBuildStatusCancelled,
-		}).Count(&active).Error; err != nil {
-		return nil, err
-	}
-	if active >= int64(s.cfg.MaxConcurrentPerOrg) {
-		return nil, fmt.Errorf("%w: organization already has %d active builds", ErrQuotaExceeded, active)
-	}
 	platformsJSON, err := MarshalPlatforms(normalized)
 	if err != nil {
 		return nil, err
@@ -127,7 +118,22 @@ func (s *Service) CreateBuild(ctx context.Context, orgID, actorID, profileID uin
 	var manifest Manifest
 	bundleWritten := false
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var lockedOrg model.Organization
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").
+			First(&lockedOrg, orgID).Error; err != nil {
+			return err
+		}
 		scoped := store.ScopedByOrg(tx, orgID)
+		var active int64
+		if err := scoped.Model(&model.ClientBuild{}).
+			Where("status NOT IN ?", []string{
+				model.ClientBuildStatusSucceeded, model.ClientBuildStatusFailed, model.ClientBuildStatusCancelled,
+			}).Count(&active).Error; err != nil {
+			return err
+		}
+		if active >= int64(s.cfg.MaxConcurrentPerOrg) {
+			return fmt.Errorf("%w: organization already has %d active builds", ErrQuotaExceeded, active)
+		}
 		if err := scoped.Create(&row).Error; err != nil {
 			return err
 		}

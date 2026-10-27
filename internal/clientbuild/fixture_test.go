@@ -3,6 +3,7 @@ package clientbuild
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -117,14 +118,30 @@ type fixture struct {
 	now      time.Time
 }
 
-func newFixture(t *testing.T) *fixture {
+func openClientBuildStore(t *testing.T, n int64) *store.Store {
 	t.Helper()
-	n := fixtureSeq.Add(1)
+	switch {
+	case os.Getenv("TEST_POSTGRES_DSN") != "":
+		st, err := store.Open(config.DatabaseConfig{Driver: "postgres", DSN: os.Getenv("TEST_POSTGRES_DSN")})
+		require.NoError(t, err)
+		return st
+	case os.Getenv("TEST_MYSQL_DSN") != "":
+		st, err := store.Open(config.DatabaseConfig{Driver: "mysql", DSN: os.Getenv("TEST_MYSQL_DSN")})
+		require.NoError(t, err)
+		return st
+	}
 	st, err := store.Open(config.DatabaseConfig{
 		Driver: "sqlite",
 		DSN:    fmt.Sprintf("file:clientbuild_%d?mode=memory&cache=shared", n),
 	})
 	require.NoError(t, err)
+	return st
+}
+
+func newFixture(t *testing.T) *fixture {
+	t.Helper()
+	n := fixtureSeq.Add(1)
+	st := openClientBuildStore(t, n)
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.DB.AutoMigrate(
 		&model.Organization{}, &model.User{}, &model.ServerGroup{},
@@ -138,16 +155,18 @@ func newFixture(t *testing.T) *fixture {
 		github:   &fakeGitHub{},
 		now:      time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC),
 	}
-	f.org = model.Organization{Name: fmt.Sprintf("cb-org-%d", n)}
-	f.otherOrg = model.Organization{Name: fmt.Sprintf("cb-other-%d", n)}
+	prefix := fmt.Sprintf("cb-%d-%d", os.Getpid(), n)
+	f.org = model.Organization{Name: prefix + "-org"}
+	f.otherOrg = model.Organization{Name: prefix + "-other"}
 	require.NoError(t, f.db.Create(&f.org).Error)
 	require.NoError(t, f.db.Create(&f.otherOrg).Error)
 	f.user = model.User{
-		Email: fmt.Sprintf("cb-user-%d@example.com", n), PasswordHash: "x", EmailVerified: true,
+		Email: prefix + "@example.com", PasswordHash: "x", EmailVerified: true,
 	}
 	require.NoError(t, f.db.Create(&f.user).Error)
+	portBase := uint16(40000 + (n%5000)*4)
 	f.sg = model.ServerGroup{
-		OrganizationID: f.org.ID, HbbsPort: 21116, HbbrPort: 21119,
+		OrganizationID: f.org.ID, HbbsPort: portBase, HbbrPort: portBase + 3,
 		PubKey: "dGVzdC1rZXktMDEyMzQ1Njc4OWFiY2RlZmdoaWo=",
 		State:  model.ServerGroupDeployed,
 	}

@@ -13,7 +13,7 @@ import (
 )
 
 func TestScopedModels_CoverClientBuildTables(t *testing.T) {
-	_, cleanup := newDB(t)
+	_, cleanup := openClientBuildDialectDB(t)
 	defer cleanup()
 	registered := map[string]bool{}
 	for _, m := range store.ScopedModels() {
@@ -31,7 +31,7 @@ func TestScopedModels_CoverClientBuildTables(t *testing.T) {
 }
 
 func TestClientBuild_TenantIsolation(t *testing.T) {
-	db, cleanup := newDB(t)
+	db, cleanup := openClientBuildDialectDB(t)
 	defer cleanup()
 	require.NoError(t, db.AutoMigrate(
 		&model.ClientBuildProfile{}, &model.ClientBuild{}, &model.ClientBuildArtifact{},
@@ -63,7 +63,7 @@ func TestClientBuild_TenantIsolation(t *testing.T) {
 }
 
 func TestClientBuildProfile_NameKeyUniquePerOrganization(t *testing.T) {
-	db, cleanup := newDB(t)
+	db, cleanup := openClientBuildDialectDB(t)
 	defer cleanup()
 	require.NoError(t, db.AutoMigrate(&model.ClientBuildProfile{}))
 

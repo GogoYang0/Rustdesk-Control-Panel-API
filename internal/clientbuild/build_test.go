@@ -3,6 +3,7 @@ package clientbuild
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/url"
 	"os"
@@ -30,7 +31,7 @@ func TestBuild_CreateAndSnapshot(t *testing.T) {
 	p := f.createProfile(t, "Acme", "Acme")
 	d := f.createBuild(t, p.ID, []string{"linux-x64", "windows-x64"})
 	require.Equal(t, model.ClientBuildStatusPending, d.Build.Status)
-	require.Equal(t, "relay.example.com:21117", d.Manifest.Server)
+	require.Equal(t, fmt.Sprintf("relay.example.com:%d", f.sg.HbbsPort+1), d.Manifest.Server)
 	require.Equal(t, "https://panel.example.com", d.Manifest.APIServer)
 	require.Equal(t, []string{"windows-x64", "linux-x64"}, d.Manifest.Platforms)
 	require.Equal(t, f.user.ID, d.Build.CreatedBy)
@@ -71,6 +72,13 @@ func TestBuild_Errors(t *testing.T) {
 		_, err := f.svc.CreateBuild(context.Background(), f.org.ID, f.user.ID, p.ID, nil)
 		require.ErrorIs(t, err, ErrInvalidInput)
 		_, err = f.svc.CreateBuild(context.Background(), f.org.ID, f.user.ID, p.ID, []string{"ios"})
+		require.ErrorIs(t, err, ErrInvalidInput)
+	})
+	t.Run("platform narrowed by config", func(t *testing.T) {
+		f := newFixture(t)
+		f.svc.cfg.Platforms = []string{PlatformLinuxX64}
+		p := f.createProfile(t, "Acme", "Acme")
+		_, err := f.svc.CreateBuild(context.Background(), f.org.ID, f.user.ID, p.ID, []string{PlatformWindowsX64})
 		require.ErrorIs(t, err, ErrInvalidInput)
 	})
 	t.Run("server missing", func(t *testing.T) {

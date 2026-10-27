@@ -8,8 +8,10 @@ duplicated anchor is a hard failure (the template targets RustDesk v1.5.0).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
+import struct
 import sys
 import tempfile
 from pathlib import Path
@@ -82,6 +84,27 @@ def load_manifest(path: Path) -> dict:
     if not isinstance(manifest, dict):
         fail("manifest must be a JSON object")
     return validate_manifest(manifest)
+
+
+def png_dimensions(data: bytes) -> tuple[int, int]:
+    if len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n":
+        fail("logo is not a PNG")
+    width, height = struct.unpack(">II", data[16:24])
+    return width, height
+
+
+def validate_logo_metadata(manifest: dict, logo: Path | None) -> None:
+    meta = manifest.get("logo")
+    if meta is None:
+        return
+    if logo is None or not logo.is_file():
+        fail("manifest declares a logo but the bundle has no logo.png")
+    data = logo.read_bytes()
+    width, height = png_dimensions(data)
+    if hashlib.sha256(data).hexdigest() != meta.get("sha256"):
+        fail("logo sha256 does not match the manifest")
+    if (width, height) != (meta.get("width"), meta.get("height")):
+        fail("logo dimensions do not match the manifest")
 
 
 def patch_config(source: Path, manifest: dict) -> None:
@@ -159,6 +182,7 @@ def prepare(source: Path, manifest_path: Path, logo: Path | None) -> None:
     manifest = load_manifest(manifest_path)
     if not source.is_dir():
         fail(f"source directory is missing: {source}")
+    validate_logo_metadata(manifest, logo)
     patch_config(source, manifest)
     patch_api_server(source, manifest)
     if logo is not None:
@@ -188,6 +212,10 @@ def self_test() -> None:
         (root / "res/icon.png").write_bytes(b"old-icon")
         (root / "flutter/assets/logo.png").write_bytes(b"old-logo")
         (root / "flutter/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png").write_bytes(b"old-android")
+        logo_bytes = (
+            b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" +
+            struct.pack(">II", 256, 256) + b"\x08\x06\x00\x00\x00"
+        )
         manifest_path = root / "manifest.json"
         manifest_path.write_text(json.dumps({
             "schema_version": 1,
@@ -198,18 +226,32 @@ def self_test() -> None:
             "api_server": "https://panel.example.com",
             "upstream_version": "1.5.0",
             "platforms": ["linux-x64"],
+            "logo": {
+                "sha256": hashlib.sha256(logo_bytes).hexdigest(),
+                "width": 256,
+                "height": 256,
+            },
         }), encoding="utf-8")
         logo = root / "logo.png"
-        logo.write_bytes(b"new-logo")
+        logo.write_bytes(logo_bytes)
         prepare(root, manifest_path, logo)
         config = (root / CONFIG_RS).read_text(encoding="utf-8")
         assert '["relay.example.com:21117"]' in config
         assert 'RS_PUB_KEY: &str = "dGVzdC1rZXktMDEyMzQ1Njc4OWFiY2RlZmdoaWo="' in config
         assert 'RwLock::new("Acme Ops".to_owned())' in config
         assert '"https://panel.example.com"' in (root / COMMON_RS).read_text(encoding="utf-8")
-        assert (root / "res/icon.png").read_bytes() == b"new-logo"
-        assert (root / "flutter/assets/logo.png").read_bytes() == b"new-logo"
-        assert (root / "flutter/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png").read_bytes() == b"new-logo"
+        assert (root / "res/icon.png").read_bytes() == logo_bytes
+        assert (root / "flutter/assets/logo.png").read_bytes() == logo_bytes
+        assert (root / "flutter/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png").read_bytes() == logo_bytes
+
+        tampered = load_manifest(manifest_path)
+        tampered["logo"]["sha256"] = "00"
+        try:
+            validate_logo_metadata(tampered, logo)
+        except PatchError:
+            pass
+        else:
+            fail("self-test: tampered logo sha256 was not rejected")
 
         # A missing or duplicated anchor must fail, not silently patch.
         (root / CONFIG_RS).write_text('pub static ref APP_NAME: RwLock<String> = RwLock::new("RustDesk");\n', encoding="utf-8")

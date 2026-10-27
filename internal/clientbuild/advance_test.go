@@ -77,6 +77,21 @@ func TestAdvance_AmbiguousDispatchNoRetryThenTimeout(t *testing.T) {
 	require.Equal(t, model.ClientBuildStatusFailed, f.buildRow(t, d.Build.ID).Status)
 }
 
+func TestAdvance_PendingTimeoutBeforeDispatch(t *testing.T) {
+	f := newFixture(t)
+	p := f.createProfile(t, "Acme", "Acme")
+	d := f.createBuild(t, p.ID, []string{"linux-x64"})
+	f.setBuild(t, d.Build.ID, map[string]any{"created_at": f.now.Add(-13 * time.Hour)})
+	f.github.dispatchFn = func(context.Context, DispatchInput) (DispatchResult, error) {
+		t.Error("an expired pending build must not be dispatched")
+		return DispatchResult{}, nil
+	}
+	f.advance(t)
+	row := f.buildRow(t, d.Build.ID)
+	require.Equal(t, model.ClientBuildStatusFailed, row.Status)
+	require.Contains(t, row.ErrorMessage, "queue timeout")
+}
+
 func TestAdvance_NoRunIDWaitsForRecovery(t *testing.T) {
 	f := newFixture(t)
 	p := f.createProfile(t, "Acme", "Acme")
@@ -276,6 +291,32 @@ func TestAdvance_RunFailure(t *testing.T) {
 	}
 	f.advance(t)
 	require.Equal(t, model.ClientBuildStatusFailed, f.buildRow(t, d.Build.ID).Status)
+}
+
+func TestAdvance_IngestTimeoutCanceledDownload(t *testing.T) {
+	f := newFixture(t)
+	f.svc.cfg.IngestTimeout = 50 * time.Millisecond
+	p := f.createProfile(t, "Acme", "Acme")
+	d := f.createBuild(t, p.ID, []string{"linux-x64"})
+	f.github.dispatchFn = func(context.Context, DispatchInput) (DispatchResult, error) {
+		return DispatchResult{RunID: 4242}, nil
+	}
+	f.github.getRunFn = func(context.Context, int64) (Run, error) {
+		return Run{ID: 4242, Status: "completed", Conclusion: "success"}, nil
+	}
+	zipName := "panel-client-" + itoa(d.Build.ID) + "-linux-x64"
+	f.fakeArtifacts(d.Build.ID, map[string][]byte{
+		zipName: makeZip(t, zipEntry{Name: zipName + ".AppImage", Body: []byte("x")}),
+	})
+	f.github.downloadFn = func(ctx context.Context, _ int64, _ string, _ int64) (int64, error) {
+		<-ctx.Done()
+		return 0, ctx.Err()
+	}
+	_, err := f.svc.Advance(context.Background())
+	require.Error(t, err)
+	row := f.buildRow(t, d.Build.ID)
+	require.Equal(t, model.ClientBuildStatusFailed, row.Status)
+	require.Contains(t, row.ErrorMessage, "artifact download failed")
 }
 
 func TestAdvance_BuildTimeout(t *testing.T) {

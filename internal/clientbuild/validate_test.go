@@ -56,14 +56,17 @@ func TestValidateServerKey(t *testing.T) {
 }
 
 func TestDeriveServer(t *testing.T) {
-	got, err := DeriveServer("relay.example.com", 21116)
+	got, err := DeriveServer("relay.example.com", 21115)
+	require.NoError(t, err)
+	require.Equal(t, "relay.example.com:21116", got)
+	got, err = DeriveServer("relay.example.com", 21116)
 	require.NoError(t, err)
 	require.Equal(t, "relay.example.com:21117", got)
 	_, err = DeriveServer("", 21116)
 	require.Error(t, err)
-	got, err = DeriveServer("2001:db8::1", 21116)
+	got, err = DeriveServer("2001:db8::1", 21115)
 	require.NoError(t, err)
-	require.Equal(t, "[2001:db8::1]:21117", got)
+	require.Equal(t, "[2001:db8::1]:21116", got)
 }
 
 func TestValidateLogoPNG(t *testing.T) {

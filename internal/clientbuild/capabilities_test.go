@@ -2,6 +2,7 @@ package clientbuild
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -16,7 +17,7 @@ func TestCapabilities_Deployed(t *testing.T) {
 	require.True(t, caps.Enabled)
 	require.Equal(t, "deployed", caps.ProvisioningState)
 	require.NotNil(t, caps.Defaults)
-	require.Equal(t, "relay.example.com:21117", caps.Defaults.Server)
+	require.Equal(t, fmt.Sprintf("relay.example.com:%d", f.sg.HbbsPort+1), caps.Defaults.Server)
 	require.Equal(t, f.sg.PubKey, caps.Defaults.ServerKey)
 	require.Equal(t, "https://panel.example.com", caps.Defaults.APIServer)
 	require.Equal(t, f.cfg.MaxProfilesPerOrg, caps.Limits.MaxProfilesPerOrg)

@@ -57,7 +57,7 @@ func TestClientBuild_BundlePublicEndpoint(t *testing.T) {
 	require.True(t, found)
 	require.EqualValues(t, build.Id, manifest.BuildId)
 	require.Equal(t, "https://panel.example.com", manifest.ApiServer)
-	require.Equal(t, "relay.example.com:21117", manifest.Server)
+	require.Equal(t, "relay.example.com:21116", manifest.Server)
 
 	w = h.do(t, http.MethodGet, "/api/v1/client-builds/"+itoa(build.Id)+"/bundle", nil, "")
 	require.Equal(t, http.StatusUnauthorized, w.Code, w.Body.String())

@@ -76,7 +76,7 @@ func newClientBuildHarnessWith(t *testing.T, mutate func(*clientbuild.Config)) (
 		d.ClientBuilds = s
 	})
 	require.NoError(t, h.db.DB.Create(&model.ServerGroup{
-		OrganizationID: uint(orgID), HbbsPort: 21116, HbbrPort: 21119,
+		OrganizationID: uint(orgID), HbbsPort: 21115, HbbrPort: 21118,
 		PubKey: "dGVzdC1rZXktMDEyMzQ1Njc4OWFiY2RlZmdoaWo=", State: model.ServerGroupDeployed,
 	}).Error)
 	return h, orgID, ownerToken, adminToken, memberToken, svc
@@ -106,7 +106,7 @@ func TestClientBuildProfile_CRUDAndPermissions(t *testing.T) {
 	require.True(t, caps.Enabled)
 	require.Equal(t, gen.ClientBuildCapabilitiesProvisioningState("deployed"), caps.ProvisioningState)
 	require.NotNil(t, caps.Defaults)
-	require.Equal(t, "relay.example.com:21117", caps.Defaults.Server)
+	require.Equal(t, "relay.example.com:21116", caps.Defaults.Server)
 
 	w = h.do(t, http.MethodPost, base, map[string]string{"name": "  Acme  ", "app_name": "Acme Ops"}, adminToken)
 	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
