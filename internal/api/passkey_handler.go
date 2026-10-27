@@ -216,8 +216,13 @@ func (a *AdminAPI) BeginPasskeyLogin(c *gin.Context) {
 		}
 		user = &loaded
 	} else if account != "" {
-		// A miss is not an error: the response shape must not reveal whether
-		// the mailbox exists (design D16).
+		// The hint narrows allowCredentials to that account's credentials, so
+		// the response does differ between "this mailbox has a passkey" and
+		// "it does not". That is an accepted tradeoff (design D16): without the
+		// hint the parameter has no purpose at all. A miss still answers 200 and
+		// falls through to the discoverable ceremony, so probing costs a
+		// rate-limited request rather than an error. Never treat the shape as a
+		// confidentiality boundary.
 		var loaded model.User
 		if err := a.deps.DB.Where("LOWER(email) = ?", account).First(&loaded).Error; err == nil {
 			user = &loaded
@@ -230,8 +235,8 @@ func (a *AdminAPI) BeginPasskeyLogin(c *gin.Context) {
 			abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "this account has no passkey")
 			return
 		}
-		// A hint for an account without credentials degrades to the
-		// usernameless ceremony instead of leaking the account state.
+		// Same 200 and the same structure as any other hint: only the contents
+		// of allowCredentials differ, never the status code.
 		token, options, err = svc.BeginLogin(c.Request.Context(), nil)
 	}
 	if err != nil {

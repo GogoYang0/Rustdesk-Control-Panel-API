@@ -402,6 +402,12 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 passkey 时的 `passkey`）；该字段是 0.11.0 对既有 401 响应体唯一的增补。想让 passkey 成为强制要求，要么删除密码
 （见下），要么先启用 TOTP。
 
+**`begin` 的 `email` 提示可区分"该邮箱是否已绑定 passkey"**：命中时
+`allowCredentials` 收窄为该账户的凭据，未命中时退化为可发现凭据 ceremony
+（不带该字段）。状态码与结构一致，差别只在内容。这是为让浏览器只列相关凭据
+而显式接受的取舍（设计 D16），**不是**保密边界；探测成本由 per-IP 限流约束。
+需要完全消除差异的部署应不使用 `email` 入口（本版本无关闭开关，记为已知限制）。
+
 **无密码账户**：`POST /auth/password/remove` 把 `password_hash` 置空，之后
 `/auth/login` 对任何密码都返回通用 `401 unauthorized`（内部仍走一次
 Argon2id，保持耗时恒定）。删除密码的四项前置条件：当前密码正确、step-up

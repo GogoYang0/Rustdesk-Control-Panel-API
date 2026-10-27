@@ -27,7 +27,10 @@ const (
 	maxWebAuthnCredentials     = 20
 )
 
-// webAuthnHostPattern accepts a bare lowercase DNS name or an IPv4 literal.
+// webAuthnHostPattern accepts a bare lowercase host. IP literals match this
+// pattern on purpose, so validateWebAuthn rejects them separately with a
+// clearer message: browsers refuse an IP RP ID with a SecurityError and every
+// ceremony would fail.
 // Paths, ports and schemes are rejected: an RP ID is a host, nothing else.
 var webAuthnHostPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$`)
 
