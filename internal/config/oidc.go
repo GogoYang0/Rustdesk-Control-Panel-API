@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -41,10 +42,115 @@ type ExternalConfig struct {
 	RequireLocalSecondFactor bool `mapstructure:"requireLocalSecondFactor"`
 }
 
-// LDAPConfig is reserved for 5b-3. Only the mutual exclusion is enforced now;
-// enabling it in this build fails fast instead of pretending to work.
+// LDAPConfig describes the single directory the deployment delegates
+// authentication to. BindPassword is never read from the tracked file: Load
+// fills it from PANEL_LDAP_BIND_PASSWORD (design L4).
 type LDAPConfig struct {
-	Enabled bool `mapstructure:"enabled"`
+	Enabled      bool   `mapstructure:"enabled"`
+	ProviderName string `mapstructure:"providerName"`
+	Host         string `mapstructure:"host"`
+	Port         int    `mapstructure:"port"`
+	Transport    string `mapstructure:"transport"` // ldaps | starttls | none
+	// AllowInsecure is required for Transport "none": directory passwords over
+	// a plaintext link are readable by anyone on the path (design L3).
+	AllowInsecure bool `mapstructure:"allowInsecure"`
+	// InsecureSkipVerify turns off the LDAPS certificate chain check.
+	InsecureSkipVerify bool          `mapstructure:"insecureSkipVerify"`
+	BaseDN             string        `mapstructure:"baseDN"`
+	Scope              string        `mapstructure:"scope"` // one | sub
+	BindDN             string        `mapstructure:"bindDN"`
+	UserFilter         string        `mapstructure:"userFilter"`
+	UsernameAttribute  string        `mapstructure:"usernameAttribute"`
+	MailAttribute      string        `mapstructure:"mailAttribute"`
+	Timeout            time.Duration `mapstructure:"timeout"`
+	BindPassword       string        `mapstructure:"-"`
+}
+
+const (
+	ldapMaxFilterLength = 512
+	ldapMaxTimeout      = 30 * time.Second
+)
+
+var attributeNamePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9-]*$`)
+
+// Warnings lists the transport decisions an operator must not miss: plaintext
+// links broadcast the directory password, and skipping the certificate check
+// turns LDAPS into plaintext with extra steps (design L3).
+func (c LDAPConfig) Warnings() []string {
+	var out []string
+	if c.Enabled && c.Transport == "none" {
+		out = append(out, "ldap.transport=none sends directory passwords in plaintext; enable only on a trusted isolated network")
+	}
+	if c.Enabled && c.InsecureSkipVerify {
+		out = append(out, "ldap.insecureSkipVerify=true disables the directory certificate check; enable only for self-signed test directories")
+	}
+	return out
+}
+
+// validateLDAP refuses a half-configured directory rather than booting with
+// endpoints that can only answer 503.
+func validateLDAP(cfg LDAPConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(cfg.Host) == "" {
+		return fmt.Errorf("ldap.host is required")
+	}
+	if strings.TrimSpace(cfg.BaseDN) == "" {
+		return fmt.Errorf("ldap.baseDN is required")
+	}
+	if strings.TrimSpace(cfg.BindDN) == "" {
+		return fmt.Errorf("ldap.bindDN is required")
+	}
+	if cfg.BindPassword == "" {
+		return fmt.Errorf("PANEL_LDAP_BIND_PASSWORD is required when ldap.enabled is true")
+	}
+	if cfg.Port < 1 || cfg.Port > 65535 {
+		return fmt.Errorf("ldap.port must be between 1 and 65535")
+	}
+	switch cfg.Transport {
+	case "ldaps", "starttls":
+	case "none":
+		if !cfg.AllowInsecure {
+			return fmt.Errorf("ldap.transport=none requires ldap.allowInsecure=true: directory passwords in plaintext are readable by anyone on the path")
+		}
+	default:
+		return fmt.Errorf("ldap.transport must be ldaps, starttls or none, got %q", cfg.Transport)
+	}
+	for name, label := range map[string]string{
+		cfg.UsernameAttribute: "ldap.usernameAttribute",
+		cfg.MailAttribute:     "ldap.mailAttribute",
+	} {
+		if !attributeNamePattern.MatchString(name) {
+			return fmt.Errorf("%s must match ^[A-Za-z][A-Za-z0-9-]*$, got %q", label, name)
+		}
+	}
+	// The filter is spliced into the search request verbatim, so its shape is
+	// checked at startup rather than trusted from the request path.
+	filter := cfg.UserFilter
+	if !strings.HasPrefix(filter, "(") || !strings.HasSuffix(filter, ")") {
+		return fmt.Errorf("ldap.userFilter must be a parenthesised filter, got %q", filter)
+	}
+	if len(filter) > ldapMaxFilterLength {
+		return fmt.Errorf("ldap.userFilter must not exceed %d characters", ldapMaxFilterLength)
+	}
+	// A filter that never references an attribute (e.g. "(&)") matches
+	// everything-or-nothing in ways the operator did not intend: there must be
+	// at least one assertion "(attr=value)" or one presence check "(attr)".
+	hasAssertion := regexp.MustCompile(`\([^()=]+=[^()]*\)`).MatchString(filter)
+	hasPresence := regexp.MustCompile(`\([A-Za-z][^()=]*\)`).MatchString(filter)
+	if !hasAssertion && !hasPresence {
+		return fmt.Errorf("ldap.userFilter must reference at least one attribute condition, got %q", filter)
+	}
+	switch cfg.Scope {
+	case "one", "sub":
+	default:
+		return fmt.Errorf("ldap.scope must be one or sub, got %q", cfg.Scope)
+	}
+	if cfg.Timeout <= 0 || cfg.Timeout > ldapMaxTimeout {
+		return fmt.Errorf("ldap.timeout must be between 1s and 30s")
+	}
+	return nil
 }
 
 // validateOIDC refuses a half-configured provider rather than booting with
@@ -115,15 +221,10 @@ func validateOIDCWebBaseURL(raw string) error {
 	return fmt.Errorf("web.baseURL must be https when oidc.enabled is true")
 }
 
-// validateProviders enforces the single-provider rule (design O1). LDAP is
-// checked last so a deployment flipping both learns about the real conflict
-// rather than the not-implemented error.
+// validateProviders enforces the single-provider rule (design L10).
 func validateProviders(oidc OIDCConfig, ldap LDAPConfig) error {
 	if oidc.Enabled && ldap.Enabled {
 		return fmt.Errorf("oidc.enabled and ldap.enabled are mutually exclusive")
-	}
-	if ldap.Enabled {
-		return fmt.Errorf("ldap.enabled is not available in this build")
 	}
 	return nil
 }

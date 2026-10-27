@@ -81,11 +81,6 @@ func TestValidateProviders(t *testing.T) {
 		{"both disabled", OIDCConfig{}, LDAPConfig{}, ""},
 		{"oidc only", oidcOK(), LDAPConfig{}, ""},
 		{
-			"ldap is not implemented in this build",
-			OIDCConfig{}, LDAPConfig{Enabled: true},
-			"ldap.enabled is not available in this build",
-		},
-		{
 			"providers are mutually exclusive",
 			oidcOK(), LDAPConfig{Enabled: true},
 			"oidc.enabled and ldap.enabled are mutually exclusive",
