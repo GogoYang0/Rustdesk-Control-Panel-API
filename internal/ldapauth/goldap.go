@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -119,7 +120,7 @@ func (g *GoLDAP) Authenticate(ctx context.Context, username, password string) (s
 // to ErrDirectoryUnavailable: an unreachable or misconfigured directory must
 // never look like "wrong password" (design L5, P-L5).
 func (g *GoLDAP) dial(ctx context.Context) (*goldap.Conn, error) {
-	addr := fmt.Sprintf("%s:%d", g.cfg.Host, g.cfg.Port)
+	addr := net.JoinHostPort(g.cfg.Host, strconv.Itoa(g.cfg.Port))
 	timeout := g.cfg.Timeout
 	if timeout <= 0 {
 		timeout = 10 * time.Second

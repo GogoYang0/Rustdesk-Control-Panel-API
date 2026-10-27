@@ -375,8 +375,7 @@ webauthn:
 
 ## 12. OIDC 单点登录（v0.11.0）
 
-部署级单一外部身份源；`oidc.enabled` 与 `ldap.enabled` 互斥（同开启动失败，
-且本版本尚未实现 LDAP，单独开启也是启动错误）。
+部署级单一外部身份源；`oidc.enabled` 与 `ldap.enabled` 互斥（同开启动失败）。
 
 ```yaml
 oidc:
@@ -460,7 +459,7 @@ ldap:
 |---|---|
 | `host`/`baseDN`/`bindDN`/`PANEL_LDAP_BIND_PASSWORD` | 必填 |
 | `port` | 1–65535 |
-| `transport` | `ldaps`（默认）/`starttls`/`none`；`none` 必须 `allowInsecure: true`，两者都会启动 WARN |
+| `transport` | `ldaps`（默认）/`starttls`/`none`；`none` 必须 `allowInsecure: true`。启动 WARN 只有两类触发：`transport=none`（明文传目录口令）与 `insecureSkipVerify=true`（关闭证书校验），见 §13.2 |
 | `usernameAttribute`/`mailAttribute` | `^[A-Za-z][A-Za-z0-9-]*$` |
 | `userFilter` | 括号配对、≤512、至少一个属性条件 |
 | `scope` | `one`/`sub` |

@@ -71,9 +71,12 @@ func (a *AdminAPI) LdapLogin(c *gin.Context) {
 		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "invalid credentials")
 		return
 	case errors.Is(err, ldapauth.ErrDirectoryUnavailable):
-		// The wrapped cause (dial vs TLS vs protocol) is what an operator needs
-		// to tell an outage from a misconfiguration; none of it echoes secrets.
-		a.deps.Logger.Warn("ldap directory unavailable", zap.String("username", username), zap.Error(err))
+		// The stable code goes to dashboards, the wrapped cause (dial vs TLS vs
+		// protocol) tells an outage from a misconfiguration; neither echoes
+		// secrets — go-ldap errors carry result codes and messages, never the
+		// bind password.
+		a.deps.Logger.Warn("ldap directory unavailable",
+			zap.String("username", username), zap.String("error_code", "directory_unavailable"), zap.Error(err))
 		abortError(c, http.StatusServiceUnavailable, gen.ErrorCodeInternal, "directory service is unavailable")
 		return
 	case errors.Is(err, ldapauth.ErrMissingMail):
@@ -88,10 +91,13 @@ func (a *AdminAPI) LdapLogin(c *gin.Context) {
 
 	a.guard.Reset(guardKey, ip)
 
+	// The subject is the lowercased username: uid/sAMAccountName match
+	// case-insensitively in common directories, and binding the raw case would
+	// turn a variant spelling into a bogus identity conflict on the next login.
 	user, err := a.identity.Resolve(c.Request.Context(), identity.Claims{
 		Provider:      model.IdentityProviderLDAP,
 		Issuer:        a.ldapIssuer,
-		Subject:       username,
+		Subject:       guardKey,
 		Email:         email,
 		EmailVerified: true,
 	})

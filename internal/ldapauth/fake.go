@@ -2,6 +2,7 @@ package ldapauth
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 )
 
@@ -53,7 +54,9 @@ func (f *Fake) Authenticate(ctx context.Context, username, password string) (str
 	if f.Ambiguous {
 		return "", ErrAmbiguousResult
 	}
-	user, ok := f.Users[username]
+	// Directories match uid/sAMAccountName case-insensitively; model that so
+	// handler-level tests exercise real lookup semantics.
+	user, ok := f.Users[strings.ToLower(username)]
 	if !ok || user.Password != password {
 		return "", ErrInvalidCredentials
 	}

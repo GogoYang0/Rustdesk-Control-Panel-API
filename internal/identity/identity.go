@@ -207,7 +207,10 @@ func (s *Service) List(ctx context.Context, userID uint) ([]model.UserIdentity, 
 // (ER_UPDATE_TABLE_USED).
 func (s *Service) Unlink(ctx context.Context, userID, identityID uint) error {
 	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		read := tx
+		// A fresh session, not a chained clone: reusing the transaction instance
+		// for both reads would carry its Statement over, and the locking clause
+		// must apply to exactly these two lookups.
+		read := tx.Session(&gorm.Session{NewDB: true})
 		if tx.Name() != "sqlite" {
 			read = read.Clauses(clause.Locking{Strength: "UPDATE"})
 		}

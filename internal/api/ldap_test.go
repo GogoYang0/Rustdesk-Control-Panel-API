@@ -221,3 +221,28 @@ func TestAuthProviders_LDAPEnabled(t *testing.T) {
 	require.True(t, view.Ldap.Enabled)
 	require.Equal(t, "Directory", view.Ldap.Name)
 }
+
+// TestLdapLogin_CaseVariantSubjectDoesNotConflict pins the subject
+// normalization: directories match uid/sAMAccountName case-insensitively, so
+// "Alice" and "alice" are the same directory identity and must bind to the
+// same subject — a case variant must never look like a second human claiming
+// an already-linked account (409).
+func TestLdapLogin_CaseVariantSubjectDoesNotConflict(t *testing.T) {
+	h, _ := ldapHarness(t, nil)
+	h.seedUser(t, "ldap-alice@example.com", "password123")
+
+	w := h.do(t, http.MethodPost, "/api/v1/auth/ldap/login", map[string]string{
+		"username": "Alice", "password": "alicepassword",
+	}, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	w = h.do(t, http.MethodPost, "/api/v1/auth/ldap/login", map[string]string{
+		"username": "ALICE", "password": "alicepassword",
+	}, "")
+	require.Equal(t, http.StatusOK, w.Code,
+		"a case variant of the same directory user must not be a conflict: %s", w.Body.String())
+
+	var row model.UserIdentity
+	require.NoError(t, h.db.DB.Where("provider = ?", model.IdentityProviderLDAP).First(&row).Error)
+	require.Equal(t, "alice", row.Subject, "the subject is the lowercased username")
+}

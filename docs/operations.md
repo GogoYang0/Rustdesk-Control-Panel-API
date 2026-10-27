@@ -400,11 +400,26 @@ IdP discovery 返回的完全一致）、`{web.baseURL}` 是否可达、IdP 证�
 
 ## 12. LDAP 目录运维（v0.11.0）
 
-**401 与 503 的分流**：401「用户名或密码错误」= 目录工作正常、凭据被拒——
-查目录侧账号状态与密码；503「目录服务不可用」= 面板到目录的链路或配置问题——
-按序查：`host:port` 可达性（`ldapsearch -H ldaps://host -x -s base -b ''`）、
-证书链（LDAPS）、`transport`/`allowInsecure` 组合、服务账号是否被锁。**绝不能**
-因为 503 被误报成密码错而让用户反复重试。
+**401 与 503 的分流**：401 有两种成因，先看涉及面——个别用户 401 = 无效凭据
+（或该用户的 `userFilter` 命中了多条目录条目，面板按 fail-closed 拒绝，日志
+`error_code=invalid_credentials` 不可区分是刻意设计）；**所有人** 401 且带
+`ErrAmbiguousResult` 症状（`userFilter` 写宽了）= 检查 filter 是否会匹配多个
+条目。503「目录服务不可用」= 面板到目录的链路或配置问题——按 `transport`
+分情况验证连通性：
+
+```bash
+# ldaps（默认端口 636）
+ldapsearch -H ldaps://HOST:PORT -x -s base -b ''
+# starttls
+ldapsearch -H ldap://HOST:PORT -ZZ -x -s base -b ''
+# none（仅隔离网络）
+ldapsearch -H ldap://HOST:PORT -x -s base -b ''
+# 验证服务账号本身可用（替换 bindDN；-W 交互输密码）
+ldapsearch -H ldaps://HOST:PORT -x -D 'BINDDN' -W -s base -b ''
+```
+
+再查证书链（LDAPS）、`transport`/`allowInsecure` 组合、服务账号是否被锁。
+**绝不能**因为 503 被误报成密码错而让用户反复重试。
 
 **目录改名后重新绑定**：`subject` 是 `usernameAttribute` 的值（L7），目录侧
 改了它 = 旧绑定不命中。启动日志出现 `identities are bound to a different
@@ -419,7 +434,8 @@ ldap host`（换主机）或用户报 401（改用户名）时：管理员调用
 四步：目录侧设置新密码 → 更新环境变量 → 重启面板 → 删除旧密码。轮换窗口内
 登录返回 503（不是 401），不要在窗口内尝试排查用户凭据。
 
-**日志边界**：登录日志只含 `username`、结果与 `error_code`；目录密码、用户
-DN、bind 密码不落任何日志或审计。多次 401 会进入与密码登录同一失败窗口
+**日志边界**：登录日志只含 `username`、结果与 `error_code`；503 分支额外带
+`zap.Error` 的链路原因（go-ldap 的结果码与错误消息，用于区分断连/证书/协议
+故障），其中不含任何口令。目录密码、bind 密码不落任何日志或审计。多次 401 会进入与密码登录同一失败窗口
 （同 IP + 同用户名），达到阈值后 429。
 
