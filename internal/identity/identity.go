@@ -271,3 +271,34 @@ func NewService(db *gorm.DB, now func() time.Time) *Service {
 	}
 	return &Service{DB: db, Now: now}
 }
+
+// MarkSubjectEmailDrift freezes a returning binding whose directory mailbox no
+// longer matches the one recorded at bind time. For providers whose subject is
+// a user-chosen name (a LDAP username), that drift is the reassigned-username
+// signal: whoever holds the name now is not necessarily whoever bound it, and
+// the old binding must not keep selecting the former holder's account. The
+// binding is marked conflicted, so the login fails closed until an
+// administrator resolves it (reset or re-bind). Providers with immutable
+// subject identifiers (OIDC `sub`) do not call this: a mailbox change there is
+// an ordinary profile edit, and the binding still wins (O4).
+func (s *Service) MarkSubjectEmailDrift(ctx context.Context, provider, issuer, subject, email string) (bool, error) {
+	var row model.UserIdentity
+	err := s.DB.WithContext(ctx).
+		Where("provider = ? AND issuer = ? AND subject = ?", provider, issuer, subject).
+		First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil // first login: bindNew owns the decision
+	}
+	if err != nil {
+		return false, err
+	}
+	if row.ConflictAt != nil ||
+		strings.EqualFold(strings.TrimSpace(row.Email), strings.TrimSpace(email)) {
+		return false, nil
+	}
+	if err := s.DB.WithContext(ctx).Model(&model.UserIdentity{}).
+		Where("id = ?", row.ID).Update("conflict_at", s.Now()).Error; err != nil {
+		return false, err
+	}
+	return true, nil
+}

@@ -89,6 +89,24 @@ func (a *AdminAPI) LdapLogin(c *gin.Context) {
 		return
 	}
 
+	// A LDAP username is user-chosen and can be reassigned in the directory.
+	// If the mailbox the directory now reports for a bound subject differs from
+	// the bound one, freeze the binding: the old holder's account must not be
+	// handed to the name's new holder. OIDC subjects are immutable `sub` values
+	// and skip this check (O4 keeps the binding-wins rule there).
+	if drift, err := a.identity.MarkSubjectEmailDrift(c.Request.Context(),
+		model.IdentityProviderLDAP, a.ldapIssuer, guardKey, email); err != nil {
+		a.deps.Logger.Error("check subject email drift failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "login failed")
+		return
+	} else if drift {
+		a.deps.Logger.Warn("ldap binding frozen on directory mailbox change",
+			zap.String("username", username), zap.String("error_code", "identity_conflict"))
+		abortError(c, http.StatusConflict, gen.ErrorCodeConflict,
+			"directory mailbox changed; this binding needs an administrator reset")
+		return
+	}
+
 	a.guard.Reset(guardKey, ip)
 
 	// The subject is the lowercased username: uid/sAMAccountName match

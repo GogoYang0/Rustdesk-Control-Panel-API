@@ -246,3 +246,77 @@ func TestLdapLogin_CaseVariantSubjectDoesNotConflict(t *testing.T) {
 	require.NoError(t, h.db.DB.Where("provider = ?", model.IdentityProviderLDAP).First(&row).Error)
 	require.Equal(t, "alice", row.Subject, "the subject is the lowercased username")
 }
+
+// TestLdapLogin_ReassignedUsernameFailsClosed pins the security-architecture
+// finding: a directory username is a user-chosen name, so a reassignment must
+// never let the new holder inherit the former holder's binding. When the
+// directory mailbox for an existing subject no longer matches the bound one,
+// the binding freezes (conflict_at) and login fails closed until an
+// administrator resets it.
+func TestLdapLogin_ReassignedUsernameFailsClosed(t *testing.T) {
+	h, fake := ldapHarness(t, nil)
+	old := h.seedUser(t, "old@corp.com", "password123")
+	require.NoError(t, h.db.DB.Create(&model.UserIdentity{
+		UserID:   old.ID,
+		Provider: model.IdentityProviderLDAP,
+		Issuer:   "ldap.example.com",
+		Subject:  "alice",
+		Email:    "old@corp.com",
+		LinkedAt: time.Now(),
+	}).Error)
+
+	// The directory hands "alice" to a new person with a different mailbox.
+	fake.Users["alice"] = ldapauth.FakeUser{Mail: "new@corp.com", Password: "alicepassword"}
+
+	w := h.do(t, http.MethodPost, "/api/v1/auth/ldap/login", map[string]string{
+		"username": "alice", "password": "alicepassword",
+	}, "")
+	require.Equal(t, http.StatusConflict, w.Code,
+		"the new holder must not inherit the former binding: %s", w.Body.String())
+
+	var row model.UserIdentity
+	require.NoError(t, h.db.DB.Where("provider = ? AND subject = ?", model.IdentityProviderLDAP, "alice").First(&row).Error)
+	require.NotNil(t, row.ConflictAt, "the drifted binding must be marked conflicted")
+}
+
+// TestLdapLogin_LdapOnlyIdentitySelfService pins the second finding: an
+// LDAP-only deployment must still expose the identity list and unlink
+// endpoints — they are provider-agnostic self-service, not OIDC features.
+func TestLdapLogin_LdapOnlyIdentitySelfService(t *testing.T) {
+	h, _ := ldapHarness(t, nil)
+	u := h.seedUser(t, "ldap-only@example.com", "password123")
+	require.NoError(t, h.db.DB.Create(&model.UserIdentity{
+		UserID:   u.ID,
+		Provider: model.IdentityProviderLDAP,
+		Issuer:   "ldap.example.com",
+		Subject:  "ldap-only",
+		Email:    "ldap-only@example.com",
+		LinkedAt: time.Now(),
+	}).Error)
+	jwt := h.login(t, "ldap-only@example.com", "password123")
+
+	w := h.do(t, http.MethodGet, "/api/v1/auth/identity", nil, jwt)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var list struct {
+		ActiveProvider string `json:"active_provider"`
+		Identities     []struct {
+			ID       int64  `json:"id"`
+			Provider string `json:"provider"`
+			Subject  string `json:"subject"`
+		} `json:"identities"`
+	}
+	decodeData(t, w, &list)
+	require.Equal(t, "ldap", list.ActiveProvider)
+	require.Len(t, list.Identities, 1)
+	require.Equal(t, "ldap-only", list.Identities[0].Subject)
+
+	w = h.do(t, http.MethodPost, "/api/v1/auth/identity/unlink", map[string]any{
+		"identity_id": list.Identities[0].ID,
+		"password":    "password123",
+	}, jwt)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	var count int64
+	require.NoError(t, h.db.DB.Model(&model.UserIdentity{}).Where("user_id = ?", u.ID).Count(&count).Error)
+	require.EqualValues(t, 0, count, "the unlink must remove the binding")
+}

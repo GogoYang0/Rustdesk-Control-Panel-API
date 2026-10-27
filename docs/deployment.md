@@ -463,6 +463,8 @@ ldap:
 | `usernameAttribute`/`mailAttribute` | `^[A-Za-z][A-Za-z0-9-]*$` |
 | `userFilter` | 括号配对、≤512、至少一个属性条件 |
 | `scope` | `one`/`sub` |
+|
+| 绑定安全 | LDAP 的 subject 是用户名，可被目录重分配：返回登录发现目录邮箱与绑定时不同 → 绑定自动冻结（`conflict_at`）并 409，管理员 reset 后新人重新绑定。OIDC 的 `sub` 不可变，不适用此门 |
 | `timeout` | (0, 30s] |
 
 **AD 对照**：`usernameAttribute: sAMAccountName`；AD 默认拒绝匿名搜索（所以

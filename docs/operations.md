@@ -414,7 +414,8 @@ ldapsearch -H ldaps://HOST:PORT -x -s base -b ''
 ldapsearch -H ldap://HOST:PORT -ZZ -x -s base -b ''
 # none（仅隔离网络）
 ldapsearch -H ldap://HOST:PORT -x -s base -b ''
-# 验证服务账号本身可用（替换 bindDN；-W 交互输密码）
+# 验证服务账号本身可用（替换 bindDN；-W 交互输密码；在上方对应
+# transport 的命令中加上 -D/-W，starttls 用 ldap://HOST:PORT -ZZ）
 ldapsearch -H ldaps://HOST:PORT -x -D 'BINDDN' -W -s base -b ''
 ```
 
@@ -426,6 +427,14 @@ ldapsearch -H ldaps://HOST:PORT -x -D 'BINDDN' -W -s base -b ''
 ldap host`（换主机）或用户报 401（改用户名）时：管理员调用
 `POST /orgs/{orgId}/members/{userId}/identity/reset` 清空绑定，用户重新登录
 一次即按新值绑定。reset 写审计 `user.identity.reset`。
+
+**目录账号复用（用户名重分配）**：LDAP 的 subject 是用户名——目录侧把
+`alice` 重新分配给另一个人时，新持有人能通过自己的口令 bind。面板的防线是
+**绑定邮箱漂移即冻结**：返回登录发现该 subject 的目录邮箱与绑定时记录的
+不一致 → 绑定标记 `conflict_at`，登录返回 409，直到管理员
+`identity/reset` 清掉旧绑定后新人重新绑定。注意残余风险：若目录管理员把
+用户名**和邮箱一起**让给新人（邮箱不变），面板无法区分——这属于目录侧
+账号管理责任，处置同「目录改名后重新绑定」。
 
 **`mail` 属性缺失**：登录返回 403「directory account has no mail attribute」。
 处置：在目录侧给该账号补 `mail`（必须与面板账户邮箱一致），无需面板侧操作。

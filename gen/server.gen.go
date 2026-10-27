@@ -2410,7 +2410,7 @@ type Identity struct {
 
 // IdentityList defines model for IdentityList.
 type IdentityList struct {
-	// ActiveProvider 当前部署启用的外部身份源（oidc / 空串）
+	// ActiveProvider 当前部署启用的外部身份源（oidc / ldap / 空串）
 	ActiveProvider string     `json:"active_provider"`
 	Identities     []Identity `json:"identities"`
 }
