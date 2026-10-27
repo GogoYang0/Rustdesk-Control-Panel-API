@@ -49,17 +49,20 @@ func (a *AdminAPI) ResetMemberIdentity(c *gin.Context, orgId int64, userId int64
 
 	orgID, targetID := uint(orgId), uint(userId)
 	err := a.deps.DB.Transaction(func(tx *gorm.DB) error {
-		if err := a.assertResettableFactor(tx, c, orgID, targetID); err != nil {
-			return err
-		}
-		// Lock the account row so concurrent credential removals (password,
-		// passkeys, identities) serialize on the same lock.
+		// Lock the account row FIRST, before any plain read: on MySQL's
+		// REPEATABLE READ the transaction snapshot starts at the first read, and
+		// every other credential-removal path (password, passkeys, identities)
+		// serializes on this same lock — so everything counted after the lock is
+		// taken reflects their committed outcome.
 		read := tx
 		if tx.Name() != "sqlite" {
 			read = read.Clauses(clause.Locking{Strength: "UPDATE"})
 		}
 		var target model.User
 		if err := store.WithoutTenantScope(read).Where("id = ?", targetID).First(&target).Error; err != nil {
+			return err
+		}
+		if err := a.assertResettableFactor(tx, c, orgID, targetID); err != nil {
 			return err
 		}
 		var passkeys int64
