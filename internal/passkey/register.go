@@ -179,7 +179,7 @@ func (s *Service) FinishRegistration(ctx context.Context, u model.User, token st
 func (s *Service) insertPasskey(ctx context.Context, userID uint, name string, cred *webauthn.Credential) (*model.UserPasskey, error) {
 	row := model.UserPasskey{
 		UserID:           userID,
-		CredentialID:     base64.RawURLEncoding.EncodeToString(cred.ID),
+		CredentialID:     encodeCredentialID(cred.ID),
 		CredentialIDHash: credentialHash(cred.ID),
 		PublicKey:        base64.StdEncoding.EncodeToString(cred.PublicKey),
 		SignCount:        cred.Authenticator.SignCount,
@@ -256,3 +256,5 @@ func encodeTransports(transports []protocol.AuthenticatorTransport) string {
 	}
 	return string(encoded)
 }
+
+func encodeCredentialID(id []byte) string { return base64.RawURLEncoding.EncodeToString(id) }

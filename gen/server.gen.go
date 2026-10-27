@@ -2749,6 +2749,24 @@ type PasskeyCeremonyResponse struct {
 	Message string          `json:"message"`
 }
 
+// PasskeyLoginBeginRequest defines model for PasskeyLoginBeginRequest.
+type PasskeyLoginBeginRequest struct {
+	// ChallengeToken 密码登录返回的短期挑战令牌（第二步用 passkey 代替 TOTP）
+	ChallengeToken *string `json:"challenge_token,omitempty"`
+
+	// Email 可选邮箱提示，只用于收窄 allowCredentials，不构成账户存在性判断
+	Email *string `json:"email,omitempty"`
+}
+
+// PasskeyLoginRequest defines model for PasskeyLoginRequest.
+type PasskeyLoginRequest struct {
+	CeremonyToken string `json:"ceremony_token"`
+
+	// Credential 浏览器 `PublicKeyCredential` 的 JSON 形态
+	// （id/rawId/type/response.clientDataJSON/authenticatorData/signature/userHandle）。
+	Credential map[string]interface{} `json:"credential"`
+}
+
 // PasskeyRegistrationRequest defines model for PasskeyRegistrationRequest.
 type PasskeyRegistrationRequest struct {
 	CeremonyToken string `json:"ceremony_token"`
@@ -3989,6 +4007,12 @@ type VerifyTOTPJSONRequestBody = TOTPVerifyRequest
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
 
+// BeginPasskeyLoginJSONRequestBody defines body for BeginPasskeyLogin for application/json ContentType.
+type BeginPasskeyLoginJSONRequestBody = PasskeyLoginBeginRequest
+
+// FinishPasskeyLoginJSONRequestBody defines body for FinishPasskeyLogin for application/json ContentType.
+type FinishPasskeyLoginJSONRequestBody = PasskeyLoginRequest
+
 // FinishPasskeyRegistrationJSONRequestBody defines body for FinishPasskeyRegistration for application/json ContentType.
 type FinishPasskeyRegistrationJSONRequestBody = PasskeyRegistrationRequest
 
@@ -4153,6 +4177,12 @@ type ServerInterface interface {
 	// Login 邮箱密码登录
 	// (POST /api/v1/auth/login)
 	Login(c *gin.Context)
+	// BeginPasskeyLogin 开始 passkey 登录
+	// (POST /api/v1/auth/passkey/login/begin)
+	BeginPasskeyLogin(c *gin.Context)
+	// FinishPasskeyLogin 完成 passkey 登录
+	// (POST /api/v1/auth/passkey/login/finish)
+	FinishPasskeyLogin(c *gin.Context)
 	// BeginPasskeyRegistration 开始绑定 passkey
 	// (POST /api/v1/auth/passkey/register/begin)
 	BeginPasskeyRegistration(c *gin.Context)
@@ -4580,6 +4610,32 @@ func (siw *ServerInterfaceWrapper) Login(c *gin.Context) {
 	}
 
 	siw.Handler.Login(c)
+}
+
+// BeginPasskeyLogin operation middleware
+func (siw *ServerInterfaceWrapper) BeginPasskeyLogin(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.BeginPasskeyLogin(c)
+}
+
+// FinishPasskeyLogin operation middleware
+func (siw *ServerInterfaceWrapper) FinishPasskeyLogin(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.FinishPasskeyLogin(c)
 }
 
 // BeginPasskeyRegistration operation middleware
@@ -8309,6 +8365,8 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/auth/2fa/disable", wrapper.DisableTOTP)
 	router.POST(options.BaseURL+"/api/v1/auth/2fa/recovery-codes", wrapper.RegenerateRecoveryCodes)
 	router.POST(options.BaseURL+"/api/v1/auth/2fa/verify", wrapper.VerifyTOTP)
+	router.POST(options.BaseURL+"/api/v1/auth/passkey/login/begin", wrapper.BeginPasskeyLogin)
+	router.POST(options.BaseURL+"/api/v1/auth/passkey/login/finish", wrapper.FinishPasskeyLogin)
 	router.POST(options.BaseURL+"/api/v1/auth/passkey/register/begin", wrapper.BeginPasskeyRegistration)
 	router.POST(options.BaseURL+"/api/v1/auth/passkey/register/finish", wrapper.FinishPasskeyRegistration)
 	router.GET(options.BaseURL+"/api/v1/orgs", wrapper.ListOrgs)

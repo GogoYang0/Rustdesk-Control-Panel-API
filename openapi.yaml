@@ -445,6 +445,94 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/v1/auth/passkey/login/begin:
+    post:
+      operationId: beginPasskeyLogin
+      summary: 开始 passkey 登录
+      description: |
+        未认证。三种入口，互斥：
+
+        - 带 `challenge_token`：密码已通过、账户开启了 TOTP，此时用 passkey 代替
+          TOTP 完成第二步；`allowCredentials` 限定为该账户的凭据。账户没有凭据时 409。
+        - 带 `email`：只把 `allowCredentials` 收窄到该邮箱的凭据；**邮箱不存在或
+          账户没有凭据时仍返回 200 且 `allowCredentials` 为空数组**（不构成账户
+          存在性 oracle），`email` 只是提示。
+        - 都不带：可发现凭据（usernameless）流程，由认证器选择账户。
+
+        受 per-IP 限流；`email` 分支额外按账户计失败窗口。
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasskeyLoginBeginRequest"
+      responses:
+        "200":
+          description: 断言挑战
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasskeyCeremonyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/passkey/login/finish:
+    post:
+      operationId: finishPasskeyLogin
+      summary: 完成 passkey 登录
+      description: |
+        未认证。校验断言并签发与 `/auth/login` 相同的令牌对。
+        `ceremony_token` 一次有效；重放、过期、origin/rpId/challenge 不符、
+        签名无效一律 401，不区分原因。签名计数器回退按克隆处置（401），
+        凭据被标记 `clone_warning` 且不会自动删除。
+
+        passkey 登录成功即视为完成认证，不再叠加本地 TOTP（设计 D1/D14）。
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasskeyLoginRequest"
+      responses:
+        "200":
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /api/v1/auth/passkey/register/begin:
     post:
       operationId: beginPasskeyRegistration
@@ -5179,6 +5267,31 @@ components:
           type: string
         data:
           $ref: "#/components/schemas/PasskeyCeremony"
+
+    PasskeyLoginBeginRequest:
+      type: object
+      properties:
+        challenge_token:
+          type: string
+          description: 密码登录返回的短期挑战令牌（第二步用 passkey 代替 TOTP）
+        email:
+          type: string
+          description: 可选邮箱提示，只用于收窄 allowCredentials，不构成账户存在性判断
+
+    PasskeyLoginRequest:
+      type: object
+      required:
+        - ceremony_token
+        - credential
+      properties:
+        ceremony_token:
+          type: string
+        credential:
+          type: object
+          additionalProperties: true
+          description: |
+            浏览器 `PublicKeyCredential` 的 JSON 形态
+            （id/rawId/type/response.clientDataJSON/authenticatorData/signature/userHandle）。
 
     PasskeyRegistrationRequest:
       type: object

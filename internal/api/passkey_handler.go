@@ -3,11 +3,14 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/gen"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/passkey"
 )
@@ -162,4 +165,151 @@ func passkeyToAPI(row *model.UserPasskey) gen.Passkey {
 		Aaguid:         row.AAGUID,
 		CloneWarning:   row.CloneWarning,
 	}
+}
+
+// BeginPasskeyLogin starts an assertion ceremony. The three entry modes are
+// mutually exclusive: challenge_token (second factor after a password), email
+// (a hint that only narrows allowCredentials) and neither (usernameless).
+func (a *AdminAPI) BeginPasskeyLogin(c *gin.Context) {
+	svc, ok := a.passkeysEnabled(c)
+	if !ok {
+		return
+	}
+	var req gen.PasskeyLoginBeginRequest
+	if c.Request.Body != nil {
+		if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+			abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid passkey login payload")
+			return
+		}
+	}
+	if req.ChallengeToken != nil && req.Email != nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "challenge_token and email are mutually exclusive")
+		return
+	}
+
+	ip := c.ClientIP()
+	if !a.passkeyGuard.AllowIP(ip) {
+		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "too many passkey attempts")
+		return
+	}
+	account := ""
+	if req.Email != nil {
+		account = strings.ToLower(strings.TrimSpace(*req.Email))
+		if account != "" && a.passkeyGuard.Locked(account, ip) {
+			abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "account temporarily locked")
+			return
+		}
+	}
+
+	var user *model.User
+	if req.ChallengeToken != nil {
+		uid, err := a.deps.Issuer.ParseChallenge(*req.ChallengeToken)
+		if err != nil {
+			abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "invalid or expired challenge")
+			return
+		}
+		loaded, err := a.loadUser(uid)
+		if err != nil {
+			abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "invalid or expired challenge")
+			return
+		}
+		user = &loaded
+	} else if account != "" {
+		// A miss is not an error: the response shape must not reveal whether
+		// the mailbox exists (design D16).
+		var loaded model.User
+		if err := a.deps.DB.Where("LOWER(email) = ?", account).First(&loaded).Error; err == nil {
+			user = &loaded
+		}
+	}
+
+	token, options, err := svc.BeginLogin(c.Request.Context(), user)
+	if errors.Is(err, passkey.ErrNoCredentials) {
+		if req.ChallengeToken != nil {
+			abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "this account has no passkey")
+			return
+		}
+		// A hint for an account without credentials degrades to the
+		// usernameless ceremony instead of leaking the account state.
+		token, options, err = svc.BeginLogin(c.Request.Context(), nil)
+	}
+	if err != nil {
+		a.deps.Logger.Error("begin passkey login failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not start passkey login")
+		return
+	}
+
+	payload, err := jsonObject(options)
+	if err != nil {
+		a.deps.Logger.Error("encode passkey login options failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not start passkey login")
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gen.PasskeyCeremonyResponse{
+		Code:    gen.ErrorCodeOk,
+		Message: "ok",
+		Data:    gen.PasskeyCeremony{CeremonyToken: token, Options: payload},
+	})
+}
+
+// FinishPasskeyLogin validates the assertion and issues the same token pair as
+// a password login. Passkey authentication is not stacked with a local TOTP
+// step (design D1/D14).
+func (a *AdminAPI) FinishPasskeyLogin(c *gin.Context) {
+	svc, ok := a.passkeysEnabled(c)
+	if !ok {
+		return
+	}
+	var req gen.PasskeyLoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.CeremonyToken == "" || len(req.Credential) == 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "ceremony_token and credential are required")
+		return
+	}
+	body, err := json.Marshal(req.Credential)
+	if err != nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "credential is not valid JSON")
+		return
+	}
+	ip := c.ClientIP()
+	if !a.passkeyGuard.AllowIP(ip) {
+		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "too many passkey attempts")
+		return
+	}
+
+	user, _, err := svc.FinishLogin(c.Request.Context(), req.CeremonyToken, body)
+	switch {
+	case errors.Is(err, passkey.ErrCeremonyNotFound),
+		errors.Is(err, passkey.ErrCeremonyExpired),
+		errors.Is(err, passkey.ErrCeremonyUsed),
+		errors.Is(err, passkey.ErrAssertionFailed),
+		errors.Is(err, passkey.ErrCloneWarning):
+		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "passkey login rejected")
+		return
+	case err != nil:
+		a.deps.Logger.Error("finish passkey login failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not finish passkey login")
+		return
+	}
+
+	if err := auth.RequireVerifiedUser(user); err != nil {
+		abortError(c, http.StatusForbidden, gen.ErrorCodeEmailNotVerified, "email is not verified")
+		return
+	}
+
+	access, refresh, err := a.deps.Auth.IssueTokens(user.ID)
+	if err != nil {
+		a.deps.Logger.Error("issue tokens after passkey login failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "login failed")
+		return
+	}
+	c.JSON(http.StatusOK, gen.TokenResponse{
+		Code:    gen.ErrorCodeOk,
+		Message: "ok",
+		Data: gen.TokenPair{
+			AccessToken:  access,
+			RefreshToken: refresh,
+			ExpiresIn:    int64(a.deps.AccessTTL.Seconds()),
+		},
+	})
 }

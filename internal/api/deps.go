@@ -137,13 +137,17 @@ type AdminAPI struct {
 	// unauthenticated login bucket, and their own per-IP bucket still bounds
 	// attempts once the shared failure table is full.
 	totpManageGuard *loginGuard
-	books           *addressbook.Service
-	tickets         *session.Service
-	totp            *auth.TOTPService
-	retention       *audit.RetentionService
-	captcha         *captcha.Service
-	clientBuilds    *clientbuild.Service
-	passkeys        *passkey.Service
+	// passkeyGuard bounds unauthenticated passkey login attempts. It is a
+	// separate bucket so WebAuthn traffic never drains the password login
+	// budget (and vice versa).
+	passkeyGuard *loginGuard
+	books        *addressbook.Service
+	tickets      *session.Service
+	totp         *auth.TOTPService
+	retention    *audit.RetentionService
+	captcha      *captcha.Service
+	clientBuilds *clientbuild.Service
+	passkeys     *passkey.Service
 	// captchaGuard bounds challenge issuance per IP without spending the
 	// login attempt budget.
 	captchaGuard *loginGuard
@@ -236,6 +240,7 @@ func NewAdminAPI(d Deps) *AdminAPI {
 		totpGuard: newLoginGuard(),
 
 		totpManageGuard: newLoginGuard(),
+		passkeyGuard:    newLoginGuard(),
 		books:           addressbook.NewService(d.DB),
 		tickets:         tickets,
 		totp:            d.TOTP,
