@@ -55,13 +55,24 @@ func (f *Fake) Authenticate(ctx context.Context, username, password string) (str
 		return "", ErrAmbiguousResult
 	}
 	// Directories match uid/sAMAccountName case-insensitively; model that so
-	// handler-level tests exercise real lookup semantics.
-	user, ok := f.Users[strings.ToLower(username)]
-	if !ok || user.Password != password {
+	// handler-level tests exercise real lookup semantics regardless of how the
+	// fixture keys are spelled.
+	var matched []FakeUser
+	for name, user := range f.Users {
+		if strings.EqualFold(name, username) {
+			matched = append(matched, user)
+		}
+	}
+	if len(matched) > 1 {
+		// Same fail-closed semantics as the production directory: two entries
+		// matching one username must never let either bind.
+		return "", ErrAmbiguousResult
+	}
+	if len(matched) == 0 || matched[0].Password != password {
 		return "", ErrInvalidCredentials
 	}
-	if user.Mail == "" {
+	if matched[0].Mail == "" {
 		return "", ErrMissingMail
 	}
-	return user.Mail, nil
+	return matched[0].Mail, nil
 }

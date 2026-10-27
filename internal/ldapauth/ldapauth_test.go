@@ -108,3 +108,23 @@ func TestFake_ErrorKnobs(t *testing.T) {
 		t.Fatalf("ambiguous = %v, want ErrAmbiguousResult", err)
 	}
 }
+
+// TestFake_CaseInsensitiveFixtureKeys pins the lookup contract: fixture keys
+// may be spelled in any case, and two keys that fold to the same name fail
+// closed exactly like the production directory.
+func TestFake_CaseInsensitiveFixtureKeys(t *testing.T) {
+	dir := NewFake(map[string]FakeUser{
+		"Alice": {Mail: "a@example.com", Password: "pw"},
+	})
+	if _, err := dir.Authenticate(context.Background(), "alice", "pw"); err != nil {
+		t.Fatalf("lowercase lookup against mixed-case key: %v", err)
+	}
+
+	amb := NewFake(map[string]FakeUser{
+		"Alice": {Mail: "a@example.com", Password: "pw"},
+		"ALICE": {Mail: "b@example.com", Password: "pw"},
+	})
+	if _, err := amb.Authenticate(context.Background(), "alice", "pw"); err != ErrAmbiguousResult {
+		t.Fatalf("two folding keys = %v, want ErrAmbiguousResult", err)
+	}
+}
