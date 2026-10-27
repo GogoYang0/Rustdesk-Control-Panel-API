@@ -82,10 +82,13 @@ jobs:
           LDAP_ORGANISATION: "Panel Test"
           LDAP_DOMAIN: "example.org"
           LDAP_ADMIN_PASSWORD: "adminpassword"
+        # The image listens on 389/636 inside the container; the host side is
+        # mapped to 1389 so the tests (fixed port 1389) never collide with a
+        # local slapd.
         ports:
-          - 1389:1389
+          - 1389:389
         options: >-
-          --health-cmd "ldapwhoami -H ldap://localhost:1389 -x"
+          --health-cmd "ldapwhoami -H ldap://localhost:389 -x"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
