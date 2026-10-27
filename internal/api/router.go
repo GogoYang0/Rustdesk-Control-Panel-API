@@ -16,6 +16,9 @@ import (
 var publicPaths = map[string]bool{
 	"/healthz":                              true,
 	"/api/v1/auth/login":                    true,
+	"/api/v1/auth/providers":                true,
+	"/api/v1/auth/passkey/login/begin":      true,
+	"/api/v1/auth/passkey/login/finish":     true,
 	"/api/v1/auth/captcha":                  true,
 	"/api/v1/auth/refresh":                  true,
 	"/api/v1/auth/2fa/verify":               true,

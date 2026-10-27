@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Rustdesk-Control-Panel API
-  version: 0.10.0
+  version: 0.11.0
   contact:
     name: Rustdesk-Control-Panel
     url: https://github.com/GogoYang0/Rustdesk-Control-Panel-API
@@ -150,6 +150,24 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/providers:
+    get:
+      operationId: listAuthProviders
+      summary: 列出可用的登录方式
+      description: |
+        未认证。返回部署级启用的外部身份源；本版本（5b-1）两者恒为 false，
+        5b-2/5b-3 点亮后前端据此显示入口。
+      tags:
+        - auth
+      security: []
+      responses:
+        "200":
+          description: 登录方式
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthProvidersResponse"
 
   /api/v1/auth/captcha:
     get:
@@ -375,6 +393,12 @@ paths:
                 $ref: "#/components/schemas/OkResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "409":
+          description: 账户没有本地密码（passkey-only），无法启用或维护 TOTP
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
 
@@ -402,6 +426,12 @@ paths:
                 $ref: "#/components/schemas/TOTPRecoveryCodesResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "409":
+          description: 账户没有本地密码（passkey-only），无法启用或维护 TOTP
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
 
@@ -440,6 +470,435 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "503":
           description: 验证码提供商不可用（仅启用验证码且 failMode=closed 时）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/passkey/stepup/begin:
+    post:
+      operationId: beginPasskeyStepup
+      summary: 开始 step-up 断言
+      description: |
+        需要登录（JWT）。为敏感操作（删除/恢复本地密码）发起一次新鲜断言。
+        账户没有 passkey 时 409；断言有效期由 `webauthn.ceremonyTTL` 决定（默认 5 分钟）。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 断言挑战
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasskeyCeremonyResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/passkey/stepup/finish:
+    post:
+      operationId: finishPasskeyStepup
+      summary: 完成 step-up 断言
+      description: |
+        需要登录（JWT）。校验断言后返回 2 分钟、**一次一用**的 `stepup_token`。
+        该令牌只能授权一个敏感动作；重放返回 401。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasskeyLoginRequest"
+      responses:
+        "200":
+          description: step-up 令牌
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StepupTokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/password/remove:
+    post:
+      operationId: removePassword
+      summary: 删除本地密码（转为 passkey-only）
+      description: |
+        需要登录（JWT）+ 一次**新鲜的 passkey 断言**（`stepup_token`，2 分钟、一次一用）。
+        四项前置条件全部满足才执行：当前密码正确；stepup 有效；已绑定 passkey ≥ 2；
+        账户没有任何 TOTP 配置（含未启用的 pending 行）。
+
+        成功后 `password_hash` 置空，密码登录返回通用 `unauthorized`，只能走 passkey。
+        **没有线上自救通道**：删除后若丢失全部 passkey，只能由部署方按运维手册处理。
+        响应 `warnings` 列出连带影响（compat 登录不可用等）。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordRemoveRequest"
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasswordRemoveResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/password/set:
+    post:
+      operationId: setPassword
+      summary: 恢复本地密码
+      description: |
+        需要登录（JWT）+ 一次新鲜的 passkey 断言。仅当账户**当前没有密码**时可用
+        （已有密码返回 409；本版本不提供改密）。用于 passkey-only 账户恢复密码登录。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordSetRequest"
+      responses:
+        "200":
+          description: 已设置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/passkeys:
+    get:
+      operationId: listPasskeys
+      summary: 列出我的 passkey
+      description: |
+        需要登录（JWT）。返回调用者自己的凭据，附带 `has_password` 与
+        `totp_enabled`，供客户端判断"删除最后一个凭据会不会锁死账户"。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 凭据列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasskeyListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/passkeys/{passkeyId}:
+    patch:
+      operationId: renamePasskey
+      summary: 重命名 passkey
+      description: 需要登录（JWT）。名称 1-64 字符，首尾空白会被裁剪。只能操作自己的凭据。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: passkeyId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasskeyNameRequest"
+      responses:
+        "200":
+          description: 更新后的凭据
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasskeyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deletePasskey
+      summary: 删除 passkey
+      description: |
+        需要登录（JWT）。账户**没有密码**且这是最后一个凭据时返回 409：
+        删除会让账户再也无法登录，必须先设置密码或再绑定一个凭据。
+        不属于调用者的凭据一律 404，不区分"不存在"与"非本人"。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: passkeyId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/passkey/login/begin:
+    post:
+      operationId: beginPasskeyLogin
+      summary: 开始 passkey 登录
+      description: |
+        未认证。三种入口，互斥：
+
+        - 带 `challenge_token`：密码已通过、账户开启了 TOTP，此时用 passkey 代替
+          TOTP 完成第二步；`allowCredentials` 限定为该账户的凭据。账户没有凭据时 409。
+        - 带 `email`：把 `allowCredentials` 收窄到该邮箱的凭据；**邮箱不存在或
+          账户没有凭据时仍返回 200**，退化为可发现凭据 ceremony（不带
+          `allowCredentials`）。`email` 只是提示。
+
+          **安全边界说明**：命中与未命中的差别只在 `allowCredentials` 的内容，
+          状态码与结构一致。因此响应用途上可区分"该邮箱是否已绑定 passkey"——
+          这是为了让浏览器只列出相关凭据而显式接受的取舍（设计 D16），**不要**
+          把响应形状当作保密边界；探测成本由 per-IP 限流约束。
+
+          要彻底消除该差异，**必须在服务端或入口网关拒绝 `email` 参数**：端点公开，
+          客户端不发送并不能阻止第三方直接提交。本版本无内置开关，属已知限制。
+        - 都不带：可发现凭据（usernameless）流程，由认证器选择账户。
+
+        受 per-IP 限流；`email` 分支额外按账户计失败窗口。
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasskeyLoginBeginRequest"
+      responses:
+        "200":
+          description: 断言挑战
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasskeyCeremonyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/passkey/login/finish:
+    post:
+      operationId: finishPasskeyLogin
+      summary: 完成 passkey 登录
+      description: |
+        未认证。校验断言并签发与 `/auth/login` 相同的令牌对。
+        `ceremony_token` 一次有效；重放、过期、origin/rpId/challenge 不符、
+        签名无效一律 401，不区分原因。签名计数器回退按克隆处置（401），
+        凭据被标记 `clone_warning` 且不会自动删除。
+
+        passkey 登录成功即视为完成认证，不再叠加本地 TOTP（设计 D1/D14）。
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasskeyLoginRequest"
+      responses:
+        "200":
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/passkey/register/begin:
+    post:
+      operationId: beginPasskeyRegistration
+      summary: 开始绑定 passkey
+      description: |
+        需要登录（JWT）。返回一次性 `ceremony_token` 与 `navigator.credentials.create()`
+        所需的 `options`（W3C 标准 JSON，顶层为 `publicKey`）。字段按 W3C 结构透传，
+        契约不重复建模，避免与标准漂移；其中的二进制字段是 **base64url 字符串**，
+        客户端必须先解码为 `ArrayBuffer` 再调用 WebAuthn API（见
+        `PasskeyCeremony.options` 的说明与 `docs/reference/passkey-smoke.html`）。
+
+        认证器策略固定：`userVerification=required`、`residentKey=preferred`、
+        `attestation=none`；`excludeCredentials` 含该账户已绑定的凭据。
+        `webauthn.enabled=false` 时返回 503；账户已达凭据上限时返回 409。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 注册挑战
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasskeyCeremonyResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/passkey/register/finish:
+    post:
+      operationId: finishPasskeyRegistration
+      summary: 完成绑定 passkey
+      description: |
+        需要登录（JWT）。提交浏览器 `navigator.credentials.create()` 的结果。
+        `ceremony_token` 一次有效（有效期由 `webauthn.ceremonyTTL` 决定，默认 5 分钟），重放返回 401。
+
+        校验失败（origin/rpId 不符、challenge 不符、签名无效）一律 401，不区分原因；
+        同一凭据已绑定到任何账户时 409，且不回显归属账户。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasskeyRegistrationRequest"
+      responses:
+        "201":
+          description: 已绑定的凭据
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasskeyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: passkey 未启用
           content:
             application/json:
               schema:
@@ -612,6 +1071,58 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/members/{userId}/passkeys/reset:
+    post:
+      operationId: resetMemberPasskeys
+      summary: 重置成员的 passkey
+      description: |
+        管理员清空成员的 WebAuthn 凭据（`member.manage`），写审计 `user.passkey.reset`。
+        守卫与 `2fa/reset` 一致：不能重置自己；重置 owner 需要 `org.admin`；
+        目标同属其他组织时拒绝（账户级因子不能由单租户管理员处置）；事务内复判。
+
+        额外一条：目标账户**没有密码**时返回 409 —— 清空凭据会让它彻底无法登录。
+        用于用户丢失认证器但仍有密码的场景。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已重置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/Internal"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /api/v1/orgs/{orgId}/members/{userId}/2fa/reset:
     post:
@@ -5013,6 +5524,308 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
 
   schemas:
+    AuthProviderStatus:
+      type: object
+      required:
+        - enabled
+      properties:
+        enabled:
+          type: boolean
+        name:
+          type: string
+
+    AuthProviders:
+      type: object
+      required:
+        - oidc
+        - ldap
+      properties:
+        oidc:
+          $ref: "#/components/schemas/AuthProviderStatus"
+        ldap:
+          $ref: "#/components/schemas/AuthProviderStatus"
+
+    AuthProvidersResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/AuthProviders"
+
+    Passkey:
+      type: object
+      required:
+        - id
+        - name
+        - created_at
+        - transports
+        - backup_eligible
+        - backup_state
+        - aaguid
+        - clone_warning
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          description: 用户可见的凭据名（1-64 字符，缺省为 `Passkey`）
+        created_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        transports:
+          type: array
+          description: 认证器自报的传输方式（usb/nfc/ble/internal/hybrid）
+          items:
+            type: string
+        backup_eligible:
+          type: boolean
+          description: 该凭据是否可被备份/同步（同步型 passkey 为 true）
+        backup_state:
+          type: boolean
+          description: 该凭据当前是否已被备份
+        aaguid:
+          type: string
+          description: 认证器型号标识；空串表示认证器未提供
+        clone_warning:
+          type: boolean
+          description: 曾检测到签名计数器回退（疑似克隆），需重新绑定
+
+    PasskeyResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/Passkey"
+
+    PasskeyCeremony:
+      type: object
+      required:
+        - ceremony_token
+        - options
+      properties:
+        ceremony_token:
+          type: string
+          description: 一次性 ceremony 句柄；有效期由部署配置 `webauthn.ceremonyTTL` 决定（默认 5 分钟）
+        options:
+          type: object
+          additionalProperties: true
+          description: |
+            W3C PublicKeyCredentialCreationOptions / RequestOptions 的 JSON 形态，
+            顶层键为 `publicKey`。字段名与标准一致，服务端只填充不重写；但**二进制
+            字段是 base64url 字符串**（`challenge`、`user.id`、`excludeCredentials[].id`，
+            登录时为 `allowCredentials[].id`）。
+
+            ⚠️ **不能直接把这些对象交给浏览器**：`navigator.credentials.create()` /
+            `get()` 要求上述字段是 `ArrayBuffer` / `TypedArray`。客户端必须先解码
+            base64url（去掉 `-`/`_` 还原为 `+`/`/` 并补 `=`），再调用 WebAuthn API；
+            返回值方向相反——`response.clientDataJSON`、`attestationObject`、
+            `authenticatorData`、`signature`、`userHandle` 都是 `ArrayBuffer`，需再编码
+            回 base64url 才能提交。参考实现见仓库 `docs/reference/passkey-smoke.html`
+            的 `b64urlToBuf`，以及注册向的 `prepareCreationOptions`、登录向的
+            `prepareRequestOptions`。
+
+    PasskeyCeremonyResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/PasskeyCeremony"
+
+    StepupToken:
+      type: object
+      required:
+        - stepup_token
+        - expires_in
+      properties:
+        stepup_token:
+          type: string
+        expires_in:
+          type: integer
+          format: int64
+          description: 有效期（秒），固定 120
+
+    StepupTokenResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/StepupToken"
+
+    PasswordRemoveRequest:
+      type: object
+      required:
+        - password
+        - stepup_token
+      properties:
+        password:
+          type: string
+        stepup_token:
+          type: string
+
+    PasswordRemoveResult:
+      type: object
+      required:
+        - warnings
+      properties:
+        warnings:
+          type: array
+          description: |
+            连带影响说明：`compat_login_disabled` 表示原生客户端将无法再用该账户登录；
+            `keep_a_second_passkey` 表示恢复只能依赖另一个 passkey。
+          items:
+            type: string
+
+    PasswordRemoveResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/PasswordRemoveResult"
+
+    PasswordSetRequest:
+      type: object
+      required:
+        - new_password
+        - stepup_token
+      properties:
+        new_password:
+          type: string
+        stepup_token:
+          type: string
+
+    PasskeyList:
+      type: object
+      required:
+        - items
+        - has_password
+        - totp_enabled
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Passkey"
+        has_password:
+          type: boolean
+          description: 账户是否还有本地密码（false 表示 passkey-only）
+        totp_enabled:
+          type: boolean
+          description: 账户是否启用了 TOTP
+
+    PasskeyListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/PasskeyList"
+
+    PasskeyNameRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          maxLength: 64
+
+    PasskeyLoginBeginRequest:
+      type: object
+      properties:
+        challenge_token:
+          type: string
+          description: 密码登录返回的短期挑战令牌（第二步用 passkey 代替 TOTP）
+        email:
+          type: string
+          description: 可选邮箱提示，只用于收窄 allowCredentials，不构成账户存在性判断
+
+    PasskeyLoginRequest:
+      type: object
+      required:
+        - ceremony_token
+        - credential
+      properties:
+        ceremony_token:
+          type: string
+        credential:
+          type: object
+          additionalProperties: true
+          description: |
+            浏览器 `PublicKeyCredential` 的 JSON 形态
+            （id/rawId/type/response.clientDataJSON/authenticatorData/signature/userHandle）。
+
+            二进制字段（`rawId`、`clientDataJSON`、`authenticatorData`、`signature`、
+            `userHandle`）必须是 **base64url 字符串**；`userHandle` 可为 `null`，
+            `transports` 可缺失。服务端缺失兼容见 `docs/api-spec.md` §3.16。
+
+    PasskeyRegistrationRequest:
+      type: object
+      required:
+        - ceremony_token
+        - credential
+      properties:
+        ceremony_token:
+          type: string
+        credential:
+          type: object
+          additionalProperties: true
+          description: |
+            浏览器 `PublicKeyCredential` 的 JSON 形态
+            （id/rawId/type/response.clientDataJSON/response.attestationObject）。
+
+            `rawId`、`clientDataJSON`、`attestationObject` 必须是 **base64url 字符串**
+            （不能是数组或 base64 标准编码）；`transports` 可缺失。
+        name:
+          type: string
+          maxLength: 64
+          description: 可选的凭据名；空或缺失时使用 `Passkey`
+
     ErrorCode:
       type: string
       description: |
@@ -5064,8 +5877,10 @@ components:
           description: |
             错误上下文；多数错误为 null。`code=approval_required` 时带
             `approval_id`（int64，待审批请求 id），客户端据此跳转审批中心。
-            `code=two_factor_required` 时带 `challenge_token`（短期挑战令牌），
-            客户端用它调用 `POST /auth/2fa/verify` 完成第二步登录。
+            `code=two_factor_required` 时带 `challenge_token`（短期挑战令牌）与
+            `methods`（字符串数组：`totp`，以及该账户已绑定 passkey 时的
+            `passkey`）。客户端用 `challenge_token` 调用 `POST /auth/2fa/verify`
+            或 `POST /auth/passkey/login/begin` 完成第二步。
 
     LoginRequest:
       type: object

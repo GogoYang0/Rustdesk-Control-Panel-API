@@ -3,6 +3,7 @@ package auth
 
 import (
 	"fmt"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 
 	"github.com/alexedwards/argon2id"
 )
@@ -38,3 +39,8 @@ func VerifyPassword(hash, plain string) (bool, error) {
 	}
 	return argon2id.ComparePasswordAndHash(plain, hash)
 }
+
+// HasPassword reports whether the account still has a local password. The
+// empty string is the sentinel written when a user removes it; no Argon2id
+// hash can ever be empty, so the check cannot misfire on real hashes.
+func HasPassword(u model.User) bool { return u.PasswordHash != "" }

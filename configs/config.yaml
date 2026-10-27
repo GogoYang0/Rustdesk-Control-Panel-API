@@ -187,3 +187,15 @@ clientbuild:
     - "macos-arm64"
     - "macos-x64"
     - "android-arm64"
+
+# Passkey (WebAuthn) login. Disabled by default; enabling requires an RP ID and
+# the exact browser origin the panel is served from. Passkeys only work over
+# https (http is accepted for loopback only) and never over a bare IP origin of
+# a private network, because browsers do not expose WebAuthn there.
+webauthn:
+  enabled: false
+  rpId: ""            # e.g. "panel.example.com" — bare lowercase host, no scheme or port
+  rpName: "RustDesk Control Panel"
+  origin: ""          # e.g. "https://panel.example.com" — no path, query or fragment
+  ceremonyTTL: 5m
+  credentialsPerUser: 10

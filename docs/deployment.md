@@ -1,6 +1,6 @@
 # 部署指南（Deployment Guide）
 
-> 适用版本：v0.10.0（M6 波次 1：交互式验证码；上一基线 v0.9.0）。本文档随版本演进持续更新——每次发布前必须复核一遍。
+> 适用版本：v0.11.0（M6 波次 5b-1：Passkey / WebAuthn；上一基线 v0.10.0）。本文档随版本演进持续更新——每次发布前必须复核一遍。
 > 配套文档：[运维指南](operations.md) · [后端 API 规范](api-spec.md)
 
 ---
@@ -334,3 +334,42 @@ clientbuild:
 - 取消是尽力而为：已进入产物回收后返回 409；`dispatching` 状态下取消可能需要一个轮询周期。
 - 审计：组织管理员可在审计查询中看到 `client_build.*`；成功/失败/取消由后台 actor=0 写入。
 - 保留期清理由 `client-build-sweep` 每小时执行；短保留期验收可把 `artifactRetention` 临时设为 1m 并重启面板。
+
+## 11. Passkey / WebAuthn（v0.11.0）
+
+Passkey 默认关闭。打开前必须先确定**浏览器访问面板的那个 origin**：RP ID 与
+origin 都从它推导，配置错了所有 ceremony 都会失败。
+
+```yaml
+webauthn:
+  enabled: true
+  rpId: "panel.example.com"     # 裸主机名、小写、不带 scheme/端口/路径
+  rpName: "RustDesk Control Panel"
+  origin: "https://panel.example.com"   # 不带 path/query/fragment
+  ceremonyTTL: 5m
+  credentialsPerUser: 10
+```
+
+| 键 | 默认 | 约束 |
+|---|---|---|
+| `enabled` | `false` | 关闭时全部 passkey 端点返回 503（不是 404） |
+| `rpId` | 空 | 必填；必须是 `origin` 主机名的可注册后缀（相等或以 `.rpId` 结尾） |
+| `origin` | 空 | 必填；必须 https；仅 `localhost` 允许 http（RP ID 必须是域名，IP 字面量会被浏览器拒绝） |
+| `ceremonyTTL` | `5m` | 1s–15m |
+| `credentialsPerUser` | `10` | 1–20 |
+
+- `enabled=true` 时启动期校验，任何缺项/非法值 **Fatal**（不静默降级）。
+- **IP 直连不支持**：浏览器在 `http://10.x.x.x` 这类非安全上下文里不提供
+  WebAuthn；即使把 `127.0.0.1` 配成 origin，RP ID 也必须是域名——启动校验会
+  直接拒绝 IP 形式的 `rpId`。本机调试请用 `http://localhost:<port>`。
+- 反代不得改写请求体；`Origin` 由浏览器写进 `clientDataJSON`，服务端不信任
+  `Origin` 头。
+- 新增周期任务 `webauthn-ceremony-sweep`（10 分钟），清理过期 ceremony；服务
+  关闭时不注册。
+- **关闭 `enabled` 之前**：先给所有无密码账户设置密码（见 operations §10），
+  否则这些账户会立刻无法登录。启动时若检测到无密码账户会打 WARN。
+- **冒烟**：把 `docs/reference/passkey-smoke.html` 由反代挂到与 `origin` 同源
+  的路径（例如 `/passkey-smoke.html`），用真实认证器完成一次注册 + 登录。
+  本地可以用 `http://localhost:<port>` 作 origin（浏览器把 localhost 视为安全
+  上下文），但页面与 API 必须同源同端口。
+

@@ -25,6 +25,7 @@ type Config struct {
 	Audit       AuditConfig       `mapstructure:"audit"`
 	Captcha     CaptchaConfig     `mapstructure:"captcha"`
 	ClientBuild ClientBuildConfig `mapstructure:"clientbuild"`
+	WebAuthn    WebAuthnConfig    `mapstructure:"webauthn"`
 }
 
 // CaptchaConfig enables the interactive captcha in front of the public
@@ -247,6 +248,11 @@ func Load(path string) (*Config, error) {
 	if err := v.BindEnv("clientbuild.bundle.key", "PANEL_CLIENTBUILD_BUNDLE_KEY"); err != nil {
 		return nil, fmt.Errorf("bind client build bundle key: %w", err)
 	}
+	// Passkeys are opt-in; the RP identity is deployment-wide and has no secrets.
+	v.SetDefault("webauthn.enabled", false)
+	v.SetDefault("webauthn.rpName", defaultWebAuthnDisplayName)
+	v.SetDefault("webauthn.ceremonyTTL", 5*time.Minute)
+	v.SetDefault("webauthn.credentialsPerUser", 10)
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
@@ -266,6 +272,9 @@ func Load(path string) (*Config, error) {
 	}
 
 	if err := validateClientBuild(cfg.ClientBuild); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+	}
+	if err := validateWebAuthn(cfg.WebAuthn); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 	if err := validateLogcollect(cfg.Logcollect); err != nil {

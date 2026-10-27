@@ -1488,6 +1488,39 @@ type AuditRetentionResponse struct {
 	Message string         `json:"message"`
 }
 
+// AuthProviderStatus defines model for AuthProviderStatus.
+type AuthProviderStatus struct {
+	Enabled bool    `json:"enabled"`
+	Name    *string `json:"name,omitempty"`
+}
+
+// AuthProviders defines model for AuthProviders.
+type AuthProviders struct {
+	Ldap AuthProviderStatus `json:"ldap"`
+	Oidc AuthProviderStatus `json:"oidc"`
+}
+
+// AuthProvidersResponse defines model for AuthProvidersResponse.
+type AuthProvidersResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode     `json:"code"`
+	Data    AuthProviders `json:"data"`
+	Message string        `json:"message"`
+}
+
 // CaptchaChallenge defines model for CaptchaChallenge.
 type CaptchaChallenge struct {
 	Challenge *CaptchaChallengePayload `json:"challenge,omitempty"`
@@ -2296,8 +2329,10 @@ type ErrorResponse struct {
 
 	// Data 错误上下文；多数错误为 null。`code=approval_required` 时带
 	// `approval_id`（int64，待审批请求 id），客户端据此跳转审批中心。
-	// `code=two_factor_required` 时带 `challenge_token`（短期挑战令牌），
-	// 客户端用它调用 `POST /auth/2fa/verify` 完成第二步登录。
+	// `code=two_factor_required` 时带 `challenge_token`（短期挑战令牌）与
+	// `methods`（字符串数组：`totp`，以及该账户已绑定 passkey 时的
+	// `passkey`）。客户端用 `challenge_token` 调用 `POST /auth/2fa/verify`
+	// 或 `POST /auth/passkey/login/begin` 完成第二步。
 	Data    *map[string]interface{} `json:"data,omitempty"`
 	Message string                  `json:"message"`
 }
@@ -2691,6 +2726,206 @@ type OrgResponse struct {
 	Code    ErrorCode `json:"code"`
 	Data    Org       `json:"data"`
 	Message string    `json:"message"`
+}
+
+// Passkey defines model for Passkey.
+type Passkey struct {
+	// Aaguid 认证器型号标识；空串表示认证器未提供
+	Aaguid string `json:"aaguid"`
+
+	// BackupEligible 该凭据是否可被备份/同步（同步型 passkey 为 true）
+	BackupEligible bool `json:"backup_eligible"`
+
+	// BackupState 该凭据当前是否已被备份
+	BackupState bool `json:"backup_state"`
+
+	// CloneWarning 曾检测到签名计数器回退（疑似克隆），需重新绑定
+	CloneWarning bool       `json:"clone_warning"`
+	CreatedAt    time.Time  `json:"created_at"`
+	Id           int64      `json:"id"`
+	LastUsedAt   *time.Time `json:"last_used_at,omitempty"`
+
+	// Name 用户可见的凭据名（1-64 字符，缺省为 `Passkey`）
+	Name string `json:"name"`
+
+	// Transports 认证器自报的传输方式（usb/nfc/ble/internal/hybrid）
+	Transports []string `json:"transports"`
+}
+
+// PasskeyCeremony defines model for PasskeyCeremony.
+type PasskeyCeremony struct {
+	// CeremonyToken 一次性 ceremony 句柄；有效期由部署配置 `webauthn.ceremonyTTL` 决定（默认 5 分钟）
+	CeremonyToken string `json:"ceremony_token"`
+
+	// Options W3C PublicKeyCredentialCreationOptions / RequestOptions 的 JSON 形态，
+	// 顶层键为 `publicKey`。字段名与标准一致，服务端只填充不重写；但**二进制
+	// 字段是 base64url 字符串**（`challenge`、`user.id`、`excludeCredentials[].id`，
+	// 登录时为 `allowCredentials[].id`）。
+	//
+	// ⚠️ **不能直接把这些对象交给浏览器**：`navigator.credentials.create()` /
+	// `get()` 要求上述字段是 `ArrayBuffer` / `TypedArray`。客户端必须先解码
+	// base64url（去掉 `-`/`_` 还原为 `+`/`/` 并补 `=`），再调用 WebAuthn API；
+	// 返回值方向相反——`response.clientDataJSON`、`attestationObject`、
+	// `authenticatorData`、`signature`、`userHandle` 都是 `ArrayBuffer`，需再编码
+	// 回 base64url 才能提交。参考实现见仓库 `docs/reference/passkey-smoke.html`
+	// 的 `b64urlToBuf`，以及注册向的 `prepareCreationOptions`、登录向的
+	// `prepareRequestOptions`。
+	Options map[string]interface{} `json:"options"`
+}
+
+// PasskeyCeremonyResponse defines model for PasskeyCeremonyResponse.
+type PasskeyCeremonyResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode       `json:"code"`
+	Data    PasskeyCeremony `json:"data"`
+	Message string          `json:"message"`
+}
+
+// PasskeyList defines model for PasskeyList.
+type PasskeyList struct {
+	// HasPassword 账户是否还有本地密码（false 表示 passkey-only）
+	HasPassword bool      `json:"has_password"`
+	Items       []Passkey `json:"items"`
+
+	// TotpEnabled 账户是否启用了 TOTP
+	TotpEnabled bool `json:"totp_enabled"`
+}
+
+// PasskeyListResponse defines model for PasskeyListResponse.
+type PasskeyListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode   `json:"code"`
+	Data    PasskeyList `json:"data"`
+	Message string      `json:"message"`
+}
+
+// PasskeyLoginBeginRequest defines model for PasskeyLoginBeginRequest.
+type PasskeyLoginBeginRequest struct {
+	// ChallengeToken 密码登录返回的短期挑战令牌（第二步用 passkey 代替 TOTP）
+	ChallengeToken *string `json:"challenge_token,omitempty"`
+
+	// Email 可选邮箱提示，只用于收窄 allowCredentials，不构成账户存在性判断
+	Email *string `json:"email,omitempty"`
+}
+
+// PasskeyLoginRequest defines model for PasskeyLoginRequest.
+type PasskeyLoginRequest struct {
+	CeremonyToken string `json:"ceremony_token"`
+
+	// Credential 浏览器 `PublicKeyCredential` 的 JSON 形态
+	// （id/rawId/type/response.clientDataJSON/authenticatorData/signature/userHandle）。
+	//
+	// 二进制字段（`rawId`、`clientDataJSON`、`authenticatorData`、`signature`、
+	// `userHandle`）必须是 **base64url 字符串**；`userHandle` 可为 `null`，
+	// `transports` 可缺失。服务端缺失兼容见 `docs/api-spec.md` §3.16。
+	Credential map[string]interface{} `json:"credential"`
+}
+
+// PasskeyNameRequest defines model for PasskeyNameRequest.
+type PasskeyNameRequest struct {
+	Name string `json:"name"`
+}
+
+// PasskeyRegistrationRequest defines model for PasskeyRegistrationRequest.
+type PasskeyRegistrationRequest struct {
+	CeremonyToken string `json:"ceremony_token"`
+
+	// Credential 浏览器 `PublicKeyCredential` 的 JSON 形态
+	// （id/rawId/type/response.clientDataJSON/response.attestationObject）。
+	//
+	// `rawId`、`clientDataJSON`、`attestationObject` 必须是 **base64url 字符串**
+	// （不能是数组或 base64 标准编码）；`transports` 可缺失。
+	Credential map[string]interface{} `json:"credential"`
+
+	// Name 可选的凭据名；空或缺失时使用 `Passkey`
+	Name *string `json:"name,omitempty"`
+}
+
+// PasskeyResponse defines model for PasskeyResponse.
+type PasskeyResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode `json:"code"`
+	Data    Passkey   `json:"data"`
+	Message string    `json:"message"`
+}
+
+// PasswordRemoveRequest defines model for PasswordRemoveRequest.
+type PasswordRemoveRequest struct {
+	Password    string `json:"password"`
+	StepupToken string `json:"stepup_token"`
+}
+
+// PasswordRemoveResponse defines model for PasswordRemoveResponse.
+type PasswordRemoveResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode            `json:"code"`
+	Data    PasswordRemoveResult `json:"data"`
+	Message string               `json:"message"`
+}
+
+// PasswordRemoveResult defines model for PasswordRemoveResult.
+type PasswordRemoveResult struct {
+	// Warnings 连带影响说明：`compat_login_disabled` 表示原生客户端将无法再用该账户登录；
+	// `keep_a_second_passkey` 表示恢复只能依赖另一个 passkey。
+	Warnings []string `json:"warnings"`
+}
+
+// PasswordSetRequest defines model for PasswordSetRequest.
+type PasswordSetRequest struct {
+	NewPassword string `json:"new_password"`
+	StepupToken string `json:"stepup_token"`
 }
 
 // Permission defines model for Permission.
@@ -3273,6 +3508,34 @@ type SessionResponse struct {
 // - closed：已结束
 // - denied：签发阶段被策略拒绝（仅 panel 来源，用于留痕）
 type SessionStatus string
+
+// StepupToken defines model for StepupToken.
+type StepupToken struct {
+	// ExpiresIn 有效期（秒），固定 120
+	ExpiresIn   int64  `json:"expires_in"`
+	StepupToken string `json:"stepup_token"`
+}
+
+// StepupTokenResponse defines model for StepupTokenResponse.
+type StepupTokenResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode   `json:"code"`
+	Data    StepupToken `json:"data"`
+	Message string      `json:"message"`
+}
 
 // Strategy defines model for Strategy.
 type Strategy struct {
@@ -3900,6 +4163,27 @@ type VerifyTOTPJSONRequestBody = TOTPVerifyRequest
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
 
+// BeginPasskeyLoginJSONRequestBody defines body for BeginPasskeyLogin for application/json ContentType.
+type BeginPasskeyLoginJSONRequestBody = PasskeyLoginBeginRequest
+
+// FinishPasskeyLoginJSONRequestBody defines body for FinishPasskeyLogin for application/json ContentType.
+type FinishPasskeyLoginJSONRequestBody = PasskeyLoginRequest
+
+// FinishPasskeyRegistrationJSONRequestBody defines body for FinishPasskeyRegistration for application/json ContentType.
+type FinishPasskeyRegistrationJSONRequestBody = PasskeyRegistrationRequest
+
+// FinishPasskeyStepupJSONRequestBody defines body for FinishPasskeyStepup for application/json ContentType.
+type FinishPasskeyStepupJSONRequestBody = PasskeyLoginRequest
+
+// RenamePasskeyJSONRequestBody defines body for RenamePasskey for application/json ContentType.
+type RenamePasskeyJSONRequestBody = PasskeyNameRequest
+
+// RemovePasswordJSONRequestBody defines body for RemovePassword for application/json ContentType.
+type RemovePasswordJSONRequestBody = PasswordRemoveRequest
+
+// SetPasswordJSONRequestBody defines body for SetPassword for application/json ContentType.
+type SetPasswordJSONRequestBody = PasswordSetRequest
+
 // RefreshTokensJSONRequestBody defines body for RefreshTokens for application/json ContentType.
 type RefreshTokensJSONRequestBody = RefreshRequest
 
@@ -4061,6 +4345,42 @@ type ServerInterface interface {
 	// Login 邮箱密码登录
 	// (POST /api/v1/auth/login)
 	Login(c *gin.Context)
+	// BeginPasskeyLogin 开始 passkey 登录
+	// (POST /api/v1/auth/passkey/login/begin)
+	BeginPasskeyLogin(c *gin.Context)
+	// FinishPasskeyLogin 完成 passkey 登录
+	// (POST /api/v1/auth/passkey/login/finish)
+	FinishPasskeyLogin(c *gin.Context)
+	// BeginPasskeyRegistration 开始绑定 passkey
+	// (POST /api/v1/auth/passkey/register/begin)
+	BeginPasskeyRegistration(c *gin.Context)
+	// FinishPasskeyRegistration 完成绑定 passkey
+	// (POST /api/v1/auth/passkey/register/finish)
+	FinishPasskeyRegistration(c *gin.Context)
+	// BeginPasskeyStepup 开始 step-up 断言
+	// (POST /api/v1/auth/passkey/stepup/begin)
+	BeginPasskeyStepup(c *gin.Context)
+	// FinishPasskeyStepup 完成 step-up 断言
+	// (POST /api/v1/auth/passkey/stepup/finish)
+	FinishPasskeyStepup(c *gin.Context)
+	// ListPasskeys 列出我的 passkey
+	// (GET /api/v1/auth/passkeys)
+	ListPasskeys(c *gin.Context)
+	// DeletePasskey 删除 passkey
+	// (DELETE /api/v1/auth/passkeys/{passkeyId})
+	DeletePasskey(c *gin.Context, passkeyId int64)
+	// RenamePasskey 重命名 passkey
+	// (PATCH /api/v1/auth/passkeys/{passkeyId})
+	RenamePasskey(c *gin.Context, passkeyId int64)
+	// RemovePassword 删除本地密码（转为 passkey-only）
+	// (POST /api/v1/auth/password/remove)
+	RemovePassword(c *gin.Context)
+	// SetPassword 恢复本地密码
+	// (POST /api/v1/auth/password/set)
+	SetPassword(c *gin.Context)
+	// ListAuthProviders 列出可用的登录方式
+	// (GET /api/v1/auth/providers)
+	ListAuthProviders(c *gin.Context)
 	// RefreshTokens 轮换 refresh 令牌
 	// (POST /api/v1/auth/refresh)
 	RefreshTokens(c *gin.Context)
@@ -4295,6 +4615,9 @@ type ServerInterface interface {
 	// AssignMemberControlRole 分配成员的控制角色
 	// (PUT /api/v1/orgs/{orgId}/members/{userId}/control-role)
 	AssignMemberControlRole(c *gin.Context, orgId int64, userId int64)
+	// ResetMemberPasskeys 重置成员的 passkey
+	// (POST /api/v1/orgs/{orgId}/members/{userId}/passkeys/reset)
+	ResetMemberPasskeys(c *gin.Context, orgId int64, userId int64)
 	// AssignMemberStrategy 分配成员的默认客户端策略
 	// (PUT /api/v1/orgs/{orgId}/members/{userId}/strategy)
 	AssignMemberStrategy(c *gin.Context, orgId int64, userId int64)
@@ -4482,6 +4805,186 @@ func (siw *ServerInterfaceWrapper) Login(c *gin.Context) {
 	}
 
 	siw.Handler.Login(c)
+}
+
+// BeginPasskeyLogin operation middleware
+func (siw *ServerInterfaceWrapper) BeginPasskeyLogin(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.BeginPasskeyLogin(c)
+}
+
+// FinishPasskeyLogin operation middleware
+func (siw *ServerInterfaceWrapper) FinishPasskeyLogin(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.FinishPasskeyLogin(c)
+}
+
+// BeginPasskeyRegistration operation middleware
+func (siw *ServerInterfaceWrapper) BeginPasskeyRegistration(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.BeginPasskeyRegistration(c)
+}
+
+// FinishPasskeyRegistration operation middleware
+func (siw *ServerInterfaceWrapper) FinishPasskeyRegistration(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.FinishPasskeyRegistration(c)
+}
+
+// BeginPasskeyStepup operation middleware
+func (siw *ServerInterfaceWrapper) BeginPasskeyStepup(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.BeginPasskeyStepup(c)
+}
+
+// FinishPasskeyStepup operation middleware
+func (siw *ServerInterfaceWrapper) FinishPasskeyStepup(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.FinishPasskeyStepup(c)
+}
+
+// ListPasskeys operation middleware
+func (siw *ServerInterfaceWrapper) ListPasskeys(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListPasskeys(c)
+}
+
+// DeletePasskey operation middleware
+func (siw *ServerInterfaceWrapper) DeletePasskey(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "passkeyId" -------------
+	var passkeyId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "passkeyId", c.Param("passkeyId"), &passkeyId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter passkeyId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeletePasskey(c, passkeyId)
+}
+
+// RenamePasskey operation middleware
+func (siw *ServerInterfaceWrapper) RenamePasskey(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "passkeyId" -------------
+	var passkeyId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "passkeyId", c.Param("passkeyId"), &passkeyId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter passkeyId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RenamePasskey(c, passkeyId)
+}
+
+// RemovePassword operation middleware
+func (siw *ServerInterfaceWrapper) RemovePassword(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RemovePassword(c)
+}
+
+// SetPassword operation middleware
+func (siw *ServerInterfaceWrapper) SetPassword(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.SetPassword(c)
+}
+
+// ListAuthProviders operation middleware
+func (siw *ServerInterfaceWrapper) ListAuthProviders(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListAuthProviders(c)
 }
 
 // RefreshTokens operation middleware
@@ -7251,6 +7754,40 @@ func (siw *ServerInterfaceWrapper) AssignMemberControlRole(c *gin.Context) {
 	siw.Handler.AssignMemberControlRole(c, orgId, userId)
 }
 
+// ResetMemberPasskeys operation middleware
+func (siw *ServerInterfaceWrapper) ResetMemberPasskeys(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "userId" -------------
+	var userId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", c.Param("userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter userId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ResetMemberPasskeys(c, orgId, userId)
+}
+
 // AssignMemberStrategy operation middleware
 func (siw *ServerInterfaceWrapper) AssignMemberStrategy(c *gin.Context) {
 
@@ -8175,6 +8712,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 
 	router.GET(options.BaseURL+"/healthz", wrapper.GetHealthz)
 	router.POST(options.BaseURL+"/api/v1/auth/login", wrapper.Login)
+	router.GET(options.BaseURL+"/api/v1/auth/providers", wrapper.ListAuthProviders)
 	router.GET(options.BaseURL+"/api/v1/auth/captcha", wrapper.GetCaptchaChallenge)
 	router.POST(options.BaseURL+"/api/v1/auth/refresh", wrapper.RefreshTokens)
 	router.GET(options.BaseURL+"/api/v1/auth/tokens", wrapper.ListTokens)
@@ -8185,11 +8723,23 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/auth/2fa/disable", wrapper.DisableTOTP)
 	router.POST(options.BaseURL+"/api/v1/auth/2fa/recovery-codes", wrapper.RegenerateRecoveryCodes)
 	router.POST(options.BaseURL+"/api/v1/auth/2fa/verify", wrapper.VerifyTOTP)
+	router.POST(options.BaseURL+"/api/v1/auth/passkey/stepup/begin", wrapper.BeginPasskeyStepup)
+	router.POST(options.BaseURL+"/api/v1/auth/passkey/stepup/finish", wrapper.FinishPasskeyStepup)
+	router.POST(options.BaseURL+"/api/v1/auth/password/remove", wrapper.RemovePassword)
+	router.POST(options.BaseURL+"/api/v1/auth/password/set", wrapper.SetPassword)
+	router.GET(options.BaseURL+"/api/v1/auth/passkeys", wrapper.ListPasskeys)
+	router.DELETE(options.BaseURL+"/api/v1/auth/passkeys/:passkeyId", wrapper.DeletePasskey)
+	router.PATCH(options.BaseURL+"/api/v1/auth/passkeys/:passkeyId", wrapper.RenamePasskey)
+	router.POST(options.BaseURL+"/api/v1/auth/passkey/login/begin", wrapper.BeginPasskeyLogin)
+	router.POST(options.BaseURL+"/api/v1/auth/passkey/login/finish", wrapper.FinishPasskeyLogin)
+	router.POST(options.BaseURL+"/api/v1/auth/passkey/register/begin", wrapper.BeginPasskeyRegistration)
+	router.POST(options.BaseURL+"/api/v1/auth/passkey/register/finish", wrapper.FinishPasskeyRegistration)
 	router.GET(options.BaseURL+"/api/v1/orgs", wrapper.ListOrgs)
 	router.POST(options.BaseURL+"/api/v1/orgs", wrapper.CreateOrg)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/members", wrapper.ListMembers)
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId", wrapper.RemoveMember)
 	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId", wrapper.UpdateMemberRole)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId/passkeys/reset", wrapper.ResetMemberPasskeys)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId/2fa/reset", wrapper.ResetMemberTOTP)
 	router.GET(options.BaseURL+"/api/v1/permissions", wrapper.ListPermissions)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/roles", wrapper.ListRoles)

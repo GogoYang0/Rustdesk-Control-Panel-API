@@ -1,6 +1,6 @@
 # 运维指南（Operations Guide）
 
-> 适用版本：v0.10.0（M6 波次 1：交互式验证码；上一基线 v0.9.0）。本文档随版本演进持续更新——每次发布前必须复核一遍。
+> 适用版本：v0.11.0（M6 波次 5b-1：Passkey / WebAuthn；上一基线 v0.10.0）。本文档随版本演进持续更新——每次发布前必须复核一遍。
 > 配套文档：[部署指南](deployment.md) · [后端 API 规范](api-spec.md)
 
 ---
@@ -328,3 +328,46 @@ Prometheus 指标端点属后续硬化项（见 #31 描述遗留清单）。
 | 连接/文件日志为空但客户端确实在跑 | 客户端需已登录（上报依赖登录态）且设备 `bound_uuid` 与应用一致；`uuid` 不符会被 403 丢弃（§3.2） |
 | 导出连接/文件日志报 400 | 结果超过 1000 行（§3.2）：加 `deviceId` / `from` / `to` 收窄 |
 | 全员登录被限流 429 | 挑战端点与登录各有一个独立的 5/min/IP 桶：排查是否有客户端在循环刷 `/api/v1/auth/captcha`；正常用户刷新一两次不会触发 |
+
+## 10. Passkey 运维（v0.11.0）
+
+**管理员重置成员凭据**：`POST /api/v1/orgs/{orgId}/members/{userId}/passkeys/reset`
+（`member.manage`）。守卫与 2FA 重置一致：不能重置自己；重置 owner 需要
+`org.admin`；目标同属其他组织时拒绝。审计 `user.passkey.reset` 记录删除条数。
+**目标没有密码时返回 409**：清空凭据会让账户彻底无法登录。
+
+**无密码账户丢失全部 passkey（唯一需要改库的场景）**：
+
+1. 先确认没有别的出路：该账户是否绑定了另一个 passkey、是否有 OIDC/LDAP
+   （5b-2/5b-3 未上线时没有）。没有才继续。
+2. 生成一个新密码的哈希（与面板存储格式一致）：
+
+   ```bash
+   read -rs PW && printf '%s\n' "$PW" | go run ./tools/pwhash && unset PW
+   ```
+
+   `read -rs` 不回显、也不进 shell history；口令只经 stdin 传给工具，不出现在
+   进程列表里。
+
+3. 写入数据库（**先备份**，并把该值只交给账户本人）：
+
+   ```sql
+   UPDATE users SET password_hash = '<上一步输出>' WHERE id = <userId>;
+   ```
+
+4. 用户用该密码登录后，应立即在设置里重新绑定 passkey，并走
+   `POST /auth/password/remove` 恢复 passkey-only（或改密后保留密码）。
+5. 若不想给临时密码，也可以只删除该用户的 `user_passkeys` 行并保留 `users`
+   行——但那不会让账户变得可登录，仍需第 2–3 步。
+
+**`clone_warning` 处置**：`GET /auth/passkeys` 里 `clone_warning=true` 表示该
+凭据曾报告签名计数器回退（可能被复制）。处理：让用户删除该凭据并重新绑定；
+不要直接改库清标志。计数器恒为 0 的平台认证器不会触发该标记。
+
+**清扫任务**：`webauthn-ceremony-sweep` 每 10 分钟删除过期 ceremony。过期的
+ceremony 本来就无法被消费，任务只回收空间；它失败会按 worker 约定写审计。
+
+**自助事件在哪看**：passkey 注册/删除/登录、删除/恢复密码只写结构化日志
+（`user_id`、`passkey_id`、`mode`），**不进 `audit_logs`**——它们没有租户
+归属。管理员重置是唯一进入审计表的 passkey 事件。
+

@@ -15,5 +15,6 @@ func PersistentModels() []any {
 		&ControlRole{}, &ConnectionLog{}, &FileLog{}, &AuditNonce{},
 		&CompatLoginChallenge{}, &Strategy{}, &DeviceDisconnect{},
 		&ClientBuildProfile{}, &ClientBuild{}, &ClientBuildArtifact{},
+		&UserPasskey{}, &WebAuthnCeremony{},
 	}
 }
