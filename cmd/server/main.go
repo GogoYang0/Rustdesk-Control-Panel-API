@@ -29,6 +29,8 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/controlrole"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/identity"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/ldapauth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logcollect"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logger"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logquery"
@@ -240,6 +242,43 @@ func main() {
 		} else if stale > 0 {
 			lg.Warn("identities are bound to a different oidc issuer and will not match; see operations.md",
 				zap.Int64("count", stale), zap.String("current_issuer", cfg.OIDC.Issuer))
+		}
+	}
+
+	// LDAP is opt-in and mutually exclusive with OIDC (enforced at config
+	// load). The shared binding service backs both providers.
+	identitySvc := identity.NewService(st.DB, nil)
+	var ldapDir ldapauth.Directory
+	if cfg.LDAP.Enabled {
+		// Transport decisions (plaintext link, skipped certificate check) are
+		// explicit operator choices; surface them at startup (design L3).
+		for _, warning := range cfg.LDAP.Warnings() {
+			lg.Warn(warning)
+		}
+		ldapDir = ldapauth.NewGoLDAP(ldapauth.Config{
+			Host:               cfg.LDAP.Host,
+			Port:               cfg.LDAP.Port,
+			Transport:          cfg.LDAP.Transport,
+			AllowInsecure:      cfg.LDAP.AllowInsecure,
+			InsecureSkipVerify: cfg.LDAP.InsecureSkipVerify,
+			BaseDN:             cfg.LDAP.BaseDN,
+			Scope:              cfg.LDAP.Scope,
+			BindDN:             cfg.LDAP.BindDN,
+			BindPassword:       cfg.LDAP.BindPassword,
+			UserFilter:         cfg.LDAP.UserFilter,
+			UsernameAttribute:  cfg.LDAP.UsernameAttribute,
+			MailAttribute:      cfg.LDAP.MailAttribute,
+			Timeout:            cfg.LDAP.Timeout,
+		})
+
+		// The issuer is the lowercased host: pointing the panel at a different
+		// directory changes the binding namespace, and the old rows simply
+		// never match again (design §5).
+		if stale, err := identitySvc.StaleCount(context.Background(), model.IdentityProviderLDAP, strings.ToLower(cfg.LDAP.Host)); err != nil {
+			lg.Warn("could not count identities from a previous ldap host", zap.Error(err))
+		} else if stale > 0 {
+			lg.Warn("identities are bound to a different ldap host and will not match; see operations.md",
+				zap.Int64("count", stale), zap.String("current_host", strings.ToLower(cfg.LDAP.Host)))
 		}
 	}
 
@@ -623,6 +662,10 @@ func main() {
 			ClientBuilds:             clientBuildSvc,
 			Passkeys:                 passkeySvc,
 			OIDC:                     oidcSvc,
+			LDAP:                     ldapDir,
+			LDAPProviderName:         cfg.LDAP.ProviderName,
+			LDAPIssuer:               strings.ToLower(cfg.LDAP.Host),
+			Identity:                 identitySvc,
 			RequireLocalSecondFactor: cfg.External.RequireLocalSecondFactor,
 		}),
 	}
