@@ -2757,9 +2757,18 @@ type PasskeyCeremony struct {
 	// CeremonyToken 一次性 ceremony 句柄；有效期由部署配置 `webauthn.ceremonyTTL` 决定（默认 5 分钟）
 	CeremonyToken string `json:"ceremony_token"`
 
-	// Options W3C PublicKeyCredentialCreationOptions / RequestOptions 的 JSON 形态
-	// （顶层键为 `publicKey`，`challenge` 与 `user.id` 为 base64url）。
-	// 浏览器原样消费，服务端只校验不重写。
+	// Options W3C PublicKeyCredentialCreationOptions / RequestOptions 的 JSON 形态，
+	// 顶层键为 `publicKey`。字段名与标准一致，服务端只填充不重写；但**二进制
+	// 字段是 base64url 字符串**（`challenge`、`user.id`、`excludeCredentials[].id`，
+	// 登录时为 `allowCredentials[].id`）。
+	//
+	// ⚠️ **不能直接把这些对象交给浏览器**：`navigator.credentials.create()` /
+	// `get()` 要求上述字段是 `ArrayBuffer` / `TypedArray`。客户端必须先解码
+	// base64url（去掉 `-`/`_` 还原为 `+`/`/` 并补 `=`），再调用 WebAuthn API；
+	// 返回值方向相反——`response.clientDataJSON`、`attestationObject`、
+	// `authenticatorData`、`signature`、`userHandle` 都是 `ArrayBuffer`，需再编码
+	// 回 base64url 才能提交。参考实现见仓库 `docs/reference/passkey-smoke.html`
+	// 的 `b64urlToBuf` / `prepareOptions`（约 40 行）。
 	Options map[string]interface{} `json:"options"`
 }
 
@@ -2830,6 +2839,10 @@ type PasskeyLoginRequest struct {
 
 	// Credential 浏览器 `PublicKeyCredential` 的 JSON 形态
 	// （id/rawId/type/response.clientDataJSON/authenticatorData/signature/userHandle）。
+	//
+	// 二进制字段（`rawId`、`clientDataJSON`、`authenticatorData`、`signature`、
+	// `userHandle`）必须是 **base64url 字符串**；`userHandle` 可为 `null`，
+	// `transports` 可缺失。服务端缺失兼容见 `docs/api-spec.md` §3.16。
 	Credential map[string]interface{} `json:"credential"`
 }
 
@@ -2844,6 +2857,9 @@ type PasskeyRegistrationRequest struct {
 
 	// Credential 浏览器 `PublicKeyCredential` 的 JSON 形态
 	// （id/rawId/type/response.clientDataJSON/response.attestationObject）。
+	//
+	// `rawId`、`clientDataJSON`、`attestationObject` 必须是 **base64url 字符串**
+	// （不能是数组或 base64 标准编码）；`transports` 可缺失。
 	Credential map[string]interface{} `json:"credential"`
 
 	// Name 可选的凭据名；空或缺失时使用 `Passkey`

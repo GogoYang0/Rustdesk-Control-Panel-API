@@ -408,6 +408,14 @@ passkey 时的 `passkey`）；该字段是 0.11.0 对既有 401 响应体唯一�
 而显式接受的取舍（设计 D16），**不是**保密边界；探测成本由 per-IP 限流约束。
 需要完全消除差异的部署应不使用 `email` 入口（本版本无关闭开关，记为已知限制）。
 
+**客户端要做编码转换，不能把 JSON 直接交给浏览器**：`options` 里的
+`challenge`、`user.id`、`allowCredentials[].id`/`excludeCredentials[].id` 都是
+base64url 字符串，而 `navigator.credentials.create()`/`get()` 要求 `ArrayBuffer`。
+反向提交时，`rawId`、`clientDataJSON`、`attestationObject`、`authenticatorData`、
+`signature`、`userHandle` 都要编码回 base64url（`userHandle` 可为 `null`，
+`transports` 可缺失）。参考实现：`docs/reference/passkey-smoke.html` 的
+`b64urlToBuf` / `prepareOptions`。
+
 **无密码账户**：`POST /auth/password/remove` 把 `password_hash` 置空，之后
 `/auth/login` 对任何密码都返回通用 `401 unauthorized`（内部仍走一次
 Argon2id，保持耗时恒定）。删除密码的四项前置条件：当前密码正确、step-up
