@@ -27,6 +27,7 @@ require (
 
 require (
 	filippo.io/edwards25519 v1.1.1 // indirect
+	github.com/Azure/go-ntlmssp v0.1.1 // indirect
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.15.0 // indirect
@@ -39,7 +40,9 @@ require (
 	github.com/getkin/kin-openapi v0.149.0 // indirect
 	github.com/gin-contrib/sse v1.1.0 // indirect
 	github.com/glebarez/go-sqlite v1.21.2 // indirect
+	github.com/go-asn1-ber/asn1-ber v1.5.8 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
+	github.com/go-ldap/ldap/v3 v3.4.15 // indirect
 	github.com/go-openapi/jsonpointer v0.23.1 // indirect
 	github.com/go-openapi/swag/jsonname v0.26.0 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect

@@ -260,6 +260,14 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("oidc.statettl", defaultOIDCStateTTL)
 	v.SetDefault("external.requirelocalsecondfactor", false)
 	v.SetDefault("ldap.enabled", false)
+	v.SetDefault("ldap.providername", "Directory")
+	v.SetDefault("ldap.port", 636)
+	v.SetDefault("ldap.transport", "ldaps")
+	v.SetDefault("ldap.scope", "sub")
+	v.SetDefault("ldap.userfilter", "(objectClass=person)")
+	v.SetDefault("ldap.usernameattribute", "uid")
+	v.SetDefault("ldap.mailattribute", "mail")
+	v.SetDefault("ldap.timeout", 10*time.Second)
 	// Passkeys are opt-in; the RP identity is deployment-wide and has no secrets.
 	v.SetDefault("webauthn.enabled", false)
 	v.SetDefault("webauthn.rpName", defaultWebAuthnDisplayName)
@@ -292,7 +300,16 @@ func Load(path string) (*Config, error) {
 	// Read the client secret only from the environment: a value in the tracked
 	// file would be a leaked credential (design O8).
 	cfg.OIDC.ClientSecret = os.Getenv("PANEL_OIDC_CLIENT_SECRET")
+	// Same rule for the LDAP service-account password (design L4).
+	cfg.LDAP.BindPassword = os.Getenv("PANEL_LDAP_BIND_PASSWORD")
+	// A leading or trailing space in the host passes the non-empty check but
+	// fails every dial: trim before validation so the configured value is the
+	// value that gets used.
+	cfg.LDAP.Host = strings.TrimSpace(cfg.LDAP.Host)
 	if err := validateOIDC(cfg.OIDC, cfg.Web.BaseURL); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+	}
+	if err := validateLDAP(cfg.LDAP); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 	if err := validateProviders(cfg.OIDC, cfg.LDAP); err != nil {

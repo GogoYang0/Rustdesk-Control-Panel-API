@@ -3,6 +3,9 @@ package oidc
 import (
 	"context"
 	"testing"
+	"time"
+
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 )
 
 // TestStaleIssuerCount pins the O11 startup warning input: identities bound
@@ -13,8 +16,14 @@ func TestStaleIssuerCount(t *testing.T) {
 	svc.cfg.Issuer = "https://current.example.com"
 
 	alice := seedUser(t, svc, "oidc-stale@example.com", true)
-	seedIdentity(t, svc, alice.ID, "https://old.example.com", "subject-old")
-	seedIdentity(t, svc, alice.ID, "https://current.example.com", "subject-current")
+	for _, row := range []model.UserIdentity{
+		{UserID: alice.ID, Provider: model.IdentityProviderOIDC, Issuer: "https://old.example.com", Subject: "subject-old", Email: "ldap-old@example.com", LinkedAt: time.Now()},
+		{UserID: alice.ID, Provider: model.IdentityProviderOIDC, Issuer: "https://current.example.com", Subject: "subject-current", Email: "ldap-current@example.com", LinkedAt: time.Now()},
+	} {
+		if err := svc.db.Create(&row).Error; err != nil {
+			t.Fatalf("seed identity: %v", err)
+		}
+	}
 
 	got, err := svc.StaleIssuerCount(context.Background())
 	if err != nil {

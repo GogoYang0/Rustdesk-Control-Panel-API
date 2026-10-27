@@ -1,6 +1,6 @@
 # 运维指南（Operations Guide）
 
-> 适用版本：v0.11.0（M6 波次 5b-1 Passkey、5b-2 OIDC；上一基线 v0.10.0）。本文档随版本演进持续更新——每次发布前必须复核一遍。
+> 适用版本：v0.11.0（M6 波次 5b-1 Passkey、5b-2 OIDC、5b-3 LDAP；上一基线 v0.10.0）。本文档随版本演进持续更新——每次发布前必须复核一遍。
 > 配套文档：[部署指南](deployment.md) · [后端 API 规范](api-spec.md)
 
 ---
@@ -397,4 +397,54 @@ IdP discovery 返回的完全一致）、`{web.baseURL}` 是否可达、IdP 证�
 **日志字段**：自服务绑定/登录/解绑只写结构化日志（`user_id`、`provider`、
 `identity_id`、`error_code`），不进 `audit_logs`；secret/code/id_token/ticket
 原文不出现在任何日志。管理员 reset 是唯一进审计表的外部身份事件。
+
+## 12. LDAP 目录运维（v0.11.0）
+
+**401 与 503 的分流**：401 有两种成因，先看涉及面——个别用户 401 = 无效凭据
+（或该用户的 `userFilter` 命中了多条目录条目，面板按 fail-closed 拒绝，日志
+`error_code=invalid_credentials` 不可区分是刻意设计）；**所有人** 401 且带
+`ErrAmbiguousResult` 症状（`userFilter` 写宽了）= 检查 filter 是否会匹配多个
+条目。503「目录服务不可用」= 面板到目录的链路或配置问题——按 `transport`
+分情况验证连通性：
+
+```bash
+# ldaps（默认端口 636）
+ldapsearch -H ldaps://HOST:PORT -x -s base -b ''
+# starttls
+ldapsearch -H ldap://HOST:PORT -ZZ -x -s base -b ''
+# none（仅隔离网络）
+ldapsearch -H ldap://HOST:PORT -x -s base -b ''
+# 验证服务账号本身可用（替换 bindDN；-W 交互输密码；在上方对应
+# transport 的命令中加上 -D/-W，starttls 用 ldap://HOST:PORT -ZZ）
+ldapsearch -H ldaps://HOST:PORT -x -D 'BINDDN' -W -s base -b ''
+```
+
+再查证书链（LDAPS）、`transport`/`allowInsecure` 组合、服务账号是否被锁。
+**绝不能**因为 503 被误报成密码错而让用户反复重试。
+
+**目录改名后重新绑定**：`subject` 是 `usernameAttribute` 的值（L7），目录侧
+改了它 = 旧绑定不命中。启动日志出现 `identities are bound to a different
+ldap host`（换主机）或用户报 401（改用户名）时：管理员调用
+`POST /orgs/{orgId}/members/{userId}/identity/reset` 清空绑定，用户重新登录
+一次即按新值绑定。reset 写审计 `user.identity.reset`。
+
+**目录账号复用（用户名重分配）**：LDAP 的 subject 是用户名——目录侧把
+`alice` 重新分配给另一个人时，新持有人能通过自己的口令 bind。面板的防线是
+**绑定邮箱漂移即冻结**：返回登录发现该 subject 的目录邮箱与绑定时记录的
+不一致 → 绑定标记 `conflict_at`，登录返回 409，直到管理员
+`identity/reset` 清掉旧绑定后新人重新绑定。注意残余风险：若目录管理员把
+用户名**和邮箱一起**让给新人（邮箱不变），面板无法区分——这属于目录侧
+账号管理责任，处置同「目录改名后重新绑定」。
+
+**`mail` 属性缺失**：登录返回 403「directory account has no mail attribute」。
+处置：在目录侧给该账号补 `mail`（必须与面板账户邮箱一致），无需面板侧操作。
+
+**bind 账号密码轮换**：服务账号密码只在 `PANEL_LDAP_BIND_PASSWORD`。轮换
+四步：目录侧设置新密码 → 更新环境变量 → 重启面板 → 删除旧密码。轮换窗口内
+登录返回 503（不是 401），不要在窗口内尝试排查用户凭据。
+
+**日志边界**：登录日志只含 `username`、结果与 `error_code`；503 分支额外带
+`zap.Error` 的链路原因（go-ldap 的结果码与错误消息，用于区分断连/证书/协议
+故障），其中不含任何口令。目录密码、bind 密码不落任何日志或审计。多次 401 会进入与密码登录同一失败窗口
+（同 IP + 同用户名），达到阈值后 429。
 

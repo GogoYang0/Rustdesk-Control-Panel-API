@@ -415,6 +415,60 @@ paths:
           $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/Internal"
+  /api/v1/auth/ldap/login:
+    post:
+      operationId: ldapLogin
+      summary: 目录账号登录
+      description: |
+        未认证。服务账号搜索到恰好一条目录条目后，以该条目 DN 做用户 bind 验证
+        密码；成功后按目录 `mail` 属性绑定到**已存在**的面板账户（无 JIT），
+        返回与密码登录相同的 token 对。
+
+        空用户名或空密码返回 400 且**不会触碰目录**（L1：空密码 + simple bind
+        在多数目录上等于匿名 bind）。bind 失败一律 401「用户名或密码错误」，
+        不区分用户不存在与密码错；目录连接/TLS/搜索协议错误返回 503；搜索
+        命中多于一条也按 401 拒绝（filter 太宽 = fail closed，L6）。
+
+        限流与验证码与 `/auth/login` 同源（同一 IP 桶与失败窗口，L9）。
+        `external.requireLocalSecondFactor=true` 且该账户已启用 TOTP 时，
+        返回 401 `two_factor_required` + `challenge_token`，由
+        `POST /auth/2fa/verify` 完成第二步（与 OIDC 同一收尾逻辑，L12）。
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LDAPLoginRequest"
+      responses:
+        "200":
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: 目录身份与已有绑定冲突（换用户名后撞新 subject 等）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: LDAP 未启用或目录不可达
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/v1/auth/captcha:
     get:
       operationId: getCaptchaChallenge
@@ -5816,7 +5870,7 @@ components:
       properties:
         active_provider:
           type: string
-          description: 当前部署启用的外部身份源（oidc / 空串）
+          description: 当前部署启用的外部身份源（oidc / ldap / 空串）
         identities:
           type: array
           items:
@@ -5851,6 +5905,22 @@ components:
           type: string
           description: 当前密码（与 stepup_token 二选一）
 
+    LDAPLoginRequest:
+      type: object
+      required:
+        - username
+        - password
+      properties:
+        username:
+          type: string
+          maxLength: 255
+          description: 目录用户名（usernameAttribute 的值）；按 RFC 4515 转义后进 filter
+        password:
+          type: string
+          maxLength: 1024
+          description: 目录密码；只进 bind 请求，不落日志
+        captcha:
+          $ref: "#/components/schemas/CaptchaProof"
     OIDCExchangeRequest:
       type: object
       required:

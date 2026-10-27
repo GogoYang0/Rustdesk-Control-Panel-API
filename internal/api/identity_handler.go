@@ -18,8 +18,9 @@ import (
 // GetIdentities shows the caller's external bindings, including the conflict
 // marker an operator needs to act on a poisoned binding.
 func (a *AdminAPI) GetIdentities(c *gin.Context) {
-	svc := a.oidc
-	if svc == nil {
+	// The endpoints are provider-agnostic: an LDAP-only deployment must keep
+	// the self-service view and revocation path for its own bindings.
+	if a.oidc == nil && a.ldap == nil {
 		abortError(c, http.StatusServiceUnavailable, gen.ErrorCodeInternal, "single sign-on is not enabled")
 		return
 	}
@@ -28,7 +29,7 @@ func (a *AdminAPI) GetIdentities(c *gin.Context) {
 		return
 	}
 
-	rows, err := svc.ListIdentities(c.Request.Context(), uid)
+	rows, err := a.identity.List(c.Request.Context(), uid)
 	if err != nil {
 		a.deps.Logger.Error("list identities failed")
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not list identities")
@@ -56,11 +57,19 @@ func (a *AdminAPI) GetIdentities(c *gin.Context) {
 		items = append(items, item)
 	}
 
+	activeProvider := ""
+	switch {
+	case a.oidc != nil:
+		activeProvider = model.IdentityProviderOIDC
+	case a.ldap != nil:
+		activeProvider = model.IdentityProviderLDAP
+	}
+
 	c.JSON(http.StatusOK, gen.IdentityListResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
 		Data: gen.IdentityList{
-			ActiveProvider: model.IdentityProviderOIDC,
+			ActiveProvider: activeProvider,
 			Identities:     items,
 		},
 	})
@@ -70,8 +79,7 @@ func (a *AdminAPI) GetIdentities(c *gin.Context) {
 // the lockout predicate run before anything is deleted, so a failed request
 // never leaves the account in a different state.
 func (a *AdminAPI) UnlinkIdentity(c *gin.Context) {
-	svc := a.oidc
-	if svc == nil {
+	if a.oidc == nil && a.ldap == nil {
 		abortError(c, http.StatusServiceUnavailable, gen.ErrorCodeInternal, "single sign-on is not enabled")
 		return
 	}
@@ -135,7 +143,7 @@ func (a *AdminAPI) UnlinkIdentity(c *gin.Context) {
 		a.totpManageGuard.Reset(account, ip)
 	}
 
-	if err := svc.Unlink(c.Request.Context(), uid, uint(req.IdentityId)); err != nil {
+	if err := a.identity.Unlink(c.Request.Context(), uid, uint(req.IdentityId)); err != nil {
 		switch {
 		case errors.Is(err, oidc.ErrIdentityNotFound):
 			abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "identity not found")

@@ -480,6 +480,33 @@ exchange 处返回 401 `two_factor_required`（`methods:["totp"]`），
 IdP 不可达 → 503；**不降级为密码登录**。
 
 
+### 3.18 LDAP 目录登录（v0.11.0）
+
+部署级单一外部身份源之一（与 OIDC 互斥，同时启用会启动失败）。流程：服务账号
+bind → 按用户名搜索 → 用户 DN bind 验证密码；成功后按目录 `mail` 属性绑定到
+**已存在**的面板账户（无 JIT），直接返回与密码登录相同的 token 对。无浏览器
+跳转、无 ticket（与 OIDC 的差别只在证明方式）。
+
+`POST /auth/ldap/login`（未认证）→ 200 `TokenResponse`。
+
+| 错误 | 条件 |
+|---|---|
+| 400 | 用户名或密码为空——**拒绝发生在触碰目录之前**（L1：空密码 + simple bind 在多数目录上等于匿名 bind） |
+| 401 | bind 失败 / 用户名搜不到 / 搜索命中多于一条（L6 fail closed）；统一「用户名或密码错误」，不回显细节 |
+| 403 | 目录账号无 `mail` 属性；邮箱无对应面板账户（无 JIT）；面板邮箱未验证 |
+| 429 | 与 `/auth/login` 同源的 IP 桶与账户失败窗口（L9） |
+| 503 | `ldap.enabled=false` 或目录连接/TLS/搜索协议错误（L5：目录挂了绝不能报「密码错」） |
+
+用户名按 RFC 4515 逐字符转义（`\` `*` `(` `)` NUL）后进 filter；属性名
+（`usernameAttribute`/`mailAttribute`）只来自启动配置且校验形状——请求输入
+永远到不了 filter 的结构位（P-L2）。验证码启用时与 `/auth/login` 同一套。
+
+绑定语义与 OIDC 完全一致（§3.17）：`(provider="ldap", issuer=配置 host 小写,
+subject=用户名)` 唯一；冲突 409、面板邮箱未验证 403；管理员 reset 走同一条
+路径。`external.requireLocalSecondFactor=true` 的门条件也一致（L12）：仅拦
+已启用 TOTP 的账户。目录密码不落日志、审计或错误消息（P-L4）。
+
+
 ## 4. compat 层（RustDesk 原生客户端）
 
 挂载于 `/api`，**协议形状冻结自官方客户端源码**（rustdesk flutter/sciter）——字段名不遵循管理 API 包络，迁移契约前不得擅改。

@@ -2410,7 +2410,7 @@ type Identity struct {
 
 // IdentityList defines model for IdentityList.
 type IdentityList struct {
-	// ActiveProvider 当前部署启用的外部身份源（oidc / 空串）
+	// ActiveProvider 当前部署启用的外部身份源（oidc / ldap / 空串）
 	ActiveProvider string     `json:"active_provider"`
 	Identities     []Identity `json:"identities"`
 }
@@ -2550,6 +2550,17 @@ type IssuedTicketResponse struct {
 	Code    ErrorCode    `json:"code"`
 	Data    IssuedTicket `json:"data"`
 	Message string       `json:"message"`
+}
+
+// LDAPLoginRequest defines model for LDAPLoginRequest.
+type LDAPLoginRequest struct {
+	Captcha *CaptchaProof `json:"captcha,omitempty"`
+
+	// Password 目录密码；只进 bind 请求，不落日志
+	Password string `json:"password"`
+
+	// Username 目录用户名（usernameAttribute 的值）；按 RFC 4515 转义后进 filter
+	Username string `json:"username"`
 }
 
 // LogEvent defines model for LogEvent.
@@ -4270,6 +4281,9 @@ type VerifyTOTPJSONRequestBody = TOTPVerifyRequest
 // UnlinkIdentityJSONRequestBody defines body for UnlinkIdentity for application/json ContentType.
 type UnlinkIdentityJSONRequestBody = IdentityUnlinkRequest
 
+// LdapLoginJSONRequestBody defines body for LdapLogin for application/json ContentType.
+type LdapLoginJSONRequestBody = LDAPLoginRequest
+
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
 
@@ -4464,6 +4478,9 @@ type ServerInterface interface {
 	// UnlinkIdentity 解绑外部身份
 	// (POST /api/v1/auth/identity/unlink)
 	UnlinkIdentity(c *gin.Context)
+	// LdapLogin 目录账号登录
+	// (POST /api/v1/auth/ldap/login)
+	LdapLogin(c *gin.Context)
 	// Login 邮箱密码登录
 	// (POST /api/v1/auth/login)
 	Login(c *gin.Context)
@@ -4952,6 +4969,19 @@ func (siw *ServerInterfaceWrapper) UnlinkIdentity(c *gin.Context) {
 	}
 
 	siw.Handler.UnlinkIdentity(c)
+}
+
+// LdapLogin operation middleware
+func (siw *ServerInterfaceWrapper) LdapLogin(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.LdapLogin(c)
 }
 
 // Login operation middleware
@@ -8982,6 +9012,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/v1/auth/identity", wrapper.GetIdentities)
 	router.POST(options.BaseURL+"/api/v1/auth/identity/unlink", wrapper.UnlinkIdentity)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId/identity/reset", wrapper.ResetMemberIdentity)
+	router.POST(options.BaseURL+"/api/v1/auth/ldap/login", wrapper.LdapLogin)
 	router.GET(options.BaseURL+"/api/v1/auth/captcha", wrapper.GetCaptchaChallenge)
 	router.POST(options.BaseURL+"/api/v1/auth/refresh", wrapper.RefreshTokens)
 	router.GET(options.BaseURL+"/api/v1/auth/tokens", wrapper.ListTokens)

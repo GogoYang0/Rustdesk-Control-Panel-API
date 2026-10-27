@@ -76,9 +76,32 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      openldap:
+        image: osixia/openldap:1.5.0
+        env:
+          LDAP_ORGANISATION: "Panel Test"
+          LDAP_DOMAIN: "example.org"
+          LDAP_ADMIN_PASSWORD: "adminpassword"
+        # The image listens on 389/636 inside the container; the host side is
+        # mapped to 1389 so the tests (fixed port 1389) never collide with a
+        # local slapd.
+        ports:
+          - 1389:389
+        options: >-
+          --health-cmd "ldapwhoami -H ldap://localhost:389 -x"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       TEST_POSTGRES_DSN: "host=localhost user=postgres password=postgres dbname=panel_test port=5432 sslmode=disable"
       TEST_MYSQL_DSN: "root:mysql@tcp(localhost:3306)/panel_test?parseTime=true"
+      PANEL_LDAP_TEST_HOST: "localhost"
+      PANEL_LDAP_TEST_BASEDN: "dc=example,dc=org"
+      PANEL_LDAP_TEST_BINDDN: "cn=admin,dc=example,dc=org"
+      PANEL_LDAP_BIND_PASSWORD: "adminpassword"
+      # The directory is seeded by the "seed the ldap directory" step below:
+      # osixia/openldap has no env-based LDIF seeding, so the entries the
+      # env-gated tests expect are added with ldapadd after startup.
     steps:
       - uses: actions/checkout@v4
         with:
@@ -88,6 +111,31 @@ jobs:
           go-version: "1.27.x"
       - name: wait for databases
         run: sleep 10
+      - name: seed the ldap directory
+        run: |
+          CID=$(docker ps -q --filter ancestor=osixia/openldap:1.5.0 | head -1)
+          test -n "$CID" || { echo "openldap service container not found"; exit 1; }
+          docker exec -i "$CID" ldapadd -x -H ldap://localhost:389 \
+            -D "cn=admin,dc=example,dc=org" -w adminpassword <<'LDIF'
+          dn: ou=people,dc=example,dc=org
+          objectClass: organizationalUnit
+          ou: people
+
+          dn: uid=alice,ou=people,dc=example,dc=org
+          objectClass: inetOrgPerson
+          cn: Alice Test
+          sn: Test
+          uid: alice
+          userPassword: alicepassword
+          mail: ldap-alice@example.com
+
+          dn: uid=nomail,ou=people,dc=example,dc=org
+          objectClass: inetOrgPerson
+          cn: No Mail
+          sn: Test
+          uid: nomail
+          userPassword: nomailpassword
+          LDIF
       - name: go test (postgres)
         # Every package shares one Postgres instance and Go runs package test
         # binaries in parallel (-p = GOMAXPROCS). Concurrent AutoMigrate of the

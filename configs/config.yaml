@@ -219,7 +219,21 @@ external:
   # with a warning, otherwise they could never sign in.
   requireLocalSecondFactor: false
 
-# Reserved for LDAP directory login (next wave). Enabling it in this build is a
-# startup error, and it can never be enabled together with OIDC.
+# LDAP directory login. Disabled by default; at most one external provider may
+# be enabled (LDAP and OIDC are mutually exclusive). The service-account
+# password is NOT read from this file: export PANEL_LDAP_BIND_PASSWORD instead.
 ldap:
   enabled: false
+  providerName: "Directory"
+  host: ""                  # hostname or IP of the directory
+  port: 636
+  transport: "ldaps"        # ldaps | starttls | none (none requires allowInsecure)
+  allowInsecure: false
+  insecureSkipVerify: false
+  baseDN: ""                # e.g. "dc=example,dc=com"
+  scope: "sub"              # one | sub
+  bindDN: ""                # read-only service account, e.g. "cn=panel,..."
+  userFilter: "(objectClass=person)"
+  usernameAttribute: "uid"  # AD commonly uses sAMAccountName
+  mailAttribute: "mail"
+  timeout: 10s

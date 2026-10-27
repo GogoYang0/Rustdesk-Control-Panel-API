@@ -18,6 +18,8 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/clientbuild"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/controlrole"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/identity"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/ldapauth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/limit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logquery"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
@@ -119,6 +121,18 @@ type Deps struct {
 	// answers 503.
 	OIDC *oidc.Service
 
+	// LDAP is the directory-backed Directory implementation. Nil means the
+	// feature is off and POST /auth/ldap/login answers 503.
+	LDAP ldapauth.Directory
+	// LDAPProviderName is the login-button label from config.
+	LDAPProviderName string
+	// LDAPIssuer is the lowercased directory host: it is the issuer column of
+	// the identity binding, so changing the host changes the binding namespace.
+	LDAPIssuer string
+
+	// Identity owns the external-identity bindings shared by OIDC and LDAP.
+	Identity *identity.Service
+
 	// RequireLocalSecondFactor makes an external login still ask for the
 	// panel's own TOTP for accounts that already enabled it (design O12).
 	RequireLocalSecondFactor bool
@@ -163,6 +177,10 @@ type AdminAPI struct {
 	clientBuilds *clientbuild.Service
 	passkeys     *passkey.Service
 	oidc         *oidc.Service
+	ldap         ldapauth.Directory
+	ldapName     string
+	ldapIssuer   string
+	identity     *identity.Service
 	// captchaGuard bounds challenge issuance per IP without spending the
 	// login attempt budget.
 	captchaGuard *loginGuard
@@ -221,6 +239,9 @@ func NewAdminAPI(d Deps) *AdminAPI {
 	if d.TOTP == nil {
 		d.TOTP = auth.NewTOTPService(d.DB, d.AuthSecret, d.Now)
 	}
+	if d.Identity == nil {
+		d.Identity = identity.NewService(d.DB, d.Now)
+	}
 	if d.Retention == nil {
 		recorder, _ := d.Auditor.(audit.TxRecorder)
 		d.Retention = audit.NewRetentionService(d.DB, "./data/audit-archive", recorder, d.Now)
@@ -267,6 +288,10 @@ func NewAdminAPI(d Deps) *AdminAPI {
 		clientBuilds: d.ClientBuilds,
 		passkeys:     d.Passkeys,
 		oidc:         d.OIDC,
+		ldap:         d.LDAP,
+		ldapName:     d.LDAPProviderName,
+		ldapIssuer:   d.LDAPIssuer,
+		identity:     d.Identity,
 		captchaGuard: newLoginGuard(),
 	}
 }
