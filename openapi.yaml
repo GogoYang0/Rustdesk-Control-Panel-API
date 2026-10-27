@@ -156,8 +156,9 @@ paths:
       operationId: listAuthProviders
       summary: 列出可用的登录方式
       description: |
-        未认证。返回部署级启用的外部身份源；本版本（5b-1）两者恒为 false，
-        5b-2/5b-3 点亮后前端据此显示入口。
+        未认证。返回部署级启用的外部身份源：`oidc` 反映 `oidc.enabled`（同时给出
+        `name` 作为按钮文案），`ldap` 在本版本恒为 false（未实现，配置开启会启动失败）。
+        前端据此显示「使用 {name} 登录」入口。
       tags:
         - auth
       security: []
@@ -169,6 +170,251 @@ paths:
               schema:
                 $ref: "#/components/schemas/AuthProvidersResponse"
 
+  /api/v1/auth/oidc/start:
+    post:
+      operationId: startOIDCLogin
+      summary: 开始 OIDC 登录
+      description: |
+        未认证。返回浏览器必须跳转的 `authorization_url`。流程为
+        Authorization Code + PKCE(S256) + nonce；`state` 一次性（默认 10 分钟）。
+        回调地址固定为 `{web.baseURL}/api/v1/auth/oidc/callback`，不接受请求指定。
+
+        `redirect_path` 是登录成功后前端回到的站内路径：必须以 `/` 开头，且不含
+        `//`、反斜杠、`:`、`..`、百分号编码的分隔符（`%2f`/`%5c`），长度 ≤256；
+        缺省为 `/`。非法值返回 400 且不会创建流程行。
+
+        `oidc.enabled=false` 或 IdP 的 discovery 不可达时返回 503 —— 不降级为
+        密码登录，也不返回 500。
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OIDCStartRequest"
+      responses:
+        "200":
+          description: 授权请求
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OIDCStartResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: OIDC 未启用或 IdP 不可达
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/oidc/callback:
+    get:
+      operationId: handleOIDCCallback
+      summary: OIDC 回调
+      description: |
+        未认证。IdP 重定向到这里。成功时 302 到
+        `{web.baseURL}{redirect_path}?ticket=…`，失败时 302 到同一路径并带
+        `?error=<oidc_failed|no_account|email_unverified|identity_conflict>`。
+
+        URL 中**不出现任何 token**（access/refresh/id_token 都不进查询串）；
+        ticket 有效期 60 秒、一次一用。请求里的 `redirect_uri` 被忽略，
+        `Location` 只由 `web.baseURL` 与启动时校验过的站内路径拼成。
+        IdP 返回的 `error`/`error_description` 原文不回显、不入日志。
+      tags:
+        - auth
+      security: []
+      parameters:
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: code
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: error
+          in: query
+          required: false
+          schema:
+            type: string
+          description: IdP 的错误码；只用于判定失败，不记录原文
+      responses:
+        "302":
+          description: 重定向回前端（带 ticket 或固定错误码）
+          headers:
+            Location:
+              schema:
+                type: string
+        "503":
+          description: OIDC 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/oidc/exchange:
+    post:
+      operationId: exchangeOIDCLogin
+      summary: 用 ticket 换取令牌
+      description: |
+        未认证。把回调带回来的 ticket 换成与密码登录相同的 token 对。
+        ticket 一次有效（60 秒），重放或伪造一律 401。
+
+        `external.requireLocalSecondFactor=true` 且该账户**已启用** TOTP 时，
+        返回 401 `two_factor_required` 与 `challenge_token`（`methods:["totp"]`），
+        客户端继续调用 `POST /auth/2fa/verify`；未启用 TOTP 的账户直接发 token。
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OIDCExchangeRequest"
+      responses:
+        "200":
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: OIDC 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/identity:
+    get:
+      operationId: getIdentities
+      summary: 查看外部身份绑定
+      description: |
+        需要登录（JWT）。返回当前账户的全部外部身份绑定（按绑定时间倒序），
+        以及 `active_provider`（当前部署启用的外部身份源）。
+        `conflict_at` 非空表示该绑定已被标记冲突：SSO 会拒绝它，
+        需要管理员 reset 后才能重绑（设计 O4/O14）。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 绑定列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IdentityListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          description: 外部身份源未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/identity/unlink:
+    post:
+      operationId: unlinkIdentity
+      summary: 解绑外部身份
+      description: |
+        需要登录（JWT）+ 二次证明：`stepup_token`（passkey step-up）或当前密码，
+        **二者给其一**（都给或缺一 → 400）。
+
+        拒绝会锁死账户的解绑：账户没有密码、没有 passkey、且这是唯一一条绑定
+        时返回 409 —— 此类账户没有任何线上自救通道。
+        `identity_id` 不属于当前账户时返回 404（不区分“不存在”与“不是你的”）。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IdentityUnlinkRequest"
+      responses:
+        "200":
+          description: 已解绑
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /api/v1/orgs/{orgId}/members/{userId}/identity/reset:
+    post:
+      operationId: resetMemberIdentity
+      summary: 重置成员的外部身份绑定
+      description: |
+        管理员清空成员的外部身份绑定（需要 `member.manage`），写审计
+        `user.identity.reset`。守卫与 `2fa/reset`、`passkeys/reset` 一致：
+        不能重置自己；重置 owner 需要 `org.admin`；目标同属其他组织时拒绝；
+        事务内复判。
+
+        例外（设计 O14）：目标没有本地凭据（无密码、无 passkey）且仍有
+        **未冲突**的绑定时返回 409 —— 清空绑定会让它彻底无法登录；
+        但全部绑定都已标记 `conflict_at` 时，SSO 本来就登不进，
+        此时 reset 是管理员唯一的修复手段，予以放行。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已重置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/Internal"
   /api/v1/auth/captcha:
     get:
       operationId: getCaptchaChallenge
@@ -5524,6 +5770,131 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
 
   schemas:
+    Identity:
+      type: object
+      required:
+        - id
+        - provider
+        - issuer
+        - subject
+        - email
+        - linked_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        provider:
+          type: string
+        issuer:
+          type: string
+        subject:
+          type: string
+          description: IdP 侧的主体标识，仅对账户本人可见
+        email:
+          type: string
+          description: 绑定时的 IdP 邮箱（不是账户邮箱的权威来源）
+        linked_at:
+          type: string
+          format: date-time
+        last_login_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        conflict_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+          description: 非空表示绑定已冲突，SSO 拒绝直到管理员 reset
+
+    IdentityList:
+      type: object
+      required:
+        - active_provider
+        - identities
+      properties:
+        active_provider:
+          type: string
+          description: 当前部署启用的外部身份源（oidc / 空串）
+        identities:
+          type: array
+          items:
+            $ref: "#/components/schemas/Identity"
+
+    IdentityListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/IdentityList"
+
+    IdentityUnlinkRequest:
+      type: object
+      required:
+        - identity_id
+      properties:
+        identity_id:
+          type: integer
+          format: int64
+        stepup_token:
+          type: string
+          description: passkey step-up 令牌（与 password 二选一）
+        password:
+          type: string
+          description: 当前密码（与 stepup_token 二选一）
+
+    OIDCExchangeRequest:
+      type: object
+      required:
+        - ticket
+      properties:
+        ticket:
+          type: string
+          description: 回调重定向里的一次性 ticket
+
+    OIDCStartRequest:
+      type: object
+      properties:
+        redirect_path:
+          type: string
+          maxLength: 256
+          description: 登录成功后回到的站内路径；缺省 `/`
+
+    OIDCStart:
+      type: object
+      required:
+        - authorization_url
+        - state
+      properties:
+        authorization_url:
+          type: string
+          description: 浏览器应跳转的 IdP 授权地址（含 state / nonce / PKCE challenge）
+        state:
+          type: string
+          description: 一次性 state；仅供客户端关联，无需回传
+
+    OIDCStartResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/OIDCStart"
+
     AuthProviderStatus:
       type: object
       required:

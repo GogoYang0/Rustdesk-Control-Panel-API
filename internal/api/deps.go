@@ -18,8 +18,10 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/clientbuild"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/controlrole"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/limit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logquery"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/oidc"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/passkey"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/provision"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/session"
@@ -111,6 +113,15 @@ type Deps struct {
 	// deployment did not enable the feature; the endpoints then answer 503
 	// instead of pretending the capability exists.
 	Passkeys *passkey.Service
+
+	// OIDC owns the external identity provider, its login flows and the
+	// identity bindings. Nil means the feature is off and every OIDC endpoint
+	// answers 503.
+	OIDC *oidc.Service
+
+	// RequireLocalSecondFactor makes an external login still ask for the
+	// panel's own TOTP for accounts that already enabled it (design O12).
+	RequireLocalSecondFactor bool
 }
 
 // Provisioner schedules asynchronous server provisioning.
@@ -141,6 +152,9 @@ type AdminAPI struct {
 	// separate bucket so WebAuthn traffic never drains the password login
 	// budget (and vice versa).
 	passkeyGuard *loginGuard
+	// oidcGuard bounds the unauthenticated OIDC endpoints (start, callback,
+	// exchange) so probing the redirect codes cannot drain the password bucket.
+	oidcGuard    *loginGuard
 	books        *addressbook.Service
 	tickets      *session.Service
 	totp         *auth.TOTPService
@@ -148,6 +162,7 @@ type AdminAPI struct {
 	captcha      *captcha.Service
 	clientBuilds *clientbuild.Service
 	passkeys     *passkey.Service
+	oidc         *oidc.Service
 	// captchaGuard bounds challenge issuance per IP without spending the
 	// login attempt budget.
 	captchaGuard *loginGuard
@@ -241,13 +256,17 @@ func NewAdminAPI(d Deps) *AdminAPI {
 
 		totpManageGuard: newLoginGuard(),
 		passkeyGuard:    newLoginGuard(),
-		books:           addressbook.NewService(d.DB),
-		tickets:         tickets,
-		totp:            d.TOTP,
-		retention:       d.Retention,
-		captcha:         d.Captcha,
-		clientBuilds:    d.ClientBuilds,
-		passkeys:        d.Passkeys,
-		captchaGuard:    newLoginGuard(),
+		// Three tokens per SSO login (start, callback, exchange): the bucket must
+		// fit several logins per shared NAT address, unlike the password bucket.
+		oidcGuard:    limit.NewLoginGuardWithLimits(30, 30),
+		books:        addressbook.NewService(d.DB),
+		tickets:      tickets,
+		totp:         d.TOTP,
+		retention:    d.Retention,
+		captcha:      d.Captcha,
+		clientBuilds: d.ClientBuilds,
+		passkeys:     d.Passkeys,
+		oidc:         d.OIDC,
+		captchaGuard: newLoginGuard(),
 	}
 }

@@ -199,3 +199,27 @@ webauthn:
   origin: ""          # e.g. "https://panel.example.com" — no path, query or fragment
   ceremonyTTL: 5m
   credentialsPerUser: 10
+
+# OIDC single sign-on. Disabled by default; at most one external provider may
+# be enabled (OIDC and LDAP are mutually exclusive). The client secret is NOT
+# read from this file: export PANEL_OIDC_CLIENT_SECRET instead.
+oidc:
+  enabled: false
+  providerName: "Single sign-on"
+  issuer: ""              # https, e.g. "https://login.microsoftonline.com/<tenant>/v2.0"
+  clientID: ""
+  scopes: ["openid", "profile", "email"]
+  clockSkew: 60s
+  stateTTL: 10m
+
+# External identities (OIDC now, LDAP in the next wave).
+external:
+  # When true, an external login still asks for the panel TOTP — but only for
+  # accounts that already enabled TOTP. Accounts without TOTP are let through
+  # with a warning, otherwise they could never sign in.
+  requireLocalSecondFactor: false
+
+# Reserved for LDAP directory login (next wave). Enabling it in this build is a
+# startup error, and it can never be enabled together with OIDC.
+ldap:
+  enabled: false

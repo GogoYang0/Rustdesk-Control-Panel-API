@@ -55,8 +55,15 @@ func (s *Service) Rename(ctx context.Context, userID, passkeyID uint, name strin
 // lock the rows so two concurrent deletes cannot both observe "two left".
 func (s *Service) Delete(ctx context.Context, userID, passkeyID uint) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Lock the account row like the other credential-removal paths, so a
+		// passkey delete, a password removal and an identity reset cannot
+		// interleave into an account with nothing left to sign in with.
+		read := tx
+		if tx.Name() != "sqlite" {
+			read = read.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
 		var user model.User
-		if err := tx.Where("id = ?", userID).First(&user).Error; err != nil {
+		if err := read.Where("id = ?", userID).First(&user).Error; err != nil {
 			return err
 		}
 

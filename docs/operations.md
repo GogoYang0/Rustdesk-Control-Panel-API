@@ -1,6 +1,6 @@
 # 运维指南（Operations Guide）
 
-> 适用版本：v0.11.0（M6 波次 5b-1：Passkey / WebAuthn；上一基线 v0.10.0）。本文档随版本演进持续更新——每次发布前必须复核一遍。
+> 适用版本：v0.11.0（M6 波次 5b-1 Passkey、5b-2 OIDC；上一基线 v0.10.0）。本文档随版本演进持续更新——每次发布前必须复核一遍。
 > 配套文档：[部署指南](deployment.md) · [后端 API 规范](api-spec.md)
 
 ---
@@ -370,4 +370,31 @@ ceremony 本来就无法被消费，任务只回收空间；它失败会按 work
 **自助事件在哪看**：passkey 注册/删除/登录、删除/恢复密码只写结构化日志
 （`user_id`、`passkey_id`、`mode`），**不进 `audit_logs`**——它们没有租户
 归属。管理员重置是唯一进入审计表的 passkey 事件。
+
+## 11. 外部身份运维（v0.11.0，OIDC）
+
+**绑定冲突处置**：`GET /auth/identity` 里 `conflict_at` 非空，或日志出现
+`oidc callback rejected`（`error_code=identity_conflict`），表示某 subject 的
+绑定与该账户邮箱不再对应（IdP 侧邮箱被回收/改名）。处置：管理员调用
+`POST /orgs/{orgId}/members/{userId}/identity/reset` 清空绑定；用户重新走一次
+SSO 即按当前邮箱重绑。reset 写审计 `user.identity.reset`。
+
+**换 IdP（issuer 变化）**：旧行不命中也不删除；启动日志出现
+`identities are bound to a different oidc issuer`（含条数）。批量步骤：
+
+1. 通知用户 SSO 需要重新绑定一次；
+2. 对每个受影响账户调用管理员 reset（脚本按 `SELECT user_id FROM
+   user_identities WHERE provider='oidc' AND issuer <> '<新 issuer>'` 圈出名单）；
+3. 保留旧行直到新绑定完成——它们是回滚路径，**不要手工 DELETE**。
+
+**discovery/JWKS 故障排查**：SSO 报 503 时按序检查——issuer 拼写（必须与
+IdP discovery 返回的完全一致）、`{web.baseURL}` 是否可达、IdP 证书是否过期、
+出站网络是否放行。discovery 失败不缓存，修复后无需重启。
+
+**`email_verified` 缺失**：部分自建 IdP 不返回该 claim，绑定会得到
+`email_unverified`。在 IdP 侧补 claim；面板侧无开关，这是有意的 fail-closed。
+
+**日志字段**：自服务绑定/登录/解绑只写结构化日志（`user_id`、`provider`、
+`identity_id`、`error_code`），不进 `audit_logs`；secret/code/id_token/ticket
+原文不出现在任何日志。管理员 reset 是唯一进审计表的外部身份事件。
 

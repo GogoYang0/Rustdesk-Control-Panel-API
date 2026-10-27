@@ -373,3 +373,60 @@ webauthn:
   本地可以用 `http://localhost:<port>` 作 origin（浏览器把 localhost 视为安全
   上下文），但页面与 API 必须同源同端口。
 
+## 12. OIDC 单点登录（v0.11.0）
+
+部署级单一外部身份源；`oidc.enabled` 与 `ldap.enabled` 互斥（同开启动失败，
+且本版本尚未实现 LDAP，单独开启也是启动错误）。
+
+```yaml
+oidc:
+  enabled: true
+  providerName: "公司账号"        # 登录按钮文案
+  issuer: "https://login.microsoftonline.com/<tenant>/v2.0"
+  clientID: "<client-id>"
+  scopes: ["openid", "profile", "email"]
+  clockSkew: 60s
+  stateTTL: 10m
+external:
+  requireLocalSecondFactor: false
+```
+
+```bash
+export PANEL_OIDC_CLIENT_SECRET='...'   # 只从环境变量读，文件里写了也无效
+```
+
+| 键 | 默认 | 约束 |
+|---|---|---|
+| `issuer` | 必填 | 必须 https、无 query/fragment；discovery 的 issuer 必须与配置完全一致 |
+| `clientID` | 必填 | |
+| `PANEL_OIDC_CLIENT_SECRET` | 必填 | 环境变量 |
+| `scopes` | openid,profile,email | 必须含 `openid` 与 `email` |
+| `stateTTL` | 10m | (0, 30m] |
+| `clockSkew` | 60s | [0, 5m] |
+| `web.baseURL` | — | 必须是 https（本机允许 localhost）；回调 URL 由它派生 |
+
+### IdP 注册四步
+
+1. 回调 URL 固定为 `{web.baseURL}/api/v1/auth/oidc/callback`（不接受请求指定；
+   反代子路径部署时同步改 `web.baseURL` 与 IdP 注册）。
+2. 授权类型 Authorization Code；PKCE 必须允许（我们总是发 S256 challenge）。
+3. ID token 必须含 `email` 与 `email_verified=true`（Entra ID/Google 默认满足；
+   部分 Keycloak 配置要手动把 email scope 加进 client scopes）。
+4. 记录 issuer 与 client secret；secret 只进环境变量。
+
+### 上线顺序（无 JIT，O2）
+
+SSO 只绑定**已存在**的面板账户，迁移按四步走：管理员邀请建号 → 用户设密码
+接受邀请 → 用户在 IdP 侧可登录 → 登录页用 SSO 登录完成绑定。未建号邮箱得到
+`no_account`，这是设计行为不是故障。
+
+### 行为要点
+
+- IdP 不可达：`start`/`callback`/`exchange` 返回 503；**不降级为密码登录**。
+  discovery 失败不缓存，IdP 恢复后无需重启。
+- `requireLocalSecondFactor=true`：已启用 TOTP 的账户走 SSO 仍要输面板 TOTP；
+  未启用 TOTP 的账户正常登录并打 WARN——它不等于强制全员 MFA。
+- 周期任务 `external-login-flow-sweep`（10 分钟）清理过期 state/ticket。
+- **冒烟**：至少用一个真实 IdP 手工走一次 start → 登录 → 回调 → exchange；
+  检查浏览器地址栏与历史记录里没有 token。
+

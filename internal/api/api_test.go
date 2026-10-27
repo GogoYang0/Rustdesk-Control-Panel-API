@@ -76,6 +76,7 @@ func newHarnessWith(t *testing.T, tune func(*api.Deps)) *harness {
 		&model.Strategy{}, &model.DeviceDisconnect{},
 		&model.ClientBuildProfile{}, &model.ClientBuild{}, &model.ClientBuildArtifact{},
 		&model.UserPasskey{}, &model.WebAuthnCeremony{},
+		&model.UserIdentity{}, &model.ExternalLoginFlow{},
 	))
 
 	issuer := auth.NewIssuer("test-secret", time.Minute, time.Hour)
