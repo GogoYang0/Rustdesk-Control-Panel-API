@@ -2749,6 +2749,37 @@ type PasskeyCeremonyResponse struct {
 	Message string          `json:"message"`
 }
 
+// PasskeyList defines model for PasskeyList.
+type PasskeyList struct {
+	// HasPassword 账户是否还有本地密码（false 表示 passkey-only）
+	HasPassword bool      `json:"has_password"`
+	Items       []Passkey `json:"items"`
+
+	// TotpEnabled 账户是否启用了 TOTP
+	TotpEnabled bool `json:"totp_enabled"`
+}
+
+// PasskeyListResponse defines model for PasskeyListResponse.
+type PasskeyListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode   `json:"code"`
+	Data    PasskeyList `json:"data"`
+	Message string      `json:"message"`
+}
+
 // PasskeyLoginBeginRequest defines model for PasskeyLoginBeginRequest.
 type PasskeyLoginBeginRequest struct {
 	// ChallengeToken 密码登录返回的短期挑战令牌（第二步用 passkey 代替 TOTP）
@@ -2765,6 +2796,11 @@ type PasskeyLoginRequest struct {
 	// Credential 浏览器 `PublicKeyCredential` 的 JSON 形态
 	// （id/rawId/type/response.clientDataJSON/authenticatorData/signature/userHandle）。
 	Credential map[string]interface{} `json:"credential"`
+}
+
+// PasskeyNameRequest defines model for PasskeyNameRequest.
+type PasskeyNameRequest struct {
+	Name string `json:"name"`
 }
 
 // PasskeyRegistrationRequest defines model for PasskeyRegistrationRequest.
@@ -4016,6 +4052,9 @@ type FinishPasskeyLoginJSONRequestBody = PasskeyLoginRequest
 // FinishPasskeyRegistrationJSONRequestBody defines body for FinishPasskeyRegistration for application/json ContentType.
 type FinishPasskeyRegistrationJSONRequestBody = PasskeyRegistrationRequest
 
+// RenamePasskeyJSONRequestBody defines body for RenamePasskey for application/json ContentType.
+type RenamePasskeyJSONRequestBody = PasskeyNameRequest
+
 // RefreshTokensJSONRequestBody defines body for RefreshTokens for application/json ContentType.
 type RefreshTokensJSONRequestBody = RefreshRequest
 
@@ -4189,6 +4228,15 @@ type ServerInterface interface {
 	// FinishPasskeyRegistration 完成绑定 passkey
 	// (POST /api/v1/auth/passkey/register/finish)
 	FinishPasskeyRegistration(c *gin.Context)
+	// ListPasskeys 列出我的 passkey
+	// (GET /api/v1/auth/passkeys)
+	ListPasskeys(c *gin.Context)
+	// DeletePasskey 删除 passkey
+	// (DELETE /api/v1/auth/passkeys/{passkeyId})
+	DeletePasskey(c *gin.Context, passkeyId int64)
+	// RenamePasskey 重命名 passkey
+	// (PATCH /api/v1/auth/passkeys/{passkeyId})
+	RenamePasskey(c *gin.Context, passkeyId int64)
 	// RefreshTokens 轮换 refresh 令牌
 	// (POST /api/v1/auth/refresh)
 	RefreshTokens(c *gin.Context)
@@ -4662,6 +4710,69 @@ func (siw *ServerInterfaceWrapper) FinishPasskeyRegistration(c *gin.Context) {
 	}
 
 	siw.Handler.FinishPasskeyRegistration(c)
+}
+
+// ListPasskeys operation middleware
+func (siw *ServerInterfaceWrapper) ListPasskeys(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListPasskeys(c)
+}
+
+// DeletePasskey operation middleware
+func (siw *ServerInterfaceWrapper) DeletePasskey(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "passkeyId" -------------
+	var passkeyId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "passkeyId", c.Param("passkeyId"), &passkeyId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter passkeyId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeletePasskey(c, passkeyId)
+}
+
+// RenamePasskey operation middleware
+func (siw *ServerInterfaceWrapper) RenamePasskey(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "passkeyId" -------------
+	var passkeyId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "passkeyId", c.Param("passkeyId"), &passkeyId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter passkeyId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RenamePasskey(c, passkeyId)
 }
 
 // RefreshTokens operation middleware
@@ -8365,6 +8476,9 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/auth/2fa/disable", wrapper.DisableTOTP)
 	router.POST(options.BaseURL+"/api/v1/auth/2fa/recovery-codes", wrapper.RegenerateRecoveryCodes)
 	router.POST(options.BaseURL+"/api/v1/auth/2fa/verify", wrapper.VerifyTOTP)
+	router.GET(options.BaseURL+"/api/v1/auth/passkeys", wrapper.ListPasskeys)
+	router.DELETE(options.BaseURL+"/api/v1/auth/passkeys/:passkeyId", wrapper.DeletePasskey)
+	router.PATCH(options.BaseURL+"/api/v1/auth/passkeys/:passkeyId", wrapper.RenamePasskey)
 	router.POST(options.BaseURL+"/api/v1/auth/passkey/login/begin", wrapper.BeginPasskeyLogin)
 	router.POST(options.BaseURL+"/api/v1/auth/passkey/login/finish", wrapper.FinishPasskeyLogin)
 	router.POST(options.BaseURL+"/api/v1/auth/passkey/register/begin", wrapper.BeginPasskeyRegistration)

@@ -313,3 +313,117 @@ func (a *AdminAPI) FinishPasskeyLogin(c *gin.Context) {
 		},
 	})
 }
+
+// ListPasskeys returns the caller's credentials plus the account state the UI
+// needs to warn before deleting the last one.
+func (a *AdminAPI) ListPasskeys(c *gin.Context) {
+	svc, ok := a.passkeysEnabled(c)
+	if !ok {
+		return
+	}
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	user, err := a.loadUser(uid)
+	if err != nil {
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not list passkeys")
+		return
+	}
+	rows, err := svc.List(c.Request.Context(), uid)
+	if err != nil {
+		a.deps.Logger.Error("list passkeys failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not list passkeys")
+		return
+	}
+	totpEnabled, err := a.totp.Enabled(uid)
+	if err != nil {
+		a.deps.Logger.Error("load totp state failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not list passkeys")
+		return
+	}
+
+	items := make([]gen.Passkey, 0, len(rows))
+	for i := range rows {
+		items = append(items, passkeyToAPI(&rows[i]))
+	}
+	c.JSON(http.StatusOK, gen.PasskeyListResponse{
+		Code:    gen.ErrorCodeOk,
+		Message: "ok",
+		Data: gen.PasskeyList{
+			Items:       items,
+			HasPassword: user.PasswordHash != "",
+			TotpEnabled: totpEnabled,
+		},
+	})
+}
+
+// RenamePasskey changes one credential's display name.
+func (a *AdminAPI) RenamePasskey(c *gin.Context, passkeyId int64) {
+	svc, ok := a.passkeysEnabled(c)
+	if !ok {
+		return
+	}
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if passkeyId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid passkey id")
+		return
+	}
+	var req gen.PasskeyNameRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "name is required")
+		return
+	}
+	updated, err := svc.Rename(c.Request.Context(), uid, uint(passkeyId), req.Name)
+	switch {
+	case errors.Is(err, passkey.ErrPasskeyNotFound):
+		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "passkey not found")
+		return
+	case errors.Is(err, passkey.ErrInvalidName):
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "passkey name must be 1-64 characters")
+		return
+	case err != nil:
+		a.deps.Logger.Error("rename passkey failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not rename passkey")
+		return
+	}
+	c.JSON(http.StatusOK, gen.PasskeyResponse{
+		Code:    gen.ErrorCodeOk,
+		Message: "ok",
+		Data:    passkeyToAPI(updated),
+	})
+}
+
+// DeletePasskey removes one credential unless that would lock the account out.
+func (a *AdminAPI) DeletePasskey(c *gin.Context, passkeyId int64) {
+	svc, ok := a.passkeysEnabled(c)
+	if !ok {
+		return
+	}
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if passkeyId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid passkey id")
+		return
+	}
+	err := svc.Delete(c.Request.Context(), uid, uint(passkeyId))
+	switch {
+	case errors.Is(err, passkey.ErrPasskeyNotFound):
+		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "passkey not found")
+		return
+	case errors.Is(err, passkey.ErrLastCredential):
+		abortError(c, http.StatusConflict, gen.ErrorCodeConflict,
+			"cannot delete the last passkey of an account without a password")
+		return
+	case err != nil:
+		a.deps.Logger.Error("delete passkey failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not delete passkey")
+		return
+	}
+	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
+}
