@@ -219,12 +219,16 @@ func (s *Service) extractArtifact(
 	var out []stagedArtifact
 	for _, entry := range reader.File {
 		rawName := entry.Name
-		// Base() is the sanitizer at the file-write sink: every accepted
-		// artifact name must be a single path component.
-		name := filepath.Base(rawName)
 		if entry.FileInfo().IsDir() || entry.Mode()&os.ModeSymlink != 0 {
 			return nil, fmt.Errorf("zip contains a directory or symlink")
 		}
+		// Traversal is rejected on the archive-provided name itself, before any
+		// derived value reaches a file operation; Base() equality below is what
+		// actually pins an accepted name to a single path component.
+		if strings.Contains(rawName, "..") {
+			return nil, fmt.Errorf("zip entry path is invalid")
+		}
+		name := filepath.Base(rawName)
 		if name != rawName || name == "" || name == "." || name == ".." ||
 			strings.ContainsAny(name, `/\`) || path.IsAbs(name) {
 			return nil, fmt.Errorf("zip entry path is invalid")
