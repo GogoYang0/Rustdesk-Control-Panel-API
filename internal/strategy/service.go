@@ -437,13 +437,7 @@ func strategyNameTaken(scoped *gorm.DB, name string, excludeID uint) (bool, erro
 // cannot re-check inside an aborted PostgreSQL transaction, so the error itself
 // has to be classified.
 func isDuplicateKeyError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "unique constraint") ||
-		strings.Contains(msg, "duplicate key") ||
-		strings.Contains(msg, "duplicate entry")
+	return store.IsDuplicateKeyError(err)
 }
 
 // marshalOptions renders the option map canonically. encoding/json sorts map

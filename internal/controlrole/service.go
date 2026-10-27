@@ -138,7 +138,12 @@ func (s *Service) Create(ctx context.Context, orgID, actorID uint, name string, 
 		}
 		if cerr := scoped.Create(&role).Error; cerr != nil {
 			// A concurrent create may have won between the check and the
-			// insert; report it as the name conflict it is.
+			// insert; report it as the name conflict it is. The unique-violation
+			// check must come first: on PostgreSQL the aborted transaction would
+			// make the re-query below fail and the raw error surface as a 500.
+			if store.IsDuplicateKeyError(cerr) {
+				return ErrDuplicateName
+			}
 			if taken, _ := roleNameTaken(scoped, name, 0); taken {
 				return ErrDuplicateName
 			}
@@ -206,6 +211,12 @@ func (s *Service) Update(ctx context.Context, orgID, actorID, roleID uint, name 
 			updates["permissions_json"] = string(blob)
 		}
 		if err := scoped.Model(&model.ControlRole{}).Where("id = ?", role.ID).Updates(updates).Error; err != nil {
+			// Same race as Create: a concurrent rename to the same name loses
+			// the unique index here, and the aborted transaction must not be
+			// re-queried on PostgreSQL.
+			if store.IsDuplicateKeyError(err) {
+				return ErrDuplicateName
+			}
 			return err
 		}
 		if err := scoped.First(&updated, role.ID).Error; err != nil {

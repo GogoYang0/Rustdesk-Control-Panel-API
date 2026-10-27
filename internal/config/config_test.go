@@ -233,3 +233,50 @@ webauthn:
 	require.Equal(t, 3*time.Minute, cfg.WebAuthn.CeremonyTTL)
 	require.Equal(t, 5, cfg.WebAuthn.CredentialsPerUser)
 }
+
+// TestLoad_CapInstanceURLTransport pins the cap transport policy: the cap
+// secret is sent to <instanceUrl>/siteverify, so plaintext http is refused on
+// public hosts and tolerated only for loopback instances.
+func TestLoad_CapInstanceURLTransport(t *testing.T) {
+	t.Setenv("PANEL_AUTH_SECRET", "test-secret-test-secret-test-secret")
+	t.Setenv("PANEL_CAPTCHA_ALTCHA_KEY", "")
+	t.Setenv("PANEL_CAPTCHA_GEETEST_KEY", "")
+	t.Setenv("PANEL_CAPTCHA_CAP_SECRET", "")
+
+	dir := t.TempDir()
+	write := func(name, instanceURL string) string {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte(`
+server: {addr: ":8080"}
+auth: {secret: "", accessTTL: 15m, refreshTTL: 168h}
+captcha:
+  enabled: true
+  provider: cap
+  cap:
+    instanceUrl: "`+instanceURL+`"
+    siteKey: site
+`), 0o644))
+		return path
+	}
+
+	cases := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{"https public host", "https://cap.example.com", false},
+		{"http loopback", "http://127.0.0.1:9090", false},
+		{"http public host", "http://cap.example.com", true},
+		{"ftp anywhere", "ftp://cap.example.com", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := config.Load(write("cap-transport.yaml", tc.url))
+			if tc.wantErr {
+				require.ErrorContains(t, err, "captcha.cap.instanceUrl")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}

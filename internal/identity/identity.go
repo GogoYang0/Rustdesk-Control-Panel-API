@@ -207,12 +207,18 @@ func (s *Service) List(ctx context.Context, userID uint) ([]model.UserIdentity, 
 // (ER_UPDATE_TABLE_USED).
 func (s *Service) Unlink(ctx context.Context, userID, identityID uint) error {
 	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// A fresh session, not a chained clone: reusing the transaction instance
-		// for both reads would carry its Statement over, and the locking clause
-		// must apply to exactly these two lookups.
+		// Both lookups run under the same account-row lock. The locking read is
+		// built per query: `Session(&Session{NewDB: true})` yields a clone=1
+		// instance whose first chained call returns a clone=0 instance —
+		// chaining `.Clauses(...)` there and reusing the result would let the
+		// second `First` inherit the first query's conditions, Model and LIMIT,
+		// which on PostgreSQL/MySQL turns every unlink into a 404. Wrapping the
+		// locked chain in `Session(&Session{})` (clone=2) makes every chained
+		// call clone the locked template instead; on SQLite no lock is needed
+		// and the plain fresh session is already chain-safe.
 		read := tx.Session(&gorm.Session{NewDB: true})
 		if tx.Name() != "sqlite" {
-			read = read.Clauses(clause.Locking{Strength: "UPDATE"})
+			read = read.Clauses(clause.Locking{Strength: "UPDATE"}).Session(&gorm.Session{})
 		}
 
 		var user model.User

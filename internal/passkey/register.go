@@ -1,6 +1,8 @@
 package passkey
 
 import (
+	"unicode/utf8"
+
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -148,6 +150,13 @@ func (s *Service) FinishRegistration(ctx context.Context, u model.User, token st
 		return nil, fmt.Errorf("%w: %v", ErrAssertionFailed, err)
 	}
 
+	// Validate the display name before the ceremony is consumed: the user has
+	// already completed the authenticator gesture at this point, and rejecting
+	// afterwards would force a full re-enrollment over a cosmetic field.
+	if _, err := normalizePasskeyName(name); err != nil {
+		return nil, err
+	}
+
 	ceremony, session, err := s.consumeCeremony(ctx, token, model.CeremonyRegister)
 	if err != nil {
 		return nil, err
@@ -215,7 +224,9 @@ func normalizePasskeyName(name string) (string, error) {
 	if name == "" {
 		return defaultPasskeyName, nil
 	}
-	if len(name) > maxPasskeyNameLen {
+	// Count runes, not bytes: the limit is about display width, and 64 bytes
+	// is roughly 21 Chinese characters.
+	if utf8.RuneCountInString(name) > maxPasskeyNameLen {
 		return "", ErrInvalidName
 	}
 	return name, nil

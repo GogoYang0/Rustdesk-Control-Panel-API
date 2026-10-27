@@ -421,8 +421,11 @@ SSO 只绑定**已存在**的面板账户，迁移按四步走：管理员邀请
 
 ### 行为要点
 
-- IdP 不可达：`start`/`callback`/`exchange` 返回 503；**不降级为密码登录**。
-  discovery 失败不缓存，IdP 恢复后无需重启。
+- IdP 不可达的表象按阶段不同：`start` 在 discovery 失败时返回 **503**；
+  `callback` 阶段的失败（兑换/验签等）一律 **302 回前端并带 `?error=oidc_failed`**；
+  `exchange` 不访问 IdP，ticket 无效或过期返回 **401**。任何阶段都**不降级为
+  密码登录**；discovery 失败不缓存，IdP 恢复后无需重启。排障时 503 只指向
+  `start`，回调阶段的失败要看前端收到的 `error` 参数。
 - `requireLocalSecondFactor=true`：已启用 TOTP 的账户走 SSO 仍要输面板 TOTP；
   未启用 TOTP 的账户正常登录并打 WARN——它不等于强制全员 MFA。
 - 周期任务 `external-login-flow-sweep`（10 分钟）清理过期 state/ticket。
@@ -459,11 +462,10 @@ ldap:
 |---|---|
 | `host`/`baseDN`/`bindDN`/`PANEL_LDAP_BIND_PASSWORD` | 必填 |
 | `port` | 1–65535 |
-| `transport` | `ldaps`（默认）/`starttls`/`none`；`none` 必须 `allowInsecure: true`。启动 WARN 只有两类触发：`transport=none`（明文传目录口令）与 `insecureSkipVerify=true`（关闭证书校验），见 §13.2 |
+| `transport` | `ldaps`（默认）/`starttls`/`none`；`none` 必须 `allowInsecure: true`。启动 WARN 有三类触发：`transport=none`（明文传目录口令）、`insecureSkipVerify=true`（关闭证书校验）与检测到绑定在其他目录主机上的历史身份（换主机告警，见下方「行为要点」） |
 | `usernameAttribute`/`mailAttribute` | `^[A-Za-z][A-Za-z0-9-]*$` |
 | `userFilter` | 括号配对、≤512、至少一个属性条件 |
 | `scope` | `one`/`sub` |
-|
 | 绑定安全 | LDAP 的 subject 是用户名，可被目录重分配：返回登录发现目录邮箱与绑定时不同 → 绑定自动冻结（`conflict_at`）并 409，管理员 reset 后新人重新绑定。OIDC 的 `sub` 不可变，不适用此门 |
 | `timeout` | (0, 30s] |
 

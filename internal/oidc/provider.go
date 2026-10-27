@@ -13,6 +13,7 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	"go.uber.org/zap"
 	"golang.org/x/oauth2"
+	"golang.org/x/sync/singleflight"
 	"gorm.io/gorm"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/identity"
@@ -50,6 +51,9 @@ type Service struct {
 	cfg   Config
 	log   *zap.Logger
 	ident *identity.Service
+
+	// discovery collapses concurrent provider discovery into one flight.
+	discovery singleflight.Group
 
 	mu sync.Mutex
 	p  *provider
@@ -90,38 +94,53 @@ func (s *Service) EnsureProvider(ctx context.Context) error {
 }
 
 func (s *Service) providerFor(ctx context.Context) (*provider, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// Discovery runs inside a singleflight: holding the mutex across a 10s
+	// discovery would serialize N concurrent callers into N x 10s behind one
+	// lock during an IdP outage. The flight uses a detached context so one
+	// canceled browser request cannot kill the discovery every other waiter is
+	// sharing; a failed flight is not cached, so the next request retries.
+	v, err, _ := s.discovery.Do("provider", func() (any, error) {
+		s.mu.Lock()
+		if s.p != nil {
+			p := s.p
+			s.mu.Unlock()
+			return p, nil
+		}
+		s.mu.Unlock()
 
-	if s.p != nil {
-		return s.p, nil
-	}
+		dctx, cancel := context.WithTimeout(context.Background(), discoveryTimeout)
+		defer cancel()
+		discovered, err := oidc.NewProvider(dctx, s.cfg.Issuer)
+		if err != nil {
+			return nil, fmt.Errorf("%w: discovery: %v", ErrProviderUnavailable, err)
+		}
 
-	ctx, cancel := context.WithTimeout(ctx, discoveryTimeout)
-	defer cancel()
-	discovered, err := oidc.NewProvider(ctx, s.cfg.Issuer)
+		// go-oidc checks exp against Now; shifting Now back by the configured
+		// skew is how a tolerance for a slow IdP clock is expressed.
+		now := s.cfg.Now
+		if s.cfg.ClockSkew > 0 {
+			skew := s.cfg.ClockSkew
+			now = func() time.Time { return s.cfg.Now().Add(-skew) }
+		}
+		p := &provider{
+			oauth: oauth2.Config{
+				ClientID:     s.cfg.ClientID,
+				ClientSecret: s.cfg.ClientSecret,
+				Endpoint:     discovered.Endpoint(),
+				RedirectURL:  s.cfg.CallbackURL,
+				Scopes:       s.cfg.Scopes,
+			},
+			verifier: discovered.Verifier(&oidc.Config{ClientID: s.cfg.ClientID, Now: now}),
+		}
+		s.mu.Lock()
+		s.p = p
+		s.mu.Unlock()
+		return p, nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("%w: discovery: %v", ErrProviderUnavailable, err)
+		return nil, err
 	}
-
-	// go-oidc checks exp against Now; shifting Now back by the configured skew
-	// is how a tolerance for a slow IdP clock is expressed.
-	now := s.cfg.Now
-	if s.cfg.ClockSkew > 0 {
-		skew := s.cfg.ClockSkew
-		now = func() time.Time { return s.cfg.Now().Add(-skew) }
-	}
-	s.p = &provider{
-		oauth: oauth2.Config{
-			ClientID:     s.cfg.ClientID,
-			ClientSecret: s.cfg.ClientSecret,
-			Endpoint:     discovered.Endpoint(),
-			RedirectURL:  s.cfg.CallbackURL,
-			Scopes:       s.cfg.Scopes,
-		},
-		verifier: discovered.Verifier(&oidc.Config{ClientID: s.cfg.ClientID, Now: now}),
-	}
-	return s.p, nil
+	return v.(*provider), nil
 }
 
 // AuthCodeURL builds the authorization request. The nonce is echoed back inside

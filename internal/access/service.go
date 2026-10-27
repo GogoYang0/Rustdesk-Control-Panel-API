@@ -851,14 +851,18 @@ func (s *Service) ListAccessRules(ctx context.Context, orgID uint) ([]RuleView, 
 	for _, group := range userGroups {
 		sourceNames[group.ID] = group.Name
 	}
-	targetNames := make(map[uint]string, len(deviceTargetIDs)+len(userTargetIDs))
+	// Device groups and user groups are separate tables with independent id
+	// sequences: one map keyed by TargetGroupID alone would let user group 5
+	// overwrite device group 5 and mislabel rules in the list view.
+	deviceTargetNames := make(map[uint]string, len(deviceTargetIDs))
+	userTargetNames := make(map[uint]string, len(userTargetIDs))
 	if len(deviceTargetIDs) > 0 {
 		var deviceGroups []model.DeviceGroup
 		if err := store.ScopedByOrg(db, orgID).Where("id IN ?", deviceTargetIDs).Find(&deviceGroups).Error; err != nil {
 			return nil, err
 		}
 		for _, group := range deviceGroups {
-			targetNames[group.ID] = group.Name
+			deviceTargetNames[group.ID] = group.Name
 		}
 	}
 	if len(userTargetIDs) > 0 {
@@ -867,14 +871,18 @@ func (s *Service) ListAccessRules(ctx context.Context, orgID uint) ([]RuleView, 
 			return nil, err
 		}
 		for _, group := range groups {
-			targetNames[group.ID] = group.Name
+			userTargetNames[group.ID] = group.Name
 		}
 	}
 	for _, rule := range rules {
+		names := userTargetNames
+		if rule.TargetKind == "device_group" {
+			names = deviceTargetNames
+		}
 		views = append(views, RuleView{
 			Rule:            rule,
 			SourceGroupName: sourceNames[rule.SourceGroupID],
-			TargetGroupName: targetNames[rule.TargetGroupID],
+			TargetGroupName: names[rule.TargetGroupID],
 		})
 	}
 	return views, nil
