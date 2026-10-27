@@ -1488,6 +1488,39 @@ type AuditRetentionResponse struct {
 	Message string         `json:"message"`
 }
 
+// AuthProviderStatus defines model for AuthProviderStatus.
+type AuthProviderStatus struct {
+	Enabled bool    `json:"enabled"`
+	Name    *string `json:"name,omitempty"`
+}
+
+// AuthProviders defines model for AuthProviders.
+type AuthProviders struct {
+	Ldap AuthProviderStatus `json:"ldap"`
+	Oidc AuthProviderStatus `json:"oidc"`
+}
+
+// AuthProvidersResponse defines model for AuthProvidersResponse.
+type AuthProvidersResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode     `json:"code"`
+	Data    AuthProviders `json:"data"`
+	Message string        `json:"message"`
+}
+
 // CaptchaChallenge defines model for CaptchaChallenge.
 type CaptchaChallenge struct {
 	Challenge *CaptchaChallengePayload `json:"challenge,omitempty"`
@@ -4326,6 +4359,9 @@ type ServerInterface interface {
 	// SetPassword 恢复本地密码
 	// (POST /api/v1/auth/password/set)
 	SetPassword(c *gin.Context)
+	// ListAuthProviders 列出可用的登录方式
+	// (GET /api/v1/auth/providers)
+	ListAuthProviders(c *gin.Context)
 	// RefreshTokens 轮换 refresh 令牌
 	// (POST /api/v1/auth/refresh)
 	RefreshTokens(c *gin.Context)
@@ -4917,6 +4953,19 @@ func (siw *ServerInterfaceWrapper) SetPassword(c *gin.Context) {
 	}
 
 	siw.Handler.SetPassword(c)
+}
+
+// ListAuthProviders operation middleware
+func (siw *ServerInterfaceWrapper) ListAuthProviders(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListAuthProviders(c)
 }
 
 // RefreshTokens operation middleware
@@ -8644,6 +8693,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 
 	router.GET(options.BaseURL+"/healthz", wrapper.GetHealthz)
 	router.POST(options.BaseURL+"/api/v1/auth/login", wrapper.Login)
+	router.GET(options.BaseURL+"/api/v1/auth/providers", wrapper.ListAuthProviders)
 	router.GET(options.BaseURL+"/api/v1/auth/captcha", wrapper.GetCaptchaChallenge)
 	router.POST(options.BaseURL+"/api/v1/auth/refresh", wrapper.RefreshTokens)
 	router.GET(options.BaseURL+"/api/v1/auth/tokens", wrapper.ListTokens)

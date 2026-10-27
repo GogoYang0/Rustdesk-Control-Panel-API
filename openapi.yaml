@@ -151,6 +151,24 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/v1/auth/providers:
+    get:
+      operationId: listAuthProviders
+      summary: 列出可用的登录方式
+      description: |
+        未认证。返回部署级启用的外部身份源；本版本（5b-1）两者恒为 false，
+        5b-2/5b-3 点亮后前端据此显示入口。
+      tags:
+        - auth
+      security: []
+      responses:
+        "200":
+          description: 登录方式
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthProvidersResponse"
+
   /api/v1/auth/captcha:
     get:
       operationId: getCaptchaChallenge
@@ -5484,6 +5502,41 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
 
   schemas:
+    AuthProviderStatus:
+      type: object
+      required:
+        - enabled
+      properties:
+        enabled:
+          type: boolean
+        name:
+          type: string
+
+    AuthProviders:
+      type: object
+      required:
+        - oidc
+        - ldap
+      properties:
+        oidc:
+          $ref: "#/components/schemas/AuthProviderStatus"
+        ldap:
+          $ref: "#/components/schemas/AuthProviderStatus"
+
+    AuthProvidersResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/AuthProviders"
+
     Passkey:
       type: object
       required:

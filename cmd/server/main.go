@@ -189,6 +189,22 @@ func main() {
 		lg.Fatal("init client build service", zap.Error(err))
 	}
 
+	// Passkeys are opt-in. A disabled deployment leaves the service nil so the
+	// endpoints answer 503 instead of half-working.
+	var passkeySvc *passkey.Service
+	if cfg.WebAuthn.Enabled {
+		passkeySvc, err = passkey.NewService(st.DB, passkey.Config{
+			RPID:               cfg.WebAuthn.RPID,
+			RPDisplayName:      cfg.WebAuthn.RPDisplayName,
+			Origin:             cfg.WebAuthn.Origin,
+			CeremonyTTL:        cfg.WebAuthn.CeremonyTTL,
+			CredentialsPerUser: cfg.WebAuthn.CredentialsPerUser,
+		}, issuer, nil)
+		if err != nil {
+			lg.Fatal("configure webauthn", zap.Error(err))
+		}
+	}
+
 	deviceSvc := device.NewService(st.DB, auditor, nil)
 	orch := &provision.DockerOrchestrator{
 		OrgLabel:  cfg.Provision.OrgLabel,
@@ -482,6 +498,17 @@ func main() {
 	}); err != nil {
 		lg.Fatal("register client build advance", zap.Error(err))
 	}
+	if passkeySvc != nil {
+		if err := sched.Register(worker.Task{
+			Name:     "webauthn-ceremony-sweep",
+			Interval: 10 * time.Minute,
+			Run: func(ctx context.Context) (int64, error) {
+				return passkeySvc.Sweep(ctx, time.Now().Add(-10*time.Minute))
+			},
+		}); err != nil {
+			lg.Fatal("register webauthn ceremony sweep", zap.Error(err))
+		}
+	}
 	if err := sched.Register(worker.Task{
 		Name:       "client-build-sweep",
 		Interval:   time.Hour,
@@ -513,22 +540,6 @@ func main() {
 	// The organization row is the durable record of a provisioning intent, so a
 	// sweep re-enqueues anything that never reached a worker (full queue, crash).
 	go provQueue.RunReconciler(rootCtx, 2*time.Minute)
-
-	// Passkeys are opt-in. A disabled deployment leaves the service nil so the
-	// endpoints answer 503 instead of half-working.
-	var passkeySvc *passkey.Service
-	if cfg.WebAuthn.Enabled {
-		passkeySvc, err = passkey.NewService(st.DB, passkey.Config{
-			RPID:               cfg.WebAuthn.RPID,
-			RPDisplayName:      cfg.WebAuthn.RPDisplayName,
-			Origin:             cfg.WebAuthn.Origin,
-			CeremonyTTL:        cfg.WebAuthn.CeremonyTTL,
-			CredentialsPerUser: cfg.WebAuthn.CredentialsPerUser,
-		}, issuer, nil)
-		if err != nil {
-			lg.Fatal("configure webauthn", zap.Error(err))
-		}
-	}
 
 	srv := &http.Server{
 		Addr: cfg.Server.Addr,

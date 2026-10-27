@@ -3,6 +3,7 @@ package passkey
 import (
 	"context"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -80,4 +81,11 @@ func (s *Service) Delete(ctx context.Context, userID, passkeyID uint) error {
 		}
 		return tx.Where("id = ? AND user_id = ?", passkeyID, userID).Delete(&model.UserPasskey{}).Error
 	})
+}
+
+// Sweep deletes ceremonies that expired before the cutoff. Expiry already
+// blocks consumption, so this only reclaims space.
+func (s *Service) Sweep(ctx context.Context, before time.Time) (int64, error) {
+	res := s.db.WithContext(ctx).Where("expires_at < ?", before).Delete(&model.WebAuthnCeremony{})
+	return res.RowsAffected, res.Error
 }
