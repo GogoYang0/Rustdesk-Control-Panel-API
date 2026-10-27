@@ -92,9 +92,23 @@ func (a *AdminAPI) RemovePassword(c *gin.Context) {
 	}
 	a.totpManageGuard.Reset(account, ip)
 
-	if err := a.deps.DB.Model(&model.User{}).Where("id = ?", uid).Update("password_hash", "").Error; err != nil {
+	// The write repeats every precondition as a predicate: between the reads
+	// above and this UPDATE an administrator reset could have removed the
+	// passkeys, and clearing the password then would leave an unrecoverable
+	// account. Zero affected rows means a precondition changed.
+	res := a.deps.DB.Model(&model.User{}).
+		Where("id = ? AND password_hash = ?", uid, user.PasswordHash).
+		Where("(SELECT COUNT(*) FROM user_passkeys WHERE user_id = ?) >= 2", uid).
+		Where("NOT EXISTS (SELECT 1 FROM user_totps WHERE user_id = ?)", uid).
+		Update("password_hash", "")
+	if res.Error != nil {
 		a.deps.Logger.Error("remove password failed")
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not remove password")
+		return
+	}
+	if res.RowsAffected != 1 {
+		abortError(c, http.StatusConflict, gen.ErrorCodeConflict,
+			"account state changed; keep at least two passkeys and no two-factor before removing the password")
 		return
 	}
 	// Self-service security events have no tenant to file them under; they go
