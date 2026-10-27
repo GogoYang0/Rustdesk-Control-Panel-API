@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Rustdesk-Control-Panel API
-  version: 0.10.0
+  version: 0.11.0
   contact:
     name: Rustdesk-Control-Panel
     url: https://github.com/GogoYang0/Rustdesk-Control-Panel-API
@@ -440,6 +440,84 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "503":
           description: 验证码提供商不可用（仅启用验证码且 failMode=closed 时）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/passkey/register/begin:
+    post:
+      operationId: beginPasskeyRegistration
+      summary: 开始绑定 passkey
+      description: |
+        需要登录（JWT）。返回一次性 `ceremony_token` 与 `navigator.credentials.create()`
+        所需的 `options`（W3C 标准 JSON，顶层为 `publicKey`）。`options` 与 `credential`
+        都按 W3C 结构原样透传，契约不重复建模，避免与标准漂移。
+
+        认证器策略固定：`userVerification=required`、`residentKey=preferred`、
+        `attestation=none`；`excludeCredentials` 含该账户已绑定的凭据。
+        `webauthn.enabled=false` 时返回 503；账户已达凭据上限时返回 409。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 注册挑战
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasskeyCeremonyResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/passkey/register/finish:
+    post:
+      operationId: finishPasskeyRegistration
+      summary: 完成绑定 passkey
+      description: |
+        需要登录（JWT）。提交浏览器 `navigator.credentials.create()` 的结果。
+        `ceremony_token` 一次有效（5 分钟），重放返回 401。
+
+        校验失败（origin/rpId 不符、challenge 不符、签名无效）一律 401，不区分原因；
+        同一凭据已绑定到任何账户时 409，且不回显归属账户。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasskeyRegistrationRequest"
+      responses:
+        "201":
+          description: 已绑定的凭据
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasskeyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: passkey 未启用
           content:
             application/json:
               schema:
@@ -5013,6 +5091,114 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
 
   schemas:
+    Passkey:
+      type: object
+      required:
+        - id
+        - name
+        - created_at
+        - transports
+        - backup_eligible
+        - backup_state
+        - aaguid
+        - clone_warning
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          description: 用户可见的凭据名（1-64 字符，缺省为 `Passkey`）
+        created_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        transports:
+          type: array
+          description: 认证器自报的传输方式（usb/nfc/ble/internal/hybrid）
+          items:
+            type: string
+        backup_eligible:
+          type: boolean
+          description: 该凭据是否可被备份/同步（同步型 passkey 为 true）
+        backup_state:
+          type: boolean
+          description: 该凭据当前是否已被备份
+        aaguid:
+          type: string
+          description: 认证器型号标识；空串表示认证器未提供
+        clone_warning:
+          type: boolean
+          description: 曾检测到签名计数器回退（疑似克隆），需重新绑定
+
+    PasskeyResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/Passkey"
+
+    PasskeyCeremony:
+      type: object
+      required:
+        - ceremony_token
+        - options
+      properties:
+        ceremony_token:
+          type: string
+          description: 一次性 ceremony 句柄，5 分钟后过期
+        options:
+          type: object
+          additionalProperties: true
+          description: |
+            W3C PublicKeyCredentialCreationOptions / RequestOptions 的 JSON 形态
+            （顶层键为 `publicKey`，`challenge` 与 `user.id` 为 base64url）。
+            浏览器原样消费，服务端只校验不重写。
+
+    PasskeyCeremonyResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/PasskeyCeremony"
+
+    PasskeyRegistrationRequest:
+      type: object
+      required:
+        - ceremony_token
+        - credential
+      properties:
+        ceremony_token:
+          type: string
+        credential:
+          type: object
+          additionalProperties: true
+          description: |
+            浏览器 `PublicKeyCredential` 的 JSON 形态
+            （id/rawId/type/response.clientDataJSON/response.attestationObject）。
+        name:
+          type: string
+          maxLength: 64
+          description: 可选的凭据名；空或缺失时使用 `Passkey`
+
     ErrorCode:
       type: string
       description: |

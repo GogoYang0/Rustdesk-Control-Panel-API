@@ -40,7 +40,7 @@ func New(t *testing.T, rpID, origin string) *Authenticator {
 		t.Fatalf("generate credential id: %v", err)
 	}
 	a := &Authenticator{rpID: rpID, origin: origin, key: key, credID: credID}
-	copy(a.aaguid[:], []byte("testauth-v1-0000"))
+	a.aaguid = [16]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10}
 	return a
 }
 

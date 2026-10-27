@@ -20,6 +20,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logquery"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/passkey"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/provision"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/session"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/strategy"
@@ -105,6 +106,11 @@ type Deps struct {
 	// substitutes a disabled service when nil, so tests and deployments that
 	// do not enable it keep today's behavior.
 	Captcha *captcha.Service
+
+	// Passkeys owns WebAuthn credentials and ceremonies. It is nil when the
+	// deployment did not enable the feature; the endpoints then answer 503
+	// instead of pretending the capability exists.
+	Passkeys *passkey.Service
 }
 
 // Provisioner schedules asynchronous server provisioning.
@@ -137,6 +143,7 @@ type AdminAPI struct {
 	retention       *audit.RetentionService
 	captcha         *captcha.Service
 	clientBuilds    *clientbuild.Service
+	passkeys        *passkey.Service
 	// captchaGuard bounds challenge issuance per IP without spending the
 	// login attempt budget.
 	captchaGuard *loginGuard
@@ -235,6 +242,7 @@ func NewAdminAPI(d Deps) *AdminAPI {
 		retention:       d.Retention,
 		captcha:         d.Captcha,
 		clientBuilds:    d.ClientBuilds,
+		passkeys:        d.Passkeys,
 		captchaGuard:    newLoginGuard(),
 	}
 }

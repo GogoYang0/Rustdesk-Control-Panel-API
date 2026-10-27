@@ -2693,6 +2693,95 @@ type OrgResponse struct {
 	Message string    `json:"message"`
 }
 
+// Passkey defines model for Passkey.
+type Passkey struct {
+	// Aaguid 认证器型号标识；空串表示认证器未提供
+	Aaguid string `json:"aaguid"`
+
+	// BackupEligible 该凭据是否可被备份/同步（同步型 passkey 为 true）
+	BackupEligible bool `json:"backup_eligible"`
+
+	// BackupState 该凭据当前是否已被备份
+	BackupState bool `json:"backup_state"`
+
+	// CloneWarning 曾检测到签名计数器回退（疑似克隆），需重新绑定
+	CloneWarning bool       `json:"clone_warning"`
+	CreatedAt    time.Time  `json:"created_at"`
+	Id           int64      `json:"id"`
+	LastUsedAt   *time.Time `json:"last_used_at,omitempty"`
+
+	// Name 用户可见的凭据名（1-64 字符，缺省为 `Passkey`）
+	Name string `json:"name"`
+
+	// Transports 认证器自报的传输方式（usb/nfc/ble/internal/hybrid）
+	Transports []string `json:"transports"`
+}
+
+// PasskeyCeremony defines model for PasskeyCeremony.
+type PasskeyCeremony struct {
+	// CeremonyToken 一次性 ceremony 句柄，5 分钟后过期
+	CeremonyToken string `json:"ceremony_token"`
+
+	// Options W3C PublicKeyCredentialCreationOptions / RequestOptions 的 JSON 形态
+	// （顶层键为 `publicKey`，`challenge` 与 `user.id` 为 base64url）。
+	// 浏览器原样消费，服务端只校验不重写。
+	Options map[string]interface{} `json:"options"`
+}
+
+// PasskeyCeremonyResponse defines model for PasskeyCeremonyResponse.
+type PasskeyCeremonyResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode       `json:"code"`
+	Data    PasskeyCeremony `json:"data"`
+	Message string          `json:"message"`
+}
+
+// PasskeyRegistrationRequest defines model for PasskeyRegistrationRequest.
+type PasskeyRegistrationRequest struct {
+	CeremonyToken string `json:"ceremony_token"`
+
+	// Credential 浏览器 `PublicKeyCredential` 的 JSON 形态
+	// （id/rawId/type/response.clientDataJSON/response.attestationObject）。
+	Credential map[string]interface{} `json:"credential"`
+
+	// Name 可选的凭据名；空或缺失时使用 `Passkey`
+	Name *string `json:"name,omitempty"`
+}
+
+// PasskeyResponse defines model for PasskeyResponse.
+type PasskeyResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode `json:"code"`
+	Data    Passkey   `json:"data"`
+	Message string    `json:"message"`
+}
+
 // Permission defines model for Permission.
 type Permission struct {
 	// Code 权限码，如 `member.manage`
@@ -3900,6 +3989,9 @@ type VerifyTOTPJSONRequestBody = TOTPVerifyRequest
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
 
+// FinishPasskeyRegistrationJSONRequestBody defines body for FinishPasskeyRegistration for application/json ContentType.
+type FinishPasskeyRegistrationJSONRequestBody = PasskeyRegistrationRequest
+
 // RefreshTokensJSONRequestBody defines body for RefreshTokens for application/json ContentType.
 type RefreshTokensJSONRequestBody = RefreshRequest
 
@@ -4061,6 +4153,12 @@ type ServerInterface interface {
 	// Login 邮箱密码登录
 	// (POST /api/v1/auth/login)
 	Login(c *gin.Context)
+	// BeginPasskeyRegistration 开始绑定 passkey
+	// (POST /api/v1/auth/passkey/register/begin)
+	BeginPasskeyRegistration(c *gin.Context)
+	// FinishPasskeyRegistration 完成绑定 passkey
+	// (POST /api/v1/auth/passkey/register/finish)
+	FinishPasskeyRegistration(c *gin.Context)
 	// RefreshTokens 轮换 refresh 令牌
 	// (POST /api/v1/auth/refresh)
 	RefreshTokens(c *gin.Context)
@@ -4482,6 +4580,32 @@ func (siw *ServerInterfaceWrapper) Login(c *gin.Context) {
 	}
 
 	siw.Handler.Login(c)
+}
+
+// BeginPasskeyRegistration operation middleware
+func (siw *ServerInterfaceWrapper) BeginPasskeyRegistration(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.BeginPasskeyRegistration(c)
+}
+
+// FinishPasskeyRegistration operation middleware
+func (siw *ServerInterfaceWrapper) FinishPasskeyRegistration(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.FinishPasskeyRegistration(c)
 }
 
 // RefreshTokens operation middleware
@@ -8185,6 +8309,8 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/auth/2fa/disable", wrapper.DisableTOTP)
 	router.POST(options.BaseURL+"/api/v1/auth/2fa/recovery-codes", wrapper.RegenerateRecoveryCodes)
 	router.POST(options.BaseURL+"/api/v1/auth/2fa/verify", wrapper.VerifyTOTP)
+	router.POST(options.BaseURL+"/api/v1/auth/passkey/register/begin", wrapper.BeginPasskeyRegistration)
+	router.POST(options.BaseURL+"/api/v1/auth/passkey/register/finish", wrapper.FinishPasskeyRegistration)
 	router.GET(options.BaseURL+"/api/v1/orgs", wrapper.ListOrgs)
 	router.POST(options.BaseURL+"/api/v1/orgs", wrapper.CreateOrg)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/members", wrapper.ListMembers)

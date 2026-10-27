@@ -34,6 +34,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logquery"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/passkey"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/provision"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/session"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
@@ -513,6 +514,22 @@ func main() {
 	// sweep re-enqueues anything that never reached a worker (full queue, crash).
 	go provQueue.RunReconciler(rootCtx, 2*time.Minute)
 
+	// Passkeys are opt-in. A disabled deployment leaves the service nil so the
+	// endpoints answer 503 instead of half-working.
+	var passkeySvc *passkey.Service
+	if cfg.WebAuthn.Enabled {
+		passkeySvc, err = passkey.NewService(st.DB, passkey.Config{
+			RPID:               cfg.WebAuthn.RPID,
+			RPDisplayName:      cfg.WebAuthn.RPDisplayName,
+			Origin:             cfg.WebAuthn.Origin,
+			CeremonyTTL:        cfg.WebAuthn.CeremonyTTL,
+			CredentialsPerUser: cfg.WebAuthn.CredentialsPerUser,
+		}, issuer, nil)
+		if err != nil {
+			lg.Fatal("configure webauthn", zap.Error(err))
+		}
+	}
+
 	srv := &http.Server{
 		Addr: cfg.Server.Addr,
 		// Timeouts are mandatory: without a read header deadline an unauthenticated
@@ -544,6 +561,7 @@ func main() {
 			Retention:      retentionSvc,
 			Captcha:        captchaSvc,
 			ClientBuilds:   clientBuildSvc,
+			Passkeys:       passkeySvc,
 		}),
 	}
 
