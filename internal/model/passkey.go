@@ -21,21 +21,24 @@ const (
 // CredentialIDHash (SHA-256 hex) so the unique index stays a fixed 64 chars on
 // every dialect.
 type UserPasskey struct {
-	ID               uint       `gorm:"primaryKey" json:"id"`
-	UserID           uint       `gorm:"index;not null" json:"user_id"`
-	CredentialID     string     `gorm:"type:text;not null" json:"-"`
-	CredentialIDHash string     `gorm:"size:64;not null;uniqueIndex" json:"-"`
-	PublicKey        string     `gorm:"type:text;not null" json:"-"`
-	SignCount        uint32     `gorm:"not null;default:0" json:"-"`
-	AAGUID           string     `gorm:"size:36;not null;default:''" json:"aaguid"`
-	Transports       string     `gorm:"type:text;not null;default:'[]'" json:"-"`
-	Name             string     `gorm:"size:64;not null" json:"name"`
-	BackupEligible   bool       `gorm:"not null;default:false" json:"backup_eligible"`
-	BackupState      bool       `gorm:"not null;default:false" json:"backup_state"`
-	CloneWarning     bool       `gorm:"not null;default:false" json:"clone_warning"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
-	LastUsedAt       *time.Time `json:"last_used_at"`
+	ID               uint   `gorm:"primaryKey" json:"id"`
+	UserID           uint   `gorm:"index;not null" json:"user_id"`
+	CredentialID     string `gorm:"type:text;not null" json:"-"`
+	CredentialIDHash string `gorm:"size:64;not null;uniqueIndex" json:"-"`
+	PublicKey        string `gorm:"type:text;not null" json:"-"`
+	SignCount        uint32 `gorm:"not null;default:0" json:"-"`
+	AAGUID           string `gorm:"size:36;not null;default:''" json:"aaguid"`
+	// varchar, not text: MySQL refuses DEFAULT on TEXT columns (error 1101),
+	// which would abort the startup AutoMigrate on every MySQL deployment. The
+	// value is a tiny JSON array of transport names, 255 is ample.
+	Transports     string     `gorm:"size:255;not null;default:'[]'" json:"-"`
+	Name           string     `gorm:"size:64;not null" json:"name"`
+	BackupEligible bool       `gorm:"not null;default:false" json:"backup_eligible"`
+	BackupState    bool       `gorm:"not null;default:false" json:"backup_state"`
+	CloneWarning   bool       `gorm:"not null;default:false" json:"clone_warning"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	LastUsedAt     *time.Time `json:"last_used_at"`
 }
 
 // WebAuthnCeremony stores the server side of one begin/finish pair. SessionJSON
