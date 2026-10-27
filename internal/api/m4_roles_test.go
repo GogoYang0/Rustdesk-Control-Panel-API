@@ -36,9 +36,19 @@ type m4MemberView struct {
 // m4Org seeds an organization with one owner, one admin, and one member.
 func m4Org(t *testing.T) (h *harness, orgID int64, owner, admin, member model.User, ownerToken, adminToken, memberToken string) {
 	t.Helper()
+	return m4OrgWith(t, nil)
+}
+
+// m4OrgWith is m4Org with a hook for tests that need an extra service in Deps
+// before the router is built.
+func m4OrgWith(t *testing.T, tune func(*api.Deps)) (h *harness, orgID int64, owner, admin, member model.User, ownerToken, adminToken, memberToken string) {
+	t.Helper()
 	h = newHarnessWith(t, func(d *api.Deps) {
 		// 2FA setup needs a real key: an empty secret now fails closed.
 		d.AuthSecret = "test-secret"
+		if tune != nil {
+			tune(d)
+		}
 	})
 	owner = h.seedUser(t, "m4-owner@example.com", "password123")
 	ownerToken = h.login(t, "m4-owner@example.com", "password123")

@@ -97,26 +97,7 @@ func main() {
 	// data migration that trusts pre-verification accounts as verified.
 	const backfillEmailVerifiedTrue = "backfill_email_verified_true"
 
-	if err := st.DB.AutoMigrate(
-		&model.User{}, &model.RefreshToken{},
-		&model.UserTOTP{},
-		&model.Organization{}, &model.Membership{}, &model.Role{}, &model.Invitation{},
-		&model.APIToken{},
-		&model.AuditLog{},
-		&model.Device{}, &model.DeviceHeartbeat{}, &model.ServerGroup{},
-		&model.AddressBook{}, &model.AddressBookPeer{},
-		&model.AddressBookTag{}, &model.AddressBookGrant{}, &model.SyncCursor{},
-		&model.VerificationToken{},
-		&model.MigrationMark{},
-		&model.CompatSession{},
-		&model.LogEvent{},
-		&model.Session{}, &model.SessionEvent{},
-		&model.Ticket{}, &model.Policy{},
-		&model.Approval{}, &model.Alert{},
-		&model.UserGroup{}, &model.UserGroupMember{}, &model.DeviceGroup{}, &model.AccessRule{},
-		&model.ControlRole{}, &model.ConnectionLog{}, &model.FileLog{}, &model.AuditNonce{},
-		&model.CompatLoginChallenge{},
-	); err != nil {
+	if err := st.DB.AutoMigrate(model.PersistentModels()...); err != nil {
 		lg.Fatal("migrate database", zap.Error(err))
 	}
 
@@ -201,6 +182,11 @@ func main() {
 	// layer is built (binding resets must commit with their audit entry), so it
 	// is created here rather than next to the session service.
 	auditor := audit.NewGormAuditor(st.DB)
+
+	clientBuildSvc, err := newClientBuildService(*cfg, st.DB, auditor, auditor, lg)
+	if err != nil {
+		lg.Fatal("init client build service", zap.Error(err))
+	}
 
 	deviceSvc := device.NewService(st.DB, auditor, nil)
 	orch := &provision.DockerOrchestrator{
@@ -486,6 +472,23 @@ func main() {
 	} else {
 		lg.Warn("periodic retention sweep disabled (logcollect.retentionSweepInterval = 0)")
 	}
+
+	if err := sched.Register(worker.Task{
+		Name:       "client-build-advance",
+		Interval:   cfg.ClientBuild.PollInterval,
+		RunOnStart: true,
+		Run:        clientBuildSvc.Advance,
+	}); err != nil {
+		lg.Fatal("register client build advance", zap.Error(err))
+	}
+	if err := sched.Register(worker.Task{
+		Name:       "client-build-sweep",
+		Interval:   time.Hour,
+		RunOnStart: true,
+		Run:        clientBuildSvc.Sweep,
+	}); err != nil {
+		lg.Fatal("register client build sweep", zap.Error(err))
+	}
 	sched.Start(rootCtx)
 
 	// Drain the tailers on shutdown: exec.CommandContext kills the
@@ -540,6 +543,7 @@ func main() {
 			AuthSecret:     cfg.Auth.Secret,
 			Retention:      retentionSvc,
 			Captcha:        captchaSvc,
+			ClientBuilds:   clientBuildSvc,
 		}),
 	}
 

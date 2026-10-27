@@ -60,6 +60,13 @@ info:
     维护 `config_options`（20 个白名单键），策略按「设备 > 设备组 > 成员」三层
     生效，经 `POST /api/heartbeat` 响应下发给客户端；`Permission` 新增
     `strategy.manage`、`device.disconnect`（均不可委派）。
+
+    0.10.0 波次 5a 新增**自定义客户端生成器**：组织级品牌 profile、构建记录与
+    产物下载；构建由 GitHub Actions 执行，服务器地址/公钥/API server 由本组织
+    已部署的 `ServerGroup`、`relayHost` 与 `publicBaseURL` 推导，API server 指向
+    面板 compat 入口。平台为 windows-x64、linux-x64、macos-arm64、macos-x64、
+    android-arm64；5a **不签名**（Android 使用固定 debug key）。新增权限
+    `client_build.manage`（owner/admin，不可委派）。
 servers:
   - url: http://localhost:8080
     description: 本地开发
@@ -4302,6 +4309,658 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/v1/orgs/{orgId}/client-build/capabilities:
+    get:
+      operationId: getClientBuildCapabilities
+      summary: 读取自定义客户端构建能力
+      description: |
+        任何组织成员可读。返回平台白名单、配额、服务器推导状态与默认值。
+        `enabled=false` 时仍可维护 profile，但发起构建返回 503。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 构建能力
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildCapabilitiesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/orgs/{orgId}/client-build-profiles:
+    get:
+      operationId: listClientBuildProfiles
+      summary: 列出客户端品牌配置
+      description: 分页返回本组织的品牌配置，按名称升序。任何成员可读。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: 品牌配置列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildProfileListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      operationId: createClientBuildProfile
+      summary: 创建客户端品牌配置
+      description: |
+        需要 `client_build.manage`（owner/admin，不可委派）。名称去首尾空白后
+        1–64 字符，组织内不区分大小写唯一；应用名 1–32 字符，拒绝精确的
+        `RustDesk`。组织最多保留 10 个 profile。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClientBuildProfileCreateRequest"
+      responses:
+        "201":
+          description: 已创建的品牌配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildProfileResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          description: 客户端构建能力未配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/orgs/{orgId}/client-build-profiles/{profileId}:
+    get:
+      operationId: getClientBuildProfile
+      summary: 读取客户端品牌配置
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 品牌配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildProfileResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateClientBuildProfile
+      summary: 更新客户端品牌配置
+      description: 只允许修改 `name` 与 `app_name`；Logo 走独立端点。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClientBuildProfileUpdateRequest"
+      responses:
+        "200":
+          description: 已更新的品牌配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildProfileResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          description: 客户端构建能力未配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteClientBuildProfile
+      summary: 删除客户端品牌配置
+      description: 存在非终态构建时返回 409；历史构建保留快照。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          description: 客户端构建能力未配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/orgs/{orgId}/client-build-profiles/{profileId}/logo:
+    put:
+      operationId: putClientBuildProfileLogo
+      summary: 上传客户端 Logo
+      description: |
+        需要 `client_build.manage`。PNG、正方形 256–1024、解码后 ≤1 MiB；
+        服务端会解码并重新编码，剥离元数据。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClientBuildLogoUploadRequest"
+      responses:
+        "200":
+          description: 已更新的品牌配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildProfileResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          description: 客户端构建能力未配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    get:
+      operationId: getClientBuildProfileLogo
+      summary: 读取客户端 Logo
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: PNG Logo
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      operationId: deleteClientBuildProfileLogo
+      summary: 删除客户端 Logo
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          description: 客户端构建能力未配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/orgs/{orgId}/client-builds:
+    get:
+      operationId: listClientBuilds
+      summary: 列出客户端构建
+      description: |
+        分页返回本组织的构建，按 id 降序。任何成员可读。
+        `status` 与 `profileId` 可过滤；`status` 必须是已知状态。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - pending
+              - dispatching
+              - dispatched
+              - running
+              - ingesting
+              - succeeded
+              - failed
+              - cancelled
+        - name: profileId
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: 构建列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      operationId: createClientBuild
+      summary: 发起客户端构建
+      description: |
+        需要 `client_build.manage`。服务器地址、公钥与 API server 由本组织已部署的
+        `ServerGroup`、`provision.relayHost` 与 `clientbuild.publicBaseURL` 推导，
+        不接受用户传入。创建后返回 202，由后台任务异步 dispatch 到 GitHub Actions。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClientBuildCreateRequest"
+      responses:
+        "202":
+          description: 已入队
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          description: 客户端构建未启用或未配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/orgs/{orgId}/client-builds/{buildId}:
+    get:
+      operationId: getClientBuild
+      summary: 读取客户端构建
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: buildId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 构建详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/client-builds/{buildId}/cancel:
+    post:
+      operationId: cancelClientBuild
+      summary: 取消客户端构建
+      description: |
+        需要 `client_build.manage`。取消为尽力而为：已进入产物回收后返回 409；
+        已发起的 GitHub run 会被请求取消，终态以回调轮询结果为准。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: buildId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "202":
+          description: 已请求取消
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          description: 客户端构建未配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/orgs/{orgId}/client-builds/{buildId}/artifacts/{artifactId}:
+    get:
+      operationId: downloadClientBuildArtifact
+      summary: 下载构建产物
+      description: 需要 `client_build.manage`；下载动作写审计。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: buildId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: artifactId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 产物文件
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/client-builds/{buildId}/bundle:
+    get:
+      operationId: downloadClientBuildBundle
+      summary: 下载构建 bundle（构建 runner 使用）
+      description: |
+        公开端点，只接受短期 HMAC token；token 绑定路径 buildId，过期、篡改或
+        跨构建使用一律 401。成功请求写 `client_build.bundle.served` 审计。
+      tags:
+        - orgs
+      security: []
+      parameters:
+        - name: buildId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: token
+          in: query
+          required: false
+          description: 必填；缺失时由 handler 返回 401（生成器会先拒绝空的必填 query）
+          schema:
+            type: string
+      responses:
+        "200":
+          description: bundle.tar.gz
+          content:
+            application/gzip:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/Internal"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -7606,3 +8265,509 @@ components:
           type: string
         data:
           $ref: "#/components/schemas/Session"
+
+    ClientBuildCapabilitiesResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/ClientBuildCapabilities"
+
+    ClientBuildCapabilities:
+      type: object
+      required:
+        - enabled
+        - platforms
+        - limits
+        - provisioning_state
+      properties:
+        enabled:
+          type: boolean
+        platforms:
+          type: array
+          items:
+            type: string
+            enum:
+              - windows-x64
+              - linux-x64
+              - macos-arm64
+              - macos-x64
+              - android-arm64
+        limits:
+          $ref: "#/components/schemas/ClientBuildLimits"
+        provisioning_state:
+          type: string
+          enum:
+            - deployed
+            - provisioning
+            - failed
+            - disabled
+            - missing
+        defaults:
+          $ref: "#/components/schemas/ClientBuildDefaults"
+
+    ClientBuildLimits:
+      type: object
+      required:
+        - max_profiles_per_org
+        - max_concurrent_per_org
+        - max_active_builds
+        - max_artifact_bytes
+        - artifact_retention_days
+      properties:
+        max_profiles_per_org:
+          type: integer
+        max_concurrent_per_org:
+          type: integer
+        max_active_builds:
+          type: integer
+        max_artifact_bytes:
+          type: integer
+          format: int64
+        artifact_retention_days:
+          type: integer
+
+    ClientBuildDefaults:
+      type: object
+      required:
+        - server
+        - server_key
+        - api_server
+      properties:
+        server:
+          type: string
+        server_key:
+          type: string
+        api_server:
+          type: string
+
+    ClientBuildProfile:
+      type: object
+      required:
+        - id
+        - name
+        - app_name
+        - has_logo
+        - logo_width
+        - logo_height
+        - logo_sha256
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          maxLength: 64
+        app_name:
+          type: string
+          maxLength: 32
+        has_logo:
+          type: boolean
+        logo_width:
+          type: integer
+        logo_height:
+          type: integer
+        logo_sha256:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ClientBuildProfilePage:
+      type: object
+      required:
+        - items
+        - page
+        - page_size
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClientBuildProfile"
+        page:
+          type: integer
+        page_size:
+          type: integer
+          format: int64
+        total:
+          type: integer
+          format: int64
+
+    ClientBuildProfileListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/ClientBuildProfilePage"
+
+    ClientBuildProfileResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/ClientBuildProfile"
+
+    ClientBuildProfileCreateRequest:
+      type: object
+      required:
+        - name
+        - app_name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        app_name:
+          type: string
+          minLength: 1
+          maxLength: 32
+
+    ClientBuildProfileUpdateRequest:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        app_name:
+          type: string
+          minLength: 1
+          maxLength: 32
+
+    ClientBuildLogoUploadRequest:
+      type: object
+      required:
+        - png_base64
+      properties:
+        png_base64:
+          type: string
+          minLength: 1
+
+    ClientBuildSummary:
+      type: object
+      required:
+        - id
+        - profile_id
+        - profile_name
+        - app_name
+        - upstream_version
+        - platforms
+        - status
+        - artifact_count
+        - artifacts_purged
+        - created_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        profile_id:
+          type: integer
+          format: int64
+        profile_name:
+          type: string
+        app_name:
+          type: string
+        upstream_version:
+          type: string
+        platforms:
+          type: array
+          items:
+            type: string
+            enum:
+              - windows-x64
+              - linux-x64
+              - macos-arm64
+              - macos-x64
+              - android-arm64
+        status:
+          type: string
+          enum:
+            - pending
+            - dispatching
+            - dispatched
+            - running
+            - ingesting
+            - succeeded
+            - failed
+            - cancelled
+        github_run_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+        github_run_url:
+          type: string
+        error_message:
+          type: string
+        artifact_count:
+          type: integer
+        artifacts_purged:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        dispatched_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        finished_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+
+    ClientBuildManifest:
+      type: object
+      required:
+        - schema_version
+        - build_id
+        - app_name
+        - server
+        - server_key
+        - api_server
+        - upstream_version
+        - platforms
+      properties:
+        schema_version:
+          type: integer
+        build_id:
+          type: integer
+          format: int64
+        app_name:
+          type: string
+        server:
+          type: string
+        server_key:
+          type: string
+        api_server:
+          type: string
+        upstream_version:
+          type: string
+        platforms:
+          type: array
+          items:
+            type: string
+        logo:
+          $ref: "#/components/schemas/ClientBuildManifestLogo"
+
+    ClientBuildManifestLogo:
+      type: object
+      required:
+        - sha256
+        - width
+        - height
+      properties:
+        sha256:
+          type: string
+        width:
+          type: integer
+        height:
+          type: integer
+
+    ClientBuildArtifact:
+      type: object
+      required:
+        - id
+        - platform
+        - file_name
+        - size_bytes
+        - sha256
+        - created_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        platform:
+          type: string
+        file_name:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+        sha256:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    ClientBuildDetail:
+      type: object
+      required:
+        - id
+        - profile_id
+        - profile_name
+        - app_name
+        - upstream_version
+        - platforms
+        - status
+        - artifact_count
+        - artifacts_purged
+        - created_at
+        - manifest
+        - artifacts
+      properties:
+        id:
+          type: integer
+          format: int64
+        profile_id:
+          type: integer
+          format: int64
+        profile_name:
+          type: string
+        app_name:
+          type: string
+        upstream_version:
+          type: string
+        platforms:
+          type: array
+          items:
+            type: string
+            enum:
+              - windows-x64
+              - linux-x64
+              - macos-arm64
+              - macos-x64
+              - android-arm64
+        status:
+          type: string
+          enum:
+            - pending
+            - dispatching
+            - dispatched
+            - running
+            - ingesting
+            - succeeded
+            - failed
+            - cancelled
+        github_run_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+        github_run_url:
+          type: string
+        error_message:
+          type: string
+        artifact_count:
+          type: integer
+        artifacts_purged:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        dispatched_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        finished_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        manifest:
+          $ref: "#/components/schemas/ClientBuildManifest"
+        artifacts:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClientBuildArtifact"
+
+    ClientBuildPage:
+      type: object
+      required:
+        - items
+        - page
+        - page_size
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClientBuildSummary"
+        page:
+          type: integer
+        page_size:
+          type: integer
+          format: int64
+        total:
+          type: integer
+          format: int64
+
+    ClientBuildListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/ClientBuildPage"
+
+    ClientBuildResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/ClientBuildDetail"
+
+    ClientBuildCreateRequest:
+      type: object
+      required:
+        - profile_id
+        - platforms
+      properties:
+        profile_id:
+          type: integer
+          format: int64
+        platforms:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            enum:
+              - windows-x64
+              - linux-x64
+              - macos-arm64
+              - macos-x64
+              - android-arm64
