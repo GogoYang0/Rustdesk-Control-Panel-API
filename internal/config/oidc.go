@@ -134,6 +134,24 @@ func validateLDAP(cfg LDAPConfig) error {
 	if len(filter) > ldapMaxFilterLength {
 		return fmt.Errorf("ldap.userFilter must not exceed %d characters", ldapMaxFilterLength)
 	}
+	// Unbalanced parentheses pass the prefix/suffix and assertion checks but
+	// make every search a protocol error: the deployment would boot into
+	// permanent 503s instead of failing at startup.
+	depth := 0
+	for _, r := range filter {
+		switch r {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth < 0 {
+				return fmt.Errorf("ldap.userFilter has unbalanced parentheses: %q", filter)
+			}
+		}
+	}
+	if depth != 0 {
+		return fmt.Errorf("ldap.userFilter has unbalanced parentheses: %q", filter)
+	}
 	// A filter that never references an attribute (e.g. "(&)") matches
 	// everything-or-nothing in ways the operator did not intend: there must be
 	// at least one assertion "(attr=value)" or one presence check "(attr)".

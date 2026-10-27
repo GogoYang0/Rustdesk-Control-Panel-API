@@ -47,8 +47,11 @@ func (a *AdminAPI) LdapLogin(c *gin.Context) {
 		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "too many login attempts")
 		return
 	}
-	// Track 2: account(username)+IP failure window.
-	if a.guard.Locked(username, ip) {
+	// Track 2: account+IP failure window. The key is the lowercased username:
+	// directory subjects are case-sensitive, but letting "Alice" and "alice"
+	// hold separate windows would make the lockout trivially bypassable.
+	guardKey := strings.ToLower(username)
+	if a.guard.Locked(guardKey, ip) {
 		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "account temporarily locked")
 		return
 	}
@@ -60,7 +63,7 @@ func (a *AdminAPI) LdapLogin(c *gin.Context) {
 	email, err := dir.Authenticate(c.Request.Context(), username, password)
 	switch {
 	case errors.Is(err, ldapauth.ErrInvalidCredentials), errors.Is(err, ldapauth.ErrAmbiguousResult):
-		a.guard.RecordFailure(username, ip)
+		a.guard.RecordFailure(guardKey, ip)
 		// One message for both: which of the two failed would turn every caller
 		// into a directory-enumeration oracle.
 		a.deps.Logger.Warn("ldap login rejected",
@@ -68,7 +71,9 @@ func (a *AdminAPI) LdapLogin(c *gin.Context) {
 		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "invalid credentials")
 		return
 	case errors.Is(err, ldapauth.ErrDirectoryUnavailable):
-		a.deps.Logger.Warn("ldap directory unavailable", zap.String("username", username))
+		// The wrapped cause (dial vs TLS vs protocol) is what an operator needs
+		// to tell an outage from a misconfiguration; none of it echoes secrets.
+		a.deps.Logger.Warn("ldap directory unavailable", zap.String("username", username), zap.Error(err))
 		abortError(c, http.StatusServiceUnavailable, gen.ErrorCodeInternal, "directory service is unavailable")
 		return
 	case errors.Is(err, ldapauth.ErrMissingMail):
@@ -81,7 +86,7 @@ func (a *AdminAPI) LdapLogin(c *gin.Context) {
 		return
 	}
 
-	a.guard.Reset(username, ip)
+	a.guard.Reset(guardKey, ip)
 
 	user, err := a.identity.Resolve(c.Request.Context(), identity.Claims{
 		Provider:      model.IdentityProviderLDAP,

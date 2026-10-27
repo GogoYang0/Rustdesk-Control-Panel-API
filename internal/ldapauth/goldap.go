@@ -93,15 +93,24 @@ func (g *GoLDAP) Authenticate(ctx context.Context, username, password string) (s
 	}
 
 	entry := result.Entries[0]
+
+	// The user bind is the password check, and it runs BEFORE the mail read:
+	// answering 403 for an entry the caller has not authenticated against would
+	// confirm that the username exists without knowing the password (P-L5).
+	if err := conn.Bind(entry.DN, password); err != nil {
+		// Only a code-49 bind rejection is credentials. A reset socket, a TLS
+		// failure or a timeout here are infrastructure: misreporting them as
+		// 401 would feed a directory outage into the account lockout windows
+		// and show up as password guessing on the monitoring side.
+		if goldap.IsErrorWithCode(err, goldap.LDAPResultInvalidCredentials) {
+			return "", ErrInvalidCredentials
+		}
+		return "", fmt.Errorf("%w: user bind failed: %v", ErrDirectoryUnavailable, err)
+	}
+
 	mail := strings.TrimSpace(entry.GetAttributeValue(g.cfg.MailAttribute))
 	if mail == "" {
 		return "", ErrMissingMail
-	}
-
-	if err := conn.Bind(entry.DN, password); err != nil {
-		// The user bind is the password check: any failure here is credentials,
-		// not infrastructure (design L5).
-		return "", ErrInvalidCredentials
 	}
 	return mail, nil
 }

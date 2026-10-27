@@ -96,11 +96,9 @@ jobs:
       PANEL_LDAP_TEST_BASEDN: "dc=example,dc=org"
       PANEL_LDAP_TEST_BINDDN: "cn=admin,dc=example,dc=org"
       PANEL_LDAP_BIND_PASSWORD: "adminpassword"
-      # Fixture bootstrap: the image supports LDAP_SEED via custom ldif; the
-      # first CI run pins the exact mechanism (see the 5b-3 ledger Ruling).
-      # Expected entries under dc=example,dc=org (ou=people):
-      #   uid=alice  userPassword=alicepassword  mail=ldap-alice@example.com
-      #   uid=nomail userPassword=nomailpassword (no mail attribute)
+      # The directory is seeded by the "seed the ldap directory" step below:
+      # osixia/openldap has no env-based LDIF seeding, so the entries the
+      # env-gated tests expect are added with ldapadd after startup.
     steps:
       - uses: actions/checkout@v4
         with:
@@ -110,6 +108,31 @@ jobs:
           go-version: "1.27.x"
       - name: wait for databases
         run: sleep 10
+      - name: seed the ldap directory
+        run: |
+          CID=$(docker ps -q --filter ancestor=osixia/openldap:1.5.0 | head -1)
+          test -n "$CID" "openldap service container not found"
+          docker exec -i "$CID" ldapadd -x -H ldap://localhost:1389 \
+            -D "cn=admin,dc=example,dc=org" -w adminpassword <<'LDIF'
+          dn: ou=people,dc=example,dc=org
+          objectClass: organizationalUnit
+          ou: people
+
+          dn: uid=alice,ou=people,dc=example,dc=org
+          objectClass: inetOrgPerson
+          cn: Alice Test
+          sn: Test
+          uid: alice
+          userPassword: alicepassword
+          mail: ldap-alice@example.com
+
+          dn: uid=nomail,ou=people,dc=example,dc=org
+          objectClass: inetOrgPerson
+          cn: No Mail
+          sn: Test
+          uid: nomail
+          userPassword: nomailpassword
+          LDIF
       - name: go test (postgres)
         # Every package shares one Postgres instance and Go runs package test
         # binaries in parallel (-p = GOMAXPROCS). Concurrent AutoMigrate of the

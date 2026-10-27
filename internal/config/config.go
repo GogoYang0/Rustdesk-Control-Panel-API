@@ -302,6 +302,10 @@ func Load(path string) (*Config, error) {
 	cfg.OIDC.ClientSecret = os.Getenv("PANEL_OIDC_CLIENT_SECRET")
 	// Same rule for the LDAP service-account password (design L4).
 	cfg.LDAP.BindPassword = os.Getenv("PANEL_LDAP_BIND_PASSWORD")
+	// A leading or trailing space in the host passes the non-empty check but
+	// fails every dial: trim before validation so the configured value is the
+	// value that gets used.
+	cfg.LDAP.Host = strings.TrimSpace(cfg.LDAP.Host)
 	if err := validateOIDC(cfg.OIDC, cfg.Web.BaseURL); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}

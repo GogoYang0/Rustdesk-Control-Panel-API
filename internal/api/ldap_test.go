@@ -101,7 +101,20 @@ func TestLdapLogin_EmptyCredentialsNeverTouchTheDirectory(t *testing.T) {
 	code = ldapLogin(t, h, "", "secret")
 	require.Equal(t, http.StatusBadRequest, *code)
 
+	// The refusal must also not spend the per-IP bucket: seven refusals (more
+	// than the 5-token burst) followed by a legitimate login that still
+	// succeeds is the proof. If the gate ever moved below AllowIP, the sixth
+	// refusal would 429 and this test would fail.
+	for i := 0; i < 5; i++ {
+		code = ldapLogin(t, h, "alice", "")
+		require.Equal(t, http.StatusBadRequest, *code)
+	}
 	require.Zero(t, fake.DialCount(), "empty credentials must not reach the directory")
+
+	h.seedUser(t, "ldap-alice@example.com", "password123")
+	code = ldapLogin(t, h, "alice", "alicepassword")
+	require.Equal(t, http.StatusOK, *code,
+		"empty-credential refusals must not consume the rate-limit budget")
 }
 
 func TestLdapLogin_AmbiguousSearchIs401(t *testing.T) {
