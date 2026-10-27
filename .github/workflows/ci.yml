@@ -76,9 +76,31 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      openldap:
+        image: osixia/openldap:1.5.0
+        env:
+          LDAP_ORGANISATION: "Panel Test"
+          LDAP_DOMAIN: "example.com"
+          LDAP_ADMIN_PASSWORD: "adminpassword"
+        ports:
+          - 1389:1389
+        options: >-
+          --health-cmd "ldapwhoami -H ldap://localhost:1389 -x"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       TEST_POSTGRES_DSN: "host=localhost user=postgres password=postgres dbname=panel_test port=5432 sslmode=disable"
       TEST_MYSQL_DSN: "root:mysql@tcp(localhost:3306)/panel_test?parseTime=true"
+      PANEL_LDAP_TEST_HOST: "localhost"
+      PANEL_LDAP_TEST_BASEDN: "dc=example,dc=org"
+      PANEL_LDAP_TEST_BINDDN: "cn=admin,dc=example,dc=org"
+      PANEL_LDAP_BIND_PASSWORD: "adminpassword"
+      # Fixture bootstrap: the image supports LDAP_SEED via custom ldif; the
+      # first CI run pins the exact mechanism (see the 5b-3 ledger Ruling).
+      # Expected entries under dc=example,dc=org (ou=people):
+      #   uid=alice  userPassword=alicepassword  mail=ldap-alice@example.com
+      #   uid=nomail userPassword=nomailpassword (no mail attribute)
     steps:
       - uses: actions/checkout@v4
         with:
