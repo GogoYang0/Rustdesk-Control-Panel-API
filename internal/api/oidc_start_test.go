@@ -18,20 +18,6 @@ import (
 
 const testCallbackURL = "https://panel.example.com/api/v1/auth/oidc/callback"
 
-func newOIDCService(issuer string) *oidc.Service {
-	return oidc.NewService(nil, oidc.Config{
-		ProviderName: "Test IdP",
-		Issuer:       issuer,
-		ClientID:     "panel-client",
-		ClientSecret: "s3cret-value",
-		Scopes:       []string{"openid", "profile", "email"},
-		ClockSkew:    time.Minute,
-		StateTTL:     10 * time.Minute,
-		CallbackURL:  testCallbackURL,
-		Now:          time.Now,
-	}, zap.NewNop())
-}
-
 func oidcStartHarness(t *testing.T, issuer string) (*harness, *oidc.Service) {
 	t.Helper()
 

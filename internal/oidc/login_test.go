@@ -15,13 +15,6 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 )
 
-// flowHarness wires a service to a fake IdP plus the flow store.
-type flowHarness struct {
-	svc  *Service
-	fake *oidctest.Server
-	db   *Service
-}
-
 func newLoginHarness(t *testing.T) (*Service, *oidctest.Server, *testClock) {
 	t.Helper()
 

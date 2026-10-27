@@ -39,7 +39,7 @@ func TestServer_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("token request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("token status = %d", resp.StatusCode)
 	}
@@ -101,7 +101,7 @@ func TestServer_StringEmailVerified(t *testing.T) {
 	if err != nil {
 		t.Fatalf("token request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var payload struct {
 		IDToken string `json:"id_token"`
 	}
@@ -144,7 +144,7 @@ func TestServer_ForeignKeyFailsVerification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("token request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var payload struct {
 		IDToken string `json:"id_token"`
 	}
@@ -169,7 +169,7 @@ func TestServer_TokenError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("token request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
