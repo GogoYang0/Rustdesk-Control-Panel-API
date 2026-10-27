@@ -312,7 +312,7 @@ clientbuild:
 | `PANEL_CLIENTBUILD_GITHUB_TOKEN` | fine-grained PAT，仅构建仓库 `Actions: RW` + `Metadata: R` |
 | `PANEL_CLIENTBUILD_BUNDLE_KEY` | bundle URL 的 HMAC key，至少 32 字节 |
 
-`enabled=true` 时启动会校验 `publicBaseURL`、仓库/workflow/ref、token、bundle key、平台白名单与 artifact 主机白名单；缺项直接 Fatal，不静默降级。`enabled=false` 时 profile 仍可预配置，发起构建返回 503。
+`enabled=true` 时启动会校验 `publicBaseURL`、`github.apiBaseURL`、仓库/workflow/ref、token、bundle key、平台白名单与 artifact 主机白名单；缺项直接 Fatal，不静默降级。两个 URL 必须是 `https`——bundle token 与 PAT 都走这两条链路——仅 `localhost`/`127.0.0.1`/`::1` 允许 `http`（本地开发与测试）。`enabled=false` 时 profile 仍可预配置，发起构建返回 503。
 
 ### 10.2 部署前提
 

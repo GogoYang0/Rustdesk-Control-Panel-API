@@ -176,14 +176,16 @@ func (s *Service) dispatchBuild(ctx context.Context, build *model.ClientBuild) (
 		if failErr := s.failBuild(ctx, build, "bundle is unavailable"); failErr != nil {
 			return false, errors.Join(err, failErr)
 		}
-		return false, err
+		// The build reached a terminal state, so the pass continues: returning
+		// the cause here would strand every other dispatching build.
+		return true, nil
 	}
 	platforms, err := ParsePlatforms(build.PlatformsJSON)
 	if err != nil {
 		if failErr := s.failBuild(ctx, build, "stored platforms are unreadable"); failErr != nil {
 			return false, errors.Join(err, failErr)
 		}
-		return false, err
+		return true, nil
 	}
 	result, err := s.github.Dispatch(ctx, DispatchInput{
 		BuildID:         build.ID,

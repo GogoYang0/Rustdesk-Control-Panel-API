@@ -376,3 +376,23 @@ func TestAdvance_MatchRunIgnoresNonMatchingTitles(t *testing.T) {
 	run := matchRun([]Run{{ID: 1, DisplayTitle: "panel-client-9", CreatedAt: time.Now()}}, 7)
 	require.Nil(t, run)
 }
+
+func TestAdvance_DispatchInputFailureDoesNotStopThePass(t *testing.T) {
+	f := newFixture(t)
+	p := f.createProfile(t, "Acme", "Acme")
+	bad := f.createBuild(t, p.ID, []string{"linux-x64"})
+	good := f.createBuild(t, p.ID, []string{"linux-x64"})
+	require.NoError(t, store.WithoutTenantScope(f.db).Model(&model.ClientBuild{}).
+		Where("id = ?", bad.Build.ID).Update("platforms_json", "{not-json").Error)
+	f.github.dispatchFn = func(context.Context, DispatchInput) (DispatchResult, error) {
+		return DispatchResult{RunID: 4242, URL: "https://github.com/r/4242"}, nil
+	}
+	f.github.getRunFn = func(_ context.Context, id int64) (Run, error) {
+		return Run{ID: id, Status: "queued"}, nil
+	}
+
+	f.advance(t)
+
+	require.Equal(t, model.ClientBuildStatusFailed, f.buildRow(t, bad.Build.ID).Status)
+	require.Equal(t, model.ClientBuildStatusDispatched, f.buildRow(t, good.Build.ID).Status)
+}

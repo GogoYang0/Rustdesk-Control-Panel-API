@@ -53,6 +53,9 @@ func NewGitHubClient(cfg GitHubConfig, logger *zap.Logger) GitHubClient {
 func (c *githubClient) Dispatch(ctx context.Context, in DispatchInput) (DispatchResult, error) {
 	body := map[string]any{
 		"ref": c.cfg.Ref,
+		// Without this GitHub answers 204 and the run has to be recovered by
+		// matching run-name later, which is slower and can pick the wrong run.
+		"return_run_details": true,
 		"inputs": map[string]string{
 			"build_id":         strconv.FormatUint(uint64(in.BuildID), 10),
 			"bundle_url":       in.BundleURL,
@@ -61,8 +64,10 @@ func (c *githubClient) Dispatch(ctx context.Context, in DispatchInput) (Dispatch
 		},
 	}
 	var out struct {
-		WorkflowRunID int64  `json:"workflow_run_id"`
-		HTMLURL       string `json:"html_url"`
+		WorkflowRun struct {
+			ID      int64  `json:"id"`
+			HTMLURL string `json:"html_url"`
+		} `json:"workflow_run"`
 	}
 	err := c.doJSON(ctx, http.MethodPost,
 		fmt.Sprintf("/repos/%s/actions/workflows/%s/dispatches", c.cfg.Repo, c.cfg.Workflow),
@@ -70,7 +75,7 @@ func (c *githubClient) Dispatch(ctx context.Context, in DispatchInput) (Dispatch
 	if err != nil {
 		return DispatchResult{}, err
 	}
-	return DispatchResult{RunID: out.WorkflowRunID, URL: out.HTMLURL}, nil
+	return DispatchResult{RunID: out.WorkflowRun.ID, URL: out.WorkflowRun.HTMLURL}, nil
 }
 
 func (c *githubClient) GetRun(ctx context.Context, runID int64) (Run, error) {

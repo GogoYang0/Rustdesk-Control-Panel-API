@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/gen"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
@@ -53,10 +54,11 @@ func (a *AdminAPI) writeClientBuildError(c *gin.Context, err error, logMsg strin
 	case errors.Is(err, clientbuild.ErrTokenInvalid):
 		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "invalid or expired bundle token")
 	case errors.Is(err, clientbuild.ErrUnaudited):
-		a.deps.Logger.Error(logMsg + ": transactional auditor unavailable")
+		a.deps.Logger.Error(logMsg,
+			zap.String("reason", "transactional auditor unavailable"), zap.Error(err))
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "audit unavailable")
 	default:
-		a.deps.Logger.Error(logMsg)
+		a.deps.Logger.Error(logMsg, zap.Error(err))
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "client build operation failed")
 	}
 }

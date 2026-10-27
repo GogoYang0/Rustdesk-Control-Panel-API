@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -155,3 +156,25 @@ func (f *fixture) setLogo(t *testing.T, profileID uint, size int) string {
 }
 
 func strPtr(v string) *string { return &v }
+
+func TestProfile_SetLogoFailureKeepsReferencedFile(t *testing.T) {
+	f := newFixture(t)
+	p := f.createProfile(t, "Acme", "Acme")
+	png := makePNG(t, 256, 256)
+	set, err := f.svc.SetProfileLogo(context.Background(), f.org.ID, f.user.ID, p.ID, png)
+	require.NoError(t, err)
+
+	// Re-uploading identical bytes resolves to the same stored path, so a
+	// failed transaction must not delete the file the row still references.
+	f.recorder.fail = errors.New("audit unavailable")
+	_, err = f.svc.SetProfileLogo(context.Background(), f.org.ID, f.user.ID, p.ID, png)
+	require.Error(t, err)
+	f.recorder.fail = nil
+
+	var row model.ClientBuildProfile
+	require.NoError(t, store.ScopedByOrg(f.db, f.org.ID).First(&row, p.ID).Error)
+	require.Equal(t, set.LogoPath, row.LogoPath)
+	opened, err := f.svc.OpenProfileLogo(context.Background(), f.org.ID, p.ID)
+	require.NoError(t, err)
+	_ = opened.File.Close()
+}

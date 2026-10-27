@@ -101,9 +101,9 @@ func ValidateConfig(cfg Config) error {
 	}
 
 	u, err := url.Parse(strings.TrimSpace(cfg.PublicBaseURL))
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" ||
+	if err != nil || !trustedURLScheme(u) || u.Host == "" ||
 		u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
-		return fmt.Errorf("clientbuild public base URL must be an http(s) origin")
+		return fmt.Errorf("clientbuild public base URL must be an https origin (http is loopback only)")
 	}
 	if strings.TrimSpace(cfg.RelayHost) == "" {
 		return fmt.Errorf("clientbuild relay host is required")
@@ -116,8 +116,8 @@ func ValidateConfig(cfg Config) error {
 		return fmt.Errorf("clientbuild github workflow, ref and token are required")
 	}
 	api, err := url.Parse(strings.TrimSpace(cfg.GitHub.APIBaseURL))
-	if err != nil || (api.Scheme != "http" && api.Scheme != "https") || api.Host == "" {
-		return fmt.Errorf("clientbuild github API base URL must be http(s)")
+	if err != nil || !trustedURLScheme(api) || api.Host == "" {
+		return fmt.Errorf("clientbuild github API base URL must be https (http is loopback only)")
 	}
 	if len(cfg.BundleKey) < 32 {
 		return fmt.Errorf("clientbuild bundle key must be at least 32 bytes")
@@ -131,6 +131,23 @@ func ValidateConfig(cfg Config) error {
 		}
 	}
 	return nil
+}
+
+// trustedURLScheme keeps credentials off the wire: bundle tokens ride the
+// public base URL and the GitHub token rides the API base URL, so cleartext is
+// only tolerated for a loopback host (local development and tests).
+func trustedURLScheme(u *url.URL) bool {
+	if u.Scheme == "https" {
+		return true
+	}
+	if u.Scheme != "http" {
+		return false
+	}
+	switch u.Hostname() {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
 }
 
 func validArtifactHost(pattern string) bool {

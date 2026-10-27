@@ -149,6 +149,8 @@ captcha:
 #
 # publicBaseURL must be the panel origin reachable by the build runner; it is
 # also compiled into the client as its API server (compat entry).
+# publicBaseURL and github.apiBaseURL must be https: the bundle token and the
+# PAT travel over them. http is accepted only for localhost/127.0.0.1/::1.
 # Secrets are injected from the environment and must never be stored here:
 #   PANEL_CLIENTBUILD_GITHUB_TOKEN  fine-grained PAT (Actions RW, Metadata R)
 #   PANEL_CLIENTBUILD_BUNDLE_KEY    HMAC key, at least 32 bytes

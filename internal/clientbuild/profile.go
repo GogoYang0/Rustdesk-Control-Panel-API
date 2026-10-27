@@ -298,7 +298,11 @@ func (s *Service) SetProfileLogo(ctx context.Context, orgID, actorID, id uint, r
 		})
 	})
 	if err != nil {
-		_ = s.storage.Remove(rel)
+		// Re-uploading identical bytes resolves to the path the row already
+		// references; deleting it would orphan the stored logo.
+		if rel != row.LogoPath {
+			_ = s.storage.Remove(rel)
+		}
 		return nil, err
 	}
 	if row.LogoPath != "" && row.LogoPath != rel {

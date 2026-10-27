@@ -55,6 +55,10 @@ func TestValidateConfig(t *testing.T) {
 		{"missing token", func(c *Config) { c.GitHub.Token = "" }},
 		{"missing artifact hosts", func(c *Config) { c.GitHub.ArtifactHosts = nil }},
 		{"missing relay host", func(c *Config) { c.RelayHost = "" }},
+		// Both URLs carry credentials: the bundle token rides PublicBaseURL and
+		// the PAT rides APIBaseURL, so cleartext is only tolerated on loopback.
+		{"cleartext public base url", func(c *Config) { c.PublicBaseURL = "http://panel.example.com" }},
+		{"cleartext github api", func(c *Config) { c.GitHub.APIBaseURL = "http://api.github.com" }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -62,5 +66,16 @@ func TestValidateConfig(t *testing.T) {
 			tc.mutate(&cfg)
 			require.Error(t, ValidateConfig(cfg))
 		})
+	}
+}
+
+func TestValidateConfig_AllowsLoopbackCleartext(t *testing.T) {
+	for _, base := range []string{
+		"http://localhost:8080", "http://127.0.0.1:8080", "http://[::1]:8080",
+	} {
+		cfg := validConfig()
+		cfg.PublicBaseURL = base
+		cfg.GitHub.APIBaseURL = base
+		require.NoError(t, ValidateConfig(cfg), base)
 	}
 }

@@ -38,7 +38,8 @@ func TestGitHub_Dispatch(t *testing.T) {
 			t.Errorf("decode dispatch body: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"workflow_run_id":4242,"html_url":"https://github.com/acme/build/actions/runs/4242"}`))
+		_, _ = w.Write([]byte(`{"workflow_run":{"id":4242,` +
+			`"html_url":"https://github.com/acme/build/actions/runs/4242","display_title":"panel-client-7"}}`))
 	}))
 	defer srv.Close()
 
@@ -55,10 +56,25 @@ func TestGitHub_Dispatch(t *testing.T) {
 	require.Equal(t, "2022-11-28", gotVersion)
 	require.Equal(t, "rustdesk-control-panel", gotUA)
 	require.Equal(t, "main", gotBody["ref"])
+	// GitHub only reports the run back when this flag is set; without it the
+	// endpoint answers 204 and every dispatch degrades to run-name matching.
+	require.Equal(t, true, gotBody["return_run_details"])
 	inputs := gotBody["inputs"].(map[string]any)
 	require.Equal(t, "7", inputs["build_id"])
 	require.Equal(t, "linux-x64,windows-x64", inputs["platforms"])
 	require.Equal(t, "1.5.0", inputs["rustdesk_version"])
+}
+
+func TestGitHub_DispatchNoContentLeavesRunUnknown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	res, err := newGitHubForTest(t, srv.URL).Dispatch(context.Background(), DispatchInput{BuildID: 7})
+	require.NoError(t, err)
+	require.Zero(t, res.RunID)
+	require.Empty(t, res.URL)
 }
 
 func TestGitHub_DispatchDoesNotRetry(t *testing.T) {
