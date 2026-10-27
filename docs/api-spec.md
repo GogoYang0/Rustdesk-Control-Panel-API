@@ -1,6 +1,6 @@
 # 后端 API 规范（Backend API Specification）
 
-> 适用版本：v0.11.0（M6 波次 5b-1：Passkey / WebAuthn；上一基线 v0.10.0）。本文档是对 `openapi.yaml`（契约 v0.11.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
+> 适用版本：v0.11.0（M6 波次 5b-1 Passkey、5b-2 OIDC；上一基线 v0.10.0）。本文档是对 `openapi.yaml`（契约 v0.11.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
 > 本文档随版本演进持续更新——契约变更的 PR 必须同步更新 §3/§4。
 > 配套文档：[部署指南](deployment.md) · [运维指南](operations.md)
 
@@ -435,6 +435,50 @@ Argon2id，保持耗时恒定）。删除密码的四项前置条件：当前密
 
 **compat 层不受影响**：原生客户端不走 WebAuthn，`/api/login` 协议不变；
 无密码账户在 compat 侧必然失败（空 hash 也走 dummy 校验，保持耗时一致）。
+
+### 3.17 OIDC 单点登录（v0.11.0）
+
+部署级**单一**外部身份源（与 LDAP 互斥，两者同时启用会启动失败）。
+流程：Authorization Code + PKCE(S256) + nonce，全程 state/nonce 一次性、
+ID token 经 JWKS 验签；登录成功后回调签发一次性 ticket（60 秒，库存 SHA-256），
+SPA 用它兑换与密码登录相同的 token 对。URL 中不出现任何 token。
+
+| 步骤 | 端点 | 认证 | 成功 | 主要错误 |
+|---|---|---|---|---|
+| 1 | `GET /auth/providers` | 无 | `{oidc:{enabled,name}, ldap:{enabled}}` | 429 |
+| 2 | `POST /auth/oidc/start` | 无 | `{authorization_url, state}` | 400 redirect_path 非法；429；503 |
+| 3 | `GET /auth/oidc/callback` | 无 | 302 `?ticket=…` | 302 `?error=<固定码>` |
+| 4 | `POST /auth/oidc/exchange` | 无 | `TokenResponse` | 401；429；503 |
+| 5 | `GET /auth/identity` | JWT | `{active_provider, identities[]}` | 401 |
+| 6 | `POST /auth/identity/unlink` | JWT + step-up/密码 | `OkResponse` | 400/401/404/409 |
+| 7 | `POST /orgs/{orgId}/members/{userId}/identity/reset` | `member.manage` | `OkResponse` | 403/404/409/500 |
+
+**无 JIT（O2）**：外部身份只绑定已存在的面板账户。绑定条件：ID token 的
+`email` 非空、`email_verified` 为真（布尔或字符串 `"true"`），且该邮箱在
+`users` 中唯一命中、账户邮箱已验证。未建号邮箱 → 回调 `?error=no_account`。
+
+**稳定标识（O11）**：绑定按 `(provider, issuer, subject)` 识别，issuer 入库。
+换 IdP 后旧行不命中、不删除，启动时打 WARN 列出条数；老用户需管理员 reset
+一次才能重绑（见 operations §11）。
+
+**冲突（O4）**：subject 已绑定 A 而邮箱命中 B → 拒绝并把 A 的行标记
+`conflict_at`；之后 SSO 对该账户一律 `identity_conflict`，直到管理员 reset。
+
+**本地第二因子（O5/O12）**：外部登录默认不叠加面板 TOTP。
+`external.requireLocalSecondFactor=true` 时，**已启用 TOTP** 的账户在
+exchange 处返回 401 `two_factor_required`（`methods:["totp"]`），
+`POST /auth/2fa/verify` 完成第二步；未启用 TOTP 的账户直接发 token 并打 WARN。
+文档不得宣称该开关等于强制全员 MFA。
+
+**解绑**：`POST /auth/identity/unlink` 需 step-up 或当前密码（二选一）。
+无密码、无 passkey 且只剩这条绑定时返回 409 —— 此类账户没有线上自救通道。
+管理员 reset（端点 7）复用 2FA/passkey 的越权守卫；唯一例外：目标全部绑定
+都已 `conflict_at` 时放行（O14，此时 SSO 本来就登不进）。
+
+**错误码映射**：`oidc_failed`（state/签名/nonce/超时/token 端点失败，一律不
+回显 IdP 原文）、`no_account`、`email_unverified`、`identity_conflict`。
+IdP 不可达 → 503；**不降级为密码登录**。
+
 
 ## 4. compat 层（RustDesk 原生客户端）
 
