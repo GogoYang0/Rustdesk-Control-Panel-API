@@ -63,11 +63,11 @@ func (c *githubClient) Dispatch(ctx context.Context, in DispatchInput) (Dispatch
 			"rustdesk_version": in.RustdeskVersion,
 		},
 	}
+	// return_run_details makes GitHub answer 200 with a flat object instead of
+	// 204: {"workflow_run_id":N,"run_url":...,"html_url":...}.
 	var out struct {
-		WorkflowRun struct {
-			ID      int64  `json:"id"`
-			HTMLURL string `json:"html_url"`
-		} `json:"workflow_run"`
+		WorkflowRunID int64  `json:"workflow_run_id"`
+		HTMLURL       string `json:"html_url"`
 	}
 	err := c.doJSON(ctx, http.MethodPost,
 		fmt.Sprintf("/repos/%s/actions/workflows/%s/dispatches", c.cfg.Repo, c.cfg.Workflow),
@@ -75,7 +75,7 @@ func (c *githubClient) Dispatch(ctx context.Context, in DispatchInput) (Dispatch
 	if err != nil {
 		return DispatchResult{}, err
 	}
-	return DispatchResult{RunID: out.WorkflowRun.ID, URL: out.WorkflowRun.HTMLURL}, nil
+	return DispatchResult{RunID: out.WorkflowRunID, URL: out.HTMLURL}, nil
 }
 
 func (c *githubClient) GetRun(ctx context.Context, runID int64) (Run, error) {

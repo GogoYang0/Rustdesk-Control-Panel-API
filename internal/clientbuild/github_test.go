@@ -38,8 +38,9 @@ func TestGitHub_Dispatch(t *testing.T) {
 			t.Errorf("decode dispatch body: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"workflow_run":{"id":4242,` +
-			`"html_url":"https://github.com/acme/build/actions/runs/4242","display_title":"panel-client-7"}}`))
+		_, _ = w.Write([]byte(`{"workflow_run_id":4242,` +
+			`"run_url":"https://api.github.com/repos/acme/build/actions/runs/4242",` +
+			`"html_url":"https://github.com/acme/build/actions/runs/4242"}`))
 	}))
 	defer srv.Close()
 
