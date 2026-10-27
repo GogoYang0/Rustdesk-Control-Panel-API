@@ -206,3 +206,30 @@ captcha:
 		require.ErrorContains(t, err, "captcha.altcha.maxNumber")
 	})
 }
+
+func TestLoad_WebAuthnSection(t *testing.T) {
+	t.Setenv("PANEL_AUTH_SECRET", "test-secret-test-secret-test-secret")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+server: {addr: ":8080"}
+log: {level: info, format: json}
+auth: {secret: "", accessTTL: 15m, refreshTTL: 168h}
+webauthn:
+  enabled: true
+  rpId: "panel.example.com"
+  rpName: "Panel"
+  origin: "https://panel.example.com"
+  ceremonyTTL: 3m
+  credentialsPerUser: 5
+`), 0o644))
+
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	require.True(t, cfg.WebAuthn.Enabled)
+	require.Equal(t, "panel.example.com", cfg.WebAuthn.RPID)
+	require.Equal(t, "Panel", cfg.WebAuthn.RPDisplayName)
+	require.Equal(t, "https://panel.example.com", cfg.WebAuthn.Origin)
+	require.Equal(t, 3*time.Minute, cfg.WebAuthn.CeremonyTTL)
+	require.Equal(t, 5, cfg.WebAuthn.CredentialsPerUser)
+}
