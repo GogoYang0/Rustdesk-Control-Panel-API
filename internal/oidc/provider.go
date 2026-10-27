@@ -15,6 +15,7 @@ import (
 	"golang.org/x/oauth2"
 	"gorm.io/gorm"
 
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/identity"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 )
 
@@ -45,9 +46,10 @@ type Config struct {
 // bindings. A nil *Service means the feature is disabled; the HTTP layer then
 // answers 503 on every OIDC endpoint.
 type Service struct {
-	db  *gorm.DB
-	cfg Config
-	log *zap.Logger
+	db    *gorm.DB
+	cfg   Config
+	log   *zap.Logger
+	ident *identity.Service
 
 	mu sync.Mutex
 	p  *provider
@@ -69,7 +71,7 @@ func NewService(db *gorm.DB, cfg Config, log *zap.Logger) *Service {
 	if cfg.ClockSkew < 0 {
 		cfg.ClockSkew = 0
 	}
-	return &Service{db: db, cfg: cfg, log: log}
+	return &Service{db: db, cfg: cfg, log: log, ident: &identity.Service{DB: db, Now: cfg.Now}}
 }
 
 // ProviderName is the label the login page shows.

@@ -31,26 +31,6 @@ var (
 	// already exchanged.
 	ErrInvalidTicket = errors.New("oidc ticket invalid")
 
-	// ErrEmailUnverified means the IdP did not assert a verified mailbox, so
-	// the identity cannot be bound to a panel account.
-	ErrEmailUnverified = errors.New("oidc email is not verified")
-
-	// ErrNoAccount means the verified mailbox matches no panel account. There
-	// is no just-in-time provisioning by design (O2).
-	ErrNoAccount = errors.New("no panel account for this identity")
-
-	// ErrIdentityConflict means the binding is unusable: the subject is bound
-	// to one account while the mailbox belongs to another (O4), or the account
-	// already has a different subject for this issuer.
-	ErrIdentityConflict = errors.New("oidc identity conflict")
-
-	// ErrIdentityNotFound is a 404 on the self-service endpoints.
-	ErrIdentityNotFound = errors.New("identity not found")
-
-	// ErrLastCredential refuses an unlink that would leave the account with no
-	// way to sign in at all.
-	ErrLastCredential = errors.New("identity is the only credential")
-
 	// ErrInvalidRedirect refuses a redirect_path that could leave the site.
 	ErrInvalidRedirect = errors.New("invalid redirect path")
 )

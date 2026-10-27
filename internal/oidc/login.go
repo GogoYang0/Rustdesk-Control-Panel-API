@@ -6,9 +6,11 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
+	"strings"
 
 	"gorm.io/gorm"
 
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/identity"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 )
 
@@ -48,7 +50,8 @@ func (s *Service) FinishCallback(ctx context.Context, state, code string) (Callb
 		return res, ErrLoginFailed
 	}
 
-	user, err := s.resolveIdentity(ctx, identityClaims{
+	user, err := s.resolve(ctx, identity.Claims{
+		Provider:      model.IdentityProviderOIDC,
 		Issuer:        idToken.Issuer,
 		Subject:       idToken.Subject,
 		Email:         raw.Email,
@@ -146,4 +149,18 @@ func (s *Service) PeekStateForTicket(ctx context.Context, ticket string) (string
 		return "", ErrInvalidTicket
 	}
 	return flow.State, nil
+}
+
+// normalizeEmailVerified accepts the ID-token claim shapes real providers emit:
+// a JSON boolean, the string "true", or nothing at all. Anything else is false —
+// a claim we cannot read is not evidence that the mailbox was verified (S3).
+func normalizeEmailVerified(raw any) bool {
+	switch v := raw.(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(strings.TrimSpace(v), "true")
+	default:
+		return false
+	}
 }
