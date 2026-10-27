@@ -259,3 +259,12 @@ func (s *Service) StaleCount(ctx context.Context, provider, issuer string) (int6
 		Count(&count).Error
 	return count, err
 }
+
+// NewService builds the shared binding service with an explicit clock. The
+// caller normalizes nil to time.Now so every provider sees the same default.
+func NewService(db *gorm.DB, now func() time.Time) *Service {
+	if now == nil {
+		now = time.Now
+	}
+	return &Service{DB: db, Now: now}
+}
