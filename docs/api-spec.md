@@ -395,7 +395,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 |---|---|---|
 | 第二因子（替代 TOTP） | `/auth/passkey/login/begin` 带 `challenge_token` | 密码已通过且账户启用了 TOTP |
 | 无密码登录 | `begin` 不带参数（可发现凭据）或带 `email` 提示 | 账户有 passkey |
-| 敏感操作 step-up | `/auth/passkey/stepup/begin|finish` | 已登录 + 有 passkey |
+| 敏感操作 step-up | `/auth/passkey/stepup/begin`、`/auth/passkey/stepup/finish` | 已登录 + 有 passkey |
 
 **绑定不改变密码登录的因子要求**：只有启用 TOTP 时 `/auth/login` 才返回
 `two_factor_required`；`data.methods` 列出可用因子（`totp`，以及该账户有
@@ -403,7 +403,7 @@ passkey 时的 `passkey`）；该字段是 0.11.0 对既有 401 响应体唯一�
 （见下），要么先启用 TOTP。
 
 **无密码账户**：`POST /auth/password/remove` 把 `password_hash` 置空，之后
-`/auth/login` 对任何密码都返回通用 `invalid_credentials`（内部仍走一次
+`/auth/login` 对任何密码都返回通用 `401 unauthorized`（内部仍走一次
 Argon2id，保持耗时恒定）。删除密码的四项前置条件：当前密码正确、step-up
 有效、已绑 passkey ≥ 2、`user_totp` 行完全不存在（含未启用的 pending 行）。
 代价是 **compat 登录不可用**（响应 `warnings` 明示），且没有邮箱自救通道。

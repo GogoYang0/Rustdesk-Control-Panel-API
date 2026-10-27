@@ -2754,7 +2754,7 @@ type Passkey struct {
 
 // PasskeyCeremony defines model for PasskeyCeremony.
 type PasskeyCeremony struct {
-	// CeremonyToken 一次性 ceremony 句柄，5 分钟后过期
+	// CeremonyToken 一次性 ceremony 句柄；有效期由部署配置 `webauthn.ceremonyTTL` 决定（默认 5 分钟）
 	CeremonyToken string `json:"ceremony_token"`
 
 	// Options W3C PublicKeyCredentialCreationOptions / RequestOptions 的 JSON 形态

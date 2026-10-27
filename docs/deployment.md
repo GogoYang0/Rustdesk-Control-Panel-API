@@ -354,13 +354,14 @@ webauthn:
 |---|---|---|
 | `enabled` | `false` | 关闭时全部 passkey 端点返回 503（不是 404） |
 | `rpId` | 空 | 必填；必须是 `origin` 主机名的可注册后缀（相等或以 `.rpId` 结尾） |
-| `origin` | 空 | 必填；必须 https；仅 `localhost`/`127.0.0.1`/`::1` 允许 http |
+| `origin` | 空 | 必填；必须 https；仅 `localhost` 允许 http（RP ID 必须是域名，IP 字面量会被浏览器拒绝） |
 | `ceremonyTTL` | `5m` | 1s–15m |
 | `credentialsPerUser` | `10` | 1–20 |
 
 - `enabled=true` 时启动期校验，任何缺项/非法值 **Fatal**（不静默降级）。
-- **内网 IP 直连不支持**：浏览器在 `http://10.x.x.x` 这类非安全上下文里不提供
-  WebAuthn。这类部署只能继续用密码 + TOTP。
+- **IP 直连不支持**：浏览器在 `http://10.x.x.x` 这类非安全上下文里不提供
+  WebAuthn；即使把 `127.0.0.1` 配成 origin，RP ID 也必须是域名——启动校验会
+  直接拒绝 IP 形式的 `rpId`。本机调试请用 `http://localhost:<port>`。
 - 反代不得改写请求体；`Origin` 由浏览器写进 `clientDataJSON`，服务端不信任
   `Origin` 头。
 - 新增周期任务 `webauthn-ceremony-sweep`（10 分钟），清理过期 ceremony；服务

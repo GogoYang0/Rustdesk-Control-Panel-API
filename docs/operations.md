@@ -343,10 +343,11 @@ Prometheus 指标端点属后续硬化项（见 #31 描述遗留清单）。
 2. 生成一个新密码的哈希（与面板存储格式一致）：
 
    ```bash
-   printf '%s\n' 'temporary-strong-password' | go run ./tools/pwhash
+   read -rs PW && printf '%s\n' "$PW" | go run ./tools/pwhash && unset PW
    ```
 
-   口令从 stdin 读，避免进 shell history 与进程列表。
+   `read -rs` 不回显、也不进 shell history；口令只经 stdin 传给工具，不出现在
+   进程列表里。
 
 3. 写入数据库（**先备份**，并把该值只交给账户本人）：
 

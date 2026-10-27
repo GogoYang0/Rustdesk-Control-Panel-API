@@ -36,10 +36,10 @@ func TestValidateWebAuthn(t *testing.T) {
 			c.RPID = "example.com"
 			c.Origin = "https://panel.example.com"
 		}), ""},
-		{"loopback ip over http", mutateWebAuthn(func(c *WebAuthnConfig) {
+		{"ip rpId rejected", mutateWebAuthn(func(c *WebAuthnConfig) {
 			c.RPID = "127.0.0.1"
 			c.Origin = "http://127.0.0.1:8080"
-		}), ""},
+		}), "webauthn.rpId must be a domain name"},
 		{"localhost over http", mutateWebAuthn(func(c *WebAuthnConfig) {
 			c.RPID = "localhost"
 			c.Origin = "http://localhost:5173"

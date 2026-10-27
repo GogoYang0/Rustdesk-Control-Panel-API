@@ -481,7 +481,7 @@ paths:
       summary: 开始 step-up 断言
       description: |
         需要登录（JWT）。为敏感操作（删除/恢复本地密码）发起一次新鲜断言。
-        账户没有 passkey 时 409；断言有效期 5 分钟。
+        账户没有 passkey 时 409；断言有效期由 `webauthn.ceremonyTTL` 决定（默认 5 分钟）。
       tags:
         - auth
       security:
@@ -858,7 +858,7 @@ paths:
       summary: 完成绑定 passkey
       description: |
         需要登录（JWT）。提交浏览器 `navigator.credentials.create()` 的结果。
-        `ceremony_token` 一次有效（5 分钟），重放返回 401。
+        `ceremony_token` 一次有效（有效期由 `webauthn.ceremonyTTL` 决定，默认 5 分钟），重放返回 401。
 
         校验失败（origin/rpId 不符、challenge 不符、签名无效）一律 401，不区分原因；
         同一凭据已绑定到任何账户时 409，且不回显归属账户。
@@ -5615,7 +5615,7 @@ components:
       properties:
         ceremony_token:
           type: string
-          description: 一次性 ceremony 句柄，5 分钟后过期
+          description: 一次性 ceremony 句柄；有效期由部署配置 `webauthn.ceremonyTTL` 决定（默认 5 分钟）
         options:
           type: object
           additionalProperties: true

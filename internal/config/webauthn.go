@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"regexp"
 	"strings"
@@ -41,6 +42,12 @@ func validateWebAuthn(cfg WebAuthnConfig) error {
 	}
 	if !webAuthnHostPattern.MatchString(cfg.RPID) {
 		return fmt.Errorf("webauthn.rpId must be a bare lowercase host")
+	}
+	// WebAuthn RP IDs are domain names; browsers reject an IP literal with a
+	// SecurityError, so a deployment configured that way would fail every
+	// ceremony. localhost is the only loopback host that works.
+	if net.ParseIP(cfg.RPID) != nil {
+		return fmt.Errorf("webauthn.rpId must be a domain name (localhost for local testing), not an IP address")
 	}
 	if strings.TrimSpace(cfg.Origin) == "" {
 		return fmt.Errorf("webauthn.origin is required")

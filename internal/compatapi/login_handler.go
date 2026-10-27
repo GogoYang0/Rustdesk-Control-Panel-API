@@ -1,6 +1,8 @@
 package compatapi
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"strconv"
@@ -64,9 +66,21 @@ func userPayloadOf(u model.User) userPayload {
 	}
 }
 
+// passwordLoginAccepted decides whether the compat password step may succeed:
+// a resolved account without a password never authenticates, even if the dummy
+// hash matched.
+func passwordLoginAccepted(found, hasPassword, matched bool) bool {
+	return found && hasPassword && matched
+}
+
 // dummyCompatHash is verified for unknown accounts to keep login timing flat.
 var dummyCompatHash = sync.OnceValue(func() string {
-	hash, err := auth.HashPassword("dummy-password-for-compat-timing")
+	// Random secret: the compat dummy hash must never be a usable credential.
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return ""
+	}
+	hash, err := auth.HashPassword(base64.RawURLEncoding.EncodeToString(secret))
 	if err != nil {
 		return ""
 	}
@@ -120,11 +134,11 @@ func (s *Server) login(c *gin.Context) {
 	if err == nil && user.PasswordHash != "" {
 		hashToCheck = user.PasswordHash
 	}
-	valid := false
-	if ok, verr := auth.VerifyPassword(hashToCheck, req.Password); verr == nil && err == nil && ok {
-		valid = true
+	matched := false
+	if ok, verr := auth.VerifyPassword(hashToCheck, req.Password); verr == nil && ok {
+		matched = true
 	}
-	if !valid {
+	if !passwordLoginAccepted(err == nil, user.PasswordHash != "", matched) {
 		s.deps.Guard.RecordFailure(lockKey, ip)
 		compatError(c, http.StatusUnauthorized, "invalid credentials")
 		return

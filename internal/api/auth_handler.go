@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -60,11 +62,11 @@ func (a *AdminAPI) Login(c *gin.Context) {
 	if err == nil {
 		hashToCheck = passwordHashForVerification(user.PasswordHash)
 	}
-	valid := false
-	if ok, verr := auth.VerifyPassword(hashToCheck, req.Password); verr == nil && err == nil {
-		valid = ok
+	matched := false
+	if ok, verr := auth.VerifyPassword(hashToCheck, req.Password); verr == nil && ok {
+		matched = true
 	}
-	if !valid {
+	if !passwordLoginAccepted(err == nil, auth.HasPassword(user), matched) {
 		a.guard.RecordFailure(email, ip)
 		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "invalid credentials")
 		return
@@ -697,6 +699,13 @@ func tokenToAPI(t *model.APIToken) gen.APIToken {
 	}
 }
 
+// passwordLoginAccepted decides whether the password step may succeed. The
+// dummy hash is a real Argon2id hash of a known literal, so a match alone is
+// not proof: the account must exist AND actually have a password.
+func passwordLoginAccepted(found, hasPassword, matched bool) bool {
+	return found && hasPassword && matched
+}
+
 // passwordHashForVerification keeps the password step constant-time for
 // passwordless accounts: an empty hash cannot be verified, so it would fail
 // before Argon2id ran and reveal which mailboxes have no password.
@@ -709,7 +718,13 @@ func passwordHashForVerification(stored string) string {
 
 // dummyPasswordHash is verified for unknown accounts to keep login timing flat.
 var dummyPasswordHash = sync.OnceValue(func() string {
-	hash, err := auth.HashPassword("dummy-password-for-timing")
+	// Hashing a random secret keeps the dummy unguessable even if a caller
+	// forgets the hasPassword guard.
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return ""
+	}
+	hash, err := auth.HashPassword(base64.RawURLEncoding.EncodeToString(secret))
 	if err != nil {
 		return ""
 	}

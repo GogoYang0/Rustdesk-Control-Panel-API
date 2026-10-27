@@ -153,6 +153,20 @@ func TestPasswordSet_OnlyWhenAbsent(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 }
 
+// TestLogin_PasswordlessAccountRejectsDummyPassword is the regression for the
+// timing constant: the dummy hash is a real Argon2id hash of a literal string,
+// so a passwordless account must not accept it just because the email resolved.
+func TestLogin_PasswordlessAccountRejectsDummyPassword(t *testing.T) {
+	h, _, u, _ := passkeyLoginHarness(t)
+	require.NoError(t, h.db.DB.Model(&model.User{}).Where("id = ?", u.ID).Update("password_hash", "").Error)
+
+	w := h.do(t, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"email": u.Email, "password": "dummy-password-for-timing",
+	}, "")
+	require.Equal(t, http.StatusUnauthorized, w.Code, w.Body.String())
+	require.NotContains(t, w.Body.String(), "access_token")
+}
+
 func TestPasswordSet_EnforcesMinimumLength(t *testing.T) {
 	h, _, u, jwt := passkeyLoginHarness(t)
 	require.NoError(t, h.db.DB.Model(&model.User{}).Where("id = ?", u.ID).Update("password_hash", "").Error)
