@@ -65,7 +65,7 @@ func (s *Service) CreateBuild(ctx context.Context, orgID, actorID, profileID uin
 			return nil, fmt.Errorf("%w: profile logo is unreadable", ErrConflict)
 		}
 		logoBytes, err = io.ReadAll(io.LimitReader(f, 1<<20+1))
-		f.Close()
+		_ = f.Close()
 		if err != nil || len(logoBytes) == 0 || len(logoBytes) > 1<<20 {
 			return nil, fmt.Errorf("%w: profile logo is unreadable", ErrConflict)
 		}
@@ -400,7 +400,7 @@ func (s *Service) ServeBundle(ctx context.Context, buildID uint, token string) (
 		TargetID:       strconv.FormatUint(uint64(buildID), 10),
 		Detail:         map[string]any{"build_id": buildID},
 	}); err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, ErrUnaudited
 	}
 	return f, nil

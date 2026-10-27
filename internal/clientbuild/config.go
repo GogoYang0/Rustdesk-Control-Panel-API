@@ -135,9 +135,7 @@ func ValidateConfig(cfg Config) error {
 
 func validArtifactHost(pattern string) bool {
 	p := strings.ToLower(strings.TrimSpace(pattern))
-	if strings.HasPrefix(p, "*.") {
-		p = p[2:]
-	}
+	p = strings.TrimPrefix(p, "*.")
 	if p == "" || net.ParseIP(p) != nil {
 		return false
 	}

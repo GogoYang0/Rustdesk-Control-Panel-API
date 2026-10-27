@@ -159,7 +159,7 @@ func TestBuild_BundleURLAndServe(t *testing.T) {
 	file, err := f.svc.ServeBundle(context.Background(), d.Build.ID, token)
 	require.NoError(t, err)
 	_, err = io.ReadAll(file)
-	file.Close()
+	_ = file.Close()
 	require.NoError(t, err)
 	require.Contains(t, f.recorder.actions(), "client_build.bundle.served")
 

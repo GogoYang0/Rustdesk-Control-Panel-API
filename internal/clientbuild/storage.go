@@ -62,11 +62,11 @@ func (s *Storage) Open(rel string) (*os.File, error) {
 	}
 	info, err := f.Stat()
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
-		f.Close()
+		_ = f.Close()
 		return nil, fmt.Errorf("client build asset is not a regular file")
 	}
 	return f, nil
@@ -158,7 +158,7 @@ func (s *Storage) writeAtomic(rel string, data []byte) error {
 	}
 	name := tmp.Name()
 	cleanup := func() {
-		tmp.Close()
+		_ = tmp.Close()
 		_ = os.Remove(name)
 	}
 	if err := tmp.Chmod(0o600); err != nil {

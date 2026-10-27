@@ -299,7 +299,7 @@ func (a *AdminAPI) GetClientBuildProfileLogo(c *gin.Context, orgId, profileId in
 		a.writeClientBuildError(c, err, "get client build logo failed")
 		return
 	}
-	defer logo.File.Close()
+	defer func() { _ = logo.File.Close() }()
 	etag := `"` + logo.SHA256 + `"`
 	c.Header("ETag", etag)
 	c.Header("Cache-Control", "private, max-age=60")
@@ -504,7 +504,7 @@ func (a *AdminAPI) DownloadClientBuildArtifact(c *gin.Context, orgId, buildId, a
 		a.writeClientBuildError(c, err, "open client build artifact failed")
 		return
 	}
-	defer file.File.Close()
+	defer func() { _ = file.File.Close() }()
 	c.Set(contextAuditRecorded, true)
 	c.Header("Content-Type", "application/octet-stream")
 	c.Header("X-Content-Type-Options", "nosniff")
@@ -537,7 +537,7 @@ func (a *AdminAPI) DownloadClientBuildBundle(c *gin.Context, buildId int64, para
 		}
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	c.Set(contextAuditRecorded, true)
 	c.Header("Content-Type", "application/gzip")
 	c.Header("Cache-Control", "no-store")

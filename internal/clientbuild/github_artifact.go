@@ -128,7 +128,7 @@ func (f *artifactFetcher) fetch(ctx context.Context, location, destPath string, 
 	if err != nil {
 		return 0, fmt.Errorf("artifact download failed")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("artifact download failed with status %d", resp.StatusCode)
 	}
@@ -174,7 +174,7 @@ func writeLimited(body io.Reader, destPath string, maxBytes int64) (int64, error
 	}
 	name := tmp.Name()
 	cleanup := func() {
-		tmp.Close()
+		_ = tmp.Close()
 		_ = os.Remove(name)
 	}
 	n, err := io.Copy(tmp, io.LimitReader(body, maxBytes+1))

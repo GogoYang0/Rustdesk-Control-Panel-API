@@ -91,7 +91,7 @@ func (s *Service) ingestRun(ctx context.Context, build *model.ClientBuild) error
 	if err != nil {
 		return s.failIngest(ctx, build, "could not create staging directory")
 	}
-	defer os.RemoveAll(stage)
+	defer func() { _ = os.RemoveAll(stage) }()
 
 	var total int64
 	seen := map[string]bool{}
@@ -208,7 +208,7 @@ func (s *Service) extractArtifact(
 	if err != nil {
 		return nil, fmt.Errorf("zip structure is invalid")
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	prefix := fmt.Sprintf("panel-client-%d-%s", buildID, platform)
 	allowed := platformExtensions[platform]
 	maxEntries := len(allowed)
@@ -218,12 +218,15 @@ func (s *Service) extractArtifact(
 	}
 	var out []stagedArtifact
 	for _, entry := range reader.File {
-		name := entry.Name
+		rawName := entry.Name
+		// Base() is the sanitizer at the file-write sink: every accepted
+		// artifact name must be a single path component.
+		name := filepath.Base(rawName)
 		if entry.FileInfo().IsDir() || entry.Mode()&os.ModeSymlink != 0 {
 			return nil, fmt.Errorf("zip contains a directory or symlink")
 		}
-		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) ||
-			path.IsAbs(name) || path.Clean(name) != name {
+		if name != rawName || name == "" || name == "." || name == ".." ||
+			strings.ContainsAny(name, `/\`) || path.IsAbs(name) {
 			return nil, fmt.Errorf("zip entry path is invalid")
 		}
 		if len(out) >= maxEntries {
@@ -246,12 +249,12 @@ func (s *Service) extractArtifact(
 		}
 		outFile, err := os.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err != nil {
-			in.Close()
+			_ = in.Close()
 			return nil, fmt.Errorf("could not stage artifact")
 		}
 		hash := sha256.New()
 		written, copyErr := io.Copy(io.MultiWriter(outFile, hash), io.LimitReader(in, s.cfg.MaxArtifactBytes+1))
-		in.Close()
+		_ = in.Close()
 		closeErr := outFile.Close()
 		if copyErr != nil || closeErr != nil {
 			_ = os.Remove(dest)
@@ -377,7 +380,7 @@ func (s *Service) OpenArtifact(ctx context.Context, orgID, buildID, artifactID, 
 		return nil, ErrArtifactUnavailable
 	}
 	if s.auditor == nil {
-		f.Close()
+		_ = f.Close()
 		return nil, ErrUnaudited
 	}
 	if err := s.auditor.Record(ctx, audit.Entry{
@@ -391,7 +394,7 @@ func (s *Service) OpenArtifact(ctx context.Context, orgID, buildID, artifactID, 
 			"file_name": artifact.FileName,
 		},
 	}); err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, ErrUnaudited
 	}
 	return &ArtifactFile{Artifact: artifact, File: f}, nil

@@ -160,7 +160,7 @@ func (c *githubClient) DownloadArtifact(ctx context.Context, artifactID int64, d
 	if err != nil {
 		return 0, fmt.Errorf("artifact download request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	switch {
 	case resp.StatusCode == http.StatusOK:
@@ -192,10 +192,7 @@ type runPayload struct {
 }
 
 func (p runPayload) run() Run {
-	return Run{
-		ID: p.ID, Status: p.Status, Conclusion: p.Conclusion,
-		URL: p.URL, DisplayTitle: p.DisplayTitle, CreatedAt: p.CreatedAt,
-	}
+	return Run(p)
 }
 
 func (c *githubClient) request(ctx context.Context, method, path string, query url.Values, body any) (*http.Request, error) {
@@ -262,7 +259,7 @@ func (c *githubClient) doOnce(ctx context.Context, method, path string, query ur
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return &APIError{Status: resp.StatusCode, Message: c.sanitizeBody(resp.Body)}
 	}

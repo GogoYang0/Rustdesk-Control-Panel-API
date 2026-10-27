@@ -122,7 +122,7 @@ func TestProfile_LogoLifecycle(t *testing.T) {
 	opened, err := f.svc.OpenProfileLogo(context.Background(), f.org.ID, p.ID)
 	require.NoError(t, err)
 	data, err := io.ReadAll(opened.File)
-	opened.File.Close()
+	_ = opened.File.Close()
 	require.NoError(t, err)
 	sum := sha256.Sum256(data)
 	require.Equal(t, hex.EncodeToString(sum[:]), updated.LogoSHA256)

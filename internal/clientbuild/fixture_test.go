@@ -143,6 +143,12 @@ func newFixture(t *testing.T) *fixture {
 	n := fixtureSeq.Add(1)
 	st := openClientBuildStore(t, n)
 	t.Cleanup(func() { _ = st.Close() })
+	// PostgreSQL/MySQL fixtures share one CI database, while Advance and Sweep
+	// deliberately scan every organization; recreate the client-build tables so
+	// rows left behind by an earlier test cannot be picked up by a later one.
+	require.NoError(t, st.DB.Migrator().DropTable(
+		&model.ClientBuildArtifact{}, &model.ClientBuild{}, &model.ClientBuildProfile{},
+	))
 	require.NoError(t, st.DB.AutoMigrate(
 		&model.Organization{}, &model.User{}, &model.ServerGroup{},
 		&model.ClientBuildProfile{}, &model.ClientBuild{}, &model.ClientBuildArtifact{},

@@ -107,7 +107,7 @@ func TestIngest_SuccessAndOpenArtifact(t *testing.T) {
 	opened, err := f.svc.OpenArtifact(context.Background(), f.org.ID, d.Build.ID, got.Artifacts[0].ID, f.user.ID)
 	require.NoError(t, err)
 	raw, err := io.ReadAll(opened.File)
-	opened.File.Close()
+	_ = opened.File.Close()
 	require.NoError(t, err)
 	require.Equal(t, "appimage-bytes", string(raw))
 	require.Contains(t, f.recorder.actions(), "client_build.artifact.download")
