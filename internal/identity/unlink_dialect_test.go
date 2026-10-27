@@ -55,8 +55,12 @@ func TestUnlink_LockingDialects(t *testing.T) {
 			}
 			require.NoError(t, st.DB.Create(&u).Error)
 
-			first := model.UserIdentity{UserID: u.ID, Provider: model.IdentityProviderLDAP, Issuer: "https://a.example.com", Subject: "s1", Email: u.Email, LinkedAt: time.Now()}
-			second := model.UserIdentity{UserID: u.ID, Provider: model.IdentityProviderLDAP, Issuer: "https://b.example.com", Subject: "s2", Email: u.Email, LinkedAt: time.Now()}
+			// Every identity column is run-unique: user_identities is global
+			// (no org scoping) and the test-db job shares one database across
+			// runs — fixed subjects/issuers would collide on
+			// idx_identity_provider_issuer_subject with the previous run.
+			first := model.UserIdentity{UserID: u.ID, Provider: model.IdentityProviderLDAP, Issuer: "https://a-" + strconv.FormatInt(suffix, 10) + ".example.com", Subject: "s1-" + strconv.FormatInt(suffix, 10), Email: u.Email, LinkedAt: time.Now()}
+			second := model.UserIdentity{UserID: u.ID, Provider: model.IdentityProviderLDAP, Issuer: "https://b-" + strconv.FormatInt(suffix, 10) + ".example.com", Subject: "s2-" + strconv.FormatInt(suffix, 10), Email: u.Email, LinkedAt: time.Now()}
 			require.NoError(t, st.DB.Create(&first).Error)
 			require.NoError(t, st.DB.Create(&second).Error)
 
