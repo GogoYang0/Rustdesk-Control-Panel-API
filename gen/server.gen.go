@@ -2768,7 +2768,8 @@ type PasskeyCeremony struct {
 	// 返回值方向相反——`response.clientDataJSON`、`attestationObject`、
 	// `authenticatorData`、`signature`、`userHandle` 都是 `ArrayBuffer`，需再编码
 	// 回 base64url 才能提交。参考实现见仓库 `docs/reference/passkey-smoke.html`
-	// 的 `b64urlToBuf` / `prepareOptions`（约 40 行）。
+	// 的 `b64urlToBuf`，以及注册向的 `prepareCreationOptions`、登录向的
+	// `prepareRequestOptions`。
 	Options map[string]interface{} `json:"options"`
 }
 

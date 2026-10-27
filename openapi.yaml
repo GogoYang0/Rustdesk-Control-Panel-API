@@ -744,8 +744,10 @@ paths:
           **安全边界说明**：命中与未命中的差别只在 `allowCredentials` 的内容，
           状态码与结构一致。因此响应用途上可区分"该邮箱是否已绑定 passkey"——
           这是为了让浏览器只列出相关凭据而显式接受的取舍（设计 D16），**不要**
-          把响应形状当作保密边界；探测成本由 per-IP 限流约束。需要完全消除该
-          差异的部署应关闭 `email` 入口（本版本未提供开关，属已知限制）。
+          把响应形状当作保密边界；探测成本由 per-IP 限流约束。
+
+          要彻底消除该差异，**必须在服务端或入口网关拒绝 `email` 参数**：端点公开，
+          客户端不发送并不能阻止第三方直接提交。本版本无内置开关，属已知限制。
         - 都不带：可发现凭据（usernameless）流程，由认证器选择账户。
 
         受 per-IP 限流；`email` 分支额外按账户计失败窗口。
@@ -5639,7 +5641,8 @@ components:
             返回值方向相反——`response.clientDataJSON`、`attestationObject`、
             `authenticatorData`、`signature`、`userHandle` 都是 `ArrayBuffer`，需再编码
             回 base64url 才能提交。参考实现见仓库 `docs/reference/passkey-smoke.html`
-            的 `b64urlToBuf` / `prepareOptions`（约 40 行）。
+            的 `b64urlToBuf`，以及注册向的 `prepareCreationOptions`、登录向的
+            `prepareRequestOptions`。
 
     PasskeyCeremonyResponse:
       type: object

@@ -86,8 +86,9 @@ async function post(path, body, token) {
   return json;
 }
 
-// prepareOptions converts the server's base64url strings into the ArrayBuffers
-// the browser API expects.
+// prepareCreationOptions / prepareRequestOptions convert the server's
+// base64url strings into the ArrayBuffers the browser API expects: creation
+// decodes user.id and excludeCredentials, request decodes allowCredentials.
 function prepareCreationOptions(options) {
   const pk = options.publicKey;
   pk.challenge = b64urlToBuf(pk.challenge);
