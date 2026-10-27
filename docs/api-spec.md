@@ -1,6 +1,6 @@
 # 后端 API 规范（Backend API Specification）
 
-> 适用版本：v0.10.0（M6：波次 1 交互式验证码、波次 2 组模型下半场、波次 3 控制角色/客户端审计上报/compat 2FA、波次 4 客户端策略下发与心跳断连；上一基线 v0.9.0）。本文档是对 `openapi.yaml`（契约 v0.10.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
+> 适用版本：v0.11.0（M6 波次 5b-1：Passkey / WebAuthn；上一基线 v0.10.0）。本文档是对 `openapi.yaml`（契约 v0.11.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
 > 本文档随版本演进持续更新——契约变更的 PR 必须同步更新 §3/§4。
 > 配套文档：[部署指南](deployment.md) · [运维指南](operations.md)
 
@@ -386,6 +386,39 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 - 请求记录 `status`（`pending|fulfilled|expired`）、`conn_count`、`fulfilled_at`，审计动作 `device.disconnect.request/fulfilled/expired`。
 
 ---
+
+### 3.16 Passkey / WebAuthn（v0.11.0）
+
+管理面支持 passkey 登录，三条独立的用途：
+
+| 用途 | 入口 | 前置 |
+|---|---|---|
+| 第二因子（替代 TOTP） | `/auth/passkey/login/begin` 带 `challenge_token` | 密码已通过且账户启用了 TOTP |
+| 无密码登录 | `begin` 不带参数（可发现凭据）或带 `email` 提示 | 账户有 passkey |
+| 敏感操作 step-up | `/auth/passkey/stepup/begin|finish` | 已登录 + 有 passkey |
+
+**绑定不改变密码登录的因子要求**：只有启用 TOTP 时 `/auth/login` 才返回
+`two_factor_required`；`data.methods` 列出可用因子（`totp`，以及该账户有
+passkey 时的 `passkey`）。想让 passkey 成为强制要求，要么删除密码
+（见下），要么先启用 TOTP。
+
+**无密码账户**：`POST /auth/password/remove` 把 `password_hash` 置空，之后
+`/auth/login` 对任何密码都返回通用 `invalid_credentials`（内部仍走一次
+Argon2id，保持耗时恒定）。删除密码的四项前置条件：当前密码正确、step-up
+有效、已绑 passkey ≥ 2、`user_totp` 行完全不存在（含未启用的 pending 行）。
+代价是 **compat 登录不可用**（响应 `warnings` 明示），且没有邮箱自救通道。
+`POST /auth/password/set` 可在无密码时恢复（同样需要 step-up）。
+
+**step-up**：`finish` 返回 2 分钟、一次一用的 `stepup_token`；每次敏感操作
+消耗一次，重放 401。
+
+**错误语义**：断言失败（origin/rpId/challenge/签名/克隆计数器回退）一律
+401 且不区分原因；凭据已绑定（含跨账户）409；最后一个凭据 + 无密码 409；
+服务未启用 503。签名计数器回退只标记 `clone_warning=true`，**不自动删除**
+凭据。
+
+**compat 层不受影响**：原生客户端不走 WebAuthn，`/api/login` 协议不变；
+无密码账户在 compat 侧必然失败（空 hash 也走 dummy 校验，保持耗时一致）。
 
 ## 4. compat 层（RustDesk 原生客户端）
 

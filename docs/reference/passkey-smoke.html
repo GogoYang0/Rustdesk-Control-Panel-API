@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Passkey 冒烟页</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 40px auto; line-height: 1.6; }
+  fieldset { margin-bottom: 16px; }
+  label { display: block; margin: 6px 0 2px; }
+  input { width: 100%; padding: 6px; box-sizing: border-box; }
+  button { margin-top: 8px; padding: 6px 14px; }
+  pre { background: #f5f5f5; padding: 12px; overflow: auto; max-height: 320px; }
+  .warn { color: #b00; }
+</style>
+</head>
+<body>
+<h1>Passkey 冒烟页</h1>
+<p class="warn">
+  必须与面板的 <code>webauthn.origin</code> 同源提供（反代 alias 或本地同端口）。
+  <code>file://</code> 打开时 origin 为 null，WebAuthn 不可用。
+  本页只用于验收，不随面板分发。
+</p>
+
+<fieldset>
+  <legend>0. 连接</legend>
+  <label>API 基址（留空 = 当前 origin）</label>
+  <input id="apiBase" placeholder="https://panel.example.com">
+  <label>邮箱</label>
+  <input id="email" autocomplete="username">
+  <label>密码</label>
+  <input id="password" type="password" autocomplete="current-password">
+</fieldset>
+
+<fieldset>
+  <legend>1. 密码登录（拿 JWT，用于绑定）</legend>
+  <button onclick="login()">登录</button>
+</fieldset>
+
+<fieldset>
+  <legend>2. 绑定 passkey</legend>
+  <button onclick="register()">注册 passkey</button>
+</fieldset>
+
+<fieldset>
+  <legend>3. 用 passkey 登录（无密码）</legend>
+  <button onclick="loginWithPasskey()">用 passkey 登录</button>
+</fieldset>
+
+<pre id="log"></pre>
+
+<script>
+const logEl = document.getElementById('log');
+let accessToken = null;
+
+function log(...parts) {
+  logEl.textContent += parts.map(p => typeof p === 'string' ? p : JSON.stringify(p, null, 2)).join(' ') + '\n';
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function api(path) {
+  const base = document.getElementById('apiBase').value.trim().replace(/\/$/, '');
+  return (base || '') + '/api/v1' + path;
+}
+
+function b64urlToBuf(value) {
+  const pad = value.length % 4 === 0 ? '' : '='.repeat(4 - (value.length % 4));
+  const raw = atob(value.replace(/-/g, '+').replace(/_/g, '/') + pad);
+  const buf = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i);
+  return buf.buffer;
+}
+
+function bufToB64url(buf) {
+  const bytes = new Uint8Array(buf);
+  let raw = '';
+  for (const b of bytes) raw += String.fromCharCode(b);
+  return btoa(raw).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function post(path, body, token) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers.Authorization = 'Bearer ' + token;
+  const res = await fetch(api(path), { method: 'POST', headers, body: JSON.stringify(body || {}) });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(res.status + ' ' + JSON.stringify(json));
+  return json;
+}
+
+// prepareOptions converts the server's base64url strings into the ArrayBuffers
+// the browser API expects.
+function prepareCreationOptions(options) {
+  const pk = options.publicKey;
+  pk.challenge = b64urlToBuf(pk.challenge);
+  pk.user.id = b64urlToBuf(pk.user.id);
+  (pk.excludeCredentials || []).forEach(c => { c.id = b64urlToBuf(c.id); });
+  return pk;
+}
+
+function prepareRequestOptions(options) {
+  const pk = options.publicKey;
+  pk.challenge = b64urlToBuf(pk.challenge);
+  (pk.allowCredentials || []).forEach(c => { c.id = b64urlToBuf(c.id); });
+  return pk;
+}
+
+function serializeCredential(cred) {
+  const out = {
+    id: cred.id,
+    rawId: bufToB64url(cred.rawId),
+    type: cred.type,
+    clientExtensionResults: cred.getClientExtensionResults ? cred.getClientExtensionResults() : {},
+  };
+  if (cred.response.attestationObject) {
+    out.response = {
+      clientDataJSON: bufToB64url(cred.response.clientDataJSON),
+      attestationObject: bufToB64url(cred.response.attestationObject),
+      transports: cred.response.getTransports ? cred.response.getTransports() : [],
+    };
+  } else {
+    out.response = {
+      clientDataJSON: bufToB64url(cred.response.clientDataJSON),
+      authenticatorData: bufToB64url(cred.response.authenticatorData),
+      signature: bufToB64url(cred.response.signature),
+      userHandle: cred.response.userHandle ? bufToB64url(cred.response.userHandle) : null,
+    };
+  }
+  return out;
+}
+
+async function login() {
+  try {
+    const json = await post('/auth/login', {
+      email: document.getElementById('email').value,
+      password: document.getElementById('password').value,
+    });
+    accessToken = json.data.access_token;
+    log('登录成功，已拿到 access token');
+  } catch (err) {
+    log('登录失败：', String(err));
+  }
+}
+
+async function register() {
+  try {
+    if (!accessToken) throw new Error('先做第 1 步拿 JWT');
+    const begin = await post('/auth/passkey/register/begin', {}, accessToken);
+    const pk = prepareCreationOptions(begin.data.options);
+    const cred = await navigator.credentials.create({ publicKey: pk });
+    const json = await post('/auth/passkey/register/finish', {
+      ceremony_token: begin.data.ceremony_token,
+      credential: serializeCredential(cred),
+      name: '冒烟页凭据',
+    }, accessToken);
+    log('绑定成功：', json.data);
+  } catch (err) {
+    log('绑定失败：', String(err));
+  }
+}
+
+async function loginWithPasskey() {
+  try {
+    const email = document.getElementById('email').value.trim();
+    const begin = await post('/auth/passkey/login/begin', email ? { email } : {});
+    const pk = prepareRequestOptions(begin.data.options);
+    const cred = await navigator.credentials.get({ publicKey: pk });
+    const json = await post('/auth/passkey/login/finish', {
+      ceremony_token: begin.data.ceremony_token,
+      credential: serializeCredential(cred),
+    });
+    accessToken = json.data.access_token;
+    log('passkey 登录成功，令牌对长度：', {
+      access: json.data.access_token.length,
+      refresh: json.data.refresh_token.length,
+    });
+  } catch (err) {
+    log('passkey 登录失败：', String(err));
+  }
+}
+</script>
+</body>
+</html>
