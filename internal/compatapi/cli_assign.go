@@ -123,7 +123,11 @@ func (s *Server) cliAssign(c *gin.Context) {
 		}
 		var users []model.User
 		err := store.WithoutTenantScope(s.deps.DB).Where("LOWER(email) = ?", model.NormalizeEmail(email)).Find(&users).Error
-		if err != nil || len(users) != 1 {
+		if err != nil {
+			compatError(c, http.StatusInternalServerError, "assign failed")
+			return
+		}
+		if len(users) != 1 {
 			// Not found and ambiguous get the same answer: the users table is
 			// platform-global, so a distinction here would turn this endpoint
 			// into an account oracle for every deployment tenant (CWE-204).

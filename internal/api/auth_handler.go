@@ -56,8 +56,12 @@ func (a *AdminAPI) Login(c *gin.Context) {
 	// before write-path normalization can differ only by case, and First would
 	// pick one of them arbitrarily. Ambiguity is answered like any other
 	// non-match (CWE-204: no account oracle).
+	// The failure-window key is the normalized mailbox: a raw-case key would
+	// let an attacker rotate email casing into independent lockout windows for
+	// one account and one IP (CWE-307).
+	guardKey := model.NormalizeEmail(email)
 	var users []model.User
-	if err := a.deps.DB.Where("LOWER(email) = ?", model.NormalizeEmail(email)).Find(&users).Error; err != nil {
+	if err := a.deps.DB.Where("LOWER(email) = ?", guardKey).Find(&users).Error; err != nil {
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "login failed")
 		return
 	}
@@ -74,12 +78,12 @@ func (a *AdminAPI) Login(c *gin.Context) {
 		matched = true
 	}
 	if !passwordLoginAccepted(len(users) == 1, auth.HasPassword(user), matched) {
-		a.guard.RecordFailure(email, ip)
+		a.guard.RecordFailure(guardKey, ip)
 		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "invalid credentials")
 		return
 	}
 
-	a.guard.Reset(email, ip)
+	a.guard.Reset(guardKey, ip)
 
 	// Issue #17: correct credentials are not enough — the mailbox must be
 	// confirmed before any login path issues tokens.
