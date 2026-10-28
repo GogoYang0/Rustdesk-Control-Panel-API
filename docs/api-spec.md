@@ -88,6 +88,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `POST /api/v1/auth/login` | 邮箱+密码；启用验证码时先校验 `captcha`（v0.10.0）；未验证邮箱返回 `email_not_verified`；连续失败触发 LoginGuard 锁定（429，键含用户名规范化） |
 | `GET /api/v1/auth/captcha` | 公开：返回当前验证码提供商与挑战（v0.10.0）；未启用时 `enabled=false`（不耗限流桶）；**启用时**独立 IP 限流（429） |
 | `POST /api/v1/auth/refresh` | 刷新令牌轮换：旧 refresh 即刻撤销，重放旧令牌会**整族撤销**（重放检测） |
+| `GET /api/v1/me` | 当前用户与其组织（v0.12.0）：返回自身资料（邮箱、验证状态、2FA、是否设密码）与每个**有效**会籍的 `role_id`/`role_kind`/`permissions`。停用会籍、角色不可解析的会籍**不出现**（与逐请求鉴权同一 fail-closed 语义）；`permissions` 是控制台做交互闸门的只读快照，**不构成授权** |
 | `POST /api/v1/auth/verify-email` | 邮箱验证（一次性令牌，邮件下发） |
 | `POST /api/v1/auth/resend-verification` | 重发验证邮件（结果不明时令牌保留，可重试） |
 | `GET /api/v1/auth/tokens` | 列出本人在某组织的个人令牌（v0.8.0，`organizationId` 查询参数必填；不返回明文） |
@@ -619,11 +620,13 @@ compat 地址簿**只服务个人地址簿**（`EnsurePersonalBook`），共享�
 
 ## 6. 版本与变更管理
 
-- 契约版本随 release 演进：v0.1.0（M0）→ v0.2.0（M1）→ v0.3.0（M2）→ v0.4.0（M3，会话治理域）→ v0.5.0（设备管理增量）→ v0.6.0（成员离场）→ v0.7.0（按组织 provisioning 开关）→ v0.8.0（M4：角色模型、审计查询/导出、停用、地址簿授权与回收站、令牌、2FA）→ v0.9.0（M5：访问控制——用户组/设备组/组规则、peers 过滤与票据准入）→ v0.10.0（M6：波次 1 交互式验证码——Altcha/GeeTest/Cap、三入口准入；波次 2 组模型下半场；**波次 3 控制角色、客户端审计上报与连接/文件日志、compat 登录 TOTP**）
+- 契约版本随 release 演进：v0.1.0（M0）→ v0.2.0（M1）→ v0.3.0（M2）→ v0.4.0（M3，会话治理域）→ v0.5.0（设备管理增量）→ v0.6.0（成员离场）→ v0.7.0（按组织 provisioning 开关）→ v0.8.0（M4：角色模型、审计查询/导出、停用、地址簿授权与回收站、令牌、2FA）→ v0.9.0（M5：访问控制——用户组/设备组/组规则、peers 过滤与票据准入）→ v0.10.0（M6 波次 1–4）→ v0.11.0（M6 波次 5a 客户端生成器、5b Passkey/OIDC/LDAP）→ **v0.12.0（M7 前置：`GET /api/v1/me`）**
 - v0.6.0 为**加性变更**：新增 `DELETE/PATCH /orgs/{orgId}/members/{userId}`（#39 撤销接线）。v0.5.0 的新增设备列表与 rebind 保持不变；仍不提供 `DELETE` 设备
 - v0.7.0 为**加性变更**：新增 `GET/PUT /orgs/{orgId}/provisioning` 与 `ProvisioningStatus.cleanup_pending`；既有端点请求/响应形状与字段不变
+- v0.12.0 为**加性变更**：新增 `GET /api/v1/me`（当前用户 + 各有效会籍的角色与权限码）；既有端点形状不变
 - v0.9.0 为**加性变更**（新增 user-groups/device-groups/access-rules 端点、`access.manage` 权限目录项与 `Device.device_group_id` 字段），但**票据访问语义有变化**：签发/兑换新增访问控制判定（拒绝 `404 not_found`），停用设备的签发由成功变为 `404`（兑换仍为 `409`）；客户端需处理该分支
 - v0.10.0 为**加性变更**：新增 `GET /auth/captcha`、三个公开凭据请求的可选 `captcha` 字段与三个错误码。**行为变化仅在被部署显式启用验证码后生效**（默认关闭）：启用时三个入口新增 400/503 分支，客户端必须先取挑战；compat `/api/login` 不变
+- v0.11.0 为**加性变更**：新增 Passkey/WebAuthn 端点族（`auth/passkey/*`、`auth/passkeys*`、`auth/password/{set,remove}`）与 OIDC/LDAP 外部身份端点（`auth/oidc/*`、`auth/ldap/login`、`auth/identity*`）
 - v0.10.0（波次 2，组模型下半场）同样是**加性变更**：新增 compat `POST /api/devices/cli`、`Device.owner_user_id/owner_email/note` 三个字段、`AccessRule.target_kind` 的 `user_group` 取值、`AddressBookGrant(.Request).subject_group_id` 与 `AddressBookGrantKind.user_group`、`UserGroupDeleteData.removed_grants`；`PATCH .../devices/{deviceId}` 的 `operationId` 由 `setDeviceDisabled` 更名为 `updateDevice`（**重新生成客户端类型时方法名会变**，请求体形状不变）。**行为变化**：普通成员默认可见自己归属的设备（无需规则）；`memberships.role` 字符串列被一次性删除（数据库级不可回滚点，见[部署指南 §4.2](deployment.md)）
 - v0.11.0 为**加性变更**（WEB/APP 侧）：新增 Passkey（`/auth/passkeys*` 等注册/登录/管理端点）、OIDC（`/auth/oidc/{start,callback,exchange}`）与 LDAP（`/auth/ldap/login`）登录、外部身份查看/解绑（`/auth/identity*`）与管理员重置（`/orgs/{orgId}/members/{userId}/identity/reset`）、`/auth/providers` 点亮；`two_factor_required` 响应新增 `data.methods`（标识后续校验方式，目前恒为 `["totp"]`）——重新生成客户端类型后需处理该字段。**compat 层协议无变化**；新错误码仅限 v0.10.0 已声明的三个 captcha 值。外部身份为部署级单 provider（`oidc` 与 `ldap` 配置互斥）且无 JIT：IdP/目录的邮箱必须先在面板建号并验证
 - v0.4.0 的既有端点请求/响应形状与字段零变更，但 **`ErrorCode` 新增了 `approval_required`**（所有响应共用的 `code` 类型）——对穷尽式 `switch` 或严格枚举解码的客户端属于 **breaking**，重新生成类型后必须处理该分支（0.x 阶段按 C10 以 minor 承载，见 §3.6）
