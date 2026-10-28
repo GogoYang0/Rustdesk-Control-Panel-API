@@ -11,8 +11,9 @@ import (
 
 // contextAuditRecorded marks that the handler already wrote the audit entry
 // inside its own entity transaction (issue #19); the middleware then skips
-// its fallback record so the request produces exactly one audit row.
-const contextAuditRecorded = "audit.domainRecorded"
+// its fallback record so the request produces exactly one audit row. The value
+// is owned by compatapi because compat handlers set it too.
+const contextAuditRecorded = compatapi.ContextAuditRecorded
 
 // newAuditMiddleware records every request after the handler ran. The entry
 // carries who did what and the resulting status; request bodies are never

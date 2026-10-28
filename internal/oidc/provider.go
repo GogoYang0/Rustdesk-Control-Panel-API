@@ -1,0 +1,185 @@
+// Package oidc implements deployment-wide OpenID Connect single sign-on: one
+// provider from config, authorization code with PKCE and nonce, a one-shot
+// ticket exchanged by the SPA, and identities bound to existing panel accounts
+// (no just-in-time provisioning).
+package oidc
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/coreos/go-oidc/v3/oidc"
+	"go.uber.org/zap"
+	"golang.org/x/oauth2"
+	"golang.org/x/sync/singleflight"
+	"gorm.io/gorm"
+
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/identity"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
+)
+
+// discoveryTimeout bounds the single discovery round trip so a black-holed IdP
+// cannot pin request goroutines.
+const discoveryTimeout = 10 * time.Second
+
+// tokenTimeout bounds the code exchange and the JWKS fetch inside Verify: the
+// request context carries no deadline of its own, and the callback endpoint is
+// unauthenticated, so a slow IdP would otherwise hold one goroutine and one
+// connection per attempt forever.
+const tokenTimeout = 10 * time.Second
+
+// Config is the resolved, already-validated OIDC configuration.
+type Config struct {
+	ProviderName string
+	Issuer       string
+	ClientID     string
+	ClientSecret string
+	Scopes       []string
+	ClockSkew    time.Duration
+	StateTTL     time.Duration
+	CallbackURL  string
+	Now          func() time.Time
+}
+
+// Service owns the provider connection, the login flows and the identity
+// bindings. A nil *Service means the feature is disabled; the HTTP layer then
+// answers 503 on every OIDC endpoint.
+type Service struct {
+	db    *gorm.DB
+	cfg   Config
+	log   *zap.Logger
+	ident *identity.Service
+
+	// discovery collapses concurrent provider discovery into one flight.
+	discovery singleflight.Group
+
+	mu sync.Mutex
+	p  *provider
+}
+
+// provider is one successfully discovered IdP.
+type provider struct {
+	oauth    oauth2.Config
+	verifier *oidc.IDTokenVerifier
+}
+
+// NewService builds the service. It performs no network I/O: discovery happens
+// on the first request, so an unreachable IdP delays nothing at startup and
+// recovers without a restart (design O9).
+func NewService(db *gorm.DB, cfg Config, log *zap.Logger) *Service {
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
+	if cfg.ClockSkew < 0 {
+		cfg.ClockSkew = 0
+	}
+	return &Service{db: db, cfg: cfg, log: log, ident: &identity.Service{DB: db, Now: cfg.Now}}
+}
+
+// ProviderName is the label the login page shows.
+func (s *Service) ProviderName() string { return s.cfg.ProviderName }
+
+// StateTTL is how long a login flow stays alive; the flow cookie outlives it by
+// the ticket window.
+func (s *Service) StateTTL() time.Duration { return s.cfg.StateTTL }
+
+// EnsureProvider discovers the IdP once and caches the result. Failures are
+// not cached: a single IdP outage must not disable SSO for the process
+// lifetime.
+func (s *Service) EnsureProvider(ctx context.Context) error {
+	_, err := s.providerFor(ctx)
+	return err
+}
+
+func (s *Service) providerFor(ctx context.Context) (*provider, error) {
+	// Discovery runs inside a singleflight: holding the mutex across a 10s
+	// discovery would serialize N concurrent callers into N x 10s behind one
+	// lock during an IdP outage. The flight uses a detached context so one
+	// canceled browser request cannot kill the discovery every other waiter is
+	// sharing; a failed flight is not cached, so the next request retries.
+	v, err, _ := s.discovery.Do("provider", func() (any, error) {
+		s.mu.Lock()
+		if s.p != nil {
+			p := s.p
+			s.mu.Unlock()
+			return p, nil
+		}
+		s.mu.Unlock()
+
+		dctx, cancel := context.WithTimeout(context.Background(), discoveryTimeout)
+		defer cancel()
+		discovered, err := oidc.NewProvider(dctx, s.cfg.Issuer)
+		if err != nil {
+			return nil, fmt.Errorf("%w: discovery: %v", ErrProviderUnavailable, err)
+		}
+
+		// go-oidc checks exp against Now; shifting Now back by the configured
+		// skew is how a tolerance for a slow IdP clock is expressed.
+		now := s.cfg.Now
+		if s.cfg.ClockSkew > 0 {
+			skew := s.cfg.ClockSkew
+			now = func() time.Time { return s.cfg.Now().Add(-skew) }
+		}
+		p := &provider{
+			oauth: oauth2.Config{
+				ClientID:     s.cfg.ClientID,
+				ClientSecret: s.cfg.ClientSecret,
+				Endpoint:     discovered.Endpoint(),
+				RedirectURL:  s.cfg.CallbackURL,
+				Scopes:       s.cfg.Scopes,
+			},
+			verifier: discovered.Verifier(&oidc.Config{ClientID: s.cfg.ClientID, Now: now}),
+		}
+		s.mu.Lock()
+		s.p = p
+		s.mu.Unlock()
+		return p, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.(*provider), nil
+}
+
+// AuthCodeURL builds the authorization request. The nonce is echoed back inside
+// the ID token and compared by the callback; PKCE makes an intercepted code
+// useless without the verifier.
+func (s *Service) AuthCodeURL(state, nonce, verifier string) (string, error) {
+	s.mu.Lock()
+	p := s.p
+	s.mu.Unlock()
+	if p == nil {
+		return "", fmt.Errorf("%w: provider not discovered", ErrProviderUnavailable)
+	}
+	return p.oauth.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier), oidc.Nonce(nonce)), nil
+}
+
+// ExchangeCode redeems the authorization code and returns the verified ID
+// token. Every failure collapses into ErrLoginFailed: the SPA only needs to
+// know the attempt failed.
+func (s *Service) ExchangeCode(ctx context.Context, code, verifier string) (*oidc.IDToken, error) {
+	p, err := s.providerFor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, tokenTimeout)
+	defer cancel()
+	token, err := p.oauth.Exchange(ctx, code, oauth2.VerifierOption(verifier))
+	if err != nil {
+		return nil, fmt.Errorf("%w: code exchange failed: %v", ErrLoginFailed, err)
+	}
+	raw, ok := token.Extra("id_token").(string)
+	if !ok || raw == "" {
+		return nil, fmt.Errorf("%w: token response carried no id_token", ErrLoginFailed)
+	}
+	idToken, err := p.verifier.Verify(ctx, raw)
+	if err != nil {
+		return nil, fmt.Errorf("%w: id_token rejected: %v", ErrLoginFailed, err)
+	}
+	return idToken, nil
+}
+
+// IdentityProvider is the value stored in UserIdentity.Provider.
+const IdentityProvider = model.IdentityProviderOIDC

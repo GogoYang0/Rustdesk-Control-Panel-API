@@ -327,12 +327,13 @@ func (s *Service) RenameUserGroup(ctx context.Context, orgID, actorID, groupID u
 	return &updated, nil
 }
 
-// DeleteUserGroup removes a custom group together with its member rows and the
-// rules whose source is that group. It returns how many rules were cascaded so
-// the handler can report them.
-func (s *Service) DeleteUserGroup(ctx context.Context, orgID, actorID, groupID uint) (int, error) {
-	cascaded := 0
-	err := s.write(ctx, func(tx *gorm.DB) error {
+// DeleteUserGroup removes a custom group together with its member rows, the
+// rules that named it as source or as a user_group target, and the address-book
+// grants that made it their subject (D9). Device ownership stays untouched
+// (D14): ownership is a user-level fact, not a group membership. It returns how
+// many rules and grants were cascaded so the handler can report them.
+func (s *Service) DeleteUserGroup(ctx context.Context, orgID, actorID, groupID uint) (removedRules, removedGrants int, err error) {
+	err = s.write(ctx, func(tx *gorm.DB) error {
 		if err := lockOrgRow(tx, orgID); err != nil {
 			return err
 		}
@@ -345,12 +346,15 @@ func (s *Service) DeleteUserGroup(ctx context.Context, orgID, actorID, groupID u
 		}
 		var rules []model.AccessRule
 		if err := store.ScopedByOrg(tx, orgID).
-			Where("source_group_id = ?", group.ID).Find(&rules).Error; err != nil {
+			Where("source_group_id = ? OR (target_kind = ? AND target_group_id = ?)",
+				group.ID, model.AccessTargetKindUserGroup, group.ID).
+			Find(&rules).Error; err != nil {
 			return err
 		}
 		if len(rules) > 0 {
 			if err := store.ScopedByOrg(tx, orgID).
-				Where("source_group_id = ?", group.ID).
+				Where("source_group_id = ? OR (target_kind = ? AND target_group_id = ?)",
+					group.ID, model.AccessTargetKindUserGroup, group.ID).
 				Delete(&model.AccessRule{}).Error; err != nil {
 				return err
 			}
@@ -372,6 +376,18 @@ func (s *Service) DeleteUserGroup(ctx context.Context, orgID, actorID, groupID u
 				}
 			}
 		}
+		// Address-book grants naming the group as their subject die with it: a
+		// leftover row would silently restore the whole group's access if a new
+		// group ever reused the id.
+		grants := store.ScopedByOrg(tx, orgID).
+			Where("subject_kind = ? AND subject_group_id = ?",
+				model.GrantSubjectUserGroup, group.ID).
+			Delete(&model.AddressBookGrant{})
+		if grants.Error != nil {
+			return grants.Error
+		}
+		removedGrants = int(grants.RowsAffected)
+
 		if err := store.ScopedByOrg(tx, orgID).
 			Where("group_id = ?", group.ID).
 			Delete(&model.UserGroupMember{}).Error; err != nil {
@@ -386,20 +402,24 @@ func (s *Service) DeleteUserGroup(ctx context.Context, orgID, actorID, groupID u
 		if res.RowsAffected == 0 {
 			return ErrGroupNotFound
 		}
-		cascaded = len(rules)
+		removedRules = len(rules)
 		return s.record(tx, audit.Entry{
 			OrganizationID: orgID,
 			ActorUserID:    actorID,
 			Action:         "access.user_group.delete",
 			TargetType:     "user_group",
 			TargetID:       fmt.Sprint(group.ID),
-			Detail:         map[string]any{"name": group.Name, "deleted_rules": cascaded},
+			Detail: map[string]any{
+				"name":           group.Name,
+				"deleted_rules":  removedRules,
+				"removed_grants": removedGrants,
+			},
 		})
 	})
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	return cascaded, nil
+	return removedRules, removedGrants, nil
 }
 
 // ReplaceUserGroupMembers replaces the explicit member set of a custom group.
@@ -809,11 +829,18 @@ func (s *Service) ListAccessRules(ctx context.Context, orgID uint) ([]RuleView, 
 		return views, nil
 	}
 	sourceIDs := make([]uint, 0, len(rules))
-	targetIDs := make([]uint, 0, len(rules))
+	deviceTargetIDs := make([]uint, 0, len(rules))
+	userTargetIDs := make([]uint, 0, len(rules))
 	for _, rule := range rules {
 		sourceIDs = append(sourceIDs, rule.SourceGroupID)
-		if rule.TargetKind == model.AccessTargetKindDeviceGroup && rule.TargetGroupID != 0 {
-			targetIDs = append(targetIDs, rule.TargetGroupID)
+		if rule.TargetGroupID == 0 {
+			continue
+		}
+		switch rule.TargetKind {
+		case model.AccessTargetKindDeviceGroup:
+			deviceTargetIDs = append(deviceTargetIDs, rule.TargetGroupID)
+		case model.AccessTargetKindUserGroup:
+			userTargetIDs = append(userTargetIDs, rule.TargetGroupID)
 		}
 	}
 	var userGroups []model.UserGroup
@@ -824,21 +851,38 @@ func (s *Service) ListAccessRules(ctx context.Context, orgID uint) ([]RuleView, 
 	for _, group := range userGroups {
 		sourceNames[group.ID] = group.Name
 	}
-	targetNames := make(map[uint]string, len(targetIDs))
-	if len(targetIDs) > 0 {
+	// Device groups and user groups are separate tables with independent id
+	// sequences: one map keyed by TargetGroupID alone would let user group 5
+	// overwrite device group 5 and mislabel rules in the list view.
+	deviceTargetNames := make(map[uint]string, len(deviceTargetIDs))
+	userTargetNames := make(map[uint]string, len(userTargetIDs))
+	if len(deviceTargetIDs) > 0 {
 		var deviceGroups []model.DeviceGroup
-		if err := store.ScopedByOrg(db, orgID).Where("id IN ?", targetIDs).Find(&deviceGroups).Error; err != nil {
+		if err := store.ScopedByOrg(db, orgID).Where("id IN ?", deviceTargetIDs).Find(&deviceGroups).Error; err != nil {
 			return nil, err
 		}
 		for _, group := range deviceGroups {
-			targetNames[group.ID] = group.Name
+			deviceTargetNames[group.ID] = group.Name
+		}
+	}
+	if len(userTargetIDs) > 0 {
+		var groups []model.UserGroup
+		if err := store.ScopedByOrg(db, orgID).Where("id IN ?", userTargetIDs).Find(&groups).Error; err != nil {
+			return nil, err
+		}
+		for _, group := range groups {
+			userTargetNames[group.ID] = group.Name
 		}
 	}
 	for _, rule := range rules {
+		names := userTargetNames
+		if rule.TargetKind == "device_group" {
+			names = deviceTargetNames
+		}
 		views = append(views, RuleView{
 			Rule:            rule,
 			SourceGroupName: sourceNames[rule.SourceGroupID],
-			TargetGroupName: targetNames[rule.TargetGroupID],
+			TargetGroupName: names[rule.TargetGroupID],
 		})
 	}
 	return views, nil
@@ -858,11 +902,20 @@ func (s *Service) RuleViewByID(ctx context.Context, orgID, ruleID uint) (RuleVie
 	} else if !errors.Is(err, ErrGroupNotFound) {
 		return RuleView{}, err
 	}
-	if rule.TargetKind == model.AccessTargetKindDeviceGroup && rule.TargetGroupID != 0 {
-		if group, err := deviceGroupByID(db, orgID, rule.TargetGroupID); err == nil {
-			view.TargetGroupName = group.Name
-		} else if !errors.Is(err, ErrDeviceGroupNotFound) {
-			return RuleView{}, err
+	if rule.TargetGroupID != 0 {
+		switch rule.TargetKind {
+		case model.AccessTargetKindDeviceGroup:
+			if group, err := deviceGroupByID(db, orgID, rule.TargetGroupID); err == nil {
+				view.TargetGroupName = group.Name
+			} else if !errors.Is(err, ErrDeviceGroupNotFound) {
+				return RuleView{}, err
+			}
+		case model.AccessTargetKindUserGroup:
+			if group, err := groupByID(db, orgID, rule.TargetGroupID); err == nil {
+				view.TargetGroupName = group.Name
+			} else if !errors.Is(err, ErrGroupNotFound) {
+				return RuleView{}, err
+			}
 		}
 	}
 	return view, nil
@@ -881,7 +934,7 @@ func (s *Service) CreateAccessRule(ctx context.Context, orgID, actorID, sourceGr
 		if targetGroupID != 0 {
 			return nil, ErrInvalidRule
 		}
-	case model.AccessTargetKindDeviceGroup:
+	case model.AccessTargetKindDeviceGroup, model.AccessTargetKindUserGroup:
 		if targetGroupID == 0 {
 			return nil, ErrInvalidRule
 		}
@@ -902,6 +955,14 @@ func (s *Service) CreateAccessRule(ctx context.Context, orgID, actorID, sourceGr
 		if targetKind == model.AccessTargetKindDeviceGroup {
 			if _, err := deviceGroupByID(tx, orgID, targetGroupID); err != nil {
 				if errors.Is(err, ErrDeviceGroupNotFound) {
+					return ErrInvalidRule
+				}
+				return err
+			}
+		}
+		if targetKind == model.AccessTargetKindUserGroup {
+			if _, err := groupByID(tx, orgID, targetGroupID); err != nil {
+				if errors.Is(err, ErrGroupNotFound) {
 					return ErrInvalidRule
 				}
 				return err

@@ -25,15 +25,23 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/captcha"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/controlrole"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/identity"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/ldapauth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logcollect"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logger"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logquery"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/oidc"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/passkey"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/provision"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/session"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/strategy"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/worker"
 )
 
@@ -54,6 +62,35 @@ func main() {
 		lg.Fatal("auth.secret must be configured")
 	}
 
+	// The captcha is opt-in; when enabled, provider secrets are validated here
+	// so a deployment cannot boot a captcha that never passes. This runs before
+	// any background worker starts: a fatal configuration error must not leave
+	// provisioning or log-tailer children behind.
+	captchaSvc := captcha.Disabled()
+	if cfg.Captcha.Enabled {
+		built, cerr := captcha.Build(captcha.Options{
+			Provider:       cfg.Captcha.Provider,
+			FailMode:       cfg.Captcha.FailMode,
+			ChallengeTTL:   cfg.Captcha.ChallengeTTL,
+			AltchaKey:      cfg.Captcha.Altcha.Key,
+			MaxNumber:      cfg.Captcha.Altcha.MaxNumber,
+			GeetestID:      cfg.Captcha.Geetest.CaptchaID,
+			GeetestKey:     cfg.Captcha.Geetest.Key,
+			CapInstanceURL: cfg.Captcha.Cap.InstanceURL,
+			CapSiteKey:     cfg.Captcha.Cap.SiteKey,
+			CapSecret:      cfg.Captcha.Cap.Secret,
+			Now:            time.Now,
+			Logger:         lg,
+		})
+		if cerr != nil {
+			lg.Fatal("captcha configuration", zap.Error(cerr))
+		}
+		captchaSvc = built
+		lg.Info("captcha enabled",
+			zap.String("provider", cfg.Captcha.Provider),
+			zap.String("failMode", cfg.Captcha.FailMode))
+	}
+
 	st, err := store.Open(cfg.Database)
 	if err != nil {
 		lg.Fatal("open database", zap.Error(err))
@@ -64,25 +101,15 @@ func main() {
 	// data migration that trusts pre-verification accounts as verified.
 	const backfillEmailVerifiedTrue = "backfill_email_verified_true"
 
-	if err := st.DB.AutoMigrate(
-		&model.User{}, &model.RefreshToken{},
-		&model.UserTOTP{},
-		&model.Organization{}, &model.Membership{}, &model.Role{}, &model.Invitation{},
-		&model.APIToken{},
-		&model.AuditLog{},
-		&model.Device{}, &model.DeviceHeartbeat{}, &model.ServerGroup{},
-		&model.AddressBook{}, &model.AddressBookPeer{},
-		&model.AddressBookTag{}, &model.AddressBookGrant{}, &model.SyncCursor{},
-		&model.VerificationToken{},
-		&model.MigrationMark{},
-		&model.CompatSession{},
-		&model.LogEvent{},
-		&model.Session{}, &model.SessionEvent{},
-		&model.Ticket{}, &model.Policy{},
-		&model.Approval{}, &model.Alert{},
-		&model.UserGroup{}, &model.UserGroupMember{}, &model.DeviceGroup{}, &model.AccessRule{},
-	); err != nil {
+	if err := st.DB.AutoMigrate(model.PersistentModels()...); err != nil {
 		lg.Fatal("migrate database", zap.Error(err))
+	}
+
+	// Every organization needs its built-in default control role, otherwise a
+	// member without an assignment would have no permission set at all. The
+	// unique index on (organization_id, name) makes the concurrent boot safe.
+	if err := controlrole.Migrate(st.DB, time.Now); err != nil {
+		lg.Fatal("migrate control roles", zap.Error(err))
 	}
 
 	// Roles are the authorization source from v0.8.0: every organization gets
@@ -99,6 +126,22 @@ func main() {
 	// one-shot and a failure aborts startup instead of half-applying it.
 	if err := authz.MigrateAccessPermission(st.DB); err != nil {
 		lg.Fatal("migrate access permission", zap.Error(err))
+	}
+
+	// v0.10.0 drops the legacy memberships.role string column: role_id is the
+	// only authorization source, and leaving the string behind invites reading
+	// authorization from it again. The order is load-bearing — MigrateRoles
+	// above is what still can read the column and map it onto role_id.
+	if err := authz.MigrateDropLegacyRole(st.DB); err != nil {
+		lg.Fatal("drop legacy membership role", zap.Error(err))
+	}
+
+	// The grant uniqueness index gains the user group as its fourth column.
+	// AutoMigrate leaves an index of the same name alone, so the old shape is
+	// replaced explicitly; until then every user_group grant of one book would
+	// collide on the 0 sentinel.
+	if err := addressbook.MigrateGrantSubjectIndex(st.DB); err != nil {
+		lg.Fatal("rebuild grant subject index", zap.Error(err))
 	}
 
 	// Every organization needs its everyone group and the all-devices rule or
@@ -143,6 +186,101 @@ func main() {
 	// layer is built (binding resets must commit with their audit entry), so it
 	// is created here rather than next to the session service.
 	auditor := audit.NewGormAuditor(st.DB)
+
+	clientBuildSvc, err := newClientBuildService(*cfg, st.DB, auditor, auditor, lg)
+	if err != nil {
+		lg.Fatal("init client build service", zap.Error(err))
+	}
+
+	// Passkeys are opt-in. A disabled deployment leaves the service nil so the
+	// endpoints answer 503 instead of half-working.
+	var passkeySvc *passkey.Service
+	if cfg.WebAuthn.Enabled {
+		passkeySvc, err = passkey.NewService(st.DB, passkey.Config{
+			RPID:               cfg.WebAuthn.RPID,
+			RPDisplayName:      cfg.WebAuthn.RPDisplayName,
+			Origin:             cfg.WebAuthn.Origin,
+			CeremonyTTL:        cfg.WebAuthn.CeremonyTTL,
+			CredentialsPerUser: cfg.WebAuthn.CredentialsPerUser,
+		}, issuer, nil)
+		if err != nil {
+			lg.Fatal("configure webauthn", zap.Error(err))
+		}
+	}
+
+	// Disabling webauthn later would lock out every account without a password,
+	// so surface the count now (design D17).
+	var passwordless int64
+	if err := st.DB.Model(&model.User{}).Where("password_hash = ?", "").Count(&passwordless).Error; err != nil {
+		lg.Warn("could not count passwordless accounts", zap.Error(err))
+	} else if passwordless > 0 {
+		lg.Warn("passwordless accounts exist; disabling webauthn will lock them out",
+			zap.Int64("count", passwordless))
+	}
+
+	// OIDC is opt-in and single-provider. Discovery happens lazily on the first
+	// request, so an unreachable IdP delays nothing here and recovers without a
+	// restart (design O9).
+	var oidcSvc *oidc.Service
+	if cfg.OIDC.Enabled {
+		oidcSvc = oidc.NewService(st.DB, oidc.Config{
+			ProviderName: cfg.OIDC.ProviderName,
+			Issuer:       cfg.OIDC.Issuer,
+			ClientID:     cfg.OIDC.ClientID,
+			ClientSecret: cfg.OIDC.ClientSecret,
+			Scopes:       cfg.OIDC.Scopes,
+			ClockSkew:    cfg.OIDC.ClockSkew,
+			StateTTL:     cfg.OIDC.StateTTL,
+			CallbackURL:  strings.TrimRight(cfg.Web.BaseURL, "/") + "/api/v1/auth/oidc/callback",
+		}, lg)
+
+		// Identities bound under a previous issuer simply never match again.
+		// Deleting them would destroy the rollback path, so the operator gets a
+		// count and the batch procedure in operations.md instead (design O11).
+		if stale, err := oidcSvc.StaleIssuerCount(context.Background()); err != nil {
+			lg.Warn("could not count identities from a previous oidc issuer", zap.Error(err))
+		} else if stale > 0 {
+			lg.Warn("identities are bound to a different oidc issuer and will not match; see operations.md",
+				zap.Int64("count", stale), zap.String("current_issuer", cfg.OIDC.Issuer))
+		}
+	}
+
+	// LDAP is opt-in and mutually exclusive with OIDC (enforced at config
+	// load). The shared binding service backs both providers.
+	identitySvc := identity.NewService(st.DB, nil)
+	var ldapDir ldapauth.Directory
+	if cfg.LDAP.Enabled {
+		// Transport decisions (plaintext link, skipped certificate check) are
+		// explicit operator choices; surface them at startup (design L3).
+		for _, warning := range cfg.LDAP.Warnings() {
+			lg.Warn(warning)
+		}
+		ldapDir = ldapauth.NewGoLDAP(ldapauth.Config{
+			Host:               cfg.LDAP.Host,
+			Port:               cfg.LDAP.Port,
+			Transport:          cfg.LDAP.Transport,
+			AllowInsecure:      cfg.LDAP.AllowInsecure,
+			InsecureSkipVerify: cfg.LDAP.InsecureSkipVerify,
+			BaseDN:             cfg.LDAP.BaseDN,
+			Scope:              cfg.LDAP.Scope,
+			BindDN:             cfg.LDAP.BindDN,
+			BindPassword:       cfg.LDAP.BindPassword,
+			UserFilter:         cfg.LDAP.UserFilter,
+			UsernameAttribute:  cfg.LDAP.UsernameAttribute,
+			MailAttribute:      cfg.LDAP.MailAttribute,
+			Timeout:            cfg.LDAP.Timeout,
+		})
+
+		// The issuer is the lowercased host: pointing the panel at a different
+		// directory changes the binding namespace, and the old rows simply
+		// never match again (design §5).
+		if stale, err := identitySvc.StaleCount(context.Background(), model.IdentityProviderLDAP, strings.ToLower(cfg.LDAP.Host)); err != nil {
+			lg.Warn("could not count identities from a previous ldap host", zap.Error(err))
+		} else if stale > 0 {
+			lg.Warn("identities are bound to a different ldap host and will not match; see operations.md",
+				zap.Int64("count", stale), zap.String("current_host", strings.ToLower(cfg.LDAP.Host)))
+		}
+	}
 
 	deviceSvc := device.NewService(st.DB, auditor, nil)
 	orch := &provision.DockerOrchestrator{
@@ -212,7 +350,12 @@ func main() {
 	// One session service shared by the API handlers, the log collector's
 	// session hook and the background tasks: all three mutate the same rows,
 	// so they must see one clock and one audit recorder.
-	sessionSvc := session.NewService(st.DB, auditor, time.Now)
+	sessionSvc := session.NewService(st.DB, auditor, time.Now).
+		WithControlRoles(controlrole.NewService(st.DB, auditor, time.Now))
+
+	// Client audit ingest: the same service the compat endpoints use, exposed
+	// here for its nonce sweep.
+	auditIngest := logquery.New(st.DB, auditor, time.Now)
 
 	// Log collection: one tailer pair per provisioned organization. The queue
 	// hook starts the tailers of a fresh deployment immediately instead of
@@ -351,6 +494,62 @@ func main() {
 		lg.Fatal("register audit retention sweep", zap.Error(err))
 	}
 
+	// Client audit dedupe markers outlive their usefulness quickly: the upstream
+	// API server remembers a nonce for five minutes and the client retries for at
+	// most two, so a ten-minute sweep keeps the table bounded without ever
+	// dropping a marker a live retry could still need.
+	if err := sched.Register(worker.Task{
+		Name:       "audit-nonce-sweep",
+		Interval:   10 * time.Minute,
+		RunOnStart: true,
+		Run: func(ctx context.Context) (int64, error) {
+			return auditIngest.SweepNonces(ctx, time.Now(), 10*time.Minute)
+		},
+	}); err != nil {
+		lg.Fatal("register audit nonce sweep", zap.Error(err))
+	}
+
+	// Second-factor challenges are minted on every password step of an account
+	// with TOTP; sweeps keep the table from growing with login attempts.
+	if err := sched.Register(worker.Task{
+		Name:       "compat-2fa-sweep",
+		Interval:   time.Hour,
+		RunOnStart: true,
+		Run: func(ctx context.Context) (int64, error) {
+			return logquery.SweepChallenges(st.DB, time.Now())
+		},
+	}); err != nil {
+		lg.Fatal("register compat 2fa sweep", zap.Error(err))
+	}
+
+	// Pending disconnect requests expire after 15 minutes: a request nobody
+	// consumed (the client had no live connection) must not tear down an
+	// unrelated session days later. Five-minute sweeps keep the delay bounded.
+	if err := sched.Register(worker.Task{
+		Name:       "disconnect-expiry",
+		Interval:   5 * time.Minute,
+		RunOnStart: true,
+		Run: func(ctx context.Context) (int64, error) {
+			return strategy.NewService(st.DB, auditor, time.Now).ExpireStale(ctx, time.Now())
+		},
+	}); err != nil {
+		lg.Fatal("register disconnect expiry sweep", zap.Error(err))
+	}
+
+	// Client connection/file logs follow the organization's audit retention
+	// window (0 = keep forever). They are evidence rather than an archive, so
+	// the cutoff is the only bound: no JSONL pass precedes the delete.
+	if err := sched.Register(worker.Task{
+		Name:       "client-log-retention",
+		Interval:   time.Hour,
+		RunOnStart: true,
+		Run: func(ctx context.Context) (int64, error) {
+			return logquery.Prune(ctx, st.DB, time.Now())
+		},
+	}); err != nil {
+		lg.Fatal("register client log retention sweep", zap.Error(err))
+	}
+
 	if cfg.Logcollect.RetentionSweepInterval > 0 {
 		if err := sched.Register(worker.Task{
 			Name:     "logcollect-retention",
@@ -366,6 +565,45 @@ func main() {
 		}
 	} else {
 		lg.Warn("periodic retention sweep disabled (logcollect.retentionSweepInterval = 0)")
+	}
+
+	if err := sched.Register(worker.Task{
+		Name:       "client-build-advance",
+		Interval:   cfg.ClientBuild.PollInterval,
+		RunOnStart: true,
+		Run:        clientBuildSvc.Advance,
+	}); err != nil {
+		lg.Fatal("register client build advance", zap.Error(err))
+	}
+	if oidcSvc != nil {
+		if err := sched.Register(worker.Task{
+			Name:     "external-login-flow-sweep",
+			Interval: 10 * time.Minute,
+			Run: func(ctx context.Context) (int64, error) {
+				return oidcSvc.Sweep(ctx, time.Now().Add(-10*time.Minute))
+			},
+		}); err != nil {
+			lg.Fatal("register external login flow sweep", zap.Error(err))
+		}
+	}
+	if passkeySvc != nil {
+		if err := sched.Register(worker.Task{
+			Name:     "webauthn-ceremony-sweep",
+			Interval: 10 * time.Minute,
+			Run: func(ctx context.Context) (int64, error) {
+				return passkeySvc.Sweep(ctx, time.Now().Add(-10*time.Minute))
+			},
+		}); err != nil {
+			lg.Fatal("register webauthn ceremony sweep", zap.Error(err))
+		}
+	}
+	if err := sched.Register(worker.Task{
+		Name:       "client-build-sweep",
+		Interval:   time.Hour,
+		RunOnStart: true,
+		Run:        clientBuildSvc.Sweep,
+	}); err != nil {
+		lg.Fatal("register client build sweep", zap.Error(err))
 	}
 	sched.Start(rootCtx)
 
@@ -401,25 +639,34 @@ func main() {
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		Handler: api.NewRouter(api.Deps{
-			DB:             st.DB,
-			Auth:           authSvc,
-			Devices:        deviceSvc,
-			ProvisionQueue: provQueue,
-			Provisioning:   provSvc,
-			OrgsPerUser:    cfg.Provision.MaxOrgsPerUser,
-			Issuer:         issuer,
-			Auditor:        auditor,
-			Access:         access.NewService(st.DB, auditor, nil),
-			Logger:         lg,
-			Mailer:         mailer,
-			Tickets:        sessionSvc,
-			AccessTTL:      cfg.Auth.AccessTTL,
-			RefreshTTL:     cfg.Auth.RefreshTTL,
-			InvitationTTL:  7 * 24 * time.Hour,
-			WebBaseURL:     cfg.Web.BaseURL,
-			CompatTTL:      cfg.Compat.AccessTTL,
-			AuthSecret:     cfg.Auth.Secret,
-			Retention:      retentionSvc,
+			DB:                       st.DB,
+			Auth:                     authSvc,
+			Devices:                  deviceSvc,
+			ProvisionQueue:           provQueue,
+			Provisioning:             provSvc,
+			OrgsPerUser:              cfg.Provision.MaxOrgsPerUser,
+			Issuer:                   issuer,
+			Auditor:                  auditor,
+			Access:                   access.NewService(st.DB, auditor, nil),
+			Logger:                   lg,
+			Mailer:                   mailer,
+			Tickets:                  sessionSvc,
+			AccessTTL:                cfg.Auth.AccessTTL,
+			RefreshTTL:               cfg.Auth.RefreshTTL,
+			InvitationTTL:            7 * 24 * time.Hour,
+			WebBaseURL:               cfg.Web.BaseURL,
+			CompatTTL:                cfg.Compat.AccessTTL,
+			AuthSecret:               cfg.Auth.Secret,
+			Retention:                retentionSvc,
+			Captcha:                  captchaSvc,
+			ClientBuilds:             clientBuildSvc,
+			Passkeys:                 passkeySvc,
+			OIDC:                     oidcSvc,
+			LDAP:                     ldapDir,
+			LDAPProviderName:         cfg.LDAP.ProviderName,
+			LDAPIssuer:               strings.ToLower(cfg.LDAP.Host),
+			Identity:                 identitySvc,
+			RequireLocalSecondFactor: cfg.External.RequireLocalSecondFactor,
 		}),
 	}
 

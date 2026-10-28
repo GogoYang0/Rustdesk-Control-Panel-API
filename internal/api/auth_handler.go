@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -39,31 +41,49 @@ func (a *AdminAPI) Login(c *gin.Context) {
 		return
 	}
 
+	// The captcha runs before any credential work: an automated caller without
+	// a solution never reaches the password hash, and a captcha failure is not
+	// a credential failure (it does not feed the lockout window).
+	if !a.requireCaptcha(c, req.Captcha) {
+		return
+	}
+
 	// Always run one Argon2id verification so the response time does not reveal
 	// whether the email exists (CWE-208).
 	dummyHash := dummyPasswordHash()
 
-	var user model.User
-	err := a.deps.DB.Where("email = ?", email).First(&user).Error
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+	// Mailbox lookup is case-insensitive and collect-all: legacy rows from
+	// before write-path normalization can differ only by case, and First would
+	// pick one of them arbitrarily. Ambiguity is answered like any other
+	// non-match (CWE-204: no account oracle).
+	// The failure-window key is the normalized mailbox: a raw-case key would
+	// let an attacker rotate email casing into independent lockout windows for
+	// one account and one IP (CWE-307).
+	guardKey := model.NormalizeEmail(email)
+	var users []model.User
+	if err := a.deps.DB.Where("LOWER(email) = ?", guardKey).Find(&users).Error; err != nil {
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "login failed")
 		return
 	}
+	var user model.User
+	if len(users) == 1 {
+		user = users[0]
+	}
 	hashToCheck := dummyHash
-	if err == nil {
-		hashToCheck = user.PasswordHash
+	if len(users) == 1 {
+		hashToCheck = passwordHashForVerification(user.PasswordHash)
 	}
-	valid := false
-	if ok, verr := auth.VerifyPassword(hashToCheck, req.Password); verr == nil && err == nil {
-		valid = ok
+	matched := false
+	if ok, verr := auth.VerifyPassword(hashToCheck, req.Password); verr == nil && ok {
+		matched = true
 	}
-	if !valid {
-		a.guard.RecordFailure(email, ip)
+	if !passwordLoginAccepted(len(users) == 1, auth.HasPassword(user), matched) {
+		a.guard.RecordFailure(guardKey, ip)
 		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "invalid credentials")
 		return
 	}
 
-	a.guard.Reset(email, ip)
+	a.guard.Reset(guardKey, ip)
 
 	// Issue #17: correct credentials are not enough — the mailbox must be
 	// confirmed before any login path issues tokens.
@@ -87,7 +107,13 @@ func (a *AdminAPI) Login(c *gin.Context) {
 			abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "login failed")
 			return
 		}
-		data := map[string]any{"challenge_token": challenge}
+		methods := []string{"totp"}
+		if a.passkeys != nil {
+			if count, cerr := a.passkeys.Count(c.Request.Context(), user.ID); cerr == nil && count > 0 {
+				methods = append(methods, "passkey")
+			}
+		}
+		data := map[string]any{"challenge_token": challenge, "methods": methods}
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gen.ErrorResponse{
 			Code:    gen.ErrorCodeTwoFactorRequired,
 			Message: "two-factor authentication required",
@@ -332,6 +358,9 @@ func (a *AdminAPI) SetupTOTP(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !a.requireLocalPassword(c, uid) {
+		return
+	}
 	secret, uri, err := a.totp.Setup(uid)
 	switch {
 	case errors.Is(err, auth.ErrTOTPAlreadyEnabled):
@@ -359,6 +388,9 @@ func (a *AdminAPI) EnableTOTP(c *gin.Context) {
 	var req gen.TOTPCodeRequest
 	if err := c.ShouldBindJSON(&req); err != nil || req.Code == "" {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "code is required")
+		return
+	}
+	if !a.requireLocalPassword(c, uid) {
 		return
 	}
 	err := a.totp.Enable(uid, req.Code)
@@ -401,6 +433,9 @@ func (a *AdminAPI) DisableTOTP(c *gin.Context) {
 		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "too many attempts")
 		return
 	}
+	if !a.requireLocalPassword(c, uid) {
+		return
+	}
 	if err := a.totp.Disable(uid, req.Password, req.Code); err != nil {
 		a.writeTOTPError(c, err, "disable two-factor failed")
 		return
@@ -427,6 +462,9 @@ func (a *AdminAPI) RegenerateRecoveryCodes(c *gin.Context) {
 	account := fmt.Sprint(uid)
 	if !a.totpManageGuard.AllowIP(ip) || !a.totpManageGuard.Reserve(account, ip) {
 		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "too many attempts")
+		return
+	}
+	if !a.requireLocalPassword(c, uid) {
 		return
 	}
 	codes, err := a.totp.RegenerateRecovery(uid, req.Password, req.Code)
@@ -466,6 +504,11 @@ func (a *AdminAPI) VerifyTOTP(c *gin.Context) {
 	account := fmt.Sprint(uid)
 	if a.totpGuard.Locked(account, ip) {
 		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "account temporarily locked")
+		return
+	}
+	// Same ordering as the password step: the captcha runs before the factor
+	// check, so a wrong proof never reaches the TOTP verification path.
+	if !a.requireCaptcha(c, req.Captcha) {
 		return
 	}
 	if err := a.totp.VerifyLogin(uid, req.Code); err != nil {
@@ -523,7 +566,7 @@ func (a *AdminAPI) ResetMemberTOTP(c *gin.Context, orgId int64, userId int64) {
 	err := a.deps.DB.Transaction(func(tx *gorm.DB) error {
 		// Authorization is re-checked inside the transaction: 2FA state is
 		// global per user, so org-local member.manage is not enough on its own.
-		if err := a.assertResettableTOTP(tx, c, orgID, targetID); err != nil {
+		if err := a.assertResettableFactor(tx, c, orgID, targetID); err != nil {
 			return err
 		}
 		res := tx.Where("user_id = ?", userId).Delete(&model.UserTOTP{})
@@ -544,10 +587,10 @@ func (a *AdminAPI) ResetMemberTOTP(c *gin.Context, orgId int64, userId int64) {
 		})
 	})
 	switch {
-	case errors.Is(err, errTOTPOwnerReset):
+	case errors.Is(err, errFactorOwnerReset):
 		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "only an owner can reset an owner's two-factor")
 		return
-	case errors.Is(err, errTOTPOtherOrgMembership):
+	case errors.Is(err, errFactorOtherOrgMembership):
 		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "target also belongs to another organization; account-wide two-factor recovery must be handled out of band")
 		return
 	case errors.Is(err, errAuditUnavailable):
@@ -570,7 +613,7 @@ func (a *AdminAPI) ResetMemberTOTP(c *gin.Context, orgId int64, userId int64) {
 // tenants this administrator does not control, and a non-owner there (say an
 // administrator or a custom role) is just as exposed as an owner (CWE-269).
 // Such multi-organization users recover their account out of band.
-func (a *AdminAPI) assertResettableTOTP(tx *gorm.DB, c *gin.Context, orgID, targetID uint) error {
+func (a *AdminAPI) assertResettableFactor(tx *gorm.DB, c *gin.Context, orgID, targetID uint) error {
 	var m model.Membership
 	if err := store.ScopedByOrg(tx, orgID).Where("user_id = ?", targetID).First(&m).Error; err != nil {
 		return err
@@ -582,7 +625,7 @@ func (a *AdminAPI) assertResettableTOTP(tx *gorm.DB, c *gin.Context, orgID, targ
 	if role.Kind == model.RoleKindOwner {
 		perms, _ := authz.OrgPermissions(c)
 		if !authz.Has(perms, authz.PermOrgAdmin) {
-			return errTOTPOwnerReset
+			return errFactorOwnerReset
 		}
 	}
 	var outside int64
@@ -593,16 +636,16 @@ func (a *AdminAPI) assertResettableTOTP(tx *gorm.DB, c *gin.Context, orgID, targ
 		return err
 	}
 	if outside > 0 {
-		return errTOTPOtherOrgMembership
+		return errFactorOtherOrgMembership
 	}
 	return nil
 }
 
-// errTOTPOwnerReset and errTOTPOtherOrgMembership refuse an administrator reset
+// errFactorOwnerReset and errFactorOtherOrgMembership refuse an administrator reset
 // that would cross the authority boundary of the (global) second factor.
 var (
-	errTOTPOwnerReset         = errors.New("only an owner can reset an owner's two-factor")
-	errTOTPOtherOrgMembership = errors.New("target belongs to another organization")
+	errFactorOwnerReset         = errors.New("only an owner can reset an owner's two-factor")
+	errFactorOtherOrgMembership = errors.New("target belongs to another organization")
 )
 
 // writeTOTPError maps second-factor failures onto 401/409 responses.
@@ -618,6 +661,23 @@ func (a *AdminAPI) writeTOTPError(c *gin.Context, err error, logMsg string) {
 		a.deps.Logger.Error(logMsg)
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "two-factor operation failed")
 	}
+}
+
+// requireLocalPassword refuses second-factor management on an account whose
+// password was removed: TOTP can never complete a login there, so enrolling or
+// keeping a factor would be a dead end (design D5/R3).
+func (a *AdminAPI) requireLocalPassword(c *gin.Context, uid uint) bool {
+	user, err := a.loadUser(uid)
+	if err != nil {
+		a.deps.Logger.Error("load user failed")
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not load account")
+		return false
+	}
+	if !auth.HasPassword(user) {
+		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "account has no password")
+		return false
+	}
+	return true
 }
 
 // activeMembership loads the caller's membership and fails closed when it is
@@ -650,9 +710,32 @@ func tokenToAPI(t *model.APIToken) gen.APIToken {
 	}
 }
 
+// passwordLoginAccepted decides whether the password step may succeed. The
+// dummy hash is a real Argon2id hash of a known literal, so a match alone is
+// not proof: the account must exist AND actually have a password.
+func passwordLoginAccepted(found, hasPassword, matched bool) bool {
+	return found && hasPassword && matched
+}
+
+// passwordHashForVerification keeps the password step constant-time for
+// passwordless accounts: an empty hash cannot be verified, so it would fail
+// before Argon2id ran and reveal which mailboxes have no password.
+func passwordHashForVerification(stored string) string {
+	if stored == "" {
+		return dummyPasswordHash()
+	}
+	return stored
+}
+
 // dummyPasswordHash is verified for unknown accounts to keep login timing flat.
 var dummyPasswordHash = sync.OnceValue(func() string {
-	hash, err := auth.HashPassword("dummy-password-for-timing")
+	// Hashing a random secret keeps the dummy unguessable even if a caller
+	// forgets the hasPassword guard.
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return ""
+	}
+	hash, err := auth.HashPassword(base64.RawURLEncoding.EncodeToString(secret))
 	if err != nil {
 		return ""
 	}

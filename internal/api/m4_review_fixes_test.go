@@ -192,7 +192,7 @@ func TestRemoveMember_DisabledCoOwnerCanBeRemoved(t *testing.T) {
 	ownerRole := h.roleID(t, uint(orgID), model.RoleOwner)
 	require.NoError(t, h.db.DB.Create(&model.Membership{
 		OrganizationID: uint(orgID), UserID: co.ID, RoleID: ownerRole,
-		Role: model.RoleOwner, Disabled: true,
+		Disabled: true,
 	}).Error)
 
 	w := h.do(t, http.MethodDelete, "/api/v1/orgs/"+itoa(orgID)+"/members/"+itoa(int64(co.ID)), nil, token)

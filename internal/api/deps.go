@@ -14,10 +14,20 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/captcha"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/clientbuild"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/controlrole"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/identity"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/ldapauth"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/limit"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logquery"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/oidc"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/passkey"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/provision"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/session"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/strategy"
 )
 
 // Deps carries everything the HTTP layer needs.
@@ -63,6 +73,24 @@ type Deps struct {
 	// derives it from DB and the transactional auditor when nil.
 	Access *access.Service
 
+	// ControlRoles owns in-session roles and member assignments. NewAdminAPI
+	// derives it from DB and the transactional auditor when nil.
+	ControlRoles *controlrole.Service
+
+	// LogQuery reads the client-reported connection/file logs. NewAdminAPI
+	// derives it from DB when nil.
+	LogQuery *logquery.Service
+
+	// Strategies owns client strategies, their assignments and disconnect
+	// requests. NewAdminAPI derives it from DB and the transactional auditor
+	// when nil.
+	Strategies *strategy.Service
+
+	// ClientBuilds owns custom client build profiles, builds and artifacts.
+	// It is nil when the deployment did not wire the feature; the endpoints
+	// then answer 503 instead of pretending the capability exists.
+	ClientBuilds *clientbuild.Service
+
 	// Tokens mints and validates personal API tokens. NewRouter derives it from
 	// DB when nil so tests and the entrypoint share the same wiring.
 	Tokens *auth.TokenService
@@ -77,6 +105,37 @@ type Deps struct {
 	// Retention archives and purges audit rows. NewRouter derives it from DB,
 	// Auditor and Now when nil.
 	Retention *audit.RetentionService
+
+	// Captcha gates the public credential-checking endpoints. NewAdminAPI
+	// substitutes a disabled service when nil, so tests and deployments that
+	// do not enable it keep today's behavior.
+	Captcha *captcha.Service
+
+	// Passkeys owns WebAuthn credentials and ceremonies. It is nil when the
+	// deployment did not enable the feature; the endpoints then answer 503
+	// instead of pretending the capability exists.
+	Passkeys *passkey.Service
+
+	// OIDC owns the external identity provider, its login flows and the
+	// identity bindings. Nil means the feature is off and every OIDC endpoint
+	// answers 503.
+	OIDC *oidc.Service
+
+	// LDAP is the directory-backed Directory implementation. Nil means the
+	// feature is off and POST /auth/ldap/login answers 503.
+	LDAP ldapauth.Directory
+	// LDAPProviderName is the login-button label from config.
+	LDAPProviderName string
+	// LDAPIssuer is the lowercased directory host: it is the issuer column of
+	// the identity binding, so changing the host changes the binding namespace.
+	LDAPIssuer string
+
+	// Identity owns the external-identity bindings shared by OIDC and LDAP.
+	Identity *identity.Service
+
+	// RequireLocalSecondFactor makes an external login still ask for the
+	// panel's own TOTP for accounts that already enabled it (design O12).
+	RequireLocalSecondFactor bool
 }
 
 // Provisioner schedules asynchronous server provisioning.
@@ -103,10 +162,28 @@ type AdminAPI struct {
 	// unauthenticated login bucket, and their own per-IP bucket still bounds
 	// attempts once the shared failure table is full.
 	totpManageGuard *loginGuard
-	books           *addressbook.Service
-	tickets         *session.Service
-	totp            *auth.TOTPService
-	retention       *audit.RetentionService
+	// passkeyGuard bounds unauthenticated passkey login attempts. It is a
+	// separate bucket so WebAuthn traffic never drains the password login
+	// budget (and vice versa).
+	passkeyGuard *loginGuard
+	// oidcGuard bounds the unauthenticated OIDC endpoints (start, callback,
+	// exchange) so probing the redirect codes cannot drain the password bucket.
+	oidcGuard    *loginGuard
+	books        *addressbook.Service
+	tickets      *session.Service
+	totp         *auth.TOTPService
+	retention    *audit.RetentionService
+	captcha      *captcha.Service
+	clientBuilds *clientbuild.Service
+	passkeys     *passkey.Service
+	oidc         *oidc.Service
+	ldap         ldapauth.Directory
+	ldapName     string
+	ldapIssuer   string
+	identity     *identity.Service
+	// captchaGuard bounds challenge issuance per IP without spending the
+	// login attempt budget.
+	captchaGuard *loginGuard
 }
 
 // NewAdminAPI builds the handler set.
@@ -144,12 +221,35 @@ func NewAdminAPI(d Deps) *AdminAPI {
 		recorder, _ := d.Auditor.(audit.TxRecorder)
 		d.Access = access.NewService(d.DB, recorder, d.Now)
 	}
+	if d.ControlRoles == nil {
+		// Same fail-closed rule as Access: no transactional recorder means every
+		// role mutation is refused rather than committed unaudited.
+		recorder, _ := d.Auditor.(audit.TxRecorder)
+		d.ControlRoles = controlrole.NewService(d.DB, recorder, d.Now)
+	}
+	if d.LogQuery == nil {
+		d.LogQuery = logquery.NewService(d.DB)
+	}
+	if d.Strategies == nil {
+		// Same fail-closed rule as Access: without a transactional recorder
+		// every strategy mutation is refused rather than committed unaudited.
+		recorder, _ := d.Auditor.(audit.TxRecorder)
+		d.Strategies = strategy.NewService(d.DB, recorder, d.Now)
+	}
 	if d.TOTP == nil {
 		d.TOTP = auth.NewTOTPService(d.DB, d.AuthSecret, d.Now)
+	}
+	if d.Identity == nil {
+		d.Identity = identity.NewService(d.DB, d.Now)
 	}
 	if d.Retention == nil {
 		recorder, _ := d.Auditor.(audit.TxRecorder)
 		d.Retention = audit.NewRetentionService(d.DB, "./data/audit-archive", recorder, d.Now)
+	}
+	if d.Captcha == nil {
+		// Disabled by default: the captcha is opt-in and must not change any
+		// existing login behavior when a deployment leaves it off.
+		d.Captcha = captcha.Disabled()
 	}
 	tickets := d.Tickets
 	if tickets == nil {
@@ -163,7 +263,10 @@ func NewAdminAPI(d Deps) *AdminAPI {
 		if !ok {
 			panic("api: transactional auditor required when Tickets is nil")
 		}
-		tickets = session.NewService(d.DB, recorder, d.Now)
+		// Wire the control role resolver: issuance snapshots the actor's
+		// permissions onto the ticket, and the API tests exercise the real path
+		// instead of a service without role awareness.
+		tickets = session.NewService(d.DB, recorder, d.Now).WithControlRoles(d.ControlRoles)
 	}
 
 	return &AdminAPI{
@@ -173,9 +276,22 @@ func NewAdminAPI(d Deps) *AdminAPI {
 		totpGuard: newLoginGuard(),
 
 		totpManageGuard: newLoginGuard(),
-		books:           addressbook.NewService(d.DB),
-		tickets:         tickets,
-		totp:            d.TOTP,
-		retention:       d.Retention,
+		passkeyGuard:    newLoginGuard(),
+		// Three tokens per SSO login (start, callback, exchange): the bucket must
+		// fit several logins per shared NAT address, unlike the password bucket.
+		oidcGuard:    limit.NewLoginGuardWithLimits(30, 30),
+		books:        addressbook.NewService(d.DB),
+		tickets:      tickets,
+		totp:         d.TOTP,
+		retention:    d.Retention,
+		captcha:      d.Captcha,
+		clientBuilds: d.ClientBuilds,
+		passkeys:     d.Passkeys,
+		oidc:         d.OIDC,
+		ldap:         d.LDAP,
+		ldapName:     d.LDAPProviderName,
+		ldapIssuer:   d.LDAPIssuer,
+		identity:     d.Identity,
+		captchaGuard: newLoginGuard(),
 	}
 }

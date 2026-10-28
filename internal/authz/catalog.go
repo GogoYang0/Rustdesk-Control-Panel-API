@@ -27,6 +27,22 @@ const (
 	// not delegable: handing it to a custom role would let that role reshape
 	// who can reach which devices.
 	PermAccessManage = "access.manage"
+	// PermControlRoleManage gates control role CRUD and member assignment. Not
+	// delegable for the same reason as access.manage: it decides what an
+	// operator may do after connecting.
+	PermControlRoleManage = "control_role.manage"
+	// PermStrategyManage gates strategy CRUD and assignment. Not delegable:
+	// a strategy rewrites the controlled side's client options, i.e. it can
+	// disable screen privacy or file transfer for everybody in the group.
+	PermStrategyManage = "strategy.manage"
+	// PermClientBuildManage gates custom client build profiles and builds. Not
+	// delegable: a generated installer embeds the organization's server address
+	// and consumes CI quota, so only owner/admin may produce one.
+	PermClientBuildManage = "client_build.manage"
+	// PermDeviceDisconnect gates the heartbeat-driven "drop this device's
+	// live connections" request. Not delegable: it terminates other people's
+	// sessions.
+	PermDeviceDisconnect = "device.disconnect"
 )
 
 // Permission is one entry of the catalog served to role builders.
@@ -42,6 +58,10 @@ var catalog = []Permission{
 	{PermOrgAdmin, "Administer organization settings and provisioning", false},
 	{PermRoleManage, "Create, edit, delete, and assign roles", false},
 	{PermAccessManage, "Manage user groups, device groups and access rules", false},
+	{PermControlRoleManage, "Manage control roles and their member assignments", false},
+	{PermStrategyManage, "Manage client strategies and their assignments", false},
+	{PermClientBuildManage, "Manage custom client build profiles and builds", false},
+	{PermDeviceDisconnect, "Disconnect a device's live connections", false},
 	{PermMemberManage, "Invite and remove members, disable memberships", true},
 	{PermDeviceRead, "Read devices", true},
 	{PermDeviceWrite, "Register devices, heartbeat, rebind, disable", true},
@@ -87,7 +107,8 @@ func BuiltinPermissions(kind string) []string {
 		return []string{
 			PermMemberManage, PermDeviceRead, PermDeviceWrite,
 			PermAuditRead, PermAddressBook, PermPolicyWrite, PermApprovalDecide,
-			PermAccessManage,
+			PermAccessManage, PermControlRoleManage, PermStrategyManage, PermClientBuildManage,
+			PermDeviceDisconnect,
 		}
 	case "member":
 		return []string{PermDeviceRead}

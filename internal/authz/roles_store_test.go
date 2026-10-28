@@ -42,6 +42,9 @@ func TestAccess_BuiltinAdminGainsManagePermission(t *testing.T) {
 	adminRow, err := authz.RoleByKindTx(st.DB, org.ID, model.RoleKindAdmin)
 	require.NoError(t, err)
 	require.True(t, authz.Has(adminRow.PermissionList(), authz.PermAccessManage))
+	require.True(t, authz.Has(adminRow.PermissionList(), authz.PermClientBuildManage))
+
+	require.False(t, authz.Delegable(authz.PermClientBuildManage))
 
 	ownerRow, err := authz.RoleByKindTx(st.DB, org.ID, model.RoleKindOwner)
 	require.NoError(t, err)

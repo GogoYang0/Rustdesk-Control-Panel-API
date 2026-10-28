@@ -9,13 +9,18 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/access"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/addressbook"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/device"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/limit"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/logquery"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/strategy"
 )
 
 // Context keys for the authenticated compat session.
@@ -32,7 +37,10 @@ const (
 
 // Deps carries everything the compat endpoints need.
 type Deps struct {
-	DB     *gorm.DB
+	DB *gorm.DB
+	// Logger receives delivery failures; nil falls back to a no-op logger so
+	// the endpoint stays silent in tests.
+	Logger *zap.Logger
 	Issuer *auth.Issuer
 	// Devices persists devices and heartbeats; nil falls back to a service
 	// on the same DB.
@@ -44,7 +52,26 @@ type Deps struct {
 	// Access owns device visibility and reachability. The peer list and (in
 	// the ticket task) ticket issue/redemption share this one evaluation; nil
 	// falls back to a read-only service on the same DB.
-	Access    *access.Service
+	Access *access.Service
+	// Strategies resolves and delivers client strategies on the heartbeat
+	// response. When nil, Mount builds one on the same DB with a GORM
+	// transactional auditor — the CLI `strategy_name` path assigns through
+	// this service and refuses unaudited writes.
+	Strategies *strategy.Service
+	// Tokens authenticates the personal token the client's `--assign` call
+	// carries; nil falls back to a service on the same DB.
+	Tokens *auth.TokenService
+	// Roles resolves the token owner's live role for the `--assign`
+	// authorization; nil falls back to a service on the same DB.
+	Roles *authz.RoleService
+	// AuditIngest stores the client's connection/file/alarm reports; nil falls
+	// back to a service on the same DB with a GORM auditor.
+	AuditIngest *logquery.Ingest
+	// Auditor records client alarms; nil falls back to a GORM auditor.
+	Auditor audit.Auditor
+	// TOTP verifies the second factor for accounts that enabled it; nil falls
+	// back to a service on the same DB (with an empty key, which fails closed).
+	TOTP      *auth.TOTPService
 	Now       func() time.Time
 	AccessTTL time.Duration
 }
@@ -70,6 +97,9 @@ func Mount(r gin.IRouter, d Deps) *Server {
 	if d.Now == nil {
 		d.Now = time.Now
 	}
+	if d.Logger == nil {
+		d.Logger = zap.NewNop()
+	}
 	if d.Guard == nil {
 		d.Guard = limit.NewLoginGuard()
 	}
@@ -84,19 +114,50 @@ func Mount(r gin.IRouter, d Deps) *Server {
 		// which is all the compat endpoints need.
 		d.Access = access.NewService(d.DB, nil, nil)
 	}
+	if d.Tokens == nil && d.DB != nil {
+		d.Tokens = auth.NewTokenService(d.DB, d.Now)
+	}
+	if d.Roles == nil && d.DB != nil {
+		d.Roles = authz.NewRoleService(d.DB)
+	}
 	if d.AccessTTL == 0 {
 		d.AccessTTL = 720 * time.Hour
+	}
+	if d.TOTP == nil && d.DB != nil {
+		d.TOTP = auth.NewTOTPService(d.DB, "", d.Now)
+	}
+	if d.Strategies == nil && d.DB != nil {
+		// A real recorder: the CLI `--assign strategy_name` path assigns a
+		// strategy, and an unaudited assignment is refused by the service.
+		d.Strategies = strategy.NewService(d.DB, audit.NewGormAuditor(d.DB), d.Now)
+	}
+	if d.AuditIngest == nil && d.DB != nil {
+		auditor := d.Auditor
+		if auditor == nil {
+			auditor = audit.NewGormAuditor(d.DB)
+		}
+		d.AuditIngest = logquery.New(d.DB, auditor, d.Now)
 	}
 	s := &Server{deps: d}
 
 	g := r.Group("/api")
 	g.POST("/login", s.login)
 	g.GET("/login-options", s.loginOptions)
+	// The client's `--assign` call: authenticated by a personal token, not by
+	// the compat session, so it mounts beside /login instead of in the authed
+	// group (D4).
+	g.POST("/devices/cli", s.cliAssign)
 	// The client sends heartbeat/sysinfo without a bearer token (official
 	// protocol); the device binding comes from the most recent active
 	// session carrying the same uuid (裁定 C16).
 	g.POST("/heartbeat", s.heartbeat)
 	g.POST("/sysinfo", s.sysinfo)
+	// Client audit reports. They carry no Authorization header (the client
+	// posts them with an empty auth argument), so they mount beside /login and
+	// authenticate by the (id, uuid) pair matching the device binding.
+	g.POST("/audit/conn", s.auditConn)
+	g.POST("/audit/file", s.auditFile)
+	g.POST("/audit/alarm", s.auditAlarm)
 	authed := g.Group("", s.requireSession())
 	authed.POST("/logout", s.logout)
 	authed.POST("/currentUser", s.currentUser)

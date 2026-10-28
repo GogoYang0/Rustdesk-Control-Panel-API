@@ -25,3 +25,18 @@ func TestUserModel_AutoMigrateAndCRUD(t *testing.T) {
 	require.Equal(t, u.ID, got.ID)
 	require.NotEmpty(t, got.PasswordHash)
 }
+
+// TestUser_BeforeSaveNormalizesEmail pins the mailbox normalization: every
+// write path (invite accept, admin create, profile changes) funnels through
+// BeforeSave, so case-variant shadow accounts can never be created again.
+// Legacy mixed-case rows may still exist in old deployments — identity
+// matching treats them as conflicts, but no new ones may appear.
+func TestUser_BeforeSaveNormalizesEmail(t *testing.T) {
+	u := model.User{Email: "  Mixed.Case@EXAMPLE.Com  ", PasswordHash: "h"}
+	require.NoError(t, u.BeforeSave(nil))
+	require.Equal(t, "mixed.case@example.com", u.Email, "BeforeSave must normalize the mailbox on every write")
+
+	u2 := model.User{Email: "  spaced@example.com  ", PasswordHash: "h"}
+	require.NoError(t, u2.BeforeSave(nil))
+	require.Equal(t, "spaced@example.com", u2.Email, "surrounding whitespace must be trimmed too")
+}

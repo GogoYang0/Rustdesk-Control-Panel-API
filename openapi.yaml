@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Rustdesk-Control-Panel API
-  version: 0.9.0
+  version: 0.11.0
   contact:
     name: Rustdesk-Control-Panel
     url: https://github.com/GogoYang0/Rustdesk-Control-Panel-API
@@ -55,6 +55,18 @@ info:
     设备组）。普通成员的 `GET /api/peers` 只返回规则允许的设备，票据签发与
     兑换按同一判定拒绝（返回 404，不泄露设备存在性）。`Permission` 新增
     `access.manage`（owner 拥有；admin 由内置集合授予；不可委派）。
+
+    0.10.0 新增**客户端策略下发与心跳断连**：`/orgs/{orgId}/strategies` 系列端点
+    维护 `config_options`（20 个白名单键），策略按「设备 > 设备组 > 成员」三层
+    生效，经 `POST /api/heartbeat` 响应下发给客户端；`Permission` 新增
+    `strategy.manage`、`device.disconnect`（均不可委派）。
+
+    0.10.0 波次 5a 新增**自定义客户端生成器**：组织级品牌 profile、构建记录与
+    产物下载；构建由 GitHub Actions 执行，服务器地址/公钥/API server 由本组织
+    已部署的 `ServerGroup`、`relayHost` 与 `publicBaseURL` 推导，API server 指向
+    面板 compat 入口。平台为 windows-x64、linux-x64、macos-arm64、macos-x64、
+    android-arm64；5a **不签名**（Android 使用固定 debug key）。新增权限
+    `client_build.manage`（owner/admin，不可委派）。
 servers:
   - url: http://localhost:8080
     description: 本地开发
@@ -132,6 +144,359 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: 验证码提供商不可用（仅启用验证码且 failMode=closed 时）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/providers:
+    get:
+      operationId: listAuthProviders
+      summary: 列出可用的登录方式
+      description: |
+        未认证。返回部署级启用的外部身份源：`oidc` 反映 `oidc.enabled`（同时给出
+        `name` 作为按钮文案），`ldap` 在本版本恒为 false（未实现，配置开启会启动失败）。
+        前端据此显示「使用 {name} 登录」入口。
+      tags:
+        - auth
+      security: []
+      responses:
+        "200":
+          description: 登录方式
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthProvidersResponse"
+
+  /api/v1/auth/oidc/start:
+    post:
+      operationId: startOIDCLogin
+      summary: 开始 OIDC 登录
+      description: |
+        未认证。返回浏览器必须跳转的 `authorization_url`。流程为
+        Authorization Code + PKCE(S256) + nonce；`state` 一次性（默认 10 分钟）。
+        回调地址固定为 `{web.baseURL}/api/v1/auth/oidc/callback`，不接受请求指定。
+
+        `redirect_path` 是登录成功后前端回到的站内路径：必须以 `/` 开头，且不含
+        `//`、反斜杠、`:`、`..`、百分号编码的分隔符（`%2f`/`%5c`），长度 ≤256；
+        缺省为 `/`。非法值返回 400 且不会创建流程行。
+
+        `oidc.enabled=false` 或 IdP 的 discovery 不可达时返回 503 —— 不降级为
+        密码登录，也不返回 500。
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OIDCStartRequest"
+      responses:
+        "200":
+          description: 授权请求
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OIDCStartResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: OIDC 未启用或 IdP 不可达
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/oidc/callback:
+    get:
+      operationId: handleOIDCCallback
+      summary: OIDC 回调
+      description: |
+        未认证。IdP 重定向到这里。成功时 302 到
+        `{web.baseURL}{redirect_path}?ticket=…`，失败时 302 到同一路径并带
+        `?error=<oidc_failed|no_account|email_unverified|identity_conflict>`。
+
+        URL 中**不出现任何 token**（access/refresh/id_token 都不进查询串）；
+        ticket 有效期 60 秒、一次一用。请求里的 `redirect_uri` 被忽略，
+        `Location` 只由 `web.baseURL` 与启动时校验过的站内路径拼成。
+        IdP 返回的 `error`/`error_description` 原文不回显、不入日志。
+      tags:
+        - auth
+      security: []
+      parameters:
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: code
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: error
+          in: query
+          required: false
+          schema:
+            type: string
+          description: IdP 的错误码；只用于判定失败，不记录原文
+      responses:
+        "302":
+          description: 重定向回前端（带 ticket 或固定错误码）
+          headers:
+            Location:
+              schema:
+                type: string
+        "503":
+          description: OIDC 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/oidc/exchange:
+    post:
+      operationId: exchangeOIDCLogin
+      summary: 用 ticket 换取令牌
+      description: |
+        未认证。把回调带回来的 ticket 换成与密码登录相同的 token 对。
+        ticket 一次有效（60 秒），重放或伪造一律 401。
+
+        `external.requireLocalSecondFactor=true` 且该账户**已启用** TOTP 时，
+        返回 401 `two_factor_required` 与 `challenge_token`（`methods:["totp"]`），
+        客户端继续调用 `POST /auth/2fa/verify`；未启用 TOTP 的账户直接发 token。
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OIDCExchangeRequest"
+      responses:
+        "200":
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: OIDC 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/identity:
+    get:
+      operationId: getIdentities
+      summary: 查看外部身份绑定
+      description: |
+        需要登录（JWT）。返回当前账户的全部外部身份绑定（按绑定时间倒序），
+        以及 `active_provider`（当前部署启用的外部身份源）。
+        `conflict_at` 非空表示该绑定已被标记冲突：SSO 会拒绝它，
+        需要管理员 reset 后才能重绑（设计 O4/O14）。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 绑定列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IdentityListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          description: 外部身份源未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/identity/unlink:
+    post:
+      operationId: unlinkIdentity
+      summary: 解绑外部身份
+      description: |
+        需要登录（JWT）+ 二次证明：`stepup_token`（passkey step-up）或当前密码，
+        **二者给其一**（都给或缺一 → 400）。
+
+        拒绝会锁死账户的解绑：账户没有密码、没有 passkey、且这是唯一一条绑定
+        时返回 409 —— 此类账户没有任何线上自救通道。
+        `identity_id` 不属于当前账户时返回 404（不区分“不存在”与“不是你的”）。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IdentityUnlinkRequest"
+      responses:
+        "200":
+          description: 已解绑
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /api/v1/orgs/{orgId}/members/{userId}/identity/reset:
+    post:
+      operationId: resetMemberIdentity
+      summary: 重置成员的外部身份绑定
+      description: |
+        管理员清空成员的外部身份绑定（需要 `member.manage`），写审计
+        `user.identity.reset`。守卫与 `2fa/reset`、`passkeys/reset` 一致：
+        不能重置自己；重置 owner 需要 `org.admin`；目标同属其他组织时拒绝；
+        事务内复判。
+
+        例外（设计 O14）：目标没有本地凭据（无密码、无 passkey）且仍有
+        **未冲突**的绑定时返回 409 —— 清空绑定会让它彻底无法登录；
+        但全部绑定都已标记 `conflict_at` 时，SSO 本来就登不进，
+        此时 reset 是管理员唯一的修复手段，予以放行。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已重置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/Internal"
+  /api/v1/auth/ldap/login:
+    post:
+      operationId: ldapLogin
+      summary: 目录账号登录
+      description: |
+        未认证。服务账号搜索到恰好一条目录条目后，以该条目 DN 做用户 bind 验证
+        密码；成功后按目录 `mail` 属性绑定到**已存在**的面板账户（无 JIT），
+        返回与密码登录相同的 token 对。
+
+        空用户名或空密码返回 400 且**不会触碰目录**（L1：空密码 + simple bind
+        在多数目录上等于匿名 bind）。bind 失败一律 401「用户名或密码错误」，
+        不区分用户不存在与密码错；目录连接/TLS/搜索协议错误返回 503；搜索
+        命中多于一条也按 401 拒绝（filter 太宽 = fail closed，L6）。
+
+        限流与验证码与 `/auth/login` 同源（同一 IP 桶与失败窗口，L9）。
+        `external.requireLocalSecondFactor=true` 且该账户已启用 TOTP 时，
+        返回 401 `two_factor_required` + `challenge_token`，由
+        `POST /auth/2fa/verify` 完成第二步（与 OIDC 同一收尾逻辑，L12）。
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LDAPLoginRequest"
+      responses:
+        "200":
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: 目录身份与已有绑定冲突（换用户名后撞新 subject 等）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: LDAP 未启用或目录不可达
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/v1/auth/captcha:
+    get:
+      operationId: getCaptchaChallenge
+      summary: 获取交互式验证码挑战
+      description: |
+        未认证。返回当前启用的验证码提供商与客户端所需参数：
+        `altcha` 返回挑战 JSON（algorithm/challenge/maxNumber/salt/signature）；
+        `geetest` 返回 `captcha_id` 与 widget 脚本地址；`cap` 返回
+        `api_endpoint` 与 `site_key`。未启用时 `enabled=false` 且不含
+        provider/challenge。受独立 IP 限流（429）。
+      tags:
+        - auth
+      security: []
+      responses:
+        "200":
+          description: 当前验证码配置与挑战
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CaptchaChallengeResponse"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: 验证码提供商不可用（构造挑战失败）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /api/v1/auth/refresh:
     post:
@@ -328,6 +693,12 @@ paths:
                 $ref: "#/components/schemas/OkResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "409":
+          description: 账户没有本地密码（passkey-only），无法启用或维护 TOTP
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
 
@@ -355,6 +726,12 @@ paths:
                 $ref: "#/components/schemas/TOTPRecoveryCodesResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "409":
+          description: 账户没有本地密码（passkey-only），无法启用或维护 TOTP
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
 
@@ -391,6 +768,441 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: 验证码提供商不可用（仅启用验证码且 failMode=closed 时）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/passkey/stepup/begin:
+    post:
+      operationId: beginPasskeyStepup
+      summary: 开始 step-up 断言
+      description: |
+        需要登录（JWT）。为敏感操作（删除/恢复本地密码）发起一次新鲜断言。
+        账户没有 passkey 时 409；断言有效期由 `webauthn.ceremonyTTL` 决定（默认 5 分钟）。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 断言挑战
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasskeyCeremonyResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/passkey/stepup/finish:
+    post:
+      operationId: finishPasskeyStepup
+      summary: 完成 step-up 断言
+      description: |
+        需要登录（JWT）。校验断言后返回 2 分钟、**一次一用**的 `stepup_token`。
+        该令牌只能授权一个敏感动作；重放返回 401。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasskeyLoginRequest"
+      responses:
+        "200":
+          description: step-up 令牌
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StepupTokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/password/remove:
+    post:
+      operationId: removePassword
+      summary: 删除本地密码（转为 passkey-only）
+      description: |
+        需要登录（JWT）+ 一次**新鲜的 passkey 断言**（`stepup_token`，2 分钟、一次一用）。
+        四项前置条件全部满足才执行：当前密码正确；stepup 有效；已绑定 passkey ≥ 2；
+        账户没有任何 TOTP 配置（含未启用的 pending 行）。
+
+        成功后 `password_hash` 置空，密码登录返回通用 `unauthorized`，只能走 passkey。
+        **没有线上自救通道**：删除后若丢失全部 passkey，只能由部署方按运维手册处理。
+        响应 `warnings` 列出连带影响（compat 登录不可用等）。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordRemoveRequest"
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasswordRemoveResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/password/set:
+    post:
+      operationId: setPassword
+      summary: 恢复本地密码
+      description: |
+        需要登录（JWT）+ 一次新鲜的 passkey 断言。仅当账户**当前没有密码**时可用
+        （已有密码返回 409；本版本不提供改密）。用于 passkey-only 账户恢复密码登录。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordSetRequest"
+      responses:
+        "200":
+          description: 已设置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/passkeys:
+    get:
+      operationId: listPasskeys
+      summary: 列出我的 passkey
+      description: |
+        需要登录（JWT）。返回调用者自己的凭据，附带 `has_password` 与
+        `totp_enabled`，供客户端判断"删除最后一个凭据会不会锁死账户"。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 凭据列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasskeyListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/passkeys/{passkeyId}:
+    patch:
+      operationId: renamePasskey
+      summary: 重命名 passkey
+      description: 需要登录（JWT）。名称 1-64 字符，首尾空白会被裁剪。只能操作自己的凭据。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: passkeyId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasskeyNameRequest"
+      responses:
+        "200":
+          description: 更新后的凭据
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasskeyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deletePasskey
+      summary: 删除 passkey
+      description: |
+        需要登录（JWT）。账户**没有密码**且这是最后一个凭据时返回 409：
+        删除会让账户再也无法登录，必须先设置密码或再绑定一个凭据。
+        不属于调用者的凭据一律 404，不区分"不存在"与"非本人"。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: passkeyId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/passkey/login/begin:
+    post:
+      operationId: beginPasskeyLogin
+      summary: 开始 passkey 登录
+      description: |
+        未认证。三种入口，互斥：
+
+        - 带 `challenge_token`：密码已通过、账户开启了 TOTP，此时用 passkey 代替
+          TOTP 完成第二步；`allowCredentials` 限定为该账户的凭据。账户没有凭据时 409。
+        - 带 `email`：把 `allowCredentials` 收窄到该邮箱的凭据；**邮箱不存在或
+          账户没有凭据时仍返回 200**，退化为可发现凭据 ceremony（不带
+          `allowCredentials`）。`email` 只是提示。
+
+          **安全边界说明**：命中与未命中的差别只在 `allowCredentials` 的内容，
+          状态码与结构一致。因此响应用途上可区分"该邮箱是否已绑定 passkey"——
+          这是为了让浏览器只列出相关凭据而显式接受的取舍（设计 D16），**不要**
+          把响应形状当作保密边界；探测成本由 per-IP 限流约束。
+
+          要彻底消除该差异，**必须在服务端或入口网关拒绝 `email` 参数**：端点公开，
+          客户端不发送并不能阻止第三方直接提交。本版本无内置开关，属已知限制。
+        - 都不带：可发现凭据（usernameless）流程，由认证器选择账户。
+
+        受 per-IP 限流；`email` 分支额外按账户计失败窗口。
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasskeyLoginBeginRequest"
+      responses:
+        "200":
+          description: 断言挑战
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasskeyCeremonyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/passkey/login/finish:
+    post:
+      operationId: finishPasskeyLogin
+      summary: 完成 passkey 登录
+      description: |
+        未认证。校验断言并签发与 `/auth/login` 相同的令牌对。
+        `ceremony_token` 一次有效；重放、过期、origin/rpId/challenge 不符、
+        签名无效一律 401，不区分原因。签名计数器回退按克隆处置（401），
+        凭据被标记 `clone_warning` 且不会自动删除。
+
+        passkey 登录成功即视为完成认证，不再叠加本地 TOTP（设计 D1/D14）。
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasskeyLoginRequest"
+      responses:
+        "200":
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/passkey/register/begin:
+    post:
+      operationId: beginPasskeyRegistration
+      summary: 开始绑定 passkey
+      description: |
+        需要登录（JWT）。返回一次性 `ceremony_token` 与 `navigator.credentials.create()`
+        所需的 `options`（W3C 标准 JSON，顶层为 `publicKey`）。字段按 W3C 结构透传，
+        契约不重复建模，避免与标准漂移；其中的二进制字段是 **base64url 字符串**，
+        客户端必须先解码为 `ArrayBuffer` 再调用 WebAuthn API（见
+        `PasskeyCeremony.options` 的说明与 `docs/reference/passkey-smoke.html`）。
+
+        认证器策略固定：`userVerification=required`、`residentKey=preferred`、
+        `attestation=none`；`excludeCredentials` 含该账户已绑定的凭据。
+        `webauthn.enabled=false` 时返回 503；账户已达凭据上限时返回 409。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 注册挑战
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasskeyCeremonyResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/passkey/register/finish:
+    post:
+      operationId: finishPasskeyRegistration
+      summary: 完成绑定 passkey
+      description: |
+        需要登录（JWT）。提交浏览器 `navigator.credentials.create()` 的结果。
+        `ceremony_token` 一次有效（有效期由 `webauthn.ceremonyTTL` 决定，默认 5 分钟），重放返回 401。
+
+        校验失败（origin/rpId 不符、challenge 不符、签名无效）一律 401，不区分原因；
+        同一凭据已绑定到任何账户时 409，且不回显归属账户。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasskeyRegistrationRequest"
+      responses:
+        "201":
+          description: 已绑定的凭据
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasskeyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /api/v1/orgs:
     get:
@@ -559,6 +1371,58 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/members/{userId}/passkeys/reset:
+    post:
+      operationId: resetMemberPasskeys
+      summary: 重置成员的 passkey
+      description: |
+        管理员清空成员的 WebAuthn 凭据（`member.manage`），写审计 `user.passkey.reset`。
+        守卫与 `2fa/reset` 一致：不能重置自己；重置 owner 需要 `org.admin`；
+        目标同属其他组织时拒绝（账户级因子不能由单租户管理员处置）；事务内复判。
+
+        额外一条：目标账户**没有密码**时返回 409 —— 清空凭据会让它彻底无法登录。
+        用于用户丢失认证器但仍有密码的场景。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已重置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/Internal"
+        "503":
+          description: passkey 未启用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /api/v1/orgs/{orgId}/members/{userId}/2fa/reset:
     post:
@@ -807,6 +1671,463 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/control-roles:
+    get:
+      operationId: listControlRoles
+      summary: 列出控制角色
+      description: |
+        返回组织的内置 `default` 角色与全部自定义角色，``default`` 在前。
+        调用者必须是该组织成员；读取不需要 `control_role.manage`。
+
+        **控制角色只决定「连上后能做什么」，且当前不约束原生客户端会话**：
+        `control_permissions` 由 hbbs 在信令消息里注入，本面板不在信令链路
+        （设计 D10），因此角色只在票据上留下快照，供网页客户端与审计使用。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 控制角色列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ControlRoleListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      operationId: createControlRole
+      summary: 创建控制角色
+      description: |
+        需要 `control_role.manage`（owner 全量、admin 由内置集合授予，不可委派）。
+        权限键必须来自 14 个协议键；未知键或非法状态整单 400。名称在组织内唯一，
+        重名返回 409。缺失的权限键按 `use_client` 补全。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ControlRoleCreateRequest"
+      responses:
+        "201":
+          description: 已创建的控制角色
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ControlRoleResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/control-roles/{roleId}:
+    patch:
+      operationId: updateControlRole
+      summary: 更新控制角色
+      description: |
+        需要 `control_role.manage`。按字段更新，至少给出 `name` 或 `permissions` 之一。
+        内置 `default` 角色的**名称不可改**（改权限可以）：启动播种与「未分配即回退
+        default」都绑定该行；改名返回 409。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: roleId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ControlRoleUpdateRequest"
+      responses:
+        "200":
+          description: 更新后的控制角色
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ControlRoleResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      operationId: deleteControlRole
+      summary: 删除控制角色
+      description: |
+        需要 `control_role.manage`。内置 `default` 角色不可删（409）。删除在同一事务内
+        把持有该角色的会籍改回「未分配」（回退 default），并写审计。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: roleId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/members/{userId}/control-role:
+    put:
+      operationId: assignMemberControlRole
+      summary: 分配成员的控制角色
+      description: |
+        需要 `control_role.manage`。`control_role_id` 显式给 `null` 表示回到组织内置
+        `default` 角色。目标必须是本组织成员，角色必须属于本组织（跨组织 id 一律 404）。
+        写入与审计同事务。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ControlRoleAssignmentRequest"
+      responses:
+        "200":
+          description: 已分配
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/strategies:
+    get:
+      operationId: listStrategies
+      summary: 列出客户端策略
+      description: |
+        返回组织的策略，按名称升序。任何组织成员可读（控制台渲染分配需要列表）。
+
+        **Strategy 是配置下发，不是授权**：它改被控端客户端选项（音频、剪贴板、
+        文件传输等），与「能否连接」（访问控制）和「连上后能做什么」（控制角色）
+        是三件不同的事。下发经客户端 30 秒一次的 `POST /api/heartbeat` 完成。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 策略列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StrategyListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+    post:
+      operationId: createStrategy
+      summary: 创建客户端策略
+      description: |
+        需要 `strategy.manage`（owner 全量、admin 由内置集合授予，不可委派）。
+        名称去首尾空白后 1–64 字符，组织内**不区分大小写**唯一（CLI 按名解析，
+        `Ops` 与 `ops` 并存会让解析歧义），重名返回 409。
+
+        `config_options` 只接受白名单键（见 `Strategy.config_options` 说明）；
+        未知键、超过 50 个键、值超过 256 字符或含控制字符均整单 400——客户端
+        对收到的键**没有自己的白名单**，漏一个网络类键（如 `api-server`）就等于
+        把设备交给别人。`version` 取自组织内单调的下发代次（首个策略为 1，此后递增，跨策略不重复）；`enabled=true`。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StrategyCreateRequest"
+      responses:
+        "201":
+          description: 已创建的策略
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StrategyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/strategies/{strategyId}:
+    get:
+      operationId: getStrategy
+      summary: 读取单个客户端策略
+      description: |
+        返回一个策略的完整定义（含 `version` 与 `cleared_keys`）。任何组织成员可读；
+        跨组织 id 与不存在都返回 404。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: strategyId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 策略
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StrategyResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateStrategy
+      summary: 更新客户端策略
+      description: |
+        需要 `strategy.manage`。按字段更新（`name` / `config_options` /
+        `enabled`），至少给出一项。
+
+        `version` **只在 `config_options` 实际变化时 +1**：它是客户端判断「是否
+        重新套用」的依据，改名或空转的 PATCH 不应触发一次全量下发。
+        `enabled=false` 是停用开关——保留行与分配，但心跳不再下发；重新启用
+        也不改写版本（客户端手上的选项没变）。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: strategyId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StrategyUpdateRequest"
+      responses:
+        "200":
+          description: 更新后的策略
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StrategyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+    delete:
+      operationId: deleteStrategy
+      summary: 删除客户端策略
+      description: |
+        需要 `strategy.manage`。同一事务内清空设备、设备组与会籍上指向该策略的
+        分配（悬空 id 会读作「已分配」却解析不到任何行），并写审计。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: strategyId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/members/{userId}/strategy:
+    put:
+      operationId: assignMemberStrategy
+      summary: 分配成员的默认客户端策略
+      description: |
+        需要 `strategy.manage`。作用于该成员**拥有**（`owner_user_id`）且没有设备层、
+        组层分配的设备。`null` 清除。成员必须是本组织会籍，否则 404。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StrategyAssignmentRequest"
+      responses:
+        "200":
+          description: 已分配
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /api/v1/orgs/{orgId}/user-groups:
     get:
@@ -1163,6 +2484,52 @@ paths:
         "409":
           $ref: "#/components/responses/Conflict"
 
+  /api/v1/orgs/{orgId}/device-groups/{deviceGroupId}/strategy:
+    put:
+      operationId: assignDeviceGroupStrategy
+      summary: 分配设备组的客户端策略
+      description: |
+        需要 `strategy.manage`。作用于组内所有**没有设备层分配**的设备。
+        `null` 清除组层分配。写入与审计同事务。
+      tags:
+        - devices
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: deviceGroupId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StrategyAssignmentRequest"
+      responses:
+        "200":
+          description: 已分配
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/v1/orgs/{orgId}/device-groups/{deviceGroupId}/devices:
     put:
       operationId: replaceDeviceGroupDevices
@@ -1495,6 +2862,276 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
 
+  /api/v1/orgs/{orgId}/connection-logs:
+    get:
+      operationId: listConnectionLogs
+      summary: 查询客户端连接日志
+      description: |
+        按 `started_at desc, id desc` 分页返回客户端上报的连接记录（`audit.read`）。
+        数据来自原生客户端 `POST /api/audit/conn`，不是面板签发的会话记录（后者见
+        sessions）。可见范围由角色 `audit_scope` 决定：`global` 全组织；`individual`
+        只看自己拥有设备（`devices.owner_user_id`）的记录。列表轮询不写审计。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: deviceId
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: rustdeskId
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: 含下界（UTC），比较 `started_at`
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: 含上界（UTC），比较 `started_at`
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: 连接日志页
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectionLogListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/orgs/{orgId}/connection-logs/export:
+    get:
+      operationId: exportConnectionLogs
+      summary: 导出连接日志 CSV
+      description: |
+        与查询相同的过滤条件，单次最多 1000 行（超出返回 400）。CSV 列：
+        `started_at, ended_at, status, rustdesk_id, device_id, ip, conn_id, session_id,
+        note, conn_audit_ref`。导出动作写审计 `connection_log.export`。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: deviceId
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: rustdeskId
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: CSV 文件
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+          content:
+            text/csv:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/orgs/{orgId}/file-logs:
+    get:
+      operationId: listFileLogs
+      summary: 查询客户端文件传输日志
+      description: |
+        按 `created_at desc, id desc` 分页返回客户端上报的文件传输记录（`audit.read`）。
+        数据来自原生客户端 `POST /api/audit/file`。可见范围与连接日志一致。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: deviceId
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: rustdeskId
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: 含下界（UTC），比较 `created_at`
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: 含上界（UTC），比较 `created_at`
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: 文件日志页
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileLogListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/orgs/{orgId}/file-logs/export:
+    get:
+      operationId: exportFileLogs
+      summary: 导出文件传输日志 CSV
+      description: |
+        与查询相同的过滤条件，单次最多 1000 行（超出返回 400）。CSV 列：
+        `created_at, direction, rustdesk_id, device_id, peer_id, conn_id, path, is_file,
+        file_count, ip, name, files`。导出动作写审计 `file_log.export`。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: deviceId
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: rustdeskId
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: CSV 文件
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+          content:
+            text/csv:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
   /api/v1/orgs/{orgId}/audit-retention:
     get:
       operationId: getAuditRetention
@@ -1704,6 +3341,12 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "409":
           $ref: "#/components/responses/Conflict"
+        "503":
+          description: 验证码提供商不可用（仅启用验证码且 failMode=closed 时）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /api/v1/orgs/{orgId}/devices:
     get:
@@ -2572,15 +4215,24 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
-  /api/v1/orgs/{orgId}/devices/{deviceId}:
-    patch:
-      operationId: setDeviceDisabled
-      summary: 停用或恢复设备
+  /api/v1/orgs/{orgId}/devices/{deviceId}/disconnect:
+    post:
+      operationId: requestDeviceDisconnect
+      summary: 请求断开设备的当前连接
       description: |
-        停用设备（v0.8.0，`device.write`）：拒绝该设备的新客户端认领、compat 登录、
-        心跳与系统信息上报，并在同一事务撤销该设备在本组织的活跃 compat 会话；
-        票据兑换被拒绝（409）。恢复后设备重新可被认领与连接。设备历史（心跳、会话、
-        审计）保留。重复设置同一状态为 200 no-op。设备不属于本组织或不存在返回 404。
+        需要 `device.disconnect`（owner 全量、admin 由内置集合授予，不可委派）。
+        `reason` 必填（去首尾空白后 1–255 字符），随审计留存。
+
+        **面板不直接断连**：它不在信令链路（设计 D10）。本端点只记录一次请求，
+        由客户端下一次 `POST /api/heartbeat` 的响应 `disconnect` 字段执行——
+        客户端把请求里自报的**活跃连接编号**断开。因此：
+
+        - 生效延迟最长一个心跳周期（30 秒）加上客户端处理时间；
+        - 客户端当时没有活跃连接（`conns` 为空）时请求**保持 pending**，不消耗；
+        - 同一设备已有 pending 请求时返回 `409`（避免堆积重复断连）；
+        - 15 分钟未被消费则标记 `expired` 并写系统审计。
+
+        设备不存在或不属于本组织均返回 `404`。
       tags:
         - devices
       security:
@@ -2603,7 +4255,117 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/DeviceDisableRequest"
+              $ref: "#/components/schemas/DeviceDisconnectRequest"
+      responses:
+        "201":
+          description: 已记录的断连请求
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceDisconnectResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}/devices/{deviceId}/strategy:
+    put:
+      operationId: assignDeviceStrategy
+      summary: 分配设备的客户端策略
+      description: |
+        需要 `strategy.manage`。`strategy_id` 显式给 `null` 表示清除设备层分配，
+        回落到设备组层。设备层优先级最高（设计 D1：设备 > 设备组 > 成员）。
+        策略必须属于本组织，跨组织 id 与不存在的设备一律 404。写入与审计同事务。
+      tags:
+        - devices
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: deviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StrategyAssignmentRequest"
+      responses:
+        "200":
+          description: 已分配
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/devices/{deviceId}:
+    patch:
+      operationId: updateDevice
+      summary: 更新设备（停用/恢复、归属、备注）
+      description: |
+        按字段更新设备（`device.write`）。请求体至少包含一个字段，同一请求中的多个字段
+        要么全部生效、要么全部不生效；每个实际发生变化的字段各写一条审计
+        （`device.disable` / `device.enable`、`device.assign`、`device.note`），
+        未变化的字段不写审计。
+
+        `disabled`（v0.8.0）：停用设备后拒绝该设备的新客户端认领、compat 登录、心跳与
+        系统信息上报，并在同一事务撤销该设备在本组织的活跃 compat 会话；票据兑换被拒绝
+        （409）。恢复后设备重新可被认领与连接。设备历史（心跳、会话、审计）保留。重复
+        设置同一状态为 200 no-op。
+
+        `owner_user_id`：设置设备归属人，值必须是本组织的有效成员（执行成员，会籍未停用），
+        否则 404；`null` 清空归属；`0` 或负数非法（400）。归属人始终能在客户端看到并连接
+        自己的设备（设备停用或会籍停用时除外）。
+
+        `note`：运维备注，最长 255 字符，`null` 或空串清空。
+
+        设备不属于本组织或不存在返回 404。
+      tags:
+        - devices
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: deviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceUpdateRequest"
       responses:
         "200":
           description: 更新后的设备
@@ -3358,6 +5120,658 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/v1/orgs/{orgId}/client-build/capabilities:
+    get:
+      operationId: getClientBuildCapabilities
+      summary: 读取自定义客户端构建能力
+      description: |
+        任何组织成员可读。返回平台白名单、配额、服务器推导状态与默认值。
+        `enabled=false` 时仍可维护 profile，但发起构建返回 503。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 构建能力
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildCapabilitiesResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/orgs/{orgId}/client-build-profiles:
+    get:
+      operationId: listClientBuildProfiles
+      summary: 列出客户端品牌配置
+      description: 分页返回本组织的品牌配置，按名称升序。任何成员可读。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: 品牌配置列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildProfileListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      operationId: createClientBuildProfile
+      summary: 创建客户端品牌配置
+      description: |
+        需要 `client_build.manage`（owner/admin，不可委派）。名称去首尾空白后
+        1–64 字符，组织内不区分大小写唯一；应用名 1–32 字符，拒绝精确的
+        `RustDesk`。组织最多保留 10 个 profile。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClientBuildProfileCreateRequest"
+      responses:
+        "201":
+          description: 已创建的品牌配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildProfileResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          description: 客户端构建能力未配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/orgs/{orgId}/client-build-profiles/{profileId}:
+    get:
+      operationId: getClientBuildProfile
+      summary: 读取客户端品牌配置
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 品牌配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildProfileResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateClientBuildProfile
+      summary: 更新客户端品牌配置
+      description: 只允许修改 `name` 与 `app_name`；Logo 走独立端点。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClientBuildProfileUpdateRequest"
+      responses:
+        "200":
+          description: 已更新的品牌配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildProfileResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          description: 客户端构建能力未配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteClientBuildProfile
+      summary: 删除客户端品牌配置
+      description: 存在非终态构建时返回 409；历史构建保留快照。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          description: 客户端构建能力未配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/orgs/{orgId}/client-build-profiles/{profileId}/logo:
+    put:
+      operationId: putClientBuildProfileLogo
+      summary: 上传客户端 Logo
+      description: |
+        需要 `client_build.manage`。PNG、正方形 256–1024、解码后 ≤1 MiB；
+        服务端会解码并重新编码，剥离元数据。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClientBuildLogoUploadRequest"
+      responses:
+        "200":
+          description: 已更新的品牌配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildProfileResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          description: 客户端构建能力未配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    get:
+      operationId: getClientBuildProfileLogo
+      summary: 读取客户端 Logo
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: PNG Logo
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      operationId: deleteClientBuildProfileLogo
+      summary: 删除客户端 Logo
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          description: 客户端构建能力未配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/orgs/{orgId}/client-builds:
+    get:
+      operationId: listClientBuilds
+      summary: 列出客户端构建
+      description: |
+        分页返回本组织的构建，按 id 降序。任何成员可读。
+        `status` 与 `profileId` 可过滤；`status` 必须是已知状态。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - pending
+              - dispatching
+              - dispatched
+              - running
+              - ingesting
+              - succeeded
+              - failed
+              - cancelled
+        - name: profileId
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: 构建列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      operationId: createClientBuild
+      summary: 发起客户端构建
+      description: |
+        需要 `client_build.manage`。服务器地址、公钥与 API server 由本组织已部署的
+        `ServerGroup`、`provision.relayHost` 与 `clientbuild.publicBaseURL` 推导，
+        不接受用户传入。创建后返回 202，由后台任务异步 dispatch 到 GitHub Actions。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClientBuildCreateRequest"
+      responses:
+        "202":
+          description: 已入队
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          description: 客户端构建未启用或未配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/orgs/{orgId}/client-builds/{buildId}:
+    get:
+      operationId: getClientBuild
+      summary: 读取客户端构建
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: buildId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 构建详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/client-builds/{buildId}/cancel:
+    post:
+      operationId: cancelClientBuild
+      summary: 取消客户端构建
+      description: |
+        需要 `client_build.manage`。取消为尽力而为：已进入产物回收后返回 409；
+        已发起的 GitHub run 会被请求取消，终态以回调轮询结果为准。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: buildId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "202":
+          description: 已请求取消
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientBuildResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          description: 客户端构建未配置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/orgs/{orgId}/client-builds/{buildId}/artifacts/{artifactId}:
+    get:
+      operationId: downloadClientBuildArtifact
+      summary: 下载构建产物
+      description: 需要 `client_build.manage`；下载动作写审计。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: buildId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: artifactId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 产物文件
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/client-builds/{buildId}/bundle:
+    get:
+      operationId: downloadClientBuildBundle
+      summary: 下载构建 bundle（构建 runner 使用）
+      description: |
+        公开端点，只接受短期 HMAC token；token 绑定路径 buildId，过期、篡改或
+        跨构建使用一律 401。成功请求写 `client_build.bundle.served` 审计。
+      tags:
+        - orgs
+      security: []
+      parameters:
+        - name: buildId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: token
+          in: query
+          required: false
+          description: 必填；缺失时由 handler 返回 401（生成器会先拒绝空的必填 query）
+          schema:
+            type: string
+      responses:
+        "200":
+          description: bundle.tar.gz
+          content:
+            application/gzip:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/Internal"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -3410,6 +5824,449 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
 
   schemas:
+    Identity:
+      type: object
+      required:
+        - id
+        - provider
+        - issuer
+        - subject
+        - email
+        - linked_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        provider:
+          type: string
+        issuer:
+          type: string
+        subject:
+          type: string
+          description: IdP 侧的主体标识，仅对账户本人可见
+        email:
+          type: string
+          description: 绑定时的 IdP 邮箱（不是账户邮箱的权威来源）
+        linked_at:
+          type: string
+          format: date-time
+        last_login_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        conflict_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+          description: 非空表示绑定已冲突，SSO 拒绝直到管理员 reset
+
+    IdentityList:
+      type: object
+      required:
+        - active_provider
+        - identities
+      properties:
+        active_provider:
+          type: string
+          description: 当前部署启用的外部身份源（oidc / ldap / 空串）
+        identities:
+          type: array
+          items:
+            $ref: "#/components/schemas/Identity"
+
+    IdentityListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/IdentityList"
+
+    IdentityUnlinkRequest:
+      type: object
+      required:
+        - identity_id
+      properties:
+        identity_id:
+          type: integer
+          format: int64
+        stepup_token:
+          type: string
+          description: passkey step-up 令牌（与 password 二选一）
+        password:
+          type: string
+          description: 当前密码（与 stepup_token 二选一）
+
+    LDAPLoginRequest:
+      type: object
+      required:
+        - username
+        - password
+      properties:
+        username:
+          type: string
+          maxLength: 255
+          description: 目录用户名（usernameAttribute 的值）；按 RFC 4515 转义后进 filter
+        password:
+          type: string
+          maxLength: 1024
+          description: 目录密码；只进 bind 请求，不落日志
+        captcha:
+          $ref: "#/components/schemas/CaptchaProof"
+    OIDCExchangeRequest:
+      type: object
+      required:
+        - ticket
+      properties:
+        ticket:
+          type: string
+          description: 回调重定向里的一次性 ticket
+
+    OIDCStartRequest:
+      type: object
+      properties:
+        redirect_path:
+          type: string
+          maxLength: 256
+          description: 登录成功后回到的站内路径；缺省 `/`
+
+    OIDCStart:
+      type: object
+      required:
+        - authorization_url
+        - state
+      properties:
+        authorization_url:
+          type: string
+          description: 浏览器应跳转的 IdP 授权地址（含 state / nonce / PKCE challenge）
+        state:
+          type: string
+          description: 一次性 state；仅供客户端关联，无需回传
+
+    OIDCStartResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/OIDCStart"
+
+    AuthProviderStatus:
+      type: object
+      required:
+        - enabled
+      properties:
+        enabled:
+          type: boolean
+        name:
+          type: string
+
+    AuthProviders:
+      type: object
+      required:
+        - oidc
+        - ldap
+      properties:
+        oidc:
+          $ref: "#/components/schemas/AuthProviderStatus"
+        ldap:
+          $ref: "#/components/schemas/AuthProviderStatus"
+
+    AuthProvidersResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/AuthProviders"
+
+    Passkey:
+      type: object
+      required:
+        - id
+        - name
+        - created_at
+        - transports
+        - backup_eligible
+        - backup_state
+        - aaguid
+        - clone_warning
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          description: 用户可见的凭据名（1-64 字符，缺省为 `Passkey`）
+        created_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        transports:
+          type: array
+          description: 认证器自报的传输方式（usb/nfc/ble/internal/hybrid）
+          items:
+            type: string
+        backup_eligible:
+          type: boolean
+          description: 该凭据是否可被备份/同步（同步型 passkey 为 true）
+        backup_state:
+          type: boolean
+          description: 该凭据当前是否已被备份
+        aaguid:
+          type: string
+          description: 认证器型号标识；空串表示认证器未提供
+        clone_warning:
+          type: boolean
+          description: 曾检测到签名计数器回退（疑似克隆），需重新绑定
+
+    PasskeyResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/Passkey"
+
+    PasskeyCeremony:
+      type: object
+      required:
+        - ceremony_token
+        - options
+      properties:
+        ceremony_token:
+          type: string
+          description: 一次性 ceremony 句柄；有效期由部署配置 `webauthn.ceremonyTTL` 决定（默认 5 分钟）
+        options:
+          type: object
+          additionalProperties: true
+          description: |
+            W3C PublicKeyCredentialCreationOptions / RequestOptions 的 JSON 形态，
+            顶层键为 `publicKey`。字段名与标准一致，服务端只填充不重写；但**二进制
+            字段是 base64url 字符串**（`challenge`、`user.id`、`excludeCredentials[].id`，
+            登录时为 `allowCredentials[].id`）。
+
+            ⚠️ **不能直接把这些对象交给浏览器**：`navigator.credentials.create()` /
+            `get()` 要求上述字段是 `ArrayBuffer` / `TypedArray`。客户端必须先解码
+            base64url（去掉 `-`/`_` 还原为 `+`/`/` 并补 `=`），再调用 WebAuthn API；
+            返回值方向相反——`response.clientDataJSON`、`attestationObject`、
+            `authenticatorData`、`signature`、`userHandle` 都是 `ArrayBuffer`，需再编码
+            回 base64url 才能提交。参考实现见仓库 `docs/reference/passkey-smoke.html`
+            的 `b64urlToBuf`，以及注册向的 `prepareCreationOptions`、登录向的
+            `prepareRequestOptions`。
+
+    PasskeyCeremonyResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/PasskeyCeremony"
+
+    StepupToken:
+      type: object
+      required:
+        - stepup_token
+        - expires_in
+      properties:
+        stepup_token:
+          type: string
+        expires_in:
+          type: integer
+          format: int64
+          description: 有效期（秒），固定 120
+
+    StepupTokenResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/StepupToken"
+
+    PasswordRemoveRequest:
+      type: object
+      required:
+        - password
+        - stepup_token
+      properties:
+        password:
+          type: string
+        stepup_token:
+          type: string
+
+    PasswordRemoveResult:
+      type: object
+      required:
+        - warnings
+      properties:
+        warnings:
+          type: array
+          description: |
+            连带影响说明：`compat_login_disabled` 表示原生客户端将无法再用该账户登录；
+            `keep_a_second_passkey` 表示恢复只能依赖另一个 passkey。
+          items:
+            type: string
+
+    PasswordRemoveResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/PasswordRemoveResult"
+
+    PasswordSetRequest:
+      type: object
+      required:
+        - new_password
+        - stepup_token
+      properties:
+        new_password:
+          type: string
+        stepup_token:
+          type: string
+
+    PasskeyList:
+      type: object
+      required:
+        - items
+        - has_password
+        - totp_enabled
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Passkey"
+        has_password:
+          type: boolean
+          description: 账户是否还有本地密码（false 表示 passkey-only）
+        totp_enabled:
+          type: boolean
+          description: 账户是否启用了 TOTP
+
+    PasskeyListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/PasskeyList"
+
+    PasskeyNameRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          maxLength: 64
+
+    PasskeyLoginBeginRequest:
+      type: object
+      properties:
+        challenge_token:
+          type: string
+          description: 密码登录返回的短期挑战令牌（第二步用 passkey 代替 TOTP）
+        email:
+          type: string
+          description: 可选邮箱提示，只用于收窄 allowCredentials，不构成账户存在性判断
+
+    PasskeyLoginRequest:
+      type: object
+      required:
+        - ceremony_token
+        - credential
+      properties:
+        ceremony_token:
+          type: string
+        credential:
+          type: object
+          additionalProperties: true
+          description: |
+            浏览器 `PublicKeyCredential` 的 JSON 形态
+            （id/rawId/type/response.clientDataJSON/authenticatorData/signature/userHandle）。
+
+            二进制字段（`rawId`、`clientDataJSON`、`authenticatorData`、`signature`、
+            `userHandle`）必须是 **base64url 字符串**；`userHandle` 可为 `null`，
+            `transports` 可缺失。服务端缺失兼容见 `docs/api-spec.md` §3.16。
+
+    PasskeyRegistrationRequest:
+      type: object
+      required:
+        - ceremony_token
+        - credential
+      properties:
+        ceremony_token:
+          type: string
+        credential:
+          type: object
+          additionalProperties: true
+          description: |
+            浏览器 `PublicKeyCredential` 的 JSON 形态
+            （id/rawId/type/response.clientDataJSON/response.attestationObject）。
+
+            `rawId`、`clientDataJSON`、`attestationObject` 必须是 **base64url 字符串**
+            （不能是数组或 base64 标准编码）；`transports` 可缺失。
+        name:
+          type: string
+          maxLength: 64
+          description: 可选的凭据名；空或缺失时使用 `Passkey`
+
     ErrorCode:
       type: string
       description: |
@@ -3423,6 +6280,9 @@ components:
         - rate_limited：触发限流
         - internal：服务端错误
         - email_not_verified：邮箱未验证（登录被拒）
+        - captcha_required：已启用验证码但请求未携带（400）
+        - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+        - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
         - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
       enum:
         - ok
@@ -3436,6 +6296,9 @@ components:
         - email_not_verified
         - approval_required
         - two_factor_required
+        - captcha_required
+        - captcha_invalid
+        - captcha_unavailable
 
     ErrorResponse:
       type: object
@@ -3455,8 +6318,10 @@ components:
           description: |
             错误上下文；多数错误为 null。`code=approval_required` 时带
             `approval_id`（int64，待审批请求 id），客户端据此跳转审批中心。
-            `code=two_factor_required` 时带 `challenge_token`（短期挑战令牌），
-            客户端用它调用 `POST /auth/2fa/verify` 完成第二步登录。
+            `code=two_factor_required` 时带 `challenge_token`（短期挑战令牌）与
+            `methods`（字符串数组：`totp`，以及该账户已绑定 passkey 时的
+            `passkey`）。客户端用 `challenge_token` 调用 `POST /auth/2fa/verify`
+            或 `POST /auth/passkey/login/begin` 完成第二步。
 
     LoginRequest:
       type: object
@@ -3472,6 +6337,60 @@ components:
           type: string
           minLength: 8
           maxLength: 128
+        captcha:
+          $ref: "#/components/schemas/CaptchaProof"
+
+    CaptchaProof:
+      type: object
+      required:
+        - response
+      properties:
+        response:
+          type: object
+          description: |
+            提供商相关的验证凭据。`altcha` 传 `payload`（widget 返回的 base64
+            payload）；`geetest` 传 `lot_number`、`captcha_output`、`pass_token`、
+            `gen_time`；`cap` 传 `response`。
+          additionalProperties:
+            type: string
+
+    CaptchaChallengePayload:
+      type: object
+      required:
+        - params
+      properties:
+        params:
+          type: object
+          additionalProperties: true
+          description: |
+            提供商公开参数：`altcha` 为挑战 JSON（algorithm/challenge/maxnumber/
+            salt/signature）；`geetest` 为 `captcha_id`/`script_url`；`cap` 为
+            `api_endpoint`/`site_key`。
+
+    CaptchaChallenge:
+      type: object
+      required:
+        - enabled
+      properties:
+        enabled:
+          type: boolean
+        provider:
+          type: string
+        challenge:
+          $ref: "#/components/schemas/CaptchaChallengePayload"
+
+    CaptchaChallengeResponse:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/CaptchaChallenge"
 
     RefreshRequest:
       type: object
@@ -3710,6 +6629,8 @@ components:
         code:
           type: string
           description: TOTP 码或一次性恢复码
+        captcha:
+          $ref: "#/components/schemas/CaptchaProof"
 
     Org:
       type: object
@@ -3799,6 +6720,20 @@ components:
         role_name:
           type: string
           description: 角色展示名（内置 owner/admin/member 或自定义名称）
+        control_role_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: |
+            成员的控制角色 id（v0.10.0）；`null` 表示未分配、回退组织内置 `default`。
+            角色名称由 `GET /control-roles` 的列表解析（避免成员列表逐行 JOIN）。
+        strategy_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: 成员默认策略 id（v0.10.0）；作用于其拥有且无设备/组层分配的设备
         disabled:
           type: boolean
           description: 会籍是否已停用；停用后不能登录或访问该组织
@@ -4033,6 +6968,337 @@ components:
           items:
             $ref: "#/components/schemas/Role"
 
+    ControlRoleKind:
+      type: string
+      description: |
+        - default：每个组织唯一的内置角色，不可删除，未分配角色的成员回退到它
+        - custom：管理员创建的角色
+      enum:
+        - default
+        - custom
+
+    ControlPermissionState:
+      type: string
+      description: |
+        单项权限的三态（对齐 RustDesk Server Pro）：
+        - use_client：不覆盖被控端本地设置
+        - enable：显式启用（覆盖本地设置）
+        - disable：显式禁用（覆盖本地设置）
+      enum:
+        - use_client
+        - enable
+        - disable
+
+    ControlPermissionStates:
+      type: object
+      description: |
+        14 个权限键到三态的映射，键与 RustDesk 客户端 `ControlPermissions.Permission`
+        枚举一一对应（bit 序号即声明顺序）：`keyboard`、`remote_printer`、
+        `clipboard`、`file`、`audio`、`camera`、`terminal`、`tunnel`、`restart`、
+        `recording`、`block_input`、`remote_modify`、`privacy_mode`、`usb`。
+        未知键或非法状态整单拒绝；缺失键按 `use_client` 补全。
+      additionalProperties:
+        $ref: "#/components/schemas/ControlPermissionState"
+
+    ControlRole:
+      type: object
+      required:
+        - id
+        - name
+        - kind
+        - permissions
+        - builtin
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          maxLength: 64
+        kind:
+          $ref: "#/components/schemas/ControlRoleKind"
+        permissions:
+          $ref: "#/components/schemas/ControlPermissionStates"
+        builtin:
+          type: boolean
+          description: true 表示内置 `default` 角色（不可删除、不可改名）
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ControlRoleCreateRequest:
+      type: object
+      required:
+        - name
+        - permissions
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        permissions:
+          $ref: "#/components/schemas/ControlPermissionStates"
+
+    ControlRoleUpdateRequest:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        permissions:
+          $ref: "#/components/schemas/ControlPermissionStates"
+
+    ControlRoleListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ControlRole"
+
+    ControlRoleResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/ControlRole"
+
+    ControlRoleAssignmentRequest:
+      type: object
+      required:
+        - control_role_id
+      properties:
+        control_role_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: 目标控制角色 id；`null` 表示回到组织内置 default 角色
+
+    Strategy:
+      type: object
+      required:
+        - id
+        - name
+        - config_options
+        - version
+        - enabled
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          maxLength: 64
+        config_options:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            下发给客户端的选项键值。**只允许以下 20 个键**（大小写与空格敏感，
+            必须逐字匹配）：
+
+            `enable-audio`、`enable-clipboard`、`enable-file-transfer`、
+            `enable-file-copy-paste`、`enable-camera`、`enable-terminal`、
+            `enable-tunnel`、`enable-remote-restart`、`enable-record-session`、
+            `enable-block-input`、`enable-privacy-mode`、`enable-remote-modify`、
+            `enable-remote-printer`、`enable-check-update`、`disable-change-id`、
+            `disable-settings`、`disable-installation`、`disable-unlock-pin`、
+            `disable-tcp-listen`、`disable-ab`。
+
+            值按客户端原样字符串下发：开关类用 `Y`/`N`；**空值**表示清除该键、
+            回到客户端内置默认。客户端会把下发的键标记为「固定」，用户无法在
+            本机改回。
+
+            网络类键（`api-server`、`custom-rendezvous-server`、`relay-server`、
+            `key`、`whitelist` 等）一律拒绝：它们能改设备指向的服务器或密钥，
+            等于设备接管。
+        version:
+          type: integer
+          format: int64
+          description: 下发版本；作为心跳响应的 `modified_at` 交给客户端比对
+        cleared_keys:
+          type: array
+          items:
+            type: string
+          description: |
+            已从 `config_options` 移除、仍以空值随下发回传的键（v0.10.0）。
+            客户端只写收到的键，删除键必须显式清除，否则旧值会一直保留。
+        enabled:
+          type: boolean
+          description: false 表示停用（保留行与分配，但心跳不下发）
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    StrategyAssignmentRequest:
+      type: object
+      required:
+        - strategy_id
+      properties:
+        strategy_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: 目标策略 id；`null` 表示清除该层分配
+
+    StrategyCreateRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        config_options:
+          type: object
+          additionalProperties:
+            type: string
+          description: 省略或空对象表示「不下发任何选项」（占位策略）
+
+    StrategyUpdateRequest:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        config_options:
+          type: object
+          additionalProperties:
+            type: string
+        enabled:
+          type: boolean
+
+    StrategyListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Strategy"
+
+    StrategyResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/Strategy"
+
+    DeviceDisconnectRequest:
+      type: object
+      required:
+        - reason
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: 断连原因；写入审计，供事后追溯
+
+    DeviceDisconnect:
+      type: object
+      required:
+        - id
+        - device_id
+        - reason
+        - status
+        - requested_at
+        - expires_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        device_id:
+          type: integer
+          format: int64
+        reason:
+          type: string
+          maxLength: 255
+        status:
+          type: string
+          description: |
+            - `pending`：已记录，等待客户端心跳消费
+            - `fulfilled`：某次心跳带回了活跃连接，`disconnect` 已下发
+            - `expired`：15 分钟内没有可断开的连接，请求作废
+          enum:
+            - pending
+            - fulfilled
+            - expired
+        requested_at:
+          type: string
+          format: date-time
+        fulfilled_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        conn_count:
+          type: integer
+          description: 消费该请求的那次心跳里客户端报告的连接数
+
+    DeviceDisconnectResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/DeviceDisconnect"
+
     UserGroupKind:
       type: string
       description: |
@@ -4167,10 +7433,14 @@ components:
       type: object
       required:
         - removed_rules
+        - removed_grants
       properties:
         removed_rules:
           type: integer
-          description: 随组级联删除的访问规则数
+          description: 随组级联删除的访问规则数（以该组为源，或以该组为 `user_group` 目标）
+        removed_grants:
+          type: integer
+          description: 随组级联删除的共享地址簿授权数（以该组为授权主体）
 
     UserGroupDeleteResponse:
       type: object
@@ -4206,6 +7476,12 @@ components:
             type: integer
             format: int64
           description: 当前属于该组的设备 id；一台设备只属于一个组
+        strategy_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: 组层策略 id（v0.10.0）；设备层分配优先
         created_at:
           type: string
           format: date-time
@@ -4333,9 +7609,13 @@ components:
       type: string
       description: |
         - device_group：规则指向一个设备组（`target_group_id` 必填）
+        - user_group：规则指向一个用户组，展开为该组显式成员所拥有的设备
+          （v0.10.0；`target_group_id` 必填）。目标为内置 `everyone` 组时语义是
+          「所有由**有效成员**归属的设备」（停用/无角色/已移除会籍的归属人贡献空集）
         - all_devices：规则指向组织内全部设备（`target_group_id` 必须为空）
       enum:
         - device_group
+        - user_group
         - all_devices
 
     AccessRule:
@@ -4365,10 +7645,10 @@ components:
             - integer
             - "null"
           format: int64
-          description: 设备组 id；`all_devices` 时为 null
+          description: 目标组 id（设备组或用户组，按 `target_kind` 解释）；`all_devices` 时为 null
         target_group_name:
           type: string
-          description: 设备组名；`all_devices` 时为空字符串
+          description: 目标组名；`all_devices` 时为空字符串
         created_at:
           type: string
           format: date-time
@@ -4406,7 +7686,7 @@ components:
             - integer
             - "null"
           format: int64
-          description: 设备组 id；`device_group` 时必填，`all_devices` 时不得给出
+          description: 目标组 id（设备组或用户组）；`device_group`/`user_group` 时必填，`all_devices` 时不得给出
 
     AccessRuleResponse:
       type: object
@@ -4457,6 +7737,189 @@ components:
         created_at:
           type: string
           format: date-time
+
+    ConnectionLog:
+      type: object
+      description: |
+        客户端上报的一条连接记录（`POST /api/audit/conn`）。`new` 建行、`close` 关闭；
+        与面板签发的 session 是两套记录，后者见 `Session`。
+      required:
+        - id
+        - organization_id
+        - device_id
+        - rustdesk_id
+        - conn_id
+        - session_id
+        - status
+        - started_at
+        - created_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        organization_id:
+          type: integer
+          format: int64
+        device_id:
+          type: integer
+          format: int64
+        rustdesk_id:
+          type: string
+        conn_id:
+          type: integer
+          format: int64
+        session_id:
+          type: integer
+          format: int64
+        ip:
+          type: string
+        status:
+          type: string
+          enum:
+            - open
+            - closed
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        note:
+          type: string
+          maxLength: 512
+        conn_audit_ref:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    ConnectionLogPage:
+      type: object
+      required:
+        - items
+        - page
+        - page_size
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConnectionLog"
+        page:
+          type: integer
+        page_size:
+          type: integer
+          format: int64
+        total:
+          type: integer
+          format: int64
+
+    ConnectionLogListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/ConnectionLogPage"
+
+    FileLog:
+      type: object
+      description: |
+        客户端上报的一条文件传输记录（`POST /api/audit/file`）。`files` 是上游截断到
+        10 项的 `[name, size]` 数组；`info` 为客户端原始 JSON 文本，便于排障。
+      required:
+        - id
+        - organization_id
+        - device_id
+        - rustdesk_id
+        - direction
+        - created_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        organization_id:
+          type: integer
+          format: int64
+        device_id:
+          type: integer
+          format: int64
+        rustdesk_id:
+          type: string
+        peer_id:
+          type: string
+        conn_id:
+          type: integer
+          format: int64
+        direction:
+          type: string
+          enum:
+            - send
+            - receive
+        path:
+          type: string
+        is_file:
+          type: boolean
+        file_count:
+          type: integer
+        files:
+          type: array
+          items:
+            type: array
+            items: {}
+        ip:
+          type: string
+        name:
+          type: string
+        info:
+          type: string
+          description: 客户端上传的原始 info JSON 文本
+        created_at:
+          type: string
+          format: date-time
+
+    FileLogPage:
+      type: object
+      required:
+        - items
+        - page
+        - page_size
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/FileLog"
+        page:
+          type: integer
+        page_size:
+          type: integer
+          format: int64
+        total:
+          type: integer
+          format: int64
+
+    FileLogListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/FileLogPage"
 
     AuditLogPage:
       type: object
@@ -4645,6 +8108,8 @@ components:
           type: string
           minLength: 8
           maxLength: 128
+        captcha:
+          $ref: "#/components/schemas/CaptchaProof"
 
     Device:
       type: object
@@ -4689,6 +8154,29 @@ components:
             - "null"
           format: int64
           description: 设备所属设备组 id；null 表示未分组。一台设备只能属于一个设备组。
+        strategy_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: 设备层策略 id（v0.10.0）；`null` 表示回落到设备组或成员层
+        owner_user_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: |
+            设备归属的用户 id；null 表示未归属。归属人始终能在客户端看到并连接该设备
+            （设备停用或会籍停用时除外），组→组规则也按归属展开。
+        owner_email:
+          type:
+            - string
+            - "null"
+          description: 归属人邮箱（只读展示用）；未归属或用户已不存在时为 null
+        note:
+          type: string
+          maxLength: 255
+          description: 运维备注（管理面或客户端 --assign 写入）
 
     DeviceCreateRequest:
       type: object
@@ -4730,14 +8218,30 @@ components:
           minLength: 1
           maxLength: 500
 
-    DeviceDisableRequest:
+    DeviceUpdateRequest:
       type: object
-      required:
-        - disabled
+      minProperties: 1
+      description: |
+        按字段更新设备，至少一个字段。`disabled` 与两个归属字段可同时出现，
+        各自校验并各自写一条审计。
       properties:
         disabled:
           type: boolean
           description: true 停用设备，false 恢复
+        owner_user_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: |
+            归属人 id；`null` 清空归属，`0` 非法。目标必须是本组织的有效成员，
+            否则 404。
+        note:
+          type:
+            - string
+            - "null"
+          maxLength: 255
+          description: 运维备注；`null` 视作清空
 
     DevicePage:
       type: object
@@ -4924,6 +8428,7 @@ components:
       enum:
         - user
         - everyone
+        - user_group
 
     AddressBookGrantAccess:
       type: string
@@ -4955,7 +8460,13 @@ components:
             - integer
             - "null"
           format: int64
-          description: "`user` 主体为用户 id；`everyone` 为 null"
+          description: "`user` 主体为用户 id；`everyone` 与 `user_group` 为 null"
+        subject_group_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: "`user_group` 主体为用户组 id；`user` 与 `everyone` 为 null"
         access:
           $ref: "#/components/schemas/AddressBookGrantAccess"
         created_by:
@@ -4978,7 +8489,13 @@ components:
             - integer
             - "null"
           format: int64
-          description: "`subject_kind=user` 时必填且必须是本组织成员；`everyone` 时必须省略或为 null"
+          description: "`subject_kind=user` 时必填且必须是本组织成员；`everyone` 与 `user_group` 时必须省略或为 null"
+        subject_group_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: "`subject_kind=user_group` 时必填且必须是本组织的用户组；`user` 与 `everyone` 时必须省略或为 null"
         access:
           $ref: "#/components/schemas/AddressBookGrantAccess"
 
@@ -5250,6 +8767,7 @@ components:
         - origin
         - status
         - started_at
+        - control_permissions
       properties:
         id:
           type: integer
@@ -5317,6 +8835,13 @@ components:
             - `idle_timeout`：空闲超时（默认 10 分钟无关联事件）
             - `policy_exceeded`：超过 `max_session_minutes`（后置关闭，不断连）
             - `policy_denied`：签发阶段被策略拒绝（仅 `denied` 会话）
+        control_permissions:
+          type: integer
+          format: int64
+          description: |
+            兑换时从票据复制的权限位图（bit 序号同 `ControlPermissionStates`）。会话记录
+            的是开始时刻的授权，之后修改控制角色不会改写它。原生会话恒为 0：位图由
+            hbbs 注入，面板不在信令链路。
         revision:
           type: integer
           format: int64
@@ -5735,6 +9260,7 @@ components:
         - device_id
         - expires_at
         - created_at
+        - control_permissions
       properties:
         id:
           type: integer
@@ -5760,6 +9286,23 @@ components:
             - "null"
           additionalProperties: true
           description: 签发时生效的策略快照（审计与排障用）
+        control_role_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+          description: |
+            签发时生效的控制角色 id；null 表示签发时未解析到角色（或服务未接线）。
+        control_permissions:
+          type: integer
+          format: int64
+          description: |
+            签发时生效的权限位图，bit 序号与 `ControlPermissionStates` 的声明顺序一致
+            （keyboard=0 … usb=13），只有 `enable` 置位。0 表示「没有显式启用的权限」，
+            不是「未计算」。
+
+            **原生会话不执行该位图**：hbbs 在信令消息里注入 `control_permissions`，
+            本面板不在信令链路（设计 D10），因此它只是票据快照，供网页客户端与审计使用。
         expires_at:
           type: string
           format: date-time
@@ -5978,3 +9521,509 @@ components:
           type: string
         data:
           $ref: "#/components/schemas/Session"
+
+    ClientBuildCapabilitiesResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/ClientBuildCapabilities"
+
+    ClientBuildCapabilities:
+      type: object
+      required:
+        - enabled
+        - platforms
+        - limits
+        - provisioning_state
+      properties:
+        enabled:
+          type: boolean
+        platforms:
+          type: array
+          items:
+            type: string
+            enum:
+              - windows-x64
+              - linux-x64
+              - macos-arm64
+              - macos-x64
+              - android-arm64
+        limits:
+          $ref: "#/components/schemas/ClientBuildLimits"
+        provisioning_state:
+          type: string
+          enum:
+            - deployed
+            - provisioning
+            - failed
+            - disabled
+            - missing
+        defaults:
+          $ref: "#/components/schemas/ClientBuildDefaults"
+
+    ClientBuildLimits:
+      type: object
+      required:
+        - max_profiles_per_org
+        - max_concurrent_per_org
+        - max_active_builds
+        - max_artifact_bytes
+        - artifact_retention_days
+      properties:
+        max_profiles_per_org:
+          type: integer
+        max_concurrent_per_org:
+          type: integer
+        max_active_builds:
+          type: integer
+        max_artifact_bytes:
+          type: integer
+          format: int64
+        artifact_retention_days:
+          type: integer
+
+    ClientBuildDefaults:
+      type: object
+      required:
+        - server
+        - server_key
+        - api_server
+      properties:
+        server:
+          type: string
+        server_key:
+          type: string
+        api_server:
+          type: string
+
+    ClientBuildProfile:
+      type: object
+      required:
+        - id
+        - name
+        - app_name
+        - has_logo
+        - logo_width
+        - logo_height
+        - logo_sha256
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          maxLength: 64
+        app_name:
+          type: string
+          maxLength: 32
+        has_logo:
+          type: boolean
+        logo_width:
+          type: integer
+        logo_height:
+          type: integer
+        logo_sha256:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ClientBuildProfilePage:
+      type: object
+      required:
+        - items
+        - page
+        - page_size
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClientBuildProfile"
+        page:
+          type: integer
+        page_size:
+          type: integer
+          format: int64
+        total:
+          type: integer
+          format: int64
+
+    ClientBuildProfileListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/ClientBuildProfilePage"
+
+    ClientBuildProfileResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/ClientBuildProfile"
+
+    ClientBuildProfileCreateRequest:
+      type: object
+      required:
+        - name
+        - app_name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        app_name:
+          type: string
+          minLength: 1
+          maxLength: 32
+
+    ClientBuildProfileUpdateRequest:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        app_name:
+          type: string
+          minLength: 1
+          maxLength: 32
+
+    ClientBuildLogoUploadRequest:
+      type: object
+      required:
+        - png_base64
+      properties:
+        png_base64:
+          type: string
+          minLength: 1
+
+    ClientBuildSummary:
+      type: object
+      required:
+        - id
+        - profile_id
+        - profile_name
+        - app_name
+        - upstream_version
+        - platforms
+        - status
+        - artifact_count
+        - artifacts_purged
+        - created_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        profile_id:
+          type: integer
+          format: int64
+        profile_name:
+          type: string
+        app_name:
+          type: string
+        upstream_version:
+          type: string
+        platforms:
+          type: array
+          items:
+            type: string
+            enum:
+              - windows-x64
+              - linux-x64
+              - macos-arm64
+              - macos-x64
+              - android-arm64
+        status:
+          type: string
+          enum:
+            - pending
+            - dispatching
+            - dispatched
+            - running
+            - ingesting
+            - succeeded
+            - failed
+            - cancelled
+        github_run_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+        github_run_url:
+          type: string
+        error_message:
+          type: string
+        artifact_count:
+          type: integer
+        artifacts_purged:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        dispatched_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        finished_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+
+    ClientBuildManifest:
+      type: object
+      required:
+        - schema_version
+        - build_id
+        - app_name
+        - server
+        - server_key
+        - api_server
+        - upstream_version
+        - platforms
+      properties:
+        schema_version:
+          type: integer
+        build_id:
+          type: integer
+          format: int64
+        app_name:
+          type: string
+        server:
+          type: string
+        server_key:
+          type: string
+        api_server:
+          type: string
+        upstream_version:
+          type: string
+        platforms:
+          type: array
+          items:
+            type: string
+        logo:
+          $ref: "#/components/schemas/ClientBuildManifestLogo"
+
+    ClientBuildManifestLogo:
+      type: object
+      required:
+        - sha256
+        - width
+        - height
+      properties:
+        sha256:
+          type: string
+        width:
+          type: integer
+        height:
+          type: integer
+
+    ClientBuildArtifact:
+      type: object
+      required:
+        - id
+        - platform
+        - file_name
+        - size_bytes
+        - sha256
+        - created_at
+      properties:
+        id:
+          type: integer
+          format: int64
+        platform:
+          type: string
+        file_name:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+        sha256:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    ClientBuildDetail:
+      type: object
+      required:
+        - id
+        - profile_id
+        - profile_name
+        - app_name
+        - upstream_version
+        - platforms
+        - status
+        - artifact_count
+        - artifacts_purged
+        - created_at
+        - manifest
+        - artifacts
+      properties:
+        id:
+          type: integer
+          format: int64
+        profile_id:
+          type: integer
+          format: int64
+        profile_name:
+          type: string
+        app_name:
+          type: string
+        upstream_version:
+          type: string
+        platforms:
+          type: array
+          items:
+            type: string
+            enum:
+              - windows-x64
+              - linux-x64
+              - macos-arm64
+              - macos-x64
+              - android-arm64
+        status:
+          type: string
+          enum:
+            - pending
+            - dispatching
+            - dispatched
+            - running
+            - ingesting
+            - succeeded
+            - failed
+            - cancelled
+        github_run_id:
+          type:
+            - integer
+            - "null"
+          format: int64
+        github_run_url:
+          type: string
+        error_message:
+          type: string
+        artifact_count:
+          type: integer
+        artifacts_purged:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        dispatched_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        finished_at:
+          type:
+            - string
+            - "null"
+          format: date-time
+        manifest:
+          $ref: "#/components/schemas/ClientBuildManifest"
+        artifacts:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClientBuildArtifact"
+
+    ClientBuildPage:
+      type: object
+      required:
+        - items
+        - page
+        - page_size
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClientBuildSummary"
+        page:
+          type: integer
+        page_size:
+          type: integer
+          format: int64
+        total:
+          type: integer
+          format: int64
+
+    ClientBuildListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/ClientBuildPage"
+
+    ClientBuildResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/ClientBuildDetail"
+
+    ClientBuildCreateRequest:
+      type: object
+      required:
+        - profile_id
+        - platforms
+      properties:
+        profile_id:
+          type: integer
+          format: int64
+        platforms:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            enum:
+              - windows-x64
+              - linux-x64
+              - macos-arm64
+              - macos-x64
+              - android-arm64

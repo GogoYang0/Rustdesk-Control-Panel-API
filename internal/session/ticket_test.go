@@ -100,6 +100,9 @@ func newHarness(t *testing.T) *harness {
 		&model.Organization{}, &model.Device{}, &model.Policy{},
 		&model.Ticket{}, &model.Session{}, &model.SessionEvent{},
 		&model.Approval{}, &model.Alert{},
+		// Control role snapshots need a membership (the assignment) and the
+		// role row itself; the user row keeps the fixture realistic.
+		&model.User{}, &model.Membership{}, &model.ControlRole{},
 	))
 
 	h := &harness{

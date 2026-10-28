@@ -8,10 +8,16 @@ import "time"
 // key per organization: re-registering the same id updates the existing row
 // instead of creating a duplicate.
 type Device struct {
-	ID             uint   `gorm:"primaryKey" json:"id"`
-	OrganizationID uint   `gorm:"uniqueIndex:idx_device_org_rustdesk;not null" json:"organization_id"`
-	RustdeskID     string `gorm:"uniqueIndex:idx_device_org_rustdesk;size:64;not null" json:"rustdesk_id"`
-	Name           string `gorm:"size:128;not null" json:"name"`
+	ID             uint `gorm:"primaryKey" json:"id"`
+	OrganizationID uint `gorm:"uniqueIndex:idx_device_org_rustdesk;not null" json:"organization_id"`
+	// The plain index backs the credential-free audit ingest, which looks a
+	// device up by rustdesk id alone (the id is unique per organization, not
+	// globally) before it knows the tenant.
+	RustdeskID string `gorm:"uniqueIndex:idx_device_org_rustdesk;index;size:64;not null" json:"rustdesk_id"`
+	// StrategyID is the device-level assignment; nil falls back to the device
+	// group and then to the owner's membership (design D1).
+	StrategyID *uint  `gorm:"index" json:"strategy_id"`
+	Name       string `gorm:"size:128;not null" json:"name"`
 	// BoundUUID records the client instance uuid that first presented this
 	// rustdesk id (empty until a compat login claims it). The client
 	// protocol carries no ownership secret, so this hardware-stable uuid is
@@ -39,9 +45,18 @@ type Device struct {
 	// DeviceGroupID is the single device group this device belongs to. A device
 	// is in at most one group; moving it rewrites this column inside the same
 	// transaction, and deleting its group clears it.
-	DeviceGroupID *uint     `gorm:"index" json:"device_group_id"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	DeviceGroupID *uint `gorm:"index" json:"device_group_id"`
+	// OwnerUserID is the organization member this device belongs to, nil when
+	// nobody claimed it. Ownership is what makes "user group -> user group"
+	// rules expressible: the target side expands to the devices owned by the
+	// members of that group. Deactivated members keep their ownership rows (the
+	// history stays attributable) but stop being reachable through rules.
+	OwnerUserID *uint `gorm:"index" json:"owner_user_id"`
+	// Note is a free-form operator annotation, written through the management
+	// API or the client --assign path.
+	Note      string    `gorm:"size:255;not null;default:''" json:"note"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // OnlineWindow is how fresh a heartbeat must be for the device to count as
@@ -74,4 +89,7 @@ type DeviceHeartbeat struct {
 	DeviceID       uint      `gorm:"index;not null" json:"device_id"`
 	At             time.Time `gorm:"not null" json:"at"`
 	Source         string    `gorm:"size:32" json:"source"`
+	// ConnIDs is the JSON array of connection ids the client reported on this
+	// heartbeat. Only these ids may be sent back in a disconnect field.
+	ConnIDs string `gorm:"type:text" json:"conn_ids"`
 }

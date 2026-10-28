@@ -14,13 +14,22 @@ import (
 
 // publicPaths never require a bearer token.
 var publicPaths = map[string]bool{
-	"/healthz":                         true,
-	"/api/v1/auth/login":               true,
-	"/api/v1/auth/refresh":             true,
-	"/api/v1/auth/2fa/verify":          true,
-	"/api/v1/auth/verify-email":        true,
-	"/api/v1/auth/resend-verification": true,
-	"/api/v1/invitations/accept":       true,
+	"/healthz":                              true,
+	"/api/v1/auth/login":                    true,
+	"/api/v1/auth/providers":                true,
+	"/api/v1/auth/oidc/start":               true,
+	"/api/v1/auth/oidc/callback":            true,
+	"/api/v1/auth/oidc/exchange":            true,
+	"/api/v1/auth/ldap/login":               true,
+	"/api/v1/auth/passkey/login/begin":      true,
+	"/api/v1/auth/passkey/login/finish":     true,
+	"/api/v1/auth/captcha":                  true,
+	"/api/v1/auth/refresh":                  true,
+	"/api/v1/auth/2fa/verify":               true,
+	"/api/v1/auth/verify-email":             true,
+	"/api/v1/auth/resend-verification":      true,
+	"/api/v1/invitations/accept":            true,
+	"/api/v1/client-builds/:buildId/bundle": true,
 }
 
 // NewRouter mounts the generated handlers behind the fixed middleware chain:
@@ -56,7 +65,11 @@ func NewRouter(d Deps) *gin.Engine {
 	// organization-scoped paths only.
 	mgmt := r.Group("")
 	mgmt.Use(requireAuthUnlessPublic(d.Issuer, d.Tokens))
-	gen.RegisterHandlersWithOptions(mgmt, NewAdminAPI(d), gen.GinServerOptions{
+	// NewAdminAPI resolves the services that need a transactional recorder;
+	// hand the same instances to the compat layer so production never runs two
+	// differently-wired copies of one domain.
+	admin := NewAdminAPI(d)
+	gen.RegisterHandlersWithOptions(mgmt, admin, gen.GinServerOptions{
 		// Path-parameter parse failures happen inside the generated wrapper,
 		// before any handler runs. The default wrapper answers {"msg": ...},
 		// which violates the contract's ErrorResponse; route it through the same
@@ -71,12 +84,16 @@ func NewRouter(d Deps) *gin.Engine {
 	// cover /api/* compat paths (two token families stay interchangeable-
 	// proof, and the client's unauthenticated heartbeat still lands).
 	compatapi.Mount(r, compatapi.Deps{
-		DB:        d.DB,
-		Issuer:    d.Issuer,
-		Devices:   d.Devices,
-		Access:    d.Access,
-		Now:       d.Now,
-		AccessTTL: d.CompatTTL,
+		DB:         d.DB,
+		Issuer:     d.Issuer,
+		Devices:    d.Devices,
+		Access:     d.Access,
+		Auditor:    d.Auditor,
+		TOTP:       d.TOTP,
+		Strategies: admin.deps.Strategies,
+		Logger:     d.Logger,
+		Now:        d.Now,
+		AccessTTL:  d.CompatTTL,
 	})
 	return r
 }

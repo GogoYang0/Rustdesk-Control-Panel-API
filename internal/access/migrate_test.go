@@ -26,6 +26,7 @@ func accessTestStore(t *testing.T) *store.Store {
 		&model.User{}, &model.Organization{}, &model.Membership{}, &model.Role{},
 		&model.Device{}, &model.MigrationMark{}, &model.AuditLog{},
 		&model.UserGroup{}, &model.UserGroupMember{}, &model.DeviceGroup{}, &model.AccessRule{},
+		&model.AddressBook{}, &model.AddressBookGrant{},
 	))
 	return st
 }

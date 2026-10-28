@@ -266,7 +266,7 @@ func ensureMembership(db *gorm.DB, orgID, userID uint) error {
 	if err != nil {
 		return fmt.Errorf("load owner role: %w", err)
 	}
-	row := model.Membership{OrganizationID: orgID, UserID: userID, RoleID: ownerRole.ID, Role: ownerRole.Name}
+	row := model.Membership{OrganizationID: orgID, UserID: userID, RoleID: ownerRole.ID}
 	if err := db.Create(&row).Error; err != nil {
 		return fmt.Errorf("create membership: %w", err)
 	}

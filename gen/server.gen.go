@@ -17,6 +17,7 @@ import (
 const (
 	AccessRuleTargetKindAllDevices  AccessRuleTargetKind = "all_devices"
 	AccessRuleTargetKindDeviceGroup AccessRuleTargetKind = "device_group"
+	AccessRuleTargetKindUserGroup   AccessRuleTargetKind = "user_group"
 )
 
 // Valid indicates whether the value is a known member of the AccessRuleTargetKind enum.
@@ -25,6 +26,8 @@ func (e AccessRuleTargetKind) Valid() bool {
 	case AccessRuleTargetKindAllDevices:
 		return true
 	case AccessRuleTargetKindDeviceGroup:
+		return true
+	case AccessRuleTargetKindUserGroup:
 		return true
 	default:
 		return false
@@ -90,8 +93,9 @@ func (e AddressBookGrantAccess) Valid() bool {
 
 // Defines values for AddressBookGrantKind.
 const (
-	AddressBookGrantKindEveryone AddressBookGrantKind = "everyone"
-	AddressBookGrantKindUser     AddressBookGrantKind = "user"
+	AddressBookGrantKindEveryone  AddressBookGrantKind = "everyone"
+	AddressBookGrantKindUser      AddressBookGrantKind = "user"
+	AddressBookGrantKindUserGroup AddressBookGrantKind = "user_group"
 )
 
 // Valid indicates whether the value is a known member of the AddressBookGrantKind enum.
@@ -100,6 +104,8 @@ func (e AddressBookGrantKind) Valid() bool {
 	case AddressBookGrantKindEveryone:
 		return true
 	case AddressBookGrantKindUser:
+		return true
+	case AddressBookGrantKindUserGroup:
 		return true
 	default:
 		return false
@@ -187,6 +193,270 @@ func (e ApprovalStatus) Valid() bool {
 	}
 }
 
+// Defines values for ClientBuildCapabilitiesPlatforms.
+const (
+	ClientBuildCapabilitiesPlatformsAndroidArm64 ClientBuildCapabilitiesPlatforms = "android-arm64"
+	ClientBuildCapabilitiesPlatformsLinuxX64     ClientBuildCapabilitiesPlatforms = "linux-x64"
+	ClientBuildCapabilitiesPlatformsMacosArm64   ClientBuildCapabilitiesPlatforms = "macos-arm64"
+	ClientBuildCapabilitiesPlatformsMacosX64     ClientBuildCapabilitiesPlatforms = "macos-x64"
+	ClientBuildCapabilitiesPlatformsWindowsX64   ClientBuildCapabilitiesPlatforms = "windows-x64"
+)
+
+// Valid indicates whether the value is a known member of the ClientBuildCapabilitiesPlatforms enum.
+func (e ClientBuildCapabilitiesPlatforms) Valid() bool {
+	switch e {
+	case ClientBuildCapabilitiesPlatformsAndroidArm64:
+		return true
+	case ClientBuildCapabilitiesPlatformsLinuxX64:
+		return true
+	case ClientBuildCapabilitiesPlatformsMacosArm64:
+		return true
+	case ClientBuildCapabilitiesPlatformsMacosX64:
+		return true
+	case ClientBuildCapabilitiesPlatformsWindowsX64:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ClientBuildCapabilitiesProvisioningState.
+const (
+	ClientBuildCapabilitiesProvisioningStateDeployed     ClientBuildCapabilitiesProvisioningState = "deployed"
+	ClientBuildCapabilitiesProvisioningStateDisabled     ClientBuildCapabilitiesProvisioningState = "disabled"
+	ClientBuildCapabilitiesProvisioningStateFailed       ClientBuildCapabilitiesProvisioningState = "failed"
+	ClientBuildCapabilitiesProvisioningStateMissing      ClientBuildCapabilitiesProvisioningState = "missing"
+	ClientBuildCapabilitiesProvisioningStateProvisioning ClientBuildCapabilitiesProvisioningState = "provisioning"
+)
+
+// Valid indicates whether the value is a known member of the ClientBuildCapabilitiesProvisioningState enum.
+func (e ClientBuildCapabilitiesProvisioningState) Valid() bool {
+	switch e {
+	case ClientBuildCapabilitiesProvisioningStateDeployed:
+		return true
+	case ClientBuildCapabilitiesProvisioningStateDisabled:
+		return true
+	case ClientBuildCapabilitiesProvisioningStateFailed:
+		return true
+	case ClientBuildCapabilitiesProvisioningStateMissing:
+		return true
+	case ClientBuildCapabilitiesProvisioningStateProvisioning:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ClientBuildCreateRequestPlatforms.
+const (
+	ClientBuildCreateRequestPlatformsAndroidArm64 ClientBuildCreateRequestPlatforms = "android-arm64"
+	ClientBuildCreateRequestPlatformsLinuxX64     ClientBuildCreateRequestPlatforms = "linux-x64"
+	ClientBuildCreateRequestPlatformsMacosArm64   ClientBuildCreateRequestPlatforms = "macos-arm64"
+	ClientBuildCreateRequestPlatformsMacosX64     ClientBuildCreateRequestPlatforms = "macos-x64"
+	ClientBuildCreateRequestPlatformsWindowsX64   ClientBuildCreateRequestPlatforms = "windows-x64"
+)
+
+// Valid indicates whether the value is a known member of the ClientBuildCreateRequestPlatforms enum.
+func (e ClientBuildCreateRequestPlatforms) Valid() bool {
+	switch e {
+	case ClientBuildCreateRequestPlatformsAndroidArm64:
+		return true
+	case ClientBuildCreateRequestPlatformsLinuxX64:
+		return true
+	case ClientBuildCreateRequestPlatformsMacosArm64:
+		return true
+	case ClientBuildCreateRequestPlatformsMacosX64:
+		return true
+	case ClientBuildCreateRequestPlatformsWindowsX64:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ClientBuildDetailPlatforms.
+const (
+	ClientBuildDetailPlatformsAndroidArm64 ClientBuildDetailPlatforms = "android-arm64"
+	ClientBuildDetailPlatformsLinuxX64     ClientBuildDetailPlatforms = "linux-x64"
+	ClientBuildDetailPlatformsMacosArm64   ClientBuildDetailPlatforms = "macos-arm64"
+	ClientBuildDetailPlatformsMacosX64     ClientBuildDetailPlatforms = "macos-x64"
+	ClientBuildDetailPlatformsWindowsX64   ClientBuildDetailPlatforms = "windows-x64"
+)
+
+// Valid indicates whether the value is a known member of the ClientBuildDetailPlatforms enum.
+func (e ClientBuildDetailPlatforms) Valid() bool {
+	switch e {
+	case ClientBuildDetailPlatformsAndroidArm64:
+		return true
+	case ClientBuildDetailPlatformsLinuxX64:
+		return true
+	case ClientBuildDetailPlatformsMacosArm64:
+		return true
+	case ClientBuildDetailPlatformsMacosX64:
+		return true
+	case ClientBuildDetailPlatformsWindowsX64:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ClientBuildDetailStatus.
+const (
+	ClientBuildDetailStatusCancelled   ClientBuildDetailStatus = "cancelled"
+	ClientBuildDetailStatusDispatched  ClientBuildDetailStatus = "dispatched"
+	ClientBuildDetailStatusDispatching ClientBuildDetailStatus = "dispatching"
+	ClientBuildDetailStatusFailed      ClientBuildDetailStatus = "failed"
+	ClientBuildDetailStatusIngesting   ClientBuildDetailStatus = "ingesting"
+	ClientBuildDetailStatusPending     ClientBuildDetailStatus = "pending"
+	ClientBuildDetailStatusRunning     ClientBuildDetailStatus = "running"
+	ClientBuildDetailStatusSucceeded   ClientBuildDetailStatus = "succeeded"
+)
+
+// Valid indicates whether the value is a known member of the ClientBuildDetailStatus enum.
+func (e ClientBuildDetailStatus) Valid() bool {
+	switch e {
+	case ClientBuildDetailStatusCancelled:
+		return true
+	case ClientBuildDetailStatusDispatched:
+		return true
+	case ClientBuildDetailStatusDispatching:
+		return true
+	case ClientBuildDetailStatusFailed:
+		return true
+	case ClientBuildDetailStatusIngesting:
+		return true
+	case ClientBuildDetailStatusPending:
+		return true
+	case ClientBuildDetailStatusRunning:
+		return true
+	case ClientBuildDetailStatusSucceeded:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ClientBuildSummaryPlatforms.
+const (
+	ClientBuildSummaryPlatformsAndroidArm64 ClientBuildSummaryPlatforms = "android-arm64"
+	ClientBuildSummaryPlatformsLinuxX64     ClientBuildSummaryPlatforms = "linux-x64"
+	ClientBuildSummaryPlatformsMacosArm64   ClientBuildSummaryPlatforms = "macos-arm64"
+	ClientBuildSummaryPlatformsMacosX64     ClientBuildSummaryPlatforms = "macos-x64"
+	ClientBuildSummaryPlatformsWindowsX64   ClientBuildSummaryPlatforms = "windows-x64"
+)
+
+// Valid indicates whether the value is a known member of the ClientBuildSummaryPlatforms enum.
+func (e ClientBuildSummaryPlatforms) Valid() bool {
+	switch e {
+	case ClientBuildSummaryPlatformsAndroidArm64:
+		return true
+	case ClientBuildSummaryPlatformsLinuxX64:
+		return true
+	case ClientBuildSummaryPlatformsMacosArm64:
+		return true
+	case ClientBuildSummaryPlatformsMacosX64:
+		return true
+	case ClientBuildSummaryPlatformsWindowsX64:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ClientBuildSummaryStatus.
+const (
+	ClientBuildSummaryStatusCancelled   ClientBuildSummaryStatus = "cancelled"
+	ClientBuildSummaryStatusDispatched  ClientBuildSummaryStatus = "dispatched"
+	ClientBuildSummaryStatusDispatching ClientBuildSummaryStatus = "dispatching"
+	ClientBuildSummaryStatusFailed      ClientBuildSummaryStatus = "failed"
+	ClientBuildSummaryStatusIngesting   ClientBuildSummaryStatus = "ingesting"
+	ClientBuildSummaryStatusPending     ClientBuildSummaryStatus = "pending"
+	ClientBuildSummaryStatusRunning     ClientBuildSummaryStatus = "running"
+	ClientBuildSummaryStatusSucceeded   ClientBuildSummaryStatus = "succeeded"
+)
+
+// Valid indicates whether the value is a known member of the ClientBuildSummaryStatus enum.
+func (e ClientBuildSummaryStatus) Valid() bool {
+	switch e {
+	case ClientBuildSummaryStatusCancelled:
+		return true
+	case ClientBuildSummaryStatusDispatched:
+		return true
+	case ClientBuildSummaryStatusDispatching:
+		return true
+	case ClientBuildSummaryStatusFailed:
+		return true
+	case ClientBuildSummaryStatusIngesting:
+		return true
+	case ClientBuildSummaryStatusPending:
+		return true
+	case ClientBuildSummaryStatusRunning:
+		return true
+	case ClientBuildSummaryStatusSucceeded:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ConnectionLogStatus.
+const (
+	ConnectionLogStatusClosed ConnectionLogStatus = "closed"
+	ConnectionLogStatusOpen   ConnectionLogStatus = "open"
+)
+
+// Valid indicates whether the value is a known member of the ConnectionLogStatus enum.
+func (e ConnectionLogStatus) Valid() bool {
+	switch e {
+	case ConnectionLogStatusClosed:
+		return true
+	case ConnectionLogStatusOpen:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ControlPermissionState.
+const (
+	Disable   ControlPermissionState = "disable"
+	Enable    ControlPermissionState = "enable"
+	UseClient ControlPermissionState = "use_client"
+)
+
+// Valid indicates whether the value is a known member of the ControlPermissionState enum.
+func (e ControlPermissionState) Valid() bool {
+	switch e {
+	case Disable:
+		return true
+	case Enable:
+		return true
+	case UseClient:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ControlRoleKind.
+const (
+	ControlRoleKindCustom  ControlRoleKind = "custom"
+	ControlRoleKindDefault ControlRoleKind = "default"
+)
+
+// Valid indicates whether the value is a known member of the ControlRoleKind enum.
+func (e ControlRoleKind) Valid() bool {
+	switch e {
+	case ControlRoleKindCustom:
+		return true
+	case ControlRoleKindDefault:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for DeviceStatus.
 const (
 	Offline DeviceStatus = "offline"
@@ -205,25 +475,55 @@ func (e DeviceStatus) Valid() bool {
 	}
 }
 
+// Defines values for DeviceDisconnectStatus.
+const (
+	DeviceDisconnectStatusExpired   DeviceDisconnectStatus = "expired"
+	DeviceDisconnectStatusFulfilled DeviceDisconnectStatus = "fulfilled"
+	DeviceDisconnectStatusPending   DeviceDisconnectStatus = "pending"
+)
+
+// Valid indicates whether the value is a known member of the DeviceDisconnectStatus enum.
+func (e DeviceDisconnectStatus) Valid() bool {
+	switch e {
+	case DeviceDisconnectStatusExpired:
+		return true
+	case DeviceDisconnectStatusFulfilled:
+		return true
+	case DeviceDisconnectStatusPending:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ErrorCode.
 const (
-	ErrorCodeApprovalRequired  ErrorCode = "approval_required"
-	ErrorCodeConflict          ErrorCode = "conflict"
-	ErrorCodeEmailNotVerified  ErrorCode = "email_not_verified"
-	ErrorCodeForbidden         ErrorCode = "forbidden"
-	ErrorCodeInternal          ErrorCode = "internal"
-	ErrorCodeInvalidRequest    ErrorCode = "invalid_request"
-	ErrorCodeNotFound          ErrorCode = "not_found"
-	ErrorCodeOk                ErrorCode = "ok"
-	ErrorCodeRateLimited       ErrorCode = "rate_limited"
-	ErrorCodeTwoFactorRequired ErrorCode = "two_factor_required"
-	ErrorCodeUnauthorized      ErrorCode = "unauthorized"
+	ErrorCodeApprovalRequired   ErrorCode = "approval_required"
+	ErrorCodeCaptchaInvalid     ErrorCode = "captcha_invalid"
+	ErrorCodeCaptchaRequired    ErrorCode = "captcha_required"
+	ErrorCodeCaptchaUnavailable ErrorCode = "captcha_unavailable"
+	ErrorCodeConflict           ErrorCode = "conflict"
+	ErrorCodeEmailNotVerified   ErrorCode = "email_not_verified"
+	ErrorCodeForbidden          ErrorCode = "forbidden"
+	ErrorCodeInternal           ErrorCode = "internal"
+	ErrorCodeInvalidRequest     ErrorCode = "invalid_request"
+	ErrorCodeNotFound           ErrorCode = "not_found"
+	ErrorCodeOk                 ErrorCode = "ok"
+	ErrorCodeRateLimited        ErrorCode = "rate_limited"
+	ErrorCodeTwoFactorRequired  ErrorCode = "two_factor_required"
+	ErrorCodeUnauthorized       ErrorCode = "unauthorized"
 )
 
 // Valid indicates whether the value is a known member of the ErrorCode enum.
 func (e ErrorCode) Valid() bool {
 	switch e {
 	case ErrorCodeApprovalRequired:
+		return true
+	case ErrorCodeCaptchaInvalid:
+		return true
+	case ErrorCodeCaptchaRequired:
+		return true
+	case ErrorCodeCaptchaUnavailable:
 		return true
 	case ErrorCodeConflict:
 		return true
@@ -244,6 +544,24 @@ func (e ErrorCode) Valid() bool {
 	case ErrorCodeTwoFactorRequired:
 		return true
 	case ErrorCodeUnauthorized:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for FileLogDirection.
+const (
+	Receive FileLogDirection = "receive"
+	Send    FileLogDirection = "send"
+)
+
+// Valid indicates whether the value is a known member of the FileLogDirection enum.
+func (e FileLogDirection) Valid() bool {
+	switch e {
+	case Receive:
+		return true
+	case Send:
 		return true
 	default:
 		return false
@@ -475,6 +793,42 @@ func (e UserGroupKind) Valid() bool {
 	}
 }
 
+// Defines values for ListClientBuildsParamsStatus.
+const (
+	ListClientBuildsParamsStatusCancelled   ListClientBuildsParamsStatus = "cancelled"
+	ListClientBuildsParamsStatusDispatched  ListClientBuildsParamsStatus = "dispatched"
+	ListClientBuildsParamsStatusDispatching ListClientBuildsParamsStatus = "dispatching"
+	ListClientBuildsParamsStatusFailed      ListClientBuildsParamsStatus = "failed"
+	ListClientBuildsParamsStatusIngesting   ListClientBuildsParamsStatus = "ingesting"
+	ListClientBuildsParamsStatusPending     ListClientBuildsParamsStatus = "pending"
+	ListClientBuildsParamsStatusRunning     ListClientBuildsParamsStatus = "running"
+	ListClientBuildsParamsStatusSucceeded   ListClientBuildsParamsStatus = "succeeded"
+)
+
+// Valid indicates whether the value is a known member of the ListClientBuildsParamsStatus enum.
+func (e ListClientBuildsParamsStatus) Valid() bool {
+	switch e {
+	case ListClientBuildsParamsStatusCancelled:
+		return true
+	case ListClientBuildsParamsStatusDispatched:
+		return true
+	case ListClientBuildsParamsStatusDispatching:
+		return true
+	case ListClientBuildsParamsStatusFailed:
+		return true
+	case ListClientBuildsParamsStatusIngesting:
+		return true
+	case ListClientBuildsParamsStatusPending:
+		return true
+	case ListClientBuildsParamsStatusRunning:
+		return true
+	case ListClientBuildsParamsStatusSucceeded:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ListLogEventsParamsLevel.
 const (
 	ListLogEventsParamsLevelError ListLogEventsParamsLevel = "error"
@@ -540,6 +894,9 @@ type APITokenListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode  `json:"code"`
 	Data    []APIToken `json:"data"`
@@ -555,13 +912,16 @@ type AccessRule struct {
 	// SourceGroupName 源用户组名（含内置 `everyone`）
 	SourceGroupName string `json:"source_group_name"`
 
-	// TargetGroupId 设备组 id；`all_devices` 时为 null
+	// TargetGroupId 目标组 id（设备组或用户组，按 `target_kind` 解释）；`all_devices` 时为 null
 	TargetGroupId *int64 `json:"target_group_id"`
 
-	// TargetGroupName 设备组名；`all_devices` 时为空字符串
+	// TargetGroupName 目标组名；`all_devices` 时为空字符串
 	TargetGroupName string `json:"target_group_name"`
 
 	// TargetKind - device_group：规则指向一个设备组（`target_group_id` 必填）
+	// - user_group：规则指向一个用户组，展开为该组显式成员所拥有的设备
+	//   （v0.10.0；`target_group_id` 必填）。目标为内置 `everyone` 组时语义是
+	//   「所有由**有效成员**归属的设备」（停用/无角色/已移除会籍的归属人贡献空集）
 	// - all_devices：规则指向组织内全部设备（`target_group_id` 必须为空）
 	TargetKind AccessRuleTargetKind `json:"target_kind"`
 }
@@ -571,10 +931,13 @@ type AccessRuleCreateRequest struct {
 	// SourceGroupId 本组织的用户组 id（含 `everyone`）
 	SourceGroupId int64 `json:"source_group_id"`
 
-	// TargetGroupId 设备组 id；`device_group` 时必填，`all_devices` 时不得给出
+	// TargetGroupId 目标组 id（设备组或用户组）；`device_group`/`user_group` 时必填，`all_devices` 时不得给出
 	TargetGroupId *int64 `json:"target_group_id,omitempty"`
 
 	// TargetKind - device_group：规则指向一个设备组（`target_group_id` 必填）
+	// - user_group：规则指向一个用户组，展开为该组显式成员所拥有的设备
+	//   （v0.10.0；`target_group_id` 必填）。目标为内置 `everyone` 组时语义是
+	//   「所有由**有效成员**归属的设备」（停用/无角色/已移除会籍的归属人贡献空集）
 	// - all_devices：规则指向组织内全部设备（`target_group_id` 必须为空）
 	TargetKind AccessRuleTargetKind `json:"target_kind"`
 }
@@ -591,6 +954,9 @@ type AccessRuleListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode    `json:"code"`
 	Data    []AccessRule `json:"data"`
@@ -609,6 +975,9 @@ type AccessRuleResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode  `json:"code"`
 	Data    AccessRule `json:"data"`
@@ -616,7 +985,10 @@ type AccessRuleResponse struct {
 }
 
 // AccessRuleTargetKind - device_group：规则指向一个设备组（`target_group_id` 必填）
-// - all_devices：规则指向组织内全部设备（`target_group_id` 必须为空）
+//   - user_group：规则指向一个用户组，展开为该组显式成员所拥有的设备
+//     （v0.10.0；`target_group_id` 必填）。目标为内置 `everyone` 组时语义是
+//     「所有由**有效成员**归属的设备」（停用/无角色/已移除会籍的归属人贡献空集）
+//   - all_devices：规则指向组织内全部设备（`target_group_id` 必须为空）
 type AccessRuleTargetKind string
 
 // AddressBook defines model for AddressBook.
@@ -653,13 +1025,16 @@ type AddressBookGrant struct {
 	// Access - read：只读（当前共享簿默认成员可读，显式 everyone/user 授权可覆盖）
 	// - write：可替换 peers/tags
 	// - full：可改名、删除簿、管理授权
-	Access      AddressBookGrantAccess `json:"access"`
-	CreatedAt   time.Time              `json:"created_at"`
-	CreatedBy   int64                  `json:"created_by"`
-	Id          int64                  `json:"id"`
-	SubjectKind AddressBookGrantKind   `json:"subject_kind"`
+	Access    AddressBookGrantAccess `json:"access"`
+	CreatedAt time.Time              `json:"created_at"`
+	CreatedBy int64                  `json:"created_by"`
+	Id        int64                  `json:"id"`
 
-	// SubjectUserId `user` 主体为用户 id；`everyone` 为 null
+	// SubjectGroupId `user_group` 主体为用户组 id；`user` 与 `everyone` 为 null
+	SubjectGroupId *int64               `json:"subject_group_id,omitempty"`
+	SubjectKind    AddressBookGrantKind `json:"subject_kind"`
+
+	// SubjectUserId `user` 主体为用户 id；`everyone` 与 `user_group` 为 null
 	SubjectUserId *int64 `json:"subject_user_id,omitempty"`
 }
 
@@ -683,6 +1058,9 @@ type AddressBookGrantListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode          `json:"code"`
 	Data    []AddressBookGrant `json:"data"`
@@ -694,10 +1072,13 @@ type AddressBookGrantRequest struct {
 	// Access - read：只读（当前共享簿默认成员可读，显式 everyone/user 授权可覆盖）
 	// - write：可替换 peers/tags
 	// - full：可改名、删除簿、管理授权
-	Access      AddressBookGrantAccess `json:"access"`
-	SubjectKind AddressBookGrantKind   `json:"subject_kind"`
+	Access AddressBookGrantAccess `json:"access"`
 
-	// SubjectUserId `subject_kind=user` 时必填且必须是本组织成员；`everyone` 时必须省略或为 null
+	// SubjectGroupId `subject_kind=user_group` 时必填且必须是本组织的用户组；`user` 与 `everyone` 时必须省略或为 null
+	SubjectGroupId *int64               `json:"subject_group_id,omitempty"`
+	SubjectKind    AddressBookGrantKind `json:"subject_kind"`
+
+	// SubjectUserId `subject_kind=user` 时必填且必须是本组织成员；`everyone` 与 `user_group` 时必须省略或为 null
 	SubjectUserId *int64 `json:"subject_user_id,omitempty"`
 }
 
@@ -713,6 +1094,9 @@ type AddressBookGrantResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode        `json:"code"`
 	Data    AddressBookGrant `json:"data"`
@@ -731,6 +1115,9 @@ type AddressBookListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode     `json:"code"`
 	Data    []AddressBook `json:"data"`
@@ -782,6 +1169,9 @@ type AddressBookRecycleBinResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode                   `json:"code"`
 	Data    []AddressBookRecycleBinItem `json:"data"`
@@ -800,6 +1190,9 @@ type AddressBookResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode   `json:"code"`
 	Data    AddressBook `json:"data"`
@@ -859,6 +1252,9 @@ type AlertListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    AlertPage `json:"data"`
@@ -964,6 +1360,9 @@ type ApprovalListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode    `json:"code"`
 	Data    ApprovalPage `json:"data"`
@@ -990,6 +1389,9 @@ type ApprovalResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    Approval  `json:"data"`
@@ -1034,6 +1436,9 @@ type AuditLogListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode    `json:"code"`
 	Data    AuditLogPage `json:"data"`
@@ -1074,10 +1479,523 @@ type AuditRetentionResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode      `json:"code"`
 	Data    AuditRetention `json:"data"`
 	Message string         `json:"message"`
+}
+
+// AuthProviderStatus defines model for AuthProviderStatus.
+type AuthProviderStatus struct {
+	Enabled bool    `json:"enabled"`
+	Name    *string `json:"name,omitempty"`
+}
+
+// AuthProviders defines model for AuthProviders.
+type AuthProviders struct {
+	Ldap AuthProviderStatus `json:"ldap"`
+	Oidc AuthProviderStatus `json:"oidc"`
+}
+
+// AuthProvidersResponse defines model for AuthProvidersResponse.
+type AuthProvidersResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode     `json:"code"`
+	Data    AuthProviders `json:"data"`
+	Message string        `json:"message"`
+}
+
+// CaptchaChallenge defines model for CaptchaChallenge.
+type CaptchaChallenge struct {
+	Challenge *CaptchaChallengePayload `json:"challenge,omitempty"`
+	Enabled   bool                     `json:"enabled"`
+	Provider  *string                  `json:"provider,omitempty"`
+}
+
+// CaptchaChallengePayload defines model for CaptchaChallengePayload.
+type CaptchaChallengePayload struct {
+	// Params 提供商公开参数：`altcha` 为挑战 JSON（algorithm/challenge/maxnumber/
+	// salt/signature）；`geetest` 为 `captcha_id`/`script_url`；`cap` 为
+	// `api_endpoint`/`site_key`。
+	Params map[string]interface{} `json:"params"`
+}
+
+// CaptchaChallengeResponse defines model for CaptchaChallengeResponse.
+type CaptchaChallengeResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode         `json:"code"`
+	Data    *CaptchaChallenge `json:"data,omitempty"`
+	Message string            `json:"message"`
+}
+
+// CaptchaProof defines model for CaptchaProof.
+type CaptchaProof struct {
+	// Response 提供商相关的验证凭据。`altcha` 传 `payload`（widget 返回的 base64
+	// payload）；`geetest` 传 `lot_number`、`captcha_output`、`pass_token`、
+	// `gen_time`；`cap` 传 `response`。
+	Response map[string]string `json:"response"`
+}
+
+// ClientBuildArtifact defines model for ClientBuildArtifact.
+type ClientBuildArtifact struct {
+	CreatedAt time.Time `json:"created_at"`
+	FileName  string    `json:"file_name"`
+	Id        int64     `json:"id"`
+	Platform  string    `json:"platform"`
+	Sha256    string    `json:"sha256"`
+	SizeBytes int64     `json:"size_bytes"`
+}
+
+// ClientBuildCapabilities defines model for ClientBuildCapabilities.
+type ClientBuildCapabilities struct {
+	Defaults          *ClientBuildDefaults                     `json:"defaults,omitempty"`
+	Enabled           bool                                     `json:"enabled"`
+	Limits            ClientBuildLimits                        `json:"limits"`
+	Platforms         []ClientBuildCapabilitiesPlatforms       `json:"platforms"`
+	ProvisioningState ClientBuildCapabilitiesProvisioningState `json:"provisioning_state"`
+}
+
+// ClientBuildCapabilitiesPlatforms defines model for ClientBuildCapabilities.Platforms.
+type ClientBuildCapabilitiesPlatforms string
+
+// ClientBuildCapabilitiesProvisioningState defines model for ClientBuildCapabilities.ProvisioningState.
+type ClientBuildCapabilitiesProvisioningState string
+
+// ClientBuildCapabilitiesResponse defines model for ClientBuildCapabilitiesResponse.
+type ClientBuildCapabilitiesResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode               `json:"code"`
+	Data    ClientBuildCapabilities `json:"data"`
+	Message string                  `json:"message"`
+}
+
+// ClientBuildCreateRequest defines model for ClientBuildCreateRequest.
+type ClientBuildCreateRequest struct {
+	Platforms []ClientBuildCreateRequestPlatforms `json:"platforms"`
+	ProfileId int64                               `json:"profile_id"`
+}
+
+// ClientBuildCreateRequestPlatforms defines model for ClientBuildCreateRequest.Platforms.
+type ClientBuildCreateRequestPlatforms string
+
+// ClientBuildDefaults defines model for ClientBuildDefaults.
+type ClientBuildDefaults struct {
+	ApiServer string `json:"api_server"`
+	Server    string `json:"server"`
+	ServerKey string `json:"server_key"`
+}
+
+// ClientBuildDetail defines model for ClientBuildDetail.
+type ClientBuildDetail struct {
+	AppName         string                       `json:"app_name"`
+	ArtifactCount   int                          `json:"artifact_count"`
+	Artifacts       []ClientBuildArtifact        `json:"artifacts"`
+	ArtifactsPurged bool                         `json:"artifacts_purged"`
+	CreatedAt       time.Time                    `json:"created_at"`
+	DispatchedAt    *time.Time                   `json:"dispatched_at,omitempty"`
+	ErrorMessage    *string                      `json:"error_message,omitempty"`
+	FinishedAt      *time.Time                   `json:"finished_at,omitempty"`
+	GithubRunId     *int64                       `json:"github_run_id,omitempty"`
+	GithubRunUrl    *string                      `json:"github_run_url,omitempty"`
+	Id              int64                        `json:"id"`
+	Manifest        ClientBuildManifest          `json:"manifest"`
+	Platforms       []ClientBuildDetailPlatforms `json:"platforms"`
+	ProfileId       int64                        `json:"profile_id"`
+	ProfileName     string                       `json:"profile_name"`
+	Status          ClientBuildDetailStatus      `json:"status"`
+	UpstreamVersion string                       `json:"upstream_version"`
+}
+
+// ClientBuildDetailPlatforms defines model for ClientBuildDetail.Platforms.
+type ClientBuildDetailPlatforms string
+
+// ClientBuildDetailStatus defines model for ClientBuildDetail.Status.
+type ClientBuildDetailStatus string
+
+// ClientBuildLimits defines model for ClientBuildLimits.
+type ClientBuildLimits struct {
+	ArtifactRetentionDays int   `json:"artifact_retention_days"`
+	MaxActiveBuilds       int   `json:"max_active_builds"`
+	MaxArtifactBytes      int64 `json:"max_artifact_bytes"`
+	MaxConcurrentPerOrg   int   `json:"max_concurrent_per_org"`
+	MaxProfilesPerOrg     int   `json:"max_profiles_per_org"`
+}
+
+// ClientBuildListResponse defines model for ClientBuildListResponse.
+type ClientBuildListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode       `json:"code"`
+	Data    ClientBuildPage `json:"data"`
+	Message string          `json:"message"`
+}
+
+// ClientBuildLogoUploadRequest defines model for ClientBuildLogoUploadRequest.
+type ClientBuildLogoUploadRequest struct {
+	PngBase64 string `json:"png_base64"`
+}
+
+// ClientBuildManifest defines model for ClientBuildManifest.
+type ClientBuildManifest struct {
+	ApiServer       string                   `json:"api_server"`
+	AppName         string                   `json:"app_name"`
+	BuildId         int64                    `json:"build_id"`
+	Logo            *ClientBuildManifestLogo `json:"logo,omitempty"`
+	Platforms       []string                 `json:"platforms"`
+	SchemaVersion   int                      `json:"schema_version"`
+	Server          string                   `json:"server"`
+	ServerKey       string                   `json:"server_key"`
+	UpstreamVersion string                   `json:"upstream_version"`
+}
+
+// ClientBuildManifestLogo defines model for ClientBuildManifestLogo.
+type ClientBuildManifestLogo struct {
+	Height int    `json:"height"`
+	Sha256 string `json:"sha256"`
+	Width  int    `json:"width"`
+}
+
+// ClientBuildPage defines model for ClientBuildPage.
+type ClientBuildPage struct {
+	Items    []ClientBuildSummary `json:"items"`
+	Page     int                  `json:"page"`
+	PageSize int64                `json:"page_size"`
+	Total    int64                `json:"total"`
+}
+
+// ClientBuildProfile defines model for ClientBuildProfile.
+type ClientBuildProfile struct {
+	AppName    string    `json:"app_name"`
+	CreatedAt  time.Time `json:"created_at"`
+	HasLogo    bool      `json:"has_logo"`
+	Id         int64     `json:"id"`
+	LogoHeight int       `json:"logo_height"`
+	LogoSha256 string    `json:"logo_sha256"`
+	LogoWidth  int       `json:"logo_width"`
+	Name       string    `json:"name"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+// ClientBuildProfileCreateRequest defines model for ClientBuildProfileCreateRequest.
+type ClientBuildProfileCreateRequest struct {
+	AppName string `json:"app_name"`
+	Name    string `json:"name"`
+}
+
+// ClientBuildProfileListResponse defines model for ClientBuildProfileListResponse.
+type ClientBuildProfileListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode              `json:"code"`
+	Data    ClientBuildProfilePage `json:"data"`
+	Message string                 `json:"message"`
+}
+
+// ClientBuildProfilePage defines model for ClientBuildProfilePage.
+type ClientBuildProfilePage struct {
+	Items    []ClientBuildProfile `json:"items"`
+	Page     int                  `json:"page"`
+	PageSize int64                `json:"page_size"`
+	Total    int64                `json:"total"`
+}
+
+// ClientBuildProfileResponse defines model for ClientBuildProfileResponse.
+type ClientBuildProfileResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode          `json:"code"`
+	Data    ClientBuildProfile `json:"data"`
+	Message string             `json:"message"`
+}
+
+// ClientBuildProfileUpdateRequest defines model for ClientBuildProfileUpdateRequest.
+type ClientBuildProfileUpdateRequest struct {
+	AppName *string `json:"app_name,omitempty"`
+	Name    *string `json:"name,omitempty"`
+}
+
+// ClientBuildResponse defines model for ClientBuildResponse.
+type ClientBuildResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode         `json:"code"`
+	Data    ClientBuildDetail `json:"data"`
+	Message string            `json:"message"`
+}
+
+// ClientBuildSummary defines model for ClientBuildSummary.
+type ClientBuildSummary struct {
+	AppName         string                        `json:"app_name"`
+	ArtifactCount   int                           `json:"artifact_count"`
+	ArtifactsPurged bool                          `json:"artifacts_purged"`
+	CreatedAt       time.Time                     `json:"created_at"`
+	DispatchedAt    *time.Time                    `json:"dispatched_at,omitempty"`
+	ErrorMessage    *string                       `json:"error_message,omitempty"`
+	FinishedAt      *time.Time                    `json:"finished_at,omitempty"`
+	GithubRunId     *int64                        `json:"github_run_id,omitempty"`
+	GithubRunUrl    *string                       `json:"github_run_url,omitempty"`
+	Id              int64                         `json:"id"`
+	Platforms       []ClientBuildSummaryPlatforms `json:"platforms"`
+	ProfileId       int64                         `json:"profile_id"`
+	ProfileName     string                        `json:"profile_name"`
+	Status          ClientBuildSummaryStatus      `json:"status"`
+	UpstreamVersion string                        `json:"upstream_version"`
+}
+
+// ClientBuildSummaryPlatforms defines model for ClientBuildSummary.Platforms.
+type ClientBuildSummaryPlatforms string
+
+// ClientBuildSummaryStatus defines model for ClientBuildSummary.Status.
+type ClientBuildSummaryStatus string
+
+// ConnectionLog 客户端上报的一条连接记录（`POST /api/audit/conn`）。`new` 建行、`close` 关闭；
+// 与面板签发的 session 是两套记录，后者见 `Session`。
+type ConnectionLog struct {
+	ConnAuditRef   *string             `json:"conn_audit_ref,omitempty"`
+	ConnId         int64               `json:"conn_id"`
+	CreatedAt      time.Time           `json:"created_at"`
+	DeviceId       int64               `json:"device_id"`
+	EndedAt        *time.Time          `json:"ended_at,omitempty"`
+	Id             int64               `json:"id"`
+	Ip             *string             `json:"ip,omitempty"`
+	Note           *string             `json:"note,omitempty"`
+	OrganizationId int64               `json:"organization_id"`
+	RustdeskId     string              `json:"rustdesk_id"`
+	SessionId      int64               `json:"session_id"`
+	StartedAt      time.Time           `json:"started_at"`
+	Status         ConnectionLogStatus `json:"status"`
+}
+
+// ConnectionLogStatus defines model for ConnectionLog.Status.
+type ConnectionLogStatus string
+
+// ConnectionLogListResponse defines model for ConnectionLogListResponse.
+type ConnectionLogListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode         `json:"code"`
+	Data    ConnectionLogPage `json:"data"`
+	Message string            `json:"message"`
+}
+
+// ConnectionLogPage defines model for ConnectionLogPage.
+type ConnectionLogPage struct {
+	Items    []ConnectionLog `json:"items"`
+	Page     int             `json:"page"`
+	PageSize int64           `json:"page_size"`
+	Total    int64           `json:"total"`
+}
+
+// ControlPermissionState 单项权限的三态（对齐 RustDesk Server Pro）：
+// - use_client：不覆盖被控端本地设置
+// - enable：显式启用（覆盖本地设置）
+// - disable：显式禁用（覆盖本地设置）
+type ControlPermissionState string
+
+// ControlPermissionStates 14 个权限键到三态的映射，键与 RustDesk 客户端 `ControlPermissions.Permission`
+// 枚举一一对应（bit 序号即声明顺序）：`keyboard`、`remote_printer`、
+// `clipboard`、`file`、`audio`、`camera`、`terminal`、`tunnel`、`restart`、
+// `recording`、`block_input`、`remote_modify`、`privacy_mode`、`usb`。
+// 未知键或非法状态整单拒绝；缺失键按 `use_client` 补全。
+type ControlPermissionStates map[string]ControlPermissionState
+
+// ControlRole defines model for ControlRole.
+type ControlRole struct {
+	// Builtin true 表示内置 `default` 角色（不可删除、不可改名）
+	Builtin   bool      `json:"builtin"`
+	CreatedAt time.Time `json:"created_at"`
+	Id        int64     `json:"id"`
+
+	// Kind - default：每个组织唯一的内置角色，不可删除，未分配角色的成员回退到它
+	// - custom：管理员创建的角色
+	Kind ControlRoleKind `json:"kind"`
+	Name string          `json:"name"`
+
+	// Permissions 14 个权限键到三态的映射，键与 RustDesk 客户端 `ControlPermissions.Permission`
+	// 枚举一一对应（bit 序号即声明顺序）：`keyboard`、`remote_printer`、
+	// `clipboard`、`file`、`audio`、`camera`、`terminal`、`tunnel`、`restart`、
+	// `recording`、`block_input`、`remote_modify`、`privacy_mode`、`usb`。
+	// 未知键或非法状态整单拒绝；缺失键按 `use_client` 补全。
+	Permissions ControlPermissionStates `json:"permissions"`
+	UpdatedAt   time.Time               `json:"updated_at"`
+}
+
+// ControlRoleAssignmentRequest defines model for ControlRoleAssignmentRequest.
+type ControlRoleAssignmentRequest struct {
+	// ControlRoleId 目标控制角色 id；`null` 表示回到组织内置 default 角色
+	ControlRoleId *int64 `json:"control_role_id"`
+}
+
+// ControlRoleCreateRequest defines model for ControlRoleCreateRequest.
+type ControlRoleCreateRequest struct {
+	Name string `json:"name"`
+
+	// Permissions 14 个权限键到三态的映射，键与 RustDesk 客户端 `ControlPermissions.Permission`
+	// 枚举一一对应（bit 序号即声明顺序）：`keyboard`、`remote_printer`、
+	// `clipboard`、`file`、`audio`、`camera`、`terminal`、`tunnel`、`restart`、
+	// `recording`、`block_input`、`remote_modify`、`privacy_mode`、`usb`。
+	// 未知键或非法状态整单拒绝；缺失键按 `use_client` 补全。
+	Permissions ControlPermissionStates `json:"permissions"`
+}
+
+// ControlRoleKind - default：每个组织唯一的内置角色，不可删除，未分配角色的成员回退到它
+// - custom：管理员创建的角色
+type ControlRoleKind string
+
+// ControlRoleListResponse defines model for ControlRoleListResponse.
+type ControlRoleListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode     `json:"code"`
+	Data    []ControlRole `json:"data"`
+	Message string        `json:"message"`
+}
+
+// ControlRoleResponse defines model for ControlRoleResponse.
+type ControlRoleResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode   `json:"code"`
+	Data    ControlRole `json:"data"`
+	Message string      `json:"message"`
+}
+
+// ControlRoleUpdateRequest defines model for ControlRoleUpdateRequest.
+type ControlRoleUpdateRequest struct {
+	Name *string `json:"name,omitempty"`
+
+	// Permissions 14 个权限键到三态的映射，键与 RustDesk 客户端 `ControlPermissions.Permission`
+	// 枚举一一对应（bit 序号即声明顺序）：`keyboard`、`remote_printer`、
+	// `clipboard`、`file`、`audio`、`camera`、`terminal`、`tunnel`、`restart`、
+	// `recording`、`block_input`、`remote_modify`、`privacy_mode`、`usb`。
+	// 未知键或非法状态整单拒绝；缺失键按 `use_client` 补全。
+	Permissions *ControlPermissionStates `json:"permissions,omitempty"`
 }
 
 // Device defines model for Device.
@@ -1089,12 +2007,25 @@ type Device struct {
 	DeviceGroupId *int64 `json:"device_group_id"`
 
 	// Disabled 设备是否已被停用（停用期间拒绝认领、心跳与票据兑换）
-	Disabled   bool         `json:"disabled"`
-	Id         int64        `json:"id"`
-	LastSeenAt *time.Time   `json:"last_seen_at"`
-	Name       string       `json:"name"`
-	RustdeskId string       `json:"rustdesk_id"`
-	Status     DeviceStatus `json:"status"`
+	Disabled   bool       `json:"disabled"`
+	Id         int64      `json:"id"`
+	LastSeenAt *time.Time `json:"last_seen_at"`
+	Name       string     `json:"name"`
+
+	// Note 运维备注（管理面或客户端 --assign 写入）
+	Note *string `json:"note,omitempty"`
+
+	// OwnerEmail 归属人邮箱（只读展示用）；未归属或用户已不存在时为 null
+	OwnerEmail *string `json:"owner_email,omitempty"`
+
+	// OwnerUserId 设备归属的用户 id；null 表示未归属。归属人始终能在客户端看到并连接该设备
+	// （设备停用或会籍停用时除外），组→组规则也按归属展开。
+	OwnerUserId *int64       `json:"owner_user_id,omitempty"`
+	RustdeskId  string       `json:"rustdesk_id"`
+	Status      DeviceStatus `json:"status"`
+
+	// StrategyId 设备层策略 id（v0.10.0）；`null` 表示回落到设备组或成员层
+	StrategyId *int64 `json:"strategy_id,omitempty"`
 }
 
 // DeviceStatus defines model for Device.Status.
@@ -1106,10 +2037,53 @@ type DeviceCreateRequest struct {
 	RustdeskId string `json:"rustdesk_id"`
 }
 
-// DeviceDisableRequest defines model for DeviceDisableRequest.
-type DeviceDisableRequest struct {
-	// Disabled true 停用设备，false 恢复
-	Disabled bool `json:"disabled"`
+// DeviceDisconnect defines model for DeviceDisconnect.
+type DeviceDisconnect struct {
+	// ConnCount 消费该请求的那次心跳里客户端报告的连接数
+	ConnCount   *int       `json:"conn_count,omitempty"`
+	DeviceId    int64      `json:"device_id"`
+	ExpiresAt   time.Time  `json:"expires_at"`
+	FulfilledAt *time.Time `json:"fulfilled_at,omitempty"`
+	Id          int64      `json:"id"`
+	Reason      string     `json:"reason"`
+	RequestedAt time.Time  `json:"requested_at"`
+
+	// Status - `pending`：已记录，等待客户端心跳消费
+	// - `fulfilled`：某次心跳带回了活跃连接，`disconnect` 已下发
+	// - `expired`：15 分钟内没有可断开的连接，请求作废
+	Status DeviceDisconnectStatus `json:"status"`
+}
+
+// DeviceDisconnectStatus - `pending`：已记录，等待客户端心跳消费
+// - `fulfilled`：某次心跳带回了活跃连接，`disconnect` 已下发
+// - `expired`：15 分钟内没有可断开的连接，请求作废
+type DeviceDisconnectStatus string
+
+// DeviceDisconnectRequest defines model for DeviceDisconnectRequest.
+type DeviceDisconnectRequest struct {
+	// Reason 断连原因；写入审计，供事后追溯
+	Reason string `json:"reason"`
+}
+
+// DeviceDisconnectResponse defines model for DeviceDisconnectResponse.
+type DeviceDisconnectResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode        `json:"code"`
+	Data    DeviceDisconnect `json:"data"`
+	Message string           `json:"message"`
 }
 
 // DeviceGroup defines model for DeviceGroup.
@@ -1117,10 +2091,13 @@ type DeviceGroup struct {
 	CreatedAt time.Time `json:"created_at"`
 
 	// DeviceIds 当前属于该组的设备 id；一台设备只属于一个组
-	DeviceIds []int64   `json:"device_ids"`
-	Id        int64     `json:"id"`
-	Name      string    `json:"name"`
-	UpdatedAt time.Time `json:"updated_at"`
+	DeviceIds []int64 `json:"device_ids"`
+	Id        int64   `json:"id"`
+	Name      string  `json:"name"`
+
+	// StrategyId 组层策略 id（v0.10.0）；设备层分配优先
+	StrategyId *int64    `json:"strategy_id,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // DeviceGroupCreateRequest defines model for DeviceGroupCreateRequest.
@@ -1149,6 +2126,9 @@ type DeviceGroupDeleteResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode             `json:"code"`
 	Data    DeviceGroupDeleteData `json:"data"`
@@ -1173,6 +2153,9 @@ type DeviceGroupDevicesResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode                 `json:"code"`
 	Data    DeviceGroupMemberMutation `json:"data"`
@@ -1191,6 +2174,9 @@ type DeviceGroupListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode     `json:"code"`
 	Data    []DeviceGroup `json:"data"`
@@ -1223,6 +2209,9 @@ type DeviceGroupResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode   `json:"code"`
 	Data    DeviceGroup `json:"data"`
@@ -1241,6 +2230,9 @@ type DeviceListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode  `json:"code"`
 	Data    DevicePage `json:"data"`
@@ -1273,10 +2265,27 @@ type DeviceResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    Device    `json:"data"`
 	Message string    `json:"message"`
+}
+
+// DeviceUpdateRequest 按字段更新设备，至少一个字段。`disabled` 与两个归属字段可同时出现，
+// 各自校验并各自写一条审计。
+type DeviceUpdateRequest struct {
+	// Disabled true 停用设备，false 恢复
+	Disabled *bool `json:"disabled,omitempty"`
+
+	// Note 运维备注；`null` 视作清空
+	Note *string `json:"note,omitempty"`
+
+	// OwnerUserId 归属人 id；`null` 清空归属，`0` 非法。目标必须是本组织的有效成员，
+	// 否则 404。
+	OwnerUserId *int64 `json:"owner_user_id,omitempty"`
 }
 
 // EmailVerificationRequest defines model for EmailVerificationRequest.
@@ -1294,6 +2303,9 @@ type EmailVerificationRequest struct {
 // - rate_limited：触发限流
 // - internal：服务端错误
 // - email_not_verified：邮箱未验证（登录被拒）
+// - captcha_required：已启用验证码但请求未携带（400）
+// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 // - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 type ErrorCode string
 
@@ -1309,15 +2321,130 @@ type ErrorResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code ErrorCode `json:"code"`
 
 	// Data 错误上下文；多数错误为 null。`code=approval_required` 时带
 	// `approval_id`（int64，待审批请求 id），客户端据此跳转审批中心。
-	// `code=two_factor_required` 时带 `challenge_token`（短期挑战令牌），
-	// 客户端用它调用 `POST /auth/2fa/verify` 完成第二步登录。
+	// `code=two_factor_required` 时带 `challenge_token`（短期挑战令牌）与
+	// `methods`（字符串数组：`totp`，以及该账户已绑定 passkey 时的
+	// `passkey`）。客户端用 `challenge_token` 调用 `POST /auth/2fa/verify`
+	// 或 `POST /auth/passkey/login/begin` 完成第二步。
 	Data    *map[string]interface{} `json:"data,omitempty"`
 	Message string                  `json:"message"`
+}
+
+// FileLog 客户端上报的一条文件传输记录（`POST /api/audit/file`）。`files` 是上游截断到
+// 10 项的 `[name, size]` 数组；`info` 为客户端原始 JSON 文本，便于排障。
+type FileLog struct {
+	ConnId    *int64           `json:"conn_id,omitempty"`
+	CreatedAt time.Time        `json:"created_at"`
+	DeviceId  int64            `json:"device_id"`
+	Direction FileLogDirection `json:"direction"`
+	FileCount *int             `json:"file_count,omitempty"`
+	Files     *[][]interface{} `json:"files,omitempty"`
+	Id        int64            `json:"id"`
+
+	// Info 客户端上传的原始 info JSON 文本
+	Info           *string `json:"info,omitempty"`
+	Ip             *string `json:"ip,omitempty"`
+	IsFile         *bool   `json:"is_file,omitempty"`
+	Name           *string `json:"name,omitempty"`
+	OrganizationId int64   `json:"organization_id"`
+	Path           *string `json:"path,omitempty"`
+	PeerId         *string `json:"peer_id,omitempty"`
+	RustdeskId     string  `json:"rustdesk_id"`
+}
+
+// FileLogDirection defines model for FileLog.Direction.
+type FileLogDirection string
+
+// FileLogListResponse defines model for FileLogListResponse.
+type FileLogListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode   `json:"code"`
+	Data    FileLogPage `json:"data"`
+	Message string      `json:"message"`
+}
+
+// FileLogPage defines model for FileLogPage.
+type FileLogPage struct {
+	Items    []FileLog `json:"items"`
+	Page     int       `json:"page"`
+	PageSize int64     `json:"page_size"`
+	Total    int64     `json:"total"`
+}
+
+// Identity defines model for Identity.
+type Identity struct {
+	// ConflictAt 非空表示绑定已冲突，SSO 拒绝直到管理员 reset
+	ConflictAt *time.Time `json:"conflict_at,omitempty"`
+
+	// Email 绑定时的 IdP 邮箱（不是账户邮箱的权威来源）
+	Email       string     `json:"email"`
+	Id          int64      `json:"id"`
+	Issuer      string     `json:"issuer"`
+	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
+	LinkedAt    time.Time  `json:"linked_at"`
+	Provider    string     `json:"provider"`
+
+	// Subject IdP 侧的主体标识，仅对账户本人可见
+	Subject string `json:"subject"`
+}
+
+// IdentityList defines model for IdentityList.
+type IdentityList struct {
+	// ActiveProvider 当前部署启用的外部身份源（oidc / ldap / 空串）
+	ActiveProvider string     `json:"active_provider"`
+	Identities     []Identity `json:"identities"`
+}
+
+// IdentityListResponse defines model for IdentityListResponse.
+type IdentityListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode    `json:"code"`
+	Data    IdentityList `json:"data"`
+	Message string       `json:"message"`
+}
+
+// IdentityUnlinkRequest defines model for IdentityUnlinkRequest.
+type IdentityUnlinkRequest struct {
+	IdentityId int64 `json:"identity_id"`
+
+	// Password 当前密码（与 stepup_token 二选一）
+	Password *string `json:"password,omitempty"`
+
+	// StepupToken passkey step-up 令牌（与 password 二选一）
+	StepupToken *string `json:"stepup_token,omitempty"`
 }
 
 // Invitation defines model for Invitation.
@@ -1333,8 +2460,9 @@ type InvitationRole string
 
 // InvitationAcceptRequest defines model for InvitationAcceptRequest.
 type InvitationAcceptRequest struct {
-	Password string `json:"password"`
-	Token    string `json:"token"`
+	Captcha  *CaptchaProof `json:"captcha,omitempty"`
+	Password string        `json:"password"`
+	Token    string        `json:"token"`
 }
 
 // InvitationCreateRequest defines model for InvitationCreateRequest.
@@ -1358,6 +2486,9 @@ type InvitationResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode  `json:"code"`
 	Data    Invitation `json:"data"`
@@ -1383,6 +2514,9 @@ type IssuedAPITokenResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode      `json:"code"`
 	Data    IssuedAPIToken `json:"data"`
@@ -1409,10 +2543,24 @@ type IssuedTicketResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode    `json:"code"`
 	Data    IssuedTicket `json:"data"`
 	Message string       `json:"message"`
+}
+
+// LDAPLoginRequest defines model for LDAPLoginRequest.
+type LDAPLoginRequest struct {
+	Captcha *CaptchaProof `json:"captcha,omitempty"`
+
+	// Password 目录密码；只进 bind 请求，不落日志
+	Password string `json:"password"`
+
+	// Username 目录用户名（usernameAttribute 的值）；按 RFC 4515 转义后进 filter
+	Username string `json:"username"`
 }
 
 // LogEvent defines model for LogEvent.
@@ -1449,6 +2597,9 @@ type LogEventListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode  `json:"code"`
 	Data    []LogEvent `json:"data"`
@@ -1457,13 +2608,17 @@ type LogEventListResponse struct {
 
 // LoginRequest defines model for LoginRequest.
 type LoginRequest struct {
+	Captcha  *CaptchaProof       `json:"captcha,omitempty"`
 	Email    openapi_types.Email `json:"email"`
 	Password string              `json:"password"`
 }
 
 // Member defines model for Member.
 type Member struct {
-	CreatedAt time.Time `json:"created_at"`
+	// ControlRoleId 成员的控制角色 id（v0.10.0）；`null` 表示未分配、回退组织内置 `default`。
+	// 角色名称由 `GET /control-roles` 的列表解析（避免成员列表逐行 JOIN）。
+	ControlRoleId *int64    `json:"control_role_id,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
 
 	// Disabled 会籍是否已停用；停用后不能登录或访问该组织
 	Disabled bool                `json:"disabled"`
@@ -1478,7 +2633,10 @@ type Member struct {
 
 	// RoleName 角色展示名（内置 owner/admin/member 或自定义名称）
 	RoleName string `json:"role_name"`
-	UserId   int64  `json:"user_id"`
+
+	// StrategyId 成员默认策略 id（v0.10.0）；作用于其拥有且无设备/组层分配的设备
+	StrategyId *int64 `json:"strategy_id,omitempty"`
+	UserId     int64  `json:"user_id"`
 }
 
 // MemberListResponse defines model for MemberListResponse.
@@ -1493,6 +2651,9 @@ type MemberListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    []Member  `json:"data"`
@@ -1517,6 +2678,9 @@ type MemberMutationResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode      `json:"code"`
 	Data    MemberMutation `json:"data"`
@@ -1535,6 +2699,9 @@ type MemberResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    Member    `json:"data"`
@@ -1554,6 +2721,48 @@ type MemberUpdateRequest struct {
 	RoleId *int64 `json:"role_id,omitempty"`
 }
 
+// OIDCExchangeRequest defines model for OIDCExchangeRequest.
+type OIDCExchangeRequest struct {
+	// Ticket 回调重定向里的一次性 ticket
+	Ticket string `json:"ticket"`
+}
+
+// OIDCStart defines model for OIDCStart.
+type OIDCStart struct {
+	// AuthorizationUrl 浏览器应跳转的 IdP 授权地址（含 state / nonce / PKCE challenge）
+	AuthorizationUrl string `json:"authorization_url"`
+
+	// State 一次性 state；仅供客户端关联，无需回传
+	State string `json:"state"`
+}
+
+// OIDCStartRequest defines model for OIDCStartRequest.
+type OIDCStartRequest struct {
+	// RedirectPath 登录成功后回到的站内路径；缺省 `/`
+	RedirectPath *string `json:"redirect_path,omitempty"`
+}
+
+// OIDCStartResponse defines model for OIDCStartResponse.
+type OIDCStartResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode `json:"code"`
+	Data    OIDCStart `json:"data"`
+	Message string    `json:"message"`
+}
+
 // OkResponse defines model for OkResponse.
 type OkResponse struct {
 	// Code 机器可读错误码：
@@ -1566,6 +2775,9 @@ type OkResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Message string    `json:"message"`
@@ -1595,6 +2807,9 @@ type OrgListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    []Org     `json:"data"`
@@ -1613,10 +2828,213 @@ type OrgResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    Org       `json:"data"`
 	Message string    `json:"message"`
+}
+
+// Passkey defines model for Passkey.
+type Passkey struct {
+	// Aaguid 认证器型号标识；空串表示认证器未提供
+	Aaguid string `json:"aaguid"`
+
+	// BackupEligible 该凭据是否可被备份/同步（同步型 passkey 为 true）
+	BackupEligible bool `json:"backup_eligible"`
+
+	// BackupState 该凭据当前是否已被备份
+	BackupState bool `json:"backup_state"`
+
+	// CloneWarning 曾检测到签名计数器回退（疑似克隆），需重新绑定
+	CloneWarning bool       `json:"clone_warning"`
+	CreatedAt    time.Time  `json:"created_at"`
+	Id           int64      `json:"id"`
+	LastUsedAt   *time.Time `json:"last_used_at,omitempty"`
+
+	// Name 用户可见的凭据名（1-64 字符，缺省为 `Passkey`）
+	Name string `json:"name"`
+
+	// Transports 认证器自报的传输方式（usb/nfc/ble/internal/hybrid）
+	Transports []string `json:"transports"`
+}
+
+// PasskeyCeremony defines model for PasskeyCeremony.
+type PasskeyCeremony struct {
+	// CeremonyToken 一次性 ceremony 句柄；有效期由部署配置 `webauthn.ceremonyTTL` 决定（默认 5 分钟）
+	CeremonyToken string `json:"ceremony_token"`
+
+	// Options W3C PublicKeyCredentialCreationOptions / RequestOptions 的 JSON 形态，
+	// 顶层键为 `publicKey`。字段名与标准一致，服务端只填充不重写；但**二进制
+	// 字段是 base64url 字符串**（`challenge`、`user.id`、`excludeCredentials[].id`，
+	// 登录时为 `allowCredentials[].id`）。
+	//
+	// ⚠️ **不能直接把这些对象交给浏览器**：`navigator.credentials.create()` /
+	// `get()` 要求上述字段是 `ArrayBuffer` / `TypedArray`。客户端必须先解码
+	// base64url（去掉 `-`/`_` 还原为 `+`/`/` 并补 `=`），再调用 WebAuthn API；
+	// 返回值方向相反——`response.clientDataJSON`、`attestationObject`、
+	// `authenticatorData`、`signature`、`userHandle` 都是 `ArrayBuffer`，需再编码
+	// 回 base64url 才能提交。参考实现见仓库 `docs/reference/passkey-smoke.html`
+	// 的 `b64urlToBuf`，以及注册向的 `prepareCreationOptions`、登录向的
+	// `prepareRequestOptions`。
+	Options map[string]interface{} `json:"options"`
+}
+
+// PasskeyCeremonyResponse defines model for PasskeyCeremonyResponse.
+type PasskeyCeremonyResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode       `json:"code"`
+	Data    PasskeyCeremony `json:"data"`
+	Message string          `json:"message"`
+}
+
+// PasskeyList defines model for PasskeyList.
+type PasskeyList struct {
+	// HasPassword 账户是否还有本地密码（false 表示 passkey-only）
+	HasPassword bool      `json:"has_password"`
+	Items       []Passkey `json:"items"`
+
+	// TotpEnabled 账户是否启用了 TOTP
+	TotpEnabled bool `json:"totp_enabled"`
+}
+
+// PasskeyListResponse defines model for PasskeyListResponse.
+type PasskeyListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode   `json:"code"`
+	Data    PasskeyList `json:"data"`
+	Message string      `json:"message"`
+}
+
+// PasskeyLoginBeginRequest defines model for PasskeyLoginBeginRequest.
+type PasskeyLoginBeginRequest struct {
+	// ChallengeToken 密码登录返回的短期挑战令牌（第二步用 passkey 代替 TOTP）
+	ChallengeToken *string `json:"challenge_token,omitempty"`
+
+	// Email 可选邮箱提示，只用于收窄 allowCredentials，不构成账户存在性判断
+	Email *string `json:"email,omitempty"`
+}
+
+// PasskeyLoginRequest defines model for PasskeyLoginRequest.
+type PasskeyLoginRequest struct {
+	CeremonyToken string `json:"ceremony_token"`
+
+	// Credential 浏览器 `PublicKeyCredential` 的 JSON 形态
+	// （id/rawId/type/response.clientDataJSON/authenticatorData/signature/userHandle）。
+	//
+	// 二进制字段（`rawId`、`clientDataJSON`、`authenticatorData`、`signature`、
+	// `userHandle`）必须是 **base64url 字符串**；`userHandle` 可为 `null`，
+	// `transports` 可缺失。服务端缺失兼容见 `docs/api-spec.md` §3.16。
+	Credential map[string]interface{} `json:"credential"`
+}
+
+// PasskeyNameRequest defines model for PasskeyNameRequest.
+type PasskeyNameRequest struct {
+	Name string `json:"name"`
+}
+
+// PasskeyRegistrationRequest defines model for PasskeyRegistrationRequest.
+type PasskeyRegistrationRequest struct {
+	CeremonyToken string `json:"ceremony_token"`
+
+	// Credential 浏览器 `PublicKeyCredential` 的 JSON 形态
+	// （id/rawId/type/response.clientDataJSON/response.attestationObject）。
+	//
+	// `rawId`、`clientDataJSON`、`attestationObject` 必须是 **base64url 字符串**
+	// （不能是数组或 base64 标准编码）；`transports` 可缺失。
+	Credential map[string]interface{} `json:"credential"`
+
+	// Name 可选的凭据名；空或缺失时使用 `Passkey`
+	Name *string `json:"name,omitempty"`
+}
+
+// PasskeyResponse defines model for PasskeyResponse.
+type PasskeyResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode `json:"code"`
+	Data    Passkey   `json:"data"`
+	Message string    `json:"message"`
+}
+
+// PasswordRemoveRequest defines model for PasswordRemoveRequest.
+type PasswordRemoveRequest struct {
+	Password    string `json:"password"`
+	StepupToken string `json:"stepup_token"`
+}
+
+// PasswordRemoveResponse defines model for PasswordRemoveResponse.
+type PasswordRemoveResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode            `json:"code"`
+	Data    PasswordRemoveResult `json:"data"`
+	Message string               `json:"message"`
+}
+
+// PasswordRemoveResult defines model for PasswordRemoveResult.
+type PasswordRemoveResult struct {
+	// Warnings 连带影响说明：`compat_login_disabled` 表示原生客户端将无法再用该账户登录；
+	// `keep_a_second_passkey` 表示恢复只能依赖另一个 passkey。
+	Warnings []string `json:"warnings"`
+}
+
+// PasswordSetRequest defines model for PasswordSetRequest.
+type PasswordSetRequest struct {
+	NewPassword string `json:"new_password"`
+	StepupToken string `json:"stepup_token"`
 }
 
 // Permission defines model for Permission.
@@ -1641,6 +3059,9 @@ type PermissionListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode    `json:"code"`
 	Data    []Permission `json:"data"`
@@ -1678,6 +3099,9 @@ type PolicyListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    []Policy  `json:"data"`
@@ -1728,6 +3152,9 @@ type PolicyResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    Policy    `json:"data"`
@@ -1746,6 +3173,9 @@ type ProvisioningResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode          `json:"code"`
 	Data    ProvisioningStatus `json:"data"`
@@ -1834,6 +3264,9 @@ type RoleListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    []Role    `json:"data"`
@@ -1852,6 +3285,9 @@ type RoleResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    Role      `json:"data"`
@@ -1931,6 +3367,11 @@ type RoleUpdateRequest struct {
 type Session struct {
 	// ActorUserId 发起人；native 直连无法识别发起人时为 null
 	ActorUserId *int64 `json:"actor_user_id,omitempty"`
+
+	// ControlPermissions 兑换时从票据复制的权限位图（bit 序号同 `ControlPermissionStates`）。会话记录
+	// 的是开始时刻的授权，之后修改控制角色不会改写它。原生会话恒为 0：位图由
+	// hbbs 注入，面板不在信令链路。
+	ControlPermissions int64 `json:"control_permissions"`
 
 	// DeviceId 组织内设备行 id
 	DeviceId int64 `json:"device_id"`
@@ -2048,6 +3489,9 @@ type SessionDetailResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode     `json:"code"`
 	Data    SessionDetail `json:"data"`
@@ -2077,6 +3521,9 @@ type SessionListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode   `json:"code"`
 	Data    SessionPage `json:"data"`
@@ -2108,6 +3555,9 @@ type SessionResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code ErrorCode `json:"code"`
 
@@ -2168,6 +3618,133 @@ type SessionResponse struct {
 // - denied：签发阶段被策略拒绝（仅 panel 来源，用于留痕）
 type SessionStatus string
 
+// StepupToken defines model for StepupToken.
+type StepupToken struct {
+	// ExpiresIn 有效期（秒），固定 120
+	ExpiresIn   int64  `json:"expires_in"`
+	StepupToken string `json:"stepup_token"`
+}
+
+// StepupTokenResponse defines model for StepupTokenResponse.
+type StepupTokenResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode   `json:"code"`
+	Data    StepupToken `json:"data"`
+	Message string      `json:"message"`
+}
+
+// Strategy defines model for Strategy.
+type Strategy struct {
+	// ClearedKeys 已从 `config_options` 移除、仍以空值随下发回传的键（v0.10.0）。
+	// 客户端只写收到的键，删除键必须显式清除，否则旧值会一直保留。
+	ClearedKeys *[]string `json:"cleared_keys,omitempty"`
+
+	// ConfigOptions 下发给客户端的选项键值。**只允许以下 20 个键**（大小写与空格敏感，
+	// 必须逐字匹配）：
+	//
+	// `enable-audio`、`enable-clipboard`、`enable-file-transfer`、
+	// `enable-file-copy-paste`、`enable-camera`、`enable-terminal`、
+	// `enable-tunnel`、`enable-remote-restart`、`enable-record-session`、
+	// `enable-block-input`、`enable-privacy-mode`、`enable-remote-modify`、
+	// `enable-remote-printer`、`enable-check-update`、`disable-change-id`、
+	// `disable-settings`、`disable-installation`、`disable-unlock-pin`、
+	// `disable-tcp-listen`、`disable-ab`。
+	//
+	// 值按客户端原样字符串下发：开关类用 `Y`/`N`；**空值**表示清除该键、
+	// 回到客户端内置默认。客户端会把下发的键标记为「固定」，用户无法在
+	// 本机改回。
+	//
+	// 网络类键（`api-server`、`custom-rendezvous-server`、`relay-server`、
+	// `key`、`whitelist` 等）一律拒绝：它们能改设备指向的服务器或密钥，
+	// 等于设备接管。
+	ConfigOptions map[string]string `json:"config_options"`
+	CreatedAt     time.Time         `json:"created_at"`
+
+	// Enabled false 表示停用（保留行与分配，但心跳不下发）
+	Enabled   bool      `json:"enabled"`
+	Id        int64     `json:"id"`
+	Name      string    `json:"name"`
+	UpdatedAt time.Time `json:"updated_at"`
+
+	// Version 下发版本；作为心跳响应的 `modified_at` 交给客户端比对
+	Version int64 `json:"version"`
+}
+
+// StrategyAssignmentRequest defines model for StrategyAssignmentRequest.
+type StrategyAssignmentRequest struct {
+	// StrategyId 目标策略 id；`null` 表示清除该层分配
+	StrategyId *int64 `json:"strategy_id"`
+}
+
+// StrategyCreateRequest defines model for StrategyCreateRequest.
+type StrategyCreateRequest struct {
+	// ConfigOptions 省略或空对象表示「不下发任何选项」（占位策略）
+	ConfigOptions *map[string]string `json:"config_options,omitempty"`
+	Name          string             `json:"name"`
+}
+
+// StrategyListResponse defines model for StrategyListResponse.
+type StrategyListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode  `json:"code"`
+	Data    []Strategy `json:"data"`
+	Message string     `json:"message"`
+}
+
+// StrategyResponse defines model for StrategyResponse.
+type StrategyResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode `json:"code"`
+	Data    Strategy  `json:"data"`
+	Message string    `json:"message"`
+}
+
+// StrategyUpdateRequest defines model for StrategyUpdateRequest.
+type StrategyUpdateRequest struct {
+	ConfigOptions *map[string]string `json:"config_options,omitempty"`
+	Enabled       *bool              `json:"enabled,omitempty"`
+	Name          *string            `json:"name,omitempty"`
+}
+
 // TOTPCodeRequest defines model for TOTPCodeRequest.
 type TOTPCodeRequest struct {
 	// Code 6 位 TOTP 码或恢复码
@@ -2199,6 +3776,9 @@ type TOTPRecoveryCodesResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode         `json:"code"`
 	Data    TOTPRecoveryCodes `json:"data"`
@@ -2226,6 +3806,9 @@ type TOTPSetupResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    TOTPSetup `json:"data"`
@@ -2234,7 +3817,8 @@ type TOTPSetupResponse struct {
 
 // TOTPVerifyRequest defines model for TOTPVerifyRequest.
 type TOTPVerifyRequest struct {
-	ChallengeToken string `json:"challenge_token"`
+	Captcha        *CaptchaProof `json:"captcha,omitempty"`
+	ChallengeToken string        `json:"challenge_token"`
 
 	// Code TOTP 码或一次性恢复码
 	Code string `json:"code"`
@@ -2245,7 +3829,18 @@ type Ticket struct {
 	ActorUserId *int64 `json:"actor_user_id,omitempty"`
 
 	// ApprovalId 绑定的审批请求（审批放行时）
-	ApprovalId     *int64    `json:"approval_id,omitempty"`
+	ApprovalId *int64 `json:"approval_id,omitempty"`
+
+	// ControlPermissions 签发时生效的权限位图，bit 序号与 `ControlPermissionStates` 的声明顺序一致
+	// （keyboard=0 … usb=13），只有 `enable` 置位。0 表示「没有显式启用的权限」，
+	// 不是「未计算」。
+	//
+	// **原生会话不执行该位图**：hbbs 在信令消息里注入 `control_permissions`，
+	// 本面板不在信令链路（设计 D10），因此它只是票据快照，供网页客户端与审计使用。
+	ControlPermissions int64 `json:"control_permissions"`
+
+	// ControlRoleId 签发时生效的控制角色 id；null 表示签发时未解析到角色（或服务未接线）。
+	ControlRoleId  *int64    `json:"control_role_id,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 	DeviceId       int64     `json:"device_id"`
 	ExpiresAt      time.Time `json:"expires_at"`
@@ -2289,6 +3884,9 @@ type TicketResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    Ticket    `json:"data"`
@@ -2330,6 +3928,9 @@ type TokenResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    TokenPair `json:"data"`
@@ -2360,7 +3961,10 @@ type UserGroupCreateRequest struct {
 
 // UserGroupDeleteData defines model for UserGroupDeleteData.
 type UserGroupDeleteData struct {
-	// RemovedRules 随组级联删除的访问规则数
+	// RemovedGrants 随组级联删除的共享地址簿授权数（以该组为授权主体）
+	RemovedGrants int `json:"removed_grants"`
+
+	// RemovedRules 随组级联删除的访问规则数（以该组为源，或以该组为 `user_group` 目标）
 	RemovedRules int `json:"removed_rules"`
 }
 
@@ -2376,6 +3980,9 @@ type UserGroupDeleteResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode           `json:"code"`
 	Data    UserGroupDeleteData `json:"data"`
@@ -2401,6 +4008,9 @@ type UserGroupListResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode   `json:"code"`
 	Data    []UserGroup `json:"data"`
@@ -2434,6 +4044,9 @@ type UserGroupMembersResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode               `json:"code"`
 	Data    UserGroupMemberMutation `json:"data"`
@@ -2457,6 +4070,9 @@ type UserGroupResponse struct {
 	// - rate_limited：触发限流
 	// - internal：服务端错误
 	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
 	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
 	Code    ErrorCode `json:"code"`
 	Data    UserGroup `json:"data"`
@@ -2484,9 +4100,24 @@ type TooManyRequests = ErrorResponse
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = ErrorResponse
 
+// HandleOIDCCallbackParams defines parameters for HandleOIDCCallback.
+type HandleOIDCCallbackParams struct {
+	State *string `form:"state,omitempty" json:"state,omitempty"`
+	Code  *string `form:"code,omitempty" json:"code,omitempty"`
+
+	// Error IdP 的错误码；只用于判定失败，不记录原文
+	Error *string `form:"error,omitempty" json:"error,omitempty"`
+}
+
 // ListTokensParams defines parameters for ListTokens.
 type ListTokensParams struct {
 	OrganizationId int64 `form:"organizationId" json:"organizationId"`
+}
+
+// DownloadClientBuildBundleParams defines parameters for DownloadClientBuildBundle.
+type DownloadClientBuildBundleParams struct {
+	// Token 必填；缺失时由 handler 返回 401（生成器会先拒绝空的必填 query）
+	Token *string `form:"token,omitempty" json:"token,omitempty"`
 }
 
 // ListAlertsParams defines parameters for ListAlerts.
@@ -2534,6 +4165,45 @@ type ExportAuditLogsParams struct {
 	To          *time.Time `form:"to,omitempty" json:"to,omitempty"`
 }
 
+// ListClientBuildProfilesParams defines parameters for ListClientBuildProfiles.
+type ListClientBuildProfilesParams struct {
+	Page     *int `form:"page,omitempty" json:"page,omitempty"`
+	PageSize *int `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
+// ListClientBuildsParams defines parameters for ListClientBuilds.
+type ListClientBuildsParams struct {
+	Status    *ListClientBuildsParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+	ProfileId *int64                        `form:"profileId,omitempty" json:"profileId,omitempty"`
+	Page      *int                          `form:"page,omitempty" json:"page,omitempty"`
+	PageSize  *int                          `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
+// ListClientBuildsParamsStatus defines parameters for ListClientBuilds.
+type ListClientBuildsParamsStatus string
+
+// ListConnectionLogsParams defines parameters for ListConnectionLogs.
+type ListConnectionLogsParams struct {
+	DeviceId   *int64  `form:"deviceId,omitempty" json:"deviceId,omitempty"`
+	RustdeskId *string `form:"rustdeskId,omitempty" json:"rustdeskId,omitempty"`
+
+	// From 含下界（UTC），比较 `started_at`
+	From *time.Time `form:"from,omitempty" json:"from,omitempty"`
+
+	// To 含上界（UTC），比较 `started_at`
+	To       *time.Time `form:"to,omitempty" json:"to,omitempty"`
+	Page     *int       `form:"page,omitempty" json:"page,omitempty"`
+	PageSize *int       `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
+// ExportConnectionLogsParams defines parameters for ExportConnectionLogs.
+type ExportConnectionLogsParams struct {
+	DeviceId   *int64     `form:"deviceId,omitempty" json:"deviceId,omitempty"`
+	RustdeskId *string    `form:"rustdeskId,omitempty" json:"rustdeskId,omitempty"`
+	From       *time.Time `form:"from,omitempty" json:"from,omitempty"`
+	To         *time.Time `form:"to,omitempty" json:"to,omitempty"`
+}
+
 // ListDevicesParams defines parameters for ListDevices.
 type ListDevicesParams struct {
 	// Q 按名称或 rustdesk_id 大小写不敏感子串匹配
@@ -2543,6 +4213,28 @@ type ListDevicesParams struct {
 	Bound    *bool `form:"bound,omitempty" json:"bound,omitempty"`
 	Page     *int  `form:"page,omitempty" json:"page,omitempty"`
 	PageSize *int  `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
+// ListFileLogsParams defines parameters for ListFileLogs.
+type ListFileLogsParams struct {
+	DeviceId   *int64  `form:"deviceId,omitempty" json:"deviceId,omitempty"`
+	RustdeskId *string `form:"rustdeskId,omitempty" json:"rustdeskId,omitempty"`
+
+	// From 含下界（UTC），比较 `created_at`
+	From *time.Time `form:"from,omitempty" json:"from,omitempty"`
+
+	// To 含上界（UTC），比较 `created_at`
+	To       *time.Time `form:"to,omitempty" json:"to,omitempty"`
+	Page     *int       `form:"page,omitempty" json:"page,omitempty"`
+	PageSize *int       `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+}
+
+// ExportFileLogsParams defines parameters for ExportFileLogs.
+type ExportFileLogsParams struct {
+	DeviceId   *int64     `form:"deviceId,omitempty" json:"deviceId,omitempty"`
+	RustdeskId *string    `form:"rustdeskId,omitempty" json:"rustdeskId,omitempty"`
+	From       *time.Time `form:"from,omitempty" json:"from,omitempty"`
+	To         *time.Time `form:"to,omitempty" json:"to,omitempty"`
 }
 
 // ListLogEventsParams defines parameters for ListLogEvents.
@@ -2586,8 +4278,41 @@ type RegenerateRecoveryCodesJSONRequestBody = TOTPDisableRequest
 // VerifyTOTPJSONRequestBody defines body for VerifyTOTP for application/json ContentType.
 type VerifyTOTPJSONRequestBody = TOTPVerifyRequest
 
+// UnlinkIdentityJSONRequestBody defines body for UnlinkIdentity for application/json ContentType.
+type UnlinkIdentityJSONRequestBody = IdentityUnlinkRequest
+
+// LdapLoginJSONRequestBody defines body for LdapLogin for application/json ContentType.
+type LdapLoginJSONRequestBody = LDAPLoginRequest
+
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
+
+// ExchangeOIDCLoginJSONRequestBody defines body for ExchangeOIDCLogin for application/json ContentType.
+type ExchangeOIDCLoginJSONRequestBody = OIDCExchangeRequest
+
+// StartOIDCLoginJSONRequestBody defines body for StartOIDCLogin for application/json ContentType.
+type StartOIDCLoginJSONRequestBody = OIDCStartRequest
+
+// BeginPasskeyLoginJSONRequestBody defines body for BeginPasskeyLogin for application/json ContentType.
+type BeginPasskeyLoginJSONRequestBody = PasskeyLoginBeginRequest
+
+// FinishPasskeyLoginJSONRequestBody defines body for FinishPasskeyLogin for application/json ContentType.
+type FinishPasskeyLoginJSONRequestBody = PasskeyLoginRequest
+
+// FinishPasskeyRegistrationJSONRequestBody defines body for FinishPasskeyRegistration for application/json ContentType.
+type FinishPasskeyRegistrationJSONRequestBody = PasskeyRegistrationRequest
+
+// FinishPasskeyStepupJSONRequestBody defines body for FinishPasskeyStepup for application/json ContentType.
+type FinishPasskeyStepupJSONRequestBody = PasskeyLoginRequest
+
+// RenamePasskeyJSONRequestBody defines body for RenamePasskey for application/json ContentType.
+type RenamePasskeyJSONRequestBody = PasskeyNameRequest
+
+// RemovePasswordJSONRequestBody defines body for RemovePassword for application/json ContentType.
+type RemovePasswordJSONRequestBody = PasswordRemoveRequest
+
+// SetPasswordJSONRequestBody defines body for SetPassword for application/json ContentType.
+type SetPasswordJSONRequestBody = PasswordSetRequest
 
 // RefreshTokensJSONRequestBody defines body for RefreshTokens for application/json ContentType.
 type RefreshTokensJSONRequestBody = RefreshRequest
@@ -2634,6 +4359,24 @@ type DecideApprovalJSONRequestBody = ApprovalDecisionRequest
 // SetAuditRetentionJSONRequestBody defines body for SetAuditRetention for application/json ContentType.
 type SetAuditRetentionJSONRequestBody = AuditRetentionRequest
 
+// CreateClientBuildProfileJSONRequestBody defines body for CreateClientBuildProfile for application/json ContentType.
+type CreateClientBuildProfileJSONRequestBody = ClientBuildProfileCreateRequest
+
+// UpdateClientBuildProfileJSONRequestBody defines body for UpdateClientBuildProfile for application/json ContentType.
+type UpdateClientBuildProfileJSONRequestBody = ClientBuildProfileUpdateRequest
+
+// PutClientBuildProfileLogoJSONRequestBody defines body for PutClientBuildProfileLogo for application/json ContentType.
+type PutClientBuildProfileLogoJSONRequestBody = ClientBuildLogoUploadRequest
+
+// CreateClientBuildJSONRequestBody defines body for CreateClientBuild for application/json ContentType.
+type CreateClientBuildJSONRequestBody = ClientBuildCreateRequest
+
+// CreateControlRoleJSONRequestBody defines body for CreateControlRole for application/json ContentType.
+type CreateControlRoleJSONRequestBody = ControlRoleCreateRequest
+
+// UpdateControlRoleJSONRequestBody defines body for UpdateControlRole for application/json ContentType.
+type UpdateControlRoleJSONRequestBody = ControlRoleUpdateRequest
+
 // CreateDeviceGroupJSONRequestBody defines body for CreateDeviceGroup for application/json ContentType.
 type CreateDeviceGroupJSONRequestBody = DeviceGroupCreateRequest
 
@@ -2643,20 +4386,35 @@ type RenameDeviceGroupJSONRequestBody = DeviceGroupRenameRequest
 // ReplaceDeviceGroupDevicesJSONRequestBody defines body for ReplaceDeviceGroupDevices for application/json ContentType.
 type ReplaceDeviceGroupDevicesJSONRequestBody = DeviceGroupDevicesRequest
 
+// AssignDeviceGroupStrategyJSONRequestBody defines body for AssignDeviceGroupStrategy for application/json ContentType.
+type AssignDeviceGroupStrategyJSONRequestBody = StrategyAssignmentRequest
+
 // CreateDeviceJSONRequestBody defines body for CreateDevice for application/json ContentType.
 type CreateDeviceJSONRequestBody = DeviceCreateRequest
 
-// SetDeviceDisabledJSONRequestBody defines body for SetDeviceDisabled for application/json ContentType.
-type SetDeviceDisabledJSONRequestBody = DeviceDisableRequest
+// UpdateDeviceJSONRequestBody defines body for UpdateDevice for application/json ContentType.
+type UpdateDeviceJSONRequestBody = DeviceUpdateRequest
+
+// RequestDeviceDisconnectJSONRequestBody defines body for RequestDeviceDisconnect for application/json ContentType.
+type RequestDeviceDisconnectJSONRequestBody = DeviceDisconnectRequest
 
 // ResetDeviceBindingJSONRequestBody defines body for ResetDeviceBinding for application/json ContentType.
 type ResetDeviceBindingJSONRequestBody = DeviceRebindRequest
+
+// AssignDeviceStrategyJSONRequestBody defines body for AssignDeviceStrategy for application/json ContentType.
+type AssignDeviceStrategyJSONRequestBody = StrategyAssignmentRequest
 
 // CreateInvitationJSONRequestBody defines body for CreateInvitation for application/json ContentType.
 type CreateInvitationJSONRequestBody = InvitationCreateRequest
 
 // UpdateMemberRoleJSONRequestBody defines body for UpdateMemberRole for application/json ContentType.
 type UpdateMemberRoleJSONRequestBody = MemberUpdateRequest
+
+// AssignMemberControlRoleJSONRequestBody defines body for AssignMemberControlRole for application/json ContentType.
+type AssignMemberControlRoleJSONRequestBody = ControlRoleAssignmentRequest
+
+// AssignMemberStrategyJSONRequestBody defines body for AssignMemberStrategy for application/json ContentType.
+type AssignMemberStrategyJSONRequestBody = StrategyAssignmentRequest
 
 // CreatePolicyJSONRequestBody defines body for CreatePolicy for application/json ContentType.
 type CreatePolicyJSONRequestBody = PolicyRequest
@@ -2672,6 +4430,12 @@ type CreateRoleJSONRequestBody = RoleCreateRequest
 
 // UpdateRoleJSONRequestBody defines body for UpdateRole for application/json ContentType.
 type UpdateRoleJSONRequestBody = RoleUpdateRequest
+
+// CreateStrategyJSONRequestBody defines body for CreateStrategy for application/json ContentType.
+type CreateStrategyJSONRequestBody = StrategyCreateRequest
+
+// UpdateStrategyJSONRequestBody defines body for UpdateStrategy for application/json ContentType.
+type UpdateStrategyJSONRequestBody = StrategyUpdateRequest
 
 // IssueTicketJSONRequestBody defines body for IssueTicket for application/json ContentType.
 type IssueTicketJSONRequestBody = TicketCreateRequest
@@ -2705,9 +4469,66 @@ type ServerInterface interface {
 	// VerifyTOTP 登录第二步校验
 	// (POST /api/v1/auth/2fa/verify)
 	VerifyTOTP(c *gin.Context)
+	// GetCaptchaChallenge 获取交互式验证码挑战
+	// (GET /api/v1/auth/captcha)
+	GetCaptchaChallenge(c *gin.Context)
+	// GetIdentities 查看外部身份绑定
+	// (GET /api/v1/auth/identity)
+	GetIdentities(c *gin.Context)
+	// UnlinkIdentity 解绑外部身份
+	// (POST /api/v1/auth/identity/unlink)
+	UnlinkIdentity(c *gin.Context)
+	// LdapLogin 目录账号登录
+	// (POST /api/v1/auth/ldap/login)
+	LdapLogin(c *gin.Context)
 	// Login 邮箱密码登录
 	// (POST /api/v1/auth/login)
 	Login(c *gin.Context)
+	// HandleOIDCCallback OIDC 回调
+	// (GET /api/v1/auth/oidc/callback)
+	HandleOIDCCallback(c *gin.Context, params HandleOIDCCallbackParams)
+	// ExchangeOIDCLogin 用 ticket 换取令牌
+	// (POST /api/v1/auth/oidc/exchange)
+	ExchangeOIDCLogin(c *gin.Context)
+	// StartOIDCLogin 开始 OIDC 登录
+	// (POST /api/v1/auth/oidc/start)
+	StartOIDCLogin(c *gin.Context)
+	// BeginPasskeyLogin 开始 passkey 登录
+	// (POST /api/v1/auth/passkey/login/begin)
+	BeginPasskeyLogin(c *gin.Context)
+	// FinishPasskeyLogin 完成 passkey 登录
+	// (POST /api/v1/auth/passkey/login/finish)
+	FinishPasskeyLogin(c *gin.Context)
+	// BeginPasskeyRegistration 开始绑定 passkey
+	// (POST /api/v1/auth/passkey/register/begin)
+	BeginPasskeyRegistration(c *gin.Context)
+	// FinishPasskeyRegistration 完成绑定 passkey
+	// (POST /api/v1/auth/passkey/register/finish)
+	FinishPasskeyRegistration(c *gin.Context)
+	// BeginPasskeyStepup 开始 step-up 断言
+	// (POST /api/v1/auth/passkey/stepup/begin)
+	BeginPasskeyStepup(c *gin.Context)
+	// FinishPasskeyStepup 完成 step-up 断言
+	// (POST /api/v1/auth/passkey/stepup/finish)
+	FinishPasskeyStepup(c *gin.Context)
+	// ListPasskeys 列出我的 passkey
+	// (GET /api/v1/auth/passkeys)
+	ListPasskeys(c *gin.Context)
+	// DeletePasskey 删除 passkey
+	// (DELETE /api/v1/auth/passkeys/{passkeyId})
+	DeletePasskey(c *gin.Context, passkeyId int64)
+	// RenamePasskey 重命名 passkey
+	// (PATCH /api/v1/auth/passkeys/{passkeyId})
+	RenamePasskey(c *gin.Context, passkeyId int64)
+	// RemovePassword 删除本地密码（转为 passkey-only）
+	// (POST /api/v1/auth/password/remove)
+	RemovePassword(c *gin.Context)
+	// SetPassword 恢复本地密码
+	// (POST /api/v1/auth/password/set)
+	SetPassword(c *gin.Context)
+	// ListAuthProviders 列出可用的登录方式
+	// (GET /api/v1/auth/providers)
+	ListAuthProviders(c *gin.Context)
 	// RefreshTokens 轮换 refresh 令牌
 	// (POST /api/v1/auth/refresh)
 	RefreshTokens(c *gin.Context)
@@ -2726,6 +4547,9 @@ type ServerInterface interface {
 	// VerifyEmail 邮箱验证
 	// (POST /api/v1/auth/verify-email)
 	VerifyEmail(c *gin.Context)
+	// DownloadClientBuildBundle 下载构建 bundle（构建 runner 使用）
+	// (GET /api/v1/client-builds/{buildId}/bundle)
+	DownloadClientBuildBundle(c *gin.Context, buildId int64, params DownloadClientBuildBundleParams)
 	// AcceptInvitation 接受邀请
 	// (POST /api/v1/invitations/accept)
 	AcceptInvitation(c *gin.Context)
@@ -2813,6 +4637,66 @@ type ServerInterface interface {
 	// SetAuditRetention 设置审计保留期
 	// (PUT /api/v1/orgs/{orgId}/audit-retention)
 	SetAuditRetention(c *gin.Context, orgId int64)
+	// ListClientBuildProfiles 列出客户端品牌配置
+	// (GET /api/v1/orgs/{orgId}/client-build-profiles)
+	ListClientBuildProfiles(c *gin.Context, orgId int64, params ListClientBuildProfilesParams)
+	// CreateClientBuildProfile 创建客户端品牌配置
+	// (POST /api/v1/orgs/{orgId}/client-build-profiles)
+	CreateClientBuildProfile(c *gin.Context, orgId int64)
+	// DeleteClientBuildProfile 删除客户端品牌配置
+	// (DELETE /api/v1/orgs/{orgId}/client-build-profiles/{profileId})
+	DeleteClientBuildProfile(c *gin.Context, orgId int64, profileId int64)
+	// GetClientBuildProfile 读取客户端品牌配置
+	// (GET /api/v1/orgs/{orgId}/client-build-profiles/{profileId})
+	GetClientBuildProfile(c *gin.Context, orgId int64, profileId int64)
+	// UpdateClientBuildProfile 更新客户端品牌配置
+	// (PATCH /api/v1/orgs/{orgId}/client-build-profiles/{profileId})
+	UpdateClientBuildProfile(c *gin.Context, orgId int64, profileId int64)
+	// DeleteClientBuildProfileLogo 删除客户端 Logo
+	// (DELETE /api/v1/orgs/{orgId}/client-build-profiles/{profileId}/logo)
+	DeleteClientBuildProfileLogo(c *gin.Context, orgId int64, profileId int64)
+	// GetClientBuildProfileLogo 读取客户端 Logo
+	// (GET /api/v1/orgs/{orgId}/client-build-profiles/{profileId}/logo)
+	GetClientBuildProfileLogo(c *gin.Context, orgId int64, profileId int64)
+	// PutClientBuildProfileLogo 上传客户端 Logo
+	// (PUT /api/v1/orgs/{orgId}/client-build-profiles/{profileId}/logo)
+	PutClientBuildProfileLogo(c *gin.Context, orgId int64, profileId int64)
+	// GetClientBuildCapabilities 读取自定义客户端构建能力
+	// (GET /api/v1/orgs/{orgId}/client-build/capabilities)
+	GetClientBuildCapabilities(c *gin.Context, orgId int64)
+	// ListClientBuilds 列出客户端构建
+	// (GET /api/v1/orgs/{orgId}/client-builds)
+	ListClientBuilds(c *gin.Context, orgId int64, params ListClientBuildsParams)
+	// CreateClientBuild 发起客户端构建
+	// (POST /api/v1/orgs/{orgId}/client-builds)
+	CreateClientBuild(c *gin.Context, orgId int64)
+	// GetClientBuild 读取客户端构建
+	// (GET /api/v1/orgs/{orgId}/client-builds/{buildId})
+	GetClientBuild(c *gin.Context, orgId int64, buildId int64)
+	// DownloadClientBuildArtifact 下载构建产物
+	// (GET /api/v1/orgs/{orgId}/client-builds/{buildId}/artifacts/{artifactId})
+	DownloadClientBuildArtifact(c *gin.Context, orgId int64, buildId int64, artifactId int64)
+	// CancelClientBuild 取消客户端构建
+	// (POST /api/v1/orgs/{orgId}/client-builds/{buildId}/cancel)
+	CancelClientBuild(c *gin.Context, orgId int64, buildId int64)
+	// ListConnectionLogs 查询客户端连接日志
+	// (GET /api/v1/orgs/{orgId}/connection-logs)
+	ListConnectionLogs(c *gin.Context, orgId int64, params ListConnectionLogsParams)
+	// ExportConnectionLogs 导出连接日志 CSV
+	// (GET /api/v1/orgs/{orgId}/connection-logs/export)
+	ExportConnectionLogs(c *gin.Context, orgId int64, params ExportConnectionLogsParams)
+	// ListControlRoles 列出控制角色
+	// (GET /api/v1/orgs/{orgId}/control-roles)
+	ListControlRoles(c *gin.Context, orgId int64)
+	// CreateControlRole 创建控制角色
+	// (POST /api/v1/orgs/{orgId}/control-roles)
+	CreateControlRole(c *gin.Context, orgId int64)
+	// DeleteControlRole 删除控制角色
+	// (DELETE /api/v1/orgs/{orgId}/control-roles/{roleId})
+	DeleteControlRole(c *gin.Context, orgId int64, roleId int64)
+	// UpdateControlRole 更新控制角色
+	// (PATCH /api/v1/orgs/{orgId}/control-roles/{roleId})
+	UpdateControlRole(c *gin.Context, orgId int64, roleId int64)
 	// ListDeviceGroups 列出设备组
 	// (GET /api/v1/orgs/{orgId}/device-groups)
 	ListDeviceGroups(c *gin.Context, orgId int64)
@@ -2828,21 +4712,36 @@ type ServerInterface interface {
 	// ReplaceDeviceGroupDevices 全量替换设备组成员
 	// (PUT /api/v1/orgs/{orgId}/device-groups/{deviceGroupId}/devices)
 	ReplaceDeviceGroupDevices(c *gin.Context, orgId int64, deviceGroupId int64)
+	// AssignDeviceGroupStrategy 分配设备组的客户端策略
+	// (PUT /api/v1/orgs/{orgId}/device-groups/{deviceGroupId}/strategy)
+	AssignDeviceGroupStrategy(c *gin.Context, orgId int64, deviceGroupId int64)
 	// ListDevices 列出组织设备
 	// (GET /api/v1/orgs/{orgId}/devices)
 	ListDevices(c *gin.Context, orgId int64, params ListDevicesParams)
 	// CreateDevice 注册设备
 	// (POST /api/v1/orgs/{orgId}/devices)
 	CreateDevice(c *gin.Context, orgId int64)
-	// SetDeviceDisabled 停用或恢复设备
+	// UpdateDevice 更新设备（停用/恢复、归属、备注）
 	// (PATCH /api/v1/orgs/{orgId}/devices/{deviceId})
-	SetDeviceDisabled(c *gin.Context, orgId int64, deviceId int64)
+	UpdateDevice(c *gin.Context, orgId int64, deviceId int64)
+	// RequestDeviceDisconnect 请求断开设备的当前连接
+	// (POST /api/v1/orgs/{orgId}/devices/{deviceId}/disconnect)
+	RequestDeviceDisconnect(c *gin.Context, orgId int64, deviceId int64)
 	// DeviceHeartbeat 设备心跳
 	// (POST /api/v1/orgs/{orgId}/devices/{deviceId}/heartbeat)
 	DeviceHeartbeat(c *gin.Context, orgId int64, deviceId int64)
 	// ResetDeviceBinding 重置设备绑定
 	// (POST /api/v1/orgs/{orgId}/devices/{deviceId}/rebind)
 	ResetDeviceBinding(c *gin.Context, orgId int64, deviceId int64)
+	// AssignDeviceStrategy 分配设备的客户端策略
+	// (PUT /api/v1/orgs/{orgId}/devices/{deviceId}/strategy)
+	AssignDeviceStrategy(c *gin.Context, orgId int64, deviceId int64)
+	// ListFileLogs 查询客户端文件传输日志
+	// (GET /api/v1/orgs/{orgId}/file-logs)
+	ListFileLogs(c *gin.Context, orgId int64, params ListFileLogsParams)
+	// ExportFileLogs 导出文件传输日志 CSV
+	// (GET /api/v1/orgs/{orgId}/file-logs/export)
+	ExportFileLogs(c *gin.Context, orgId int64, params ExportFileLogsParams)
 	// CreateInvitation 邀请成员加入组织
 	// (POST /api/v1/orgs/{orgId}/invitations)
 	CreateInvitation(c *gin.Context, orgId int64)
@@ -2861,6 +4760,18 @@ type ServerInterface interface {
 	// ResetMemberTOTP 重置成员的 2FA
 	// (POST /api/v1/orgs/{orgId}/members/{userId}/2fa/reset)
 	ResetMemberTOTP(c *gin.Context, orgId int64, userId int64)
+	// AssignMemberControlRole 分配成员的控制角色
+	// (PUT /api/v1/orgs/{orgId}/members/{userId}/control-role)
+	AssignMemberControlRole(c *gin.Context, orgId int64, userId int64)
+	// ResetMemberIdentity 重置成员的外部身份绑定
+	// (POST /api/v1/orgs/{orgId}/members/{userId}/identity/reset)
+	ResetMemberIdentity(c *gin.Context, orgId int64, userId int64)
+	// ResetMemberPasskeys 重置成员的 passkey
+	// (POST /api/v1/orgs/{orgId}/members/{userId}/passkeys/reset)
+	ResetMemberPasskeys(c *gin.Context, orgId int64, userId int64)
+	// AssignMemberStrategy 分配成员的默认客户端策略
+	// (PUT /api/v1/orgs/{orgId}/members/{userId}/strategy)
+	AssignMemberStrategy(c *gin.Context, orgId int64, userId int64)
 	// ListPolicies 连接策略列表
 	// (GET /api/v1/orgs/{orgId}/policies)
 	ListPolicies(c *gin.Context, orgId int64)
@@ -2900,6 +4811,21 @@ type ServerInterface interface {
 	// GetSession 会话详情（含事件序列）
 	// (GET /api/v1/orgs/{orgId}/sessions/{sessionId})
 	GetSession(c *gin.Context, orgId int64, sessionId int64)
+	// ListStrategies 列出客户端策略
+	// (GET /api/v1/orgs/{orgId}/strategies)
+	ListStrategies(c *gin.Context, orgId int64)
+	// CreateStrategy 创建客户端策略
+	// (POST /api/v1/orgs/{orgId}/strategies)
+	CreateStrategy(c *gin.Context, orgId int64)
+	// DeleteStrategy 删除客户端策略
+	// (DELETE /api/v1/orgs/{orgId}/strategies/{strategyId})
+	DeleteStrategy(c *gin.Context, orgId int64, strategyId int64)
+	// GetStrategy 读取单个客户端策略
+	// (GET /api/v1/orgs/{orgId}/strategies/{strategyId})
+	GetStrategy(c *gin.Context, orgId int64, strategyId int64)
+	// UpdateStrategy 更新客户端策略
+	// (PATCH /api/v1/orgs/{orgId}/strategies/{strategyId})
+	UpdateStrategy(c *gin.Context, orgId int64, strategyId int64)
 	// IssueTicket 签发连接票据
 	// (POST /api/v1/orgs/{orgId}/tickets)
 	IssueTicket(c *gin.Context, orgId int64)
@@ -3006,6 +4932,58 @@ func (siw *ServerInterfaceWrapper) VerifyTOTP(c *gin.Context) {
 	siw.Handler.VerifyTOTP(c)
 }
 
+// GetCaptchaChallenge operation middleware
+func (siw *ServerInterfaceWrapper) GetCaptchaChallenge(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetCaptchaChallenge(c)
+}
+
+// GetIdentities operation middleware
+func (siw *ServerInterfaceWrapper) GetIdentities(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetIdentities(c)
+}
+
+// UnlinkIdentity operation middleware
+func (siw *ServerInterfaceWrapper) UnlinkIdentity(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UnlinkIdentity(c)
+}
+
+// LdapLogin operation middleware
+func (siw *ServerInterfaceWrapper) LdapLogin(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.LdapLogin(c)
+}
+
 // Login operation middleware
 func (siw *ServerInterfaceWrapper) Login(c *gin.Context) {
 
@@ -3017,6 +4995,255 @@ func (siw *ServerInterfaceWrapper) Login(c *gin.Context) {
 	}
 
 	siw.Handler.Login(c)
+}
+
+// HandleOIDCCallback operation middleware
+func (siw *ServerInterfaceWrapper) HandleOIDCCallback(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params HandleOIDCCallbackParams
+
+	// ------------- Optional query parameter "state" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "state", c.Request.URL.Query(), &params.State, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter state: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "code" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "code", c.Request.URL.Query(), &params.Code, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter code: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "error" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "error", c.Request.URL.Query(), &params.Error, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter error: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.HandleOIDCCallback(c, params)
+}
+
+// ExchangeOIDCLogin operation middleware
+func (siw *ServerInterfaceWrapper) ExchangeOIDCLogin(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ExchangeOIDCLogin(c)
+}
+
+// StartOIDCLogin operation middleware
+func (siw *ServerInterfaceWrapper) StartOIDCLogin(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.StartOIDCLogin(c)
+}
+
+// BeginPasskeyLogin operation middleware
+func (siw *ServerInterfaceWrapper) BeginPasskeyLogin(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.BeginPasskeyLogin(c)
+}
+
+// FinishPasskeyLogin operation middleware
+func (siw *ServerInterfaceWrapper) FinishPasskeyLogin(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.FinishPasskeyLogin(c)
+}
+
+// BeginPasskeyRegistration operation middleware
+func (siw *ServerInterfaceWrapper) BeginPasskeyRegistration(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.BeginPasskeyRegistration(c)
+}
+
+// FinishPasskeyRegistration operation middleware
+func (siw *ServerInterfaceWrapper) FinishPasskeyRegistration(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.FinishPasskeyRegistration(c)
+}
+
+// BeginPasskeyStepup operation middleware
+func (siw *ServerInterfaceWrapper) BeginPasskeyStepup(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.BeginPasskeyStepup(c)
+}
+
+// FinishPasskeyStepup operation middleware
+func (siw *ServerInterfaceWrapper) FinishPasskeyStepup(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.FinishPasskeyStepup(c)
+}
+
+// ListPasskeys operation middleware
+func (siw *ServerInterfaceWrapper) ListPasskeys(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListPasskeys(c)
+}
+
+// DeletePasskey operation middleware
+func (siw *ServerInterfaceWrapper) DeletePasskey(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "passkeyId" -------------
+	var passkeyId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "passkeyId", c.Param("passkeyId"), &passkeyId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter passkeyId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeletePasskey(c, passkeyId)
+}
+
+// RenamePasskey operation middleware
+func (siw *ServerInterfaceWrapper) RenamePasskey(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "passkeyId" -------------
+	var passkeyId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "passkeyId", c.Param("passkeyId"), &passkeyId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter passkeyId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RenamePasskey(c, passkeyId)
+}
+
+// RemovePassword operation middleware
+func (siw *ServerInterfaceWrapper) RemovePassword(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RemovePassword(c)
+}
+
+// SetPassword operation middleware
+func (siw *ServerInterfaceWrapper) SetPassword(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.SetPassword(c)
+}
+
+// ListAuthProviders operation middleware
+func (siw *ServerInterfaceWrapper) ListAuthProviders(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListAuthProviders(c)
 }
 
 // RefreshTokens operation middleware
@@ -3121,6 +5348,42 @@ func (siw *ServerInterfaceWrapper) VerifyEmail(c *gin.Context) {
 	}
 
 	siw.Handler.VerifyEmail(c)
+}
+
+// DownloadClientBuildBundle operation middleware
+func (siw *ServerInterfaceWrapper) DownloadClientBuildBundle(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "buildId" -------------
+	var buildId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "buildId", c.Param("buildId"), &buildId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter buildId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DownloadClientBuildBundleParams
+
+	// ------------- Optional query parameter "token" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "token", c.Request.URL.Query(), &params.Token, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter token: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DownloadClientBuildBundle(c, buildId, params)
 }
 
 // AcceptInvitation operation middleware
@@ -4179,6 +6442,754 @@ func (siw *ServerInterfaceWrapper) SetAuditRetention(c *gin.Context) {
 	siw.Handler.SetAuditRetention(c, orgId)
 }
 
+// ListClientBuildProfiles operation middleware
+func (siw *ServerInterfaceWrapper) ListClientBuildProfiles(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListClientBuildProfilesParams
+
+	// ------------- Optional query parameter "page" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "page", c.Request.URL.Query(), &params.Page, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter page: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "pageSize" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "pageSize", c.Request.URL.Query(), &params.PageSize, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter pageSize: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListClientBuildProfiles(c, orgId, params)
+}
+
+// CreateClientBuildProfile operation middleware
+func (siw *ServerInterfaceWrapper) CreateClientBuildProfile(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateClientBuildProfile(c, orgId)
+}
+
+// DeleteClientBuildProfile operation middleware
+func (siw *ServerInterfaceWrapper) DeleteClientBuildProfile(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "profileId" -------------
+	var profileId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "profileId", c.Param("profileId"), &profileId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter profileId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteClientBuildProfile(c, orgId, profileId)
+}
+
+// GetClientBuildProfile operation middleware
+func (siw *ServerInterfaceWrapper) GetClientBuildProfile(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "profileId" -------------
+	var profileId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "profileId", c.Param("profileId"), &profileId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter profileId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetClientBuildProfile(c, orgId, profileId)
+}
+
+// UpdateClientBuildProfile operation middleware
+func (siw *ServerInterfaceWrapper) UpdateClientBuildProfile(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "profileId" -------------
+	var profileId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "profileId", c.Param("profileId"), &profileId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter profileId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UpdateClientBuildProfile(c, orgId, profileId)
+}
+
+// DeleteClientBuildProfileLogo operation middleware
+func (siw *ServerInterfaceWrapper) DeleteClientBuildProfileLogo(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "profileId" -------------
+	var profileId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "profileId", c.Param("profileId"), &profileId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter profileId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteClientBuildProfileLogo(c, orgId, profileId)
+}
+
+// GetClientBuildProfileLogo operation middleware
+func (siw *ServerInterfaceWrapper) GetClientBuildProfileLogo(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "profileId" -------------
+	var profileId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "profileId", c.Param("profileId"), &profileId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter profileId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetClientBuildProfileLogo(c, orgId, profileId)
+}
+
+// PutClientBuildProfileLogo operation middleware
+func (siw *ServerInterfaceWrapper) PutClientBuildProfileLogo(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "profileId" -------------
+	var profileId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "profileId", c.Param("profileId"), &profileId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter profileId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.PutClientBuildProfileLogo(c, orgId, profileId)
+}
+
+// GetClientBuildCapabilities operation middleware
+func (siw *ServerInterfaceWrapper) GetClientBuildCapabilities(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetClientBuildCapabilities(c, orgId)
+}
+
+// ListClientBuilds operation middleware
+func (siw *ServerInterfaceWrapper) ListClientBuilds(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListClientBuildsParams
+
+	// ------------- Optional query parameter "status" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "status", c.Request.URL.Query(), &params.Status, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter status: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "profileId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "profileId", c.Request.URL.Query(), &params.ProfileId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter profileId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "page" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "page", c.Request.URL.Query(), &params.Page, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter page: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "pageSize" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "pageSize", c.Request.URL.Query(), &params.PageSize, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter pageSize: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListClientBuilds(c, orgId, params)
+}
+
+// CreateClientBuild operation middleware
+func (siw *ServerInterfaceWrapper) CreateClientBuild(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateClientBuild(c, orgId)
+}
+
+// GetClientBuild operation middleware
+func (siw *ServerInterfaceWrapper) GetClientBuild(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "buildId" -------------
+	var buildId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "buildId", c.Param("buildId"), &buildId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter buildId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetClientBuild(c, orgId, buildId)
+}
+
+// DownloadClientBuildArtifact operation middleware
+func (siw *ServerInterfaceWrapper) DownloadClientBuildArtifact(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "buildId" -------------
+	var buildId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "buildId", c.Param("buildId"), &buildId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter buildId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "artifactId" -------------
+	var artifactId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "artifactId", c.Param("artifactId"), &artifactId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter artifactId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DownloadClientBuildArtifact(c, orgId, buildId, artifactId)
+}
+
+// CancelClientBuild operation middleware
+func (siw *ServerInterfaceWrapper) CancelClientBuild(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "buildId" -------------
+	var buildId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "buildId", c.Param("buildId"), &buildId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter buildId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CancelClientBuild(c, orgId, buildId)
+}
+
+// ListConnectionLogs operation middleware
+func (siw *ServerInterfaceWrapper) ListConnectionLogs(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListConnectionLogsParams
+
+	// ------------- Optional query parameter "deviceId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "deviceId", c.Request.URL.Query(), &params.DeviceId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "rustdeskId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "rustdeskId", c.Request.URL.Query(), &params.RustdeskId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter rustdeskId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "from" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "from", c.Request.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter from: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "to" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "to", c.Request.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter to: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "page" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "page", c.Request.URL.Query(), &params.Page, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter page: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "pageSize" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "pageSize", c.Request.URL.Query(), &params.PageSize, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter pageSize: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListConnectionLogs(c, orgId, params)
+}
+
+// ExportConnectionLogs operation middleware
+func (siw *ServerInterfaceWrapper) ExportConnectionLogs(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ExportConnectionLogsParams
+
+	// ------------- Optional query parameter "deviceId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "deviceId", c.Request.URL.Query(), &params.DeviceId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "rustdeskId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "rustdeskId", c.Request.URL.Query(), &params.RustdeskId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter rustdeskId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "from" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "from", c.Request.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter from: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "to" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "to", c.Request.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter to: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ExportConnectionLogs(c, orgId, params)
+}
+
+// ListControlRoles operation middleware
+func (siw *ServerInterfaceWrapper) ListControlRoles(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListControlRoles(c, orgId)
+}
+
+// CreateControlRole operation middleware
+func (siw *ServerInterfaceWrapper) CreateControlRole(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateControlRole(c, orgId)
+}
+
+// DeleteControlRole operation middleware
+func (siw *ServerInterfaceWrapper) DeleteControlRole(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "roleId" -------------
+	var roleId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "roleId", c.Param("roleId"), &roleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter roleId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteControlRole(c, orgId, roleId)
+}
+
+// UpdateControlRole operation middleware
+func (siw *ServerInterfaceWrapper) UpdateControlRole(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "roleId" -------------
+	var roleId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "roleId", c.Param("roleId"), &roleId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter roleId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UpdateControlRole(c, orgId, roleId)
+}
+
 // ListDeviceGroups operation middleware
 func (siw *ServerInterfaceWrapper) ListDeviceGroups(c *gin.Context) {
 
@@ -4331,6 +7342,40 @@ func (siw *ServerInterfaceWrapper) ReplaceDeviceGroupDevices(c *gin.Context) {
 	siw.Handler.ReplaceDeviceGroupDevices(c, orgId, deviceGroupId)
 }
 
+// AssignDeviceGroupStrategy operation middleware
+func (siw *ServerInterfaceWrapper) AssignDeviceGroupStrategy(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "deviceGroupId" -------------
+	var deviceGroupId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "deviceGroupId", c.Param("deviceGroupId"), &deviceGroupId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceGroupId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AssignDeviceGroupStrategy(c, orgId, deviceGroupId)
+}
+
 // ListDevices operation middleware
 func (siw *ServerInterfaceWrapper) ListDevices(c *gin.Context) {
 
@@ -4416,8 +7461,8 @@ func (siw *ServerInterfaceWrapper) CreateDevice(c *gin.Context) {
 	siw.Handler.CreateDevice(c, orgId)
 }
 
-// SetDeviceDisabled operation middleware
-func (siw *ServerInterfaceWrapper) SetDeviceDisabled(c *gin.Context) {
+// UpdateDevice operation middleware
+func (siw *ServerInterfaceWrapper) UpdateDevice(c *gin.Context) {
 
 	var err error
 	_ = err
@@ -4447,7 +7492,41 @@ func (siw *ServerInterfaceWrapper) SetDeviceDisabled(c *gin.Context) {
 		}
 	}
 
-	siw.Handler.SetDeviceDisabled(c, orgId, deviceId)
+	siw.Handler.UpdateDevice(c, orgId, deviceId)
+}
+
+// RequestDeviceDisconnect operation middleware
+func (siw *ServerInterfaceWrapper) RequestDeviceDisconnect(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "deviceId" -------------
+	var deviceId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "deviceId", c.Param("deviceId"), &deviceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RequestDeviceDisconnect(c, orgId, deviceId)
 }
 
 // DeviceHeartbeat operation middleware
@@ -4516,6 +7595,176 @@ func (siw *ServerInterfaceWrapper) ResetDeviceBinding(c *gin.Context) {
 	}
 
 	siw.Handler.ResetDeviceBinding(c, orgId, deviceId)
+}
+
+// AssignDeviceStrategy operation middleware
+func (siw *ServerInterfaceWrapper) AssignDeviceStrategy(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "deviceId" -------------
+	var deviceId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "deviceId", c.Param("deviceId"), &deviceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AssignDeviceStrategy(c, orgId, deviceId)
+}
+
+// ListFileLogs operation middleware
+func (siw *ServerInterfaceWrapper) ListFileLogs(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListFileLogsParams
+
+	// ------------- Optional query parameter "deviceId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "deviceId", c.Request.URL.Query(), &params.DeviceId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "rustdeskId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "rustdeskId", c.Request.URL.Query(), &params.RustdeskId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter rustdeskId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "from" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "from", c.Request.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter from: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "to" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "to", c.Request.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter to: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "page" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "page", c.Request.URL.Query(), &params.Page, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter page: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "pageSize" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "pageSize", c.Request.URL.Query(), &params.PageSize, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter pageSize: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListFileLogs(c, orgId, params)
+}
+
+// ExportFileLogs operation middleware
+func (siw *ServerInterfaceWrapper) ExportFileLogs(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ExportFileLogsParams
+
+	// ------------- Optional query parameter "deviceId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "deviceId", c.Request.URL.Query(), &params.DeviceId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "rustdeskId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "rustdeskId", c.Request.URL.Query(), &params.RustdeskId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter rustdeskId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "from" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "from", c.Request.URL.Query(), &params.From, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter from: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "to" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "to", c.Request.URL.Query(), &params.To, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter to: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ExportFileLogs(c, orgId, params)
 }
 
 // CreateInvitation operation middleware
@@ -4728,6 +7977,142 @@ func (siw *ServerInterfaceWrapper) ResetMemberTOTP(c *gin.Context) {
 	}
 
 	siw.Handler.ResetMemberTOTP(c, orgId, userId)
+}
+
+// AssignMemberControlRole operation middleware
+func (siw *ServerInterfaceWrapper) AssignMemberControlRole(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "userId" -------------
+	var userId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", c.Param("userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter userId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AssignMemberControlRole(c, orgId, userId)
+}
+
+// ResetMemberIdentity operation middleware
+func (siw *ServerInterfaceWrapper) ResetMemberIdentity(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "userId" -------------
+	var userId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", c.Param("userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter userId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ResetMemberIdentity(c, orgId, userId)
+}
+
+// ResetMemberPasskeys operation middleware
+func (siw *ServerInterfaceWrapper) ResetMemberPasskeys(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "userId" -------------
+	var userId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", c.Param("userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter userId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ResetMemberPasskeys(c, orgId, userId)
+}
+
+// AssignMemberStrategy operation middleware
+func (siw *ServerInterfaceWrapper) AssignMemberStrategy(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "userId" -------------
+	var userId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", c.Param("userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter userId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.AssignMemberStrategy(c, orgId, userId)
 }
 
 // ListPolicies operation middleware
@@ -5168,6 +8553,158 @@ func (siw *ServerInterfaceWrapper) GetSession(c *gin.Context) {
 	siw.Handler.GetSession(c, orgId, sessionId)
 }
 
+// ListStrategies operation middleware
+func (siw *ServerInterfaceWrapper) ListStrategies(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListStrategies(c, orgId)
+}
+
+// CreateStrategy operation middleware
+func (siw *ServerInterfaceWrapper) CreateStrategy(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateStrategy(c, orgId)
+}
+
+// DeleteStrategy operation middleware
+func (siw *ServerInterfaceWrapper) DeleteStrategy(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "strategyId" -------------
+	var strategyId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "strategyId", c.Param("strategyId"), &strategyId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter strategyId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteStrategy(c, orgId, strategyId)
+}
+
+// GetStrategy operation middleware
+func (siw *ServerInterfaceWrapper) GetStrategy(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "strategyId" -------------
+	var strategyId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "strategyId", c.Param("strategyId"), &strategyId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter strategyId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetStrategy(c, orgId, strategyId)
+}
+
+// UpdateStrategy operation middleware
+func (siw *ServerInterfaceWrapper) UpdateStrategy(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "strategyId" -------------
+	var strategyId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "strategyId", c.Param("strategyId"), &strategyId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter strategyId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UpdateStrategy(c, orgId, strategyId)
+}
+
 // IssueTicket operation middleware
 func (siw *ServerInterfaceWrapper) IssueTicket(c *gin.Context) {
 
@@ -5468,6 +9005,15 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 
 	router.GET(options.BaseURL+"/healthz", wrapper.GetHealthz)
 	router.POST(options.BaseURL+"/api/v1/auth/login", wrapper.Login)
+	router.GET(options.BaseURL+"/api/v1/auth/providers", wrapper.ListAuthProviders)
+	router.POST(options.BaseURL+"/api/v1/auth/oidc/start", wrapper.StartOIDCLogin)
+	router.GET(options.BaseURL+"/api/v1/auth/oidc/callback", wrapper.HandleOIDCCallback)
+	router.POST(options.BaseURL+"/api/v1/auth/oidc/exchange", wrapper.ExchangeOIDCLogin)
+	router.GET(options.BaseURL+"/api/v1/auth/identity", wrapper.GetIdentities)
+	router.POST(options.BaseURL+"/api/v1/auth/identity/unlink", wrapper.UnlinkIdentity)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId/identity/reset", wrapper.ResetMemberIdentity)
+	router.POST(options.BaseURL+"/api/v1/auth/ldap/login", wrapper.LdapLogin)
+	router.GET(options.BaseURL+"/api/v1/auth/captcha", wrapper.GetCaptchaChallenge)
 	router.POST(options.BaseURL+"/api/v1/auth/refresh", wrapper.RefreshTokens)
 	router.GET(options.BaseURL+"/api/v1/auth/tokens", wrapper.ListTokens)
 	router.POST(options.BaseURL+"/api/v1/auth/tokens", wrapper.CreateToken)
@@ -5477,11 +9023,23 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/auth/2fa/disable", wrapper.DisableTOTP)
 	router.POST(options.BaseURL+"/api/v1/auth/2fa/recovery-codes", wrapper.RegenerateRecoveryCodes)
 	router.POST(options.BaseURL+"/api/v1/auth/2fa/verify", wrapper.VerifyTOTP)
+	router.POST(options.BaseURL+"/api/v1/auth/passkey/stepup/begin", wrapper.BeginPasskeyStepup)
+	router.POST(options.BaseURL+"/api/v1/auth/passkey/stepup/finish", wrapper.FinishPasskeyStepup)
+	router.POST(options.BaseURL+"/api/v1/auth/password/remove", wrapper.RemovePassword)
+	router.POST(options.BaseURL+"/api/v1/auth/password/set", wrapper.SetPassword)
+	router.GET(options.BaseURL+"/api/v1/auth/passkeys", wrapper.ListPasskeys)
+	router.DELETE(options.BaseURL+"/api/v1/auth/passkeys/:passkeyId", wrapper.DeletePasskey)
+	router.PATCH(options.BaseURL+"/api/v1/auth/passkeys/:passkeyId", wrapper.RenamePasskey)
+	router.POST(options.BaseURL+"/api/v1/auth/passkey/login/begin", wrapper.BeginPasskeyLogin)
+	router.POST(options.BaseURL+"/api/v1/auth/passkey/login/finish", wrapper.FinishPasskeyLogin)
+	router.POST(options.BaseURL+"/api/v1/auth/passkey/register/begin", wrapper.BeginPasskeyRegistration)
+	router.POST(options.BaseURL+"/api/v1/auth/passkey/register/finish", wrapper.FinishPasskeyRegistration)
 	router.GET(options.BaseURL+"/api/v1/orgs", wrapper.ListOrgs)
 	router.POST(options.BaseURL+"/api/v1/orgs", wrapper.CreateOrg)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/members", wrapper.ListMembers)
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId", wrapper.RemoveMember)
 	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId", wrapper.UpdateMemberRole)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId/passkeys/reset", wrapper.ResetMemberPasskeys)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId/2fa/reset", wrapper.ResetMemberTOTP)
 	router.GET(options.BaseURL+"/api/v1/permissions", wrapper.ListPermissions)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/roles", wrapper.ListRoles)
@@ -5489,6 +9047,17 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/roles/:roleId", wrapper.DeleteRole)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/roles/:roleId", wrapper.GetRole)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/roles/:roleId", wrapper.UpdateRole)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/control-roles", wrapper.ListControlRoles)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/control-roles", wrapper.CreateControlRole)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/control-roles/:roleId", wrapper.DeleteControlRole)
+	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/control-roles/:roleId", wrapper.UpdateControlRole)
+	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId/control-role", wrapper.AssignMemberControlRole)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/strategies", wrapper.ListStrategies)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/strategies", wrapper.CreateStrategy)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/strategies/:strategyId", wrapper.DeleteStrategy)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/strategies/:strategyId", wrapper.GetStrategy)
+	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/strategies/:strategyId", wrapper.UpdateStrategy)
+	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId/strategy", wrapper.AssignMemberStrategy)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/user-groups", wrapper.ListUserGroups)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/user-groups", wrapper.CreateUserGroup)
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/user-groups/:groupId", wrapper.DeleteUserGroup)
@@ -5498,12 +9067,17 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/device-groups", wrapper.CreateDeviceGroup)
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/device-groups/:deviceGroupId", wrapper.DeleteDeviceGroup)
 	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/device-groups/:deviceGroupId", wrapper.RenameDeviceGroup)
+	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/device-groups/:deviceGroupId/strategy", wrapper.AssignDeviceGroupStrategy)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/device-groups/:deviceGroupId/devices", wrapper.ReplaceDeviceGroupDevices)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/access-rules", wrapper.ListAccessRules)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/access-rules", wrapper.CreateAccessRule)
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/access-rules/:ruleId", wrapper.DeleteAccessRule)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-logs", wrapper.ListAuditLogs)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-logs/export", wrapper.ExportAuditLogs)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/connection-logs", wrapper.ListConnectionLogs)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/connection-logs/export", wrapper.ExportConnectionLogs)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/file-logs", wrapper.ListFileLogs)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/file-logs/export", wrapper.ExportFileLogs)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/audit-retention", wrapper.GetAuditRetention)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/audit-retention", wrapper.SetAuditRetention)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/provisioning", wrapper.GetProvisioning)
@@ -5531,7 +9105,9 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/auth/resend-verification", wrapper.ResendVerification)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/heartbeat", wrapper.DeviceHeartbeat)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/rebind", wrapper.ResetDeviceBinding)
-	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId", wrapper.SetDeviceDisabled)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/disconnect", wrapper.RequestDeviceDisconnect)
+	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/strategy", wrapper.AssignDeviceStrategy)
+	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId", wrapper.UpdateDevice)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/sessions", wrapper.ListSessions)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/sessions/:sessionId", wrapper.GetSession)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/policies", wrapper.ListPolicies)
@@ -5546,4 +9122,19 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/approvals/:approvalId", wrapper.GetApproval)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/tickets/:ticketId", wrapper.GetTicket)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/tickets/:ticketId/redeem", wrapper.RedeemTicket)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/client-build/capabilities", wrapper.GetClientBuildCapabilities)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/client-build-profiles", wrapper.ListClientBuildProfiles)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/client-build-profiles", wrapper.CreateClientBuildProfile)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/client-build-profiles/:profileId", wrapper.DeleteClientBuildProfile)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/client-build-profiles/:profileId", wrapper.GetClientBuildProfile)
+	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/client-build-profiles/:profileId", wrapper.UpdateClientBuildProfile)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/client-build-profiles/:profileId/logo", wrapper.DeleteClientBuildProfileLogo)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/client-build-profiles/:profileId/logo", wrapper.GetClientBuildProfileLogo)
+	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/client-build-profiles/:profileId/logo", wrapper.PutClientBuildProfileLogo)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/client-builds", wrapper.ListClientBuilds)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/client-builds", wrapper.CreateClientBuild)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/client-builds/:buildId", wrapper.GetClientBuild)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/client-builds/:buildId/cancel", wrapper.CancelClientBuild)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/client-builds/:buildId/artifacts/:artifactId", wrapper.DownloadClientBuildArtifact)
+	router.GET(options.BaseURL+"/api/v1/client-builds/:buildId/bundle", wrapper.DownloadClientBuildBundle)
 }

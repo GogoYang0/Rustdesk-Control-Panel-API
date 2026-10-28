@@ -1,6 +1,6 @@
 # 部署指南（Deployment Guide）
 
-> 适用版本：v0.9.0（M5：访问控制——用户组/设备组/组规则、compat peers 过滤与票据准入；上一基线 v0.8.0）。本文档随版本演进持续更新——每次发布前必须复核一遍。
+> 适用版本：v0.11.0（M6 波次 5b-1：Passkey / WebAuthn；上一基线 v0.10.0）。本文档随版本演进持续更新——每次发布前必须复核一遍。
 > 配套文档：[运维指南](operations.md) · [后端 API 规范](api-spec.md)
 
 ---
@@ -36,7 +36,7 @@ go build -o panel ./cmd/server
 
 ## 3. 配置全表
 
-三个敏感项只从环境变量注入：
+下表六个敏感项只从环境变量注入，禁止写入配置文件：
 
 ### 3.1 环境变量（敏感项，禁止写入配置文件）
 
@@ -45,6 +45,9 @@ go build -o panel ./cmd/server
 | `PANEL_AUTH_SECRET` | 是 | JWT 签名密钥。未设置时进程拒绝启动（`auth.secret must be configured`）。用 `openssl rand -base64 48` 生成；**泄漏等于任何人可伪造令牌** |
 | `PANEL_SMTP_PASSWORD` | 条件 | `mail.devMode=false` 且设置了 `mail.smtp.username` 时必须；否则启动即失败 |
 | `PANEL_WEB_BASE_URL` | 条件 | 覆盖 `web.baseURL`；`devMode=false` 时必须是公网 https origin，否则启动失败（验证码/邀请链接会嵌入此地址） |
+| `PANEL_CAPTCHA_ALTCHA_KEY` | 条件 | `captcha.enabled=true` 且 `provider=altcha` 时必须，且**长度 ≥32 字节**（建议用 `openssl rand -base64 48` 生成）；缺失或过短均启动失败 |
+| `PANEL_CAPTCHA_GEETEST_KEY` | 条件 | `captcha.enabled=true` 且 `provider=geetest` 时必须 |
+| `PANEL_CAPTCHA_CAP_SECRET` | 条件 | `captcha.enabled=true` 且 `provider=cap` 时必须 |
 
 ### 3.2 配置节
 
@@ -70,6 +73,13 @@ go build -o panel ./cmd/server
 | `compat.accessTTL` | | `720h` | compat 会话（RustDesk 客户端令牌）的有效期；成员失去组织访问时应通过会话撤销立即失效（见运维指南 §2.1/#39） |
 | `session.idleTimeout` | | `10m` | 会话空闲超时：open 会话超过该时长无活动（无活动记录则回退 `started_at`）由空闲清扫任务置 `closed`（`end_reason=idle_timeout`）；契约的"部署可配置"项。**必须为正**：`0`/负值不是禁用清扫，而是记 warning 并回退默认 `10m` |
 | `audit.archiveDir` | | `./data/audit-archive` | 按组织归档审计文件的根目录（`org-<orgId>/audit-<minId>.jsonl` + `.sha256`）。组织设置 `audit_retention_days > 0` 时每小时先归档校验、后删除；**备份范围必须包含该目录**（见运维指南 §3、§7） |
+| `captcha.enabled` | | `false` | 公开凭据入口（登录 / 2FA 校验 / 邀请接受）的交互式验证码总开关（v0.10.0，见运维指南 §2.4） |
+| `captcha.provider` | | `altcha` | `altcha`（自托管 proof-of-work，无外部依赖）\| `geetest` \| `cap` |
+| `captcha.failMode` | | `closed` | `closed`：提供商不可达 → `503`；`open`：放行并打 error 日志，**仅限临时运维窗口**（提供商判定失败永不因该值放行） |
+| `captcha.challengeTTL` | | `5m` | 挑战有效期，必须在 `1m–10m` 之间 |
+| `captcha.altcha.maxNumber` | | `100000` | PoW 解题上限（`10000–5000000`）：越高越难被批量爆破，也越考验低端客户端 CPU |
+| `captcha.geetest.captchaId` | | — | GeeTest v4 的 captcha id（启用且选择 geetest 时必填） |
+| `captcha.cap.instanceUrl` / `siteKey` | | — | 自托管 Cap Standalone 的地址与 site key（启用且选择 cap 时必填） |
 
 ---
 
@@ -98,6 +108,38 @@ go build -o panel ./cmd/server
   - 启动收敛会按当前内置权限目录**重写**内置 owner/admin 角色的权限集（因此包含 `access.manage`；是整套重写而非单纯追加，自定义角色不受影响）。该权限**不可委派**，自定义角色在任何情况下都无法获得（不是“需要授权”，而是被目录禁止）。**v0.9.0 之前签发的个人 API Token 权限集不含 `access.manage`**，必须重建令牌后才能在令牌身份下管理访问控制（令牌权限是申请集 ∩ 当前角色权限集的硬上限）。
   - 存量组织自动生成 `everyone` 用户组与 `everyone → 全部设备` 默认规则，**未停用设备**的访问范围不变；停用设备从 v0.9.0 起不再出现在客户端设备列表（管理面仍可见）。删除默认规则后重启不会复活，按运维指南 §2.3 收紧。
   - 多实例并行启动仍按 §4.2 的既有约束（角色回填是一次性标记，先由单实例完成）。
+- **v0.10.0（交互式验证码）升级要点**：
+  - 无数据库结构变化；`captcha.enabled` 默认 `false`，升级后行为与 v0.9.0 完全一致。
+  - 启用前必须选定提供商并注入对应秘密（见 §3.1）；启用后**所有**管理面登录、2FA 校验与邀请接受都需要验证码，脚本化登录应改用个人 API Token（v0.8.0）。
+  - 验证码**挑战本身无状态（签名可在任意实例校验）**，但「已消耗凭据」与登录限流都在**进程内存**。两者是**不同**的约束，不要混为一谈：
+    - **单次消费**的键是凭据标识、**与客户端 IP 无关**，按 IP 粘性路由**不能**提供跨实例的全局单次消费保证——攻击者从不同源 IP 重放同一凭据就可能命中未记录该凭据的实例并再次进入密码/TOTP 校验。需要该保证时必须**单副本**部署，或改用共享消费存储（本版本未提供，属后续扩展）。
+    - **登录限流**（每 IP 每分钟桶、账号+IP 失败计数）按 IP 计费，粘性路由对它是有效的。
+  - 进程重启同样会清空消费表：重启窗口内的重放只能靠提供商的自身限制与 IP 桶约束。
+  - `provider=cap` 需要单独部署并运维 Cap Standalone；`closed` 模式下 Cap 不可用等于三个入口不可登录。`provider=geetest` 依赖境外服务，部署前确认网络可达。
+- **v0.10.0（组模型下半场：归属 / 组→组规则 / 组级地址簿授权 / 旧列清理）升级要点**：
+  - **不可回滚点**：启动时删除 `memberships.role` 字符串列（迁移顺序为「先把旧字符串映射到 `role_id`，再删列」，顺序不可交换）。**升级前必须备份数据库**——回滚到旧版本需要恢复数据库快照，旧版本无法在缺少该列的库上正常授权。迁移由标记守护且可重试：映射失败（例如出现未知角色字符串）会**中止启动**，此时列尚未删除，修数据后重启即可。
+  - 新增列/索引：`devices.owner_user_id`（索引）、`devices.note`；地址簿授权的唯一索引由三列**重建**为四列（`book_id, subject_kind, subject_user_id, subject_group_id`）——该重建由迁移标记守护、**只在首次启动执行一次**（大表首启会执行一次索引重建 DDL，请避开业务高峰），此后每次启动直接跳过。
+  - **归属（`owner_user_id`）不自动回填**：存量设备升级后均未归属。此后**首次**登录（成功认领）的设备自动归属给登录用户，**前提是登录请求携带的 `uuid` 与该设备的绑定一致**；未带 `uuid` 的登录不会产生归属（归属是持久授权，只凭 rustdesk id 不得取得），这类设备需管理员 `PATCH` 改派或让客户端正常带 uuid 重新登录。已归属设备不会被登录改写。希望立即按「本人只看自己设备」收敛的部署，请在管理面批量改派（`PATCH .../devices/{deviceId}`）或让用户各登录一次。
+  - **访问范围变化（加宽）**：普通成员现在**始终**能看到并连接自己归属的设备（停用设备/停用会籍除外），这与默认 `everyone → 全部设备` 规则叠加不产生新暴露；但如果组织已收紧到精确规则，请知悉「本人设备」这条兜底路径不受规则约束（要收走需改派归属或停用设备，见运维指南 §2.3.1）。
+  - 若客户端使用 `rustdesk --assign`：需要为该客户端所属账号签发**个人 API Token**（`device.write`）并配置到客户端；`--strategy`、`--address-book-*`、`--device-username` 会被面板 `400` 拒绝（未实现，属有意行为）。
+  - 客户端 `--device-name`/`--note` 以及管理面归属变更**不撤销已建立的 compat 会话**（与规则变更一致）。
+
+- **v0.10.0（控制角色 / 客户端审计上报 / compat 2FA）升级要点**：
+  - **无新增配置键**：控制角色的三态权限、日志保留期都复用既有配置（保留期用 `organizations.audit_retention_days`）。升级后行为与波次 2 一致。
+  - 新增表 `control_roles` / `connection_logs` / `file_logs` / `audit_nonces` / `compat_login_challenges` 与新列 `memberships.control_role_id`、`tickets.control_role_id` / `control_permissions` / `control_role_snapshot`、`sessions.control_permissions`，全部由 AutoMigrate 建表/加列/建索引（大表首启会有建索引 DDL，请避开业务高峰）。
+  - 启动时为每个组织补齐内置 `default` 控制角色（幂等，按 `(organization_id, name)` 唯一索引兜底并发启动）；**新组织在创建事务里同步播种**，不存在「重启前没有回退角色」的窗口。
+  - **控制角色不约束原生客户端会话**：权限位图由 hbbs 注入，面板不在信令链路。升级后可以在管理面配置并拿到票据快照，但不要向业务方承诺客户端已强制执行（详见 API 规范 §3.12、运维指南 §2.5）。
+  - compat 登录 2FA 依赖 `auth.secret`：**未配置或不一致时 2FA 操作 fail closed**；轮换 `auth.secret` 会让既有 TOTP 秘密无法解密，须先重置用户 2FA。多实例共享同一 `auth.secret`，否则挑战与 TOTP 校验会随机失败。
+  - `compat_login_challenges` 与 `audit_nonces` 都有内置清扫：过期挑战由 `compat-2fa-sweep` 每小时清理（保留 1 小时余量），nonce 由 `audit-nonce-sweep` 每 10 分钟清理。两项都无需人工干预。
+
+- **v0.10.0（客户端策略下发与心跳断连）升级要点**：
+  - **无新增配置键**：策略内容存库，下发搭在客户端已有的 `POST /api/heartbeat` 上（客户端只要连得到 API server 就能拿到）。升级后行为与波次 3 一致。
+  - 新增表 `strategies` / `device_disconnects` 与新列 `devices.strategy_id`、`device_groups.strategy_id`、`memberships.strategy_id`、`device_heartbeats.conn_ids`，全部由 AutoMigrate 建表/加列/建索引（`devices`/`device_groups`/`memberships` 会各加一个索引，大表首启请避开业务高峰）。另给 `device_heartbeats` —— **最高写入量的表** —— 加一列 `conn_ids`，MySQL 上是 instant DDL，PostgreSQL 上是元数据变更，但请按大表操作安排窗口。
+  - **没有默认策略、不回填**：升级后所有设备「无策略」，行为与升级前完全一致；需要下发的组织自行创建并分配。
+  - 新增权限 `strategy.manage`、`device.disconnect`（均不可委派，owner 全量、admin 由内置集合授予）。内置集合每次启动重写，存量组织自动获得。
+  - 新增 worker `disconnect-expiry`（每 5 分钟）清理超时未消费的断连请求。策略没有后台任务。
+  - **`--assign strategy_name` 由拒绝改为支持**（波次 2 的 D5 反转）：客户端可用策略名分配，大小写不敏感，未知名字 404。
+  - **生效边界**：策略只在客户端下次心跳后生效（≤30 秒），断连最长同样等一个心跳周期；面板不在信令链路，不保证即时。详见 API 规范 §3.14/§3.15、运维指南 §2.7。
 
 ### 4.3 选择生产数据库
 
@@ -211,6 +253,7 @@ server {
 - [ ] **禁止直接挂载 rootful Docker 的原始 socket**（`/var/run/docker.sock`）：拿到它即可控制宿主机。生产环境使用 rootless Docker，或经由受限的 docker socket proxy（按需白名单 API）授予 panel 访问
 - [ ] 审计表与 `panel.db` 的备份策略已建立（审计是安全证据，见运维指南 §7）
 - [ ] 已按需收紧默认 `everyone → 全部设备` 访问规则（v0.9.0，步骤见运维指南 §2.3）；内置 owner/admin 角色已确认持有 `access.manage`
+- [ ] 如需启用验证码（v0.10.0）：已选定提供商、注入对应秘密、**单副本部署**（或已接入共享消费存储，本版本未提供；粘性路由只能辅助登录限流，不能保证验证码单次消费），并在上线前用真实客户端走通一次登录（见运维指南 §2.4）
 
 ---
 
@@ -241,3 +284,206 @@ server {
 详细协议见 [API 规范 §4](api-spec.md)。
 
 > 跟踪：[#65](https://github.com/GogoYang0/Rustdesk-Control-Panel-API/issues/65)。本文档先给出「显式配置 API 服务器」的运维口径；由面板在 provision/接入信息里**下发** API 服务器地址（免手填）属于契约变更，尚未实现。
+
+---
+
+## 10. 自定义客户端生成器（v0.10.0 波次 5a）
+
+组织可以通过面板生成指向本组织服务器的品牌安装包。构建在部署方自建的私有 GitHub 仓库中执行，面板只负责发起、轮询和回收产物。
+
+### 10.1 配置
+
+```yaml
+clientbuild:
+  enabled: true
+  publicBaseURL: "https://panel.example.com"   # 面板 origin；同时是生成客户端的 API server
+  assetDir: "./data/client-builds"
+  rustdeskVersion: "1.5.0"
+  github:
+    repo: "acme/rustdesk-client-build"
+    workflow: "build-client.yml"
+    ref: "main"
+  bundle:
+    ttl: 24h
+```
+
+| 环境变量 | 说明 |
+|---|---|
+| `PANEL_CLIENTBUILD_GITHUB_TOKEN` | fine-grained PAT，仅构建仓库 `Actions: RW` + `Metadata: R` |
+| `PANEL_CLIENTBUILD_BUNDLE_KEY` | bundle URL 的 HMAC key，至少 32 字节 |
+
+`enabled=true` 时启动会校验 `publicBaseURL`、`github.apiBaseURL`、仓库/workflow/ref、token、bundle key、平台白名单与 artifact 主机白名单；缺项直接 Fatal，不静默降级。两个 URL 必须是 `https`——bundle token 与 PAT 都走这两条链路——仅 `localhost`/`127.0.0.1`/`::1` 允许 `http`（本地开发与测试）。`enabled=false` 时 profile 仍可预配置，发起构建返回 503。
+
+### 10.2 部署前提
+
+- 面板必须能被 GitHub 托管 runner 以 **HTTPS** 访问（或改用自建 runner）。`publicBaseURL` 同时是客户端 API server，必须指向面板 compat 入口（`https://<面板域名>`，反代终止 TLS）。
+- 构建仓库模板在 `docs/client-build/`（`workflow.yml`、`prepare_source.py`、`README.md`）。按 README 创建私有构建仓库、PAT、固定 Android debug keystore。
+- 平台：Windows x64、Linux x64、macOS arm64/x64、Android arm64。5a 不签名；Android 使用非生产 debug key。
+- 产物保留 30 天、单次 ≤2 GiB；每组织 10 个 profile、2 个非终态构建，全局 4 个已领取/运行中构建。
+
+### 10.3 生成包行为
+
+- 客户端内编译的服务器地址/公钥来自该组织已部署的 `ServerGroup` + `provision.relayHost`，API server 来自 `clientbuild.publicBaseURL`；用户不能自定义这些值。
+- 安装身份沿用上游，会替换同机官方 RustDesk；5a 不支持共存。
+- 非 `RustDesk` 应用名会关闭官方更新检查；升级需重新构建并手动覆盖安装。
+- RustDesk 为 AGPL-3.0；对外分发时部署方需按 AGPL 提供对应源码与许可证。
+
+### 10.4 运维
+
+- 构建详情里的 `error_message` 只给操作者可读原因（GitHub conclusion、缺平台、校验失败类别），不含 token/URL。
+- 取消是尽力而为：已进入产物回收后返回 409；`dispatching` 状态下取消可能需要一个轮询周期。
+- 审计：组织管理员可在审计查询中看到 `client_build.*`；成功/失败/取消由后台 actor=0 写入。
+- 保留期清理由 `client-build-sweep` 每小时执行；短保留期验收可把 `artifactRetention` 临时设为 1m 并重启面板。
+
+## 11. Passkey / WebAuthn（v0.11.0）
+
+Passkey 默认关闭。打开前必须先确定**浏览器访问面板的那个 origin**：RP ID 与
+origin 都从它推导，配置错了所有 ceremony 都会失败。
+
+```yaml
+webauthn:
+  enabled: true
+  rpId: "panel.example.com"     # 裸主机名、小写、不带 scheme/端口/路径
+  rpName: "RustDesk Control Panel"
+  origin: "https://panel.example.com"   # 不带 path/query/fragment
+  ceremonyTTL: 5m
+  credentialsPerUser: 10
+```
+
+| 键 | 默认 | 约束 |
+|---|---|---|
+| `enabled` | `false` | 关闭时全部 passkey 端点返回 503（不是 404） |
+| `rpId` | 空 | 必填；必须是 `origin` 主机名的可注册后缀（相等或以 `.rpId` 结尾） |
+| `origin` | 空 | 必填；必须 https；仅 `localhost` 允许 http（RP ID 必须是域名，IP 字面量会被浏览器拒绝） |
+| `ceremonyTTL` | `5m` | 1s–15m |
+| `credentialsPerUser` | `10` | 1–20 |
+
+- `enabled=true` 时启动期校验，任何缺项/非法值 **Fatal**（不静默降级）。
+- **IP 直连不支持**：浏览器在 `http://10.x.x.x` 这类非安全上下文里不提供
+  WebAuthn；即使把 `127.0.0.1` 配成 origin，RP ID 也必须是域名——启动校验会
+  直接拒绝 IP 形式的 `rpId`。本机调试请用 `http://localhost:<port>`。
+- 反代不得改写请求体；`Origin` 由浏览器写进 `clientDataJSON`，服务端不信任
+  `Origin` 头。
+- 新增周期任务 `webauthn-ceremony-sweep`（10 分钟），清理过期 ceremony；服务
+  关闭时不注册。
+- **关闭 `enabled` 之前**：先给所有无密码账户设置密码（见 operations §10），
+  否则这些账户会立刻无法登录。启动时若检测到无密码账户会打 WARN。
+- **冒烟**：把 `docs/reference/passkey-smoke.html` 由反代挂到与 `origin` 同源
+  的路径（例如 `/passkey-smoke.html`），用真实认证器完成一次注册 + 登录。
+  本地可以用 `http://localhost:<port>` 作 origin（浏览器把 localhost 视为安全
+  上下文），但页面与 API 必须同源同端口。
+
+## 12. OIDC 单点登录（v0.11.0）
+
+部署级单一外部身份源；`oidc.enabled` 与 `ldap.enabled` 互斥（同开启动失败）。
+
+```yaml
+oidc:
+  enabled: true
+  providerName: "公司账号"        # 登录按钮文案
+  issuer: "https://login.microsoftonline.com/<tenant>/v2.0"
+  clientID: "<client-id>"
+  scopes: ["openid", "profile", "email"]
+  clockSkew: 60s
+  stateTTL: 10m
+external:
+  requireLocalSecondFactor: false
+```
+
+```bash
+export PANEL_OIDC_CLIENT_SECRET='...'   # 只从环境变量读，文件里写了也无效
+```
+
+| 键 | 默认 | 约束 |
+|---|---|---|
+| `issuer` | 必填 | 必须 https、无 query/fragment；discovery 的 issuer 必须与配置完全一致 |
+| `clientID` | 必填 | |
+| `PANEL_OIDC_CLIENT_SECRET` | 必填 | 环境变量 |
+| `scopes` | openid,profile,email | 必须含 `openid` 与 `email` |
+| `stateTTL` | 10m | (0, 30m] |
+| `clockSkew` | 60s | [0, 5m] |
+| `web.baseURL` | — | 必须是 https（本机允许 localhost）；回调 URL 由它派生 |
+
+### IdP 注册四步
+
+1. 回调 URL 固定为 `{web.baseURL}/api/v1/auth/oidc/callback`（不接受请求指定；
+   反代子路径部署时同步改 `web.baseURL` 与 IdP 注册）。
+2. 授权类型 Authorization Code；PKCE 必须允许（我们总是发 S256 challenge）。
+3. ID token 必须含 `email` 与 `email_verified=true`（Entra ID/Google 默认满足；
+   部分 Keycloak 配置要手动把 email scope 加进 client scopes）。
+4. 记录 issuer 与 client secret；secret 只进环境变量。
+
+### 上线顺序（无 JIT，O2）
+
+SSO 只绑定**已存在**的面板账户，迁移按四步走：管理员邀请建号 → 用户设密码
+接受邀请 → 用户在 IdP 侧可登录 → 登录页用 SSO 登录完成绑定。未建号邮箱得到
+`no_account`，这是设计行为不是故障。
+
+### 行为要点
+
+- IdP 不可达的表象按阶段不同：`start` 在 discovery 失败时返回 **503**；
+  `callback` 阶段的失败（兑换/验签等）一律 **302 回前端并带 `?error=oidc_failed`**；
+  `exchange` 不访问 IdP，ticket 无效或过期返回 **401**。任何阶段都**不降级为
+  密码登录**；discovery 失败不缓存，IdP 恢复后无需重启。排障时 503 只指向
+  `start`，回调阶段的失败要看前端收到的 `error` 参数。
+- `requireLocalSecondFactor=true`：已启用 TOTP 的账户走 SSO 仍要输面板 TOTP；
+  未启用 TOTP 的账户正常登录并打 WARN——它不等于强制全员 MFA。
+- 周期任务 `external-login-flow-sweep`（10 分钟）清理过期 state/ticket。
+- **冒烟**：至少用一个真实 IdP 手工走一次 start → 登录 → 回调 → exchange；
+  检查浏览器地址栏与历史记录里没有 token。
+
+## 13. LDAP 目录登录（v0.11.0）
+
+与 OIDC 互斥（同开启动失败）。服务账号只读 + 搜索即可，**不要**给写权限；
+bind 密码只从环境变量读：
+
+```bash
+export PANEL_LDAP_BIND_PASSWORD='...'
+```
+
+```yaml
+ldap:
+  enabled: true
+  providerName: "目录账号"      # 登录按钮文案
+  host: "ad.corp.example.com"
+  port: 636
+  transport: "ldaps"            # ldaps | starttls | none（none 必须 allowInsecure: true）
+  insecureSkipVerify: false     # true 仅限自签测试目录，启动会 WARN
+  baseDN: "dc=corp,dc=example,dc=com"
+  scope: "sub"                  # one | sub
+  bindDN: "cn=panel-readonly,ou=svc,dc=corp,dc=example,dc=com"
+  userFilter: "(objectClass=person)"
+  usernameAttribute: "sAMAccountName"   # OpenLDAP 用 uid
+  mailAttribute: "mail"
+  timeout: 10s
+```
+
+| 键 | 约束 |
+|---|---|
+| `host`/`baseDN`/`bindDN`/`PANEL_LDAP_BIND_PASSWORD` | 必填 |
+| `port` | 1–65535 |
+| `transport` | `ldaps`（默认）/`starttls`/`none`；`none` 必须 `allowInsecure: true`。启动 WARN 有三类触发：`transport=none`（明文传目录口令）、`insecureSkipVerify=true`（关闭证书校验）与检测到绑定在其他目录主机上的历史身份（换主机告警，见下方「行为要点」） |
+| `usernameAttribute`/`mailAttribute` | `^[A-Za-z][A-Za-z0-9-]*$` |
+| `userFilter` | 括号配对、≤512、至少一个属性条件 |
+| `scope` | `one`/`sub` |
+| 绑定安全 | LDAP 的 subject 是用户名，可被目录重分配：返回登录发现目录邮箱与绑定时不同 → 绑定自动冻结（`conflict_at`）并 409，管理员 reset 后新人重新绑定。OIDC 的 `sub` 不可变，不适用此门 |
+| `timeout` | (0, 30s] |
+
+**AD 对照**：`usernameAttribute: sAMAccountName`；AD 默认拒绝匿名搜索（所以
+必须配服务账号）；LDAPS 需要完整证书链——`insecureSkipVerify: true` 只是排查
+工具，不是解法。**OpenLDAP 对照**：`uid` + `(objectClass=inetOrgPerson)`，
+StartTLS 用 389 端口。
+
+### 上线顺序（无 JIT）
+
+与 OIDC 相同：管理员邀请建号 → 用户设密码接受邀请 → 用户在目录里能登录 →
+登录页用目录账号登录完成绑定。目录邮箱（`mail`）必须与面板账户邮箱一致；
+缺失 `mail` 的目录账号登录会得到 403。
+
+### 行为要点
+
+- 目录不可达：503「目录服务不可用」，**不降级**为密码登录；`timeout` 到点即断。
+- filter 写宽了（命中多条）→ 全员 401，这是有意的 fail closed（L6）。
+- 换目录主机 = 换绑定命名空间：旧行不命中不删除，启动打 WARN，需管理员 reset。
+- 每次登录一条连接、无连接池（v1 取舍；量级是几十毫秒）。
+

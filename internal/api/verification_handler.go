@@ -91,14 +91,21 @@ func (a *AdminAPI) ResendVerification(c *gin.Context) {
 		return
 	}
 
-	var user model.User
-	err := a.deps.DB.Where("email = ?", string(req.Email)).First(&user).Error
-	if err == nil && !user.EmailVerified && !a.verificationCooldownActive(user.ID) {
-		if serr := a.sendVerificationMail(c.Request.Context(), user); serr != nil {
-			// A failed resend keeps the account state; the user can retry
-			// after the cooldown, and the response must stay identical to
-			// the unknown-address case anyway.
-			a.deps.Logger.Warn("resend verification mail failed", zap.Uint("user_id", user.ID), zap.Error(serr))
+	// Case-insensitive and collect-all like the other mailbox lookups; with
+	// more than one match the resend stays silent (the response is identical
+	// to the unknown-address case anyway, and mailing the wrong row would
+	// confirm one of them exists).
+	var users []model.User
+	err := a.deps.DB.Where("LOWER(email) = ?", model.NormalizeEmail(string(req.Email))).Find(&users).Error
+	if err == nil && len(users) == 1 {
+		user := users[0]
+		if !user.EmailVerified && !a.verificationCooldownActive(user.ID) {
+			if serr := a.sendVerificationMail(c.Request.Context(), user); serr != nil {
+				// A failed resend keeps the account state; the user can retry
+				// after the cooldown, and the response must stay identical to
+				// the unknown-address case anyway.
+				a.deps.Logger.Warn("resend verification mail failed", zap.Uint("user_id", user.ID), zap.Error(serr))
+			}
 		}
 	}
 

@@ -64,13 +64,19 @@ func newHarnessWith(t *testing.T, tune func(*api.Deps)) *harness {
 		&model.UserTOTP{},
 		&model.Organization{}, &model.Membership{}, &model.Role{}, &model.Invitation{},
 		&model.APIToken{},
-		&model.AuditLog{}, &model.Device{}, &model.DeviceHeartbeat{},
+		&model.AuditLog{}, &model.Device{}, &model.DeviceHeartbeat{}, &model.ServerGroup{},
 		&model.AddressBook{}, &model.AddressBookPeer{},
 		&model.AddressBookTag{}, &model.AddressBookGrant{}, &model.SyncCursor{}, &model.VerificationToken{},
 		&model.MigrationMark{}, &model.CompatSession{}, &model.LogEvent{},
 		&model.Policy{}, &model.Ticket{}, &model.Session{},
 		&model.SessionEvent{}, &model.Approval{}, &model.Alert{},
 		&model.UserGroup{}, &model.UserGroupMember{}, &model.DeviceGroup{}, &model.AccessRule{},
+		&model.ControlRole{}, &model.ConnectionLog{}, &model.FileLog{}, &model.AuditNonce{},
+		&model.CompatLoginChallenge{},
+		&model.Strategy{}, &model.DeviceDisconnect{},
+		&model.ClientBuildProfile{}, &model.ClientBuild{}, &model.ClientBuildArtifact{},
+		&model.UserPasskey{}, &model.WebAuthnCeremony{},
+		&model.UserIdentity{}, &model.ExternalLoginFlow{},
 	))
 
 	issuer := auth.NewIssuer("test-secret", time.Minute, time.Hour)
@@ -251,7 +257,9 @@ func TestCreateOrg_BecomesOwner(t *testing.T) {
 
 	var m model.Membership
 	require.NoError(t, store.ScopedByOrg(h.db.DB, uint(resp.Data.Id)).First(&m).Error)
-	require.Equal(t, model.RoleOwner, m.Role)
+	var owner model.Role
+	require.NoError(t, store.ScopedByOrg(h.db.DB, uint(resp.Data.Id)).First(&owner, m.RoleID).Error)
+	require.Equal(t, model.RoleKindOwner, owner.Kind, "the creator joins as owner")
 }
 
 func TestListMembers_CrossOrg_Forbidden(t *testing.T) {
@@ -306,7 +314,7 @@ func TestAcceptInvitation_JoinsAsRole(t *testing.T) {
 
 	var member model.Membership
 	require.NoError(t, store.ScopedByOrg(h.db.DB, uint(orgResp.Data.Id)).
-		Where("role = ?", model.RoleAdmin).First(&member).Error)
+		Where("role_id = ?", h.roleID(t, uint(orgResp.Data.Id), model.RoleAdmin)).First(&member).Error)
 	require.NotZero(t, member.UserID)
 
 	// Reusing the token must fail with a conflict.
@@ -630,5 +638,19 @@ func TestVerifyEmailRoutes_AnonymousReachHandler(t *testing.T) {
 
 	w = h.do(t, http.MethodPost, "/api/v1/auth/resend-verification",
 		map[string]string{"email": "someone@example.com"}, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+}
+
+// TestLogin_EmailCaseInsensitive pins the normalized-mailbox lookup: the
+// BeforeSave hook stores mailboxes lowercased, so a login spelling the
+// address with different case must still find the account. With legacy
+// case-variant rows this used to be a guaranteed not-found.
+func TestLogin_EmailCaseInsensitive(t *testing.T) {
+	h := newHarness(t)
+	h.seedUser(t, "Mixed.Case@Example.com", "password123")
+
+	w := h.do(t, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"email": "mixed.case@example.com", "password": "password123",
+	}, "")
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 }

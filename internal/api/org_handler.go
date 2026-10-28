@@ -22,6 +22,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/controlrole"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
@@ -91,7 +92,6 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 			OrganizationID: org.ID,
 			UserID:         uid,
 			RoleID:         ownerRole.ID,
-			Role:           ownerRole.Name,
 		}).Error; err != nil {
 			return err
 		}
@@ -99,6 +99,12 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 		// rule) commit with the organization: without them every member of a new
 		// organization would start with an empty device list.
 		if err := access.EnsureDefaultsTx(tx, org.ID); err != nil {
+			return err
+		}
+		// The built-in default control role commits with the organization too:
+		// every member without an assignment falls back to it, so a missing row
+		// would leave the organization with no permission set at all.
+		if err := controlrole.EnsureDefaultsTx(tx, org.ID); err != nil {
 			return err
 		}
 		// Record the audit entry on the same transaction (issue #19): the
@@ -239,19 +245,20 @@ func (a *AdminAPI) ListMembers(c *gin.Context, orgId int64) {
 	}
 	out := make([]gen.Member, 0, len(memberships))
 	for _, m := range memberships {
+		// The role row is the only source; a missing row leaves the name empty
+		// rather than guessing from a stale string (fail closed).
 		name := roleNameOf(roleIdx, m.RoleID)
-		if name == "" {
-			name = m.Role
-		}
 		out = append(out, gen.Member{
-			Id:        int64(m.ID),
-			UserId:    int64(m.UserID),
-			Email:     openapi_types.Email(emails[m.UserID]),
-			Role:      name,
-			RoleId:    int64(m.RoleID),
-			RoleName:  name,
-			Disabled:  m.Disabled,
-			CreatedAt: m.CreatedAt,
+			Id:            int64(m.ID),
+			UserId:        int64(m.UserID),
+			Email:         openapi_types.Email(emails[m.UserID]),
+			Role:          name,
+			RoleId:        int64(m.RoleID),
+			RoleName:      name,
+			ControlRoleId: controlRoleIDOf(m),
+			StrategyId:    strategyIDToAPI(m.StrategyID),
+			Disabled:      m.Disabled,
+			CreatedAt:     m.CreatedAt,
 		})
 	}
 
@@ -374,35 +381,53 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 		abortError(c, http.StatusTooManyRequests, gen.ErrorCodeRateLimited, "account temporarily locked")
 		return
 	}
+	// Accepting an invitation verifies a password for an existing account, so
+	// it is behind the same captcha as the login endpoint. The invitation is
+	// not touched before this point: a missing proof leaves it redeemable.
+	if !a.requireCaptcha(c, req.Captcha) {
+		return
+	}
 
 	var member model.Membership
 	var joined model.User
 	needVerify := false
 	err = a.deps.DB.Transaction(func(tx *gorm.DB) error {
+		// Match on the normalized mailbox: an invite addressed to a case
+		// variant of an existing account must join THAT account, never create
+		// a shadow one. More than one match is a legacy data conflict — refuse
+		// the acceptance instead of picking a row.
+		var users []model.User
+		err := tx.Where("LOWER(email) = ?", model.NormalizeEmail(inv.Email)).Find(&users).Error
+		if err != nil {
+			return err
+		}
 		var user model.User
-		err := tx.Where("email = ?", inv.Email).First(&user).Error
 		switch {
-		case err == nil:
+		case len(users) == 1:
 			// The mailbox already has an account: the invitation must not be
 			// accepted without proving ownership of the account (CWE-287).
+			user = users[0]
 			ok, verr := auth.VerifyPassword(user.PasswordHash, req.Password)
 			if verr != nil || !ok {
 				return errInvitationCredentials
 			}
-		case errors.Is(err, gorm.ErrRecordNotFound):
+		case len(users) > 1:
+			// Legacy case-variant rows: refusing beats picking one of them.
+			return errInvitationCredentials
+		default:
 			hash, herr := auth.HashPassword(req.Password)
 			if herr != nil {
 				return herr
 			}
 			// A fresh account starts unverified; the verification mail goes
-			// out after the transaction commits.
-			user = model.User{Email: inv.Email, PasswordHash: hash, EmailVerified: false}
+			// out after the transaction commits. The hook normalizes the
+			// mailbox, so the stored value is canonical even when the invite
+			// spelled it differently.
+			user = model.User{Email: model.NormalizeEmail(inv.Email), PasswordHash: hash, EmailVerified: false}
 			if cerr := tx.Create(&user).Error; cerr != nil {
 				return cerr
 			}
 			needVerify = true
-		default:
-			return err
 		}
 
 		// Remember the account for the post-commit mail step.
@@ -416,7 +441,6 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 			OrganizationID: inv.OrganizationID,
 			UserID:         user.ID,
 			RoleID:         joinerRole.ID,
-			Role:           joinerRole.Name,
 		}
 		if err := store.ScopedByOrg(tx, inv.OrganizationID).Create(&member).Error; err != nil {
 			return err
@@ -475,18 +499,27 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 	// middleware fallback for this request (issue #19).
 	c.Set(contextAuditRecorded, true)
 
+	// The membership row carries only the role id; the display name comes from
+	// the role row, and stays empty if that row cannot be resolved (fail closed
+	// rather than guessing a name).
+	joinedName := ""
+	if role, rerr := a.deps.Roles.RoleByID(inv.OrganizationID, member.RoleID); rerr == nil {
+		joinedName = role.Name
+	}
 	c.JSON(http.StatusOK, gen.MemberResponse{
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
 		Data: gen.Member{
-			Id:        int64(member.ID),
-			UserId:    int64(member.UserID),
-			Email:     openapi_types.Email(inv.Email),
-			Role:      member.Role,
-			RoleId:    int64(member.RoleID),
-			RoleName:  member.Role,
-			Disabled:  false,
-			CreatedAt: member.CreatedAt,
+			Id:            int64(member.ID),
+			UserId:        int64(member.UserID),
+			Email:         openapi_types.Email(inv.Email),
+			Role:          joinedName,
+			RoleId:        int64(member.RoleID),
+			RoleName:      joinedName,
+			ControlRoleId: controlRoleIDOf(member),
+			StrategyId:    strategyIDToAPI(member.StrategyID),
+			Disabled:      false,
+			CreatedAt:     member.CreatedAt,
 		},
 	})
 }

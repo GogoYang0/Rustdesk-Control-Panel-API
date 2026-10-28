@@ -1,0 +1,293 @@
+# Copy this file to <build-repo>/.github/workflows/build-client.yml.
+#
+# The panel dispatches this workflow with short inputs and downloads the bundle
+# itself; the token in bundle_url is masked in logs. The prepare job downloads
+# the bundle once and hands it to the platform jobs through actions/cache (never
+# upload-artifact: the panel requires the run's artifact set to match the
+# selected platforms exactly).
+name: build-client
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_id:
+        description: Panel build id
+        required: true
+        type: string
+      bundle_url:
+        description: Short-lived panel bundle URL
+        required: true
+        type: string
+      platforms:
+        description: Comma-separated platforms
+        required: true
+        type: string
+      rustdesk_version:
+        description: Pinned RustDesk version
+        required: true
+        type: string
+
+run-name: panel-client-${{ inputs.build_id }}
+concurrency:
+  group: panel-client-${{ inputs.build_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RUSTDESK_VERSION: "1.5.0"
+  RUSTDESK_COMMIT: "fada664df7a294d1d1a9ca3e7cd3637069122f17"
+  FLUTTER_VERSION: "3.24.5"
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Checkout build repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Download and validate bundle
+        shell: bash
+        env:
+          BUNDLE_URL: ${{ inputs.bundle_url }}
+          BUILD_ID: ${{ inputs.build_id }}
+          RUSTDESK_INPUT_VERSION: ${{ inputs.rustdesk_version }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$BUNDLE_URL"
+          mkdir -p .panel-bundle
+          curl --fail --silent --show-error --location "$BUNDLE_URL" -o bundle.tar.gz
+          tar -xzf bundle.tar.gz -C .panel-bundle
+          test -f .panel-bundle/manifest.json
+          python3 - <<'PY'
+          import hashlib, json, os, struct
+          m = json.load(open(".panel-bundle/manifest.json", encoding="utf-8"))
+          assert m.get("schema_version") == 1, "schema_version"
+          assert str(m.get("build_id")) == os.environ["BUILD_ID"], "build id mismatch"
+          assert m.get("upstream_version") == os.environ["RUSTDESK_INPUT_VERSION"], "version mismatch"
+          assert m.get("app_name") and m.get("server") and m.get("server_key") and m.get("api_server")
+          if m.get("logo"):
+              data = open(".panel-bundle/logo.png", "rb").read()
+              assert data[:8] == b"\x89PNG\r\n\x1a\n", "logo is not PNG"
+              width, height = struct.unpack(">II", data[16:24])
+              assert hashlib.sha256(data).hexdigest() == m["logo"]["sha256"], "logo sha256"
+              assert (width, height) == (m["logo"]["width"], m["logo"]["height"]), "logo dimensions"
+          PY
+
+      # The platform filter must happen HERE: a job-level `if` cannot
+      # reference `matrix` (it is evaluated before expansion), so the matrix is
+      # computed against the selected platforms and handed to `build` verbatim.
+      - name: Compute platform matrix
+        id: matrix
+        env:
+          PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          full = {
+              "windows-x64":   {"platform": "windows-x64",   "os": "windows-2022",  "rust": "1.75", "python": "python"},
+              "linux-x64":     {"platform": "linux-x64",     "os": "ubuntu-24.04",  "rust": "1.75", "python": "python3"},
+              "macos-arm64":   {"platform": "macos-arm64",   "os": "macos-15",      "rust": "1.81", "python": "python3"},
+              "macos-x64":     {"platform": "macos-x64",     "os": "macos-15-intel","rust": "1.81", "python": "python3"},
+              "android-arm64": {"platform": "android-arm64", "os": "ubuntu-24.04",  "rust": "1.75", "python": "python3"},
+          }
+          selected = list(dict.fromkeys(p.strip() for p in os.environ["PLATFORMS"].split(",") if p.strip()))
+          unknown = [p for p in selected if p not in full]
+          if unknown or not selected:
+              raise SystemExit(f"unknown or empty platforms: {unknown or selected}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write("matrix=" + json.dumps({"include": [full[p] for p in selected]}) + "\n")
+          PY
+
+      - name: Share bundle with platform jobs
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .panel-bundle
+          key: panel-client-${{ inputs.build_id }}-${{ github.run_id }}-bundle
+          enableCrossOsArchive: true
+
+  build:
+    needs: prepare
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout build repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Restore bundle cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .panel-bundle
+          key: panel-client-${{ inputs.build_id }}-${{ github.run_id }}-bundle
+          fail-on-cache-miss: true
+          enableCrossOsArchive: true
+
+      - name: Checkout pinned RustDesk
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: rustdesk/rustdesk
+          ref: ${{ env.RUSTDESK_COMMIT }}
+          path: src
+          submodules: recursive
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@2783a3f08e1baf891508463f8c6653c258246225 # v2.12.0
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - name: Patch source and branding
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--source src --manifest .panel-bundle/manifest.json)
+          if [ -f .panel-bundle/logo.png ]; then args+=(--logo .panel-bundle/logo.png); fi
+          ${{ matrix.python }} prepare_source.py "${args[@]}"
+
+      # ----- Windows x64 -----
+      - name: Build Windows
+        if: matrix.platform == 'windows-x64'
+        shell: pwsh
+        run: |
+          python build.py --portable --flutter --skip-portable-pack --hwcodec
+          New-Item -ItemType Directory -Force -Path ../out | Out-Null
+          $runner = "flutter/build/windows/x64/runner/Release"
+          Compress-Archive -Path "$runner/*" -DestinationPath "../out/panel-client-${{ inputs.build_id }}-windows-x64.zip"
+          $exe = Get-ChildItem -Path $runner -Filter "*.exe" | Select-Object -First 1
+          if ($null -eq $exe) { throw "no Windows executable found" }
+          Copy-Item $exe.FullName "../out/panel-client-${{ inputs.build_id }}-windows-x64.exe"
+        working-directory: src
+
+      # ----- Linux x64 AppImage -----
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'linux-x64'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxcb-randr0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libxdo-dev libxfixes-dev libasound2-dev libpulse-dev \
+            libva-dev libvdpau-dev libwayland-dev libxkbcommon-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev patchelf libarchive-tools libfuse2
+
+      - name: Build Linux
+        if: matrix.platform == 'linux-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 build.py --flutter --hwcodec --unix-file-copy-paste
+          deb=$(find target -name 'rustdesk-*.deb' | head -1)
+          test -n "$deb"
+          mkdir -p ../out appimage
+          cp "$deb" appimage/rustdesk.deb
+          # ubuntu-24.04 marks the system Python EXTERNALLY-MANAGED; without
+          # --break-system-packages pip aborts and set -e kills the build.
+          sudo pip3 install --break-system-packages "setuptools_scm==8.1.0"
+          sudo pip3 install --break-system-packages "git+https://github.com/rustdesk-org/appimage-builder.git@4ea36c95c6f3e29ff3c35807c1651ba353302f21"
+          pushd appimage
+          ./build-apprun.sh x86_64
+          sudo appimage-builder --skip-tests --recipe ./AppImageBuilder-x86_64.yml
+          appimage=$(find appimage-build -name '*.AppImage' | head -1)
+          test -n "$appimage"
+          cp "$appimage" "../../out/panel-client-${{ inputs.build_id }}-linux-x64.AppImage"
+        working-directory: src
+
+      # ----- macOS dmg -----
+      - name: Install create-dmg
+        if: startsWith(matrix.platform, 'macos-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            https://github.com/create-dmg/create-dmg/archive/refs/tags/v1.3.0.tar.gz -o create-dmg.tar.gz
+          tar -xzf create-dmg.tar.gz
+          sudo install create-dmg-1.3.0/create-dmg /usr/local/bin/create-dmg
+
+      - name: Build macOS
+        if: startsWith(matrix.platform, 'macos-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build.py --flutter --hwcodec --unix-file-copy-paste
+          app=$(find flutter/build/macos/Build/Products/Release -maxdepth 1 -name '*.app' | head -1)
+          test -n "$app"
+          mkdir -p ../out
+          arch="${{ matrix.platform == 'macos-arm64' && 'arm64' || 'x64' }}"
+          create-dmg --icon "$(basename "$app")" 200 190 --hide-extension "$(basename "$app")" \
+            --window-size 800 400 --app-drop-link 600 185 \
+            "../out/panel-client-${{ inputs.build_id }}-macos-${arch}.dmg" "$app"
+        working-directory: src
+
+      # ----- Android arm64 APK (fixed debug key) -----
+      - name: Install Android dependencies
+        if: matrix.platform == 'android-arm64'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake curl gcc-multilib git g++ g++-multilib \
+            libayatana-appindicator3-dev libasound2-dev libc6-dev libclang-dev libunwind-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgtk-3-dev libpulse-dev \
+            libva-dev libxcb-randr0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxdo-dev \
+            libxfixes-dev llvm-dev nasm ninja-build openjdk-17-jdk-headless pkg-config tree wget
+
+      - name: Setup Java
+        if: matrix.platform == 'android-arm64'
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android NDK
+        if: matrix.platform == 'android-arm64'
+        id: ndk
+        uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1
+        with:
+          ndk-version: r28c
+          add-to-path: true
+
+      - name: Build Android
+        if: matrix.platform == 'android-arm64'
+        shell: bash
+        env:
+          ANDROID_DEBUG_KEYSTORE_BASE64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          set -euo pipefail
+          test -n "$ANDROID_DEBUG_KEYSTORE_BASE64"
+          mkdir -p ~/.android
+          printf '%s' "$ANDROID_DEBUG_KEYSTORE_BASE64" | base64 -d > ~/.android/debug.keystore
+          rustup target add aarch64-linux-android
+          cargo install cargo-ndk --version 3.1.2 --locked
+          ./flutter/ndk_arm64.sh
+          mkdir -p flutter/android/app/src/main/jniLibs/arm64-v8a
+          cp target/aarch64-linux-android/release/liblibrustdesk.so \
+            flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
+          sed -i "s/signingConfigs.release/signingConfigs.debug/g" flutter/android/app/build.gradle
+          pushd flutter
+          flutter build apk --release --target-platform android-arm64 --split-per-abi
+          popd
+          mkdir -p ../out
+          cp flutter/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
+            "../out/panel-client-${{ inputs.build_id }}-android-arm64.apk"
+        working-directory: src
+
+      - name: Upload platform artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: panel-client-${{ inputs.build_id }}-${{ matrix.platform }}
+          path: out/*
+          if-no-files-found: error
+          retention-days: 3

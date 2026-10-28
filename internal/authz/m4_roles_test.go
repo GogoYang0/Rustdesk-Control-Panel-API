@@ -47,15 +47,28 @@ func TestEnsureBuiltins_SeedsThreeRolesAndIsIdempotent(t *testing.T) {
 	require.Equal(t, []string{authz.PermDeviceRead}, byKind[model.RoleKindMember].PermissionList())
 }
 
+// legacyMembership inserts a membership the way a pre-v0.10.0 database holds
+// it: role_id still 0 and the role carried by the string column, which
+// AutoMigrate no longer creates.
+func legacyMembership(t *testing.T, st *store.Store, orgID, userID uint, legacyRole string) {
+	t.Helper()
+	if !st.DB.Migrator().HasColumn(&model.Membership{}, "role") {
+		require.NoError(t, st.DB.Exec("ALTER TABLE memberships ADD COLUMN role varchar(16) NOT NULL DEFAULT ''").Error)
+	}
+	require.NoError(t, st.DB.Create(&model.Membership{
+		OrganizationID: orgID, UserID: userID,
+	}).Error)
+	require.NoError(t, st.DB.Exec("UPDATE memberships SET role = ? WHERE organization_id = ? AND user_id = ?",
+		legacyRole, orgID, userID).Error)
+}
+
 func TestRoleMigration_BackfillsLegacyRoleStrings(t *testing.T) {
 	st := roleTestStore(t)
 	org := model.Organization{Name: "acme"}
 	require.NoError(t, st.DB.Create(&org).Error)
 	user := model.User{Email: "a@example.com", PasswordHash: "x", EmailVerified: true}
 	require.NoError(t, st.DB.Create(&user).Error)
-	require.NoError(t, st.DB.Create(&model.Membership{
-		OrganizationID: org.ID, UserID: user.ID, Role: model.RoleAdmin,
-	}).Error)
+	legacyMembership(t, st, org.ID, user.ID, model.RoleAdmin)
 
 	require.NoError(t, authz.MigrateRoles(st.DB))
 
@@ -79,9 +92,7 @@ func TestRoleMigration_UnknownRoleFailsClosed(t *testing.T) {
 	require.NoError(t, st.DB.Create(&org).Error)
 	user := model.User{Email: "b@example.com", PasswordHash: "x", EmailVerified: true}
 	require.NoError(t, st.DB.Create(&user).Error)
-	require.NoError(t, st.DB.Create(&model.Membership{
-		OrganizationID: org.ID, UserID: user.ID, Role: "intern",
-	}).Error)
+	legacyMembership(t, st, org.ID, user.ID, "intern")
 
 	err := authz.MigrateRoles(st.DB)
 	require.Error(t, err)

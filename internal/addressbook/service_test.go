@@ -23,6 +23,7 @@ func newServiceFixture(t *testing.T) (*Service, uint, uint) {
 		&model.User{}, &model.Organization{}, &model.Membership{},
 		&model.AddressBook{}, &model.AddressBookPeer{}, &model.AddressBookTag{},
 		&model.AddressBookGrant{},
+		&model.UserGroup{}, &model.UserGroupMember{},
 	))
 
 	org := model.Organization{Name: "acme"}

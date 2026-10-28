@@ -34,8 +34,8 @@ func TestTenantIsolation_TwoOrgs(t *testing.T) {
 	require.NoError(t, db.Create(&orgA).Error)
 	require.NoError(t, db.Create(&orgB).Error)
 
-	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgA.ID, UserID: 1, Role: model.RoleOwner}).Error)
-	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgB.ID, UserID: 2, Role: model.RoleMember}).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgA.ID, UserID: 1, RoleID: 1}).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgB.ID, UserID: 2, RoleID: 3}).Error)
 
 	var fromA []model.Membership
 	require.NoError(t, store.ScopedByOrg(db, orgA.ID).Find(&fromA).Error)
@@ -80,7 +80,7 @@ func TestScopedByOrg_ZeroOrgFailsClosed(t *testing.T) {
 
 	org := model.Organization{Name: "org-zero"}
 	require.NoError(t, db.Create(&org).Error)
-	require.NoError(t, db.Create(&model.Membership{OrganizationID: org.ID, UserID: 3, Role: model.RoleMember}).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: org.ID, UserID: 3, RoleID: 3}).Error)
 
 	var rows []model.Membership
 	require.NoError(t, store.ScopedByOrg(db, 0).Find(&rows).Error)
@@ -97,8 +97,8 @@ func TestScopedByOrg_OrCannotEscapeTenant(t *testing.T) {
 	require.NoError(t, db.Create(&orgA).Error)
 	require.NoError(t, db.Create(&orgB).Error)
 
-	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgA.ID, UserID: 10, Role: model.RoleOwner}).Error)
-	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgB.ID, UserID: 20, Role: model.RoleMember}).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgA.ID, UserID: 10, RoleID: 1}).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgB.ID, UserID: 20, RoleID: 3}).Error)
 
 	// Org A queries with an OR on user 20 (a user of org B): must return nothing.
 	var escaped []model.Membership
@@ -132,8 +132,8 @@ func TestScopedByOrg_ScanIsScoped(t *testing.T) {
 	orgB := model.Organization{Name: "org-b-scan"}
 	require.NoError(t, db.Create(&orgA).Error)
 	require.NoError(t, db.Create(&orgB).Error)
-	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgA.ID, UserID: 31, Role: model.RoleOwner}).Error)
-	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgB.ID, UserID: 32, Role: model.RoleMember}).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgA.ID, UserID: 31, RoleID: 1}).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgB.ID, UserID: 32, RoleID: 3}).Error)
 
 	type count struct{ N int }
 	var c count
@@ -152,7 +152,7 @@ func TestUnscopedQuery_FailsClosed(t *testing.T) {
 
 	org := model.Organization{Name: "org-no-ctx"}
 	require.NoError(t, db.Create(&org).Error)
-	require.NoError(t, db.Create(&model.Membership{OrganizationID: org.ID, UserID: 41, Role: model.RoleOwner}).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: org.ID, UserID: 41, RoleID: 1}).Error)
 
 	var rows []model.Membership
 	require.NoError(t, db.Find(&rows).Error)
@@ -169,8 +169,8 @@ func TestScopedByOrg_TableQueryIsScoped(t *testing.T) {
 	orgB := model.Organization{Name: "org-b-table"}
 	require.NoError(t, db.Create(&orgA).Error)
 	require.NoError(t, db.Create(&orgB).Error)
-	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgA.ID, UserID: 51, Role: model.RoleOwner}).Error)
-	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgB.ID, UserID: 52, Role: model.RoleMember}).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgA.ID, UserID: 51, RoleID: 1}).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgB.ID, UserID: 52, RoleID: 3}).Error)
 
 	var rows []map[string]any
 	require.NoError(t, store.ScopedByOrg(db, orgA.ID).Table("memberships").Find(&rows).Error)
@@ -191,8 +191,8 @@ func TestScopedByOrg_TableAliasAndExplicitTable(t *testing.T) {
 	orgB := model.Organization{Name: "org-b-alias"}
 	require.NoError(t, db.Create(&orgA).Error)
 	require.NoError(t, db.Create(&orgB).Error)
-	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgA.ID, UserID: 61, Role: model.RoleOwner}).Error)
-	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgB.ID, UserID: 62, Role: model.RoleMember}).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgA.ID, UserID: 61, RoleID: 1}).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgB.ID, UserID: 62, RoleID: 3}).Error)
 
 	// Aliased reference: GORM keeps the alias in Statement.Table and the real
 	// name in TableExpr.
@@ -219,7 +219,7 @@ func TestScopedByOrg_DerivedTableRejected(t *testing.T) {
 
 	org := model.Organization{Name: "org-derived"}
 	require.NoError(t, db.Create(&org).Error)
-	require.NoError(t, db.Create(&model.Membership{OrganizationID: org.ID, UserID: 71, Role: model.RoleOwner}).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: org.ID, UserID: 71, RoleID: 1}).Error)
 
 	var rows []map[string]any
 	err := store.ScopedByOrg(db, org.ID).Table("(SELECT * FROM memberships) AS m").Find(&rows).Error
@@ -234,7 +234,7 @@ func TestDerivedTable_RejectedWithoutContext(t *testing.T) {
 
 	org := model.Organization{Name: "org-derived-noctx"}
 	require.NoError(t, db.Create(&org).Error)
-	require.NoError(t, db.Create(&model.Membership{OrganizationID: org.ID, UserID: 72, Role: model.RoleOwner}).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: org.ID, UserID: 72, RoleID: 1}).Error)
 
 	var rows []map[string]any
 	err := db.Table("(SELECT * FROM memberships) AS m").Find(&rows).Error
@@ -252,8 +252,8 @@ func TestScopedByOrg_JoinOnScopedTableRejected(t *testing.T) {
 	orgB := model.Organization{Name: "org-b-join"}
 	require.NoError(t, db.Create(&orgA).Error)
 	require.NoError(t, db.Create(&orgB).Error)
-	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgA.ID, UserID: 81, Role: model.RoleOwner}).Error)
-	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgB.ID, UserID: 82, Role: model.RoleMember}).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgA.ID, UserID: 81, RoleID: 1}).Error)
+	require.NoError(t, db.Create(&model.Membership{OrganizationID: orgB.ID, UserID: 82, RoleID: 3}).Error)
 
 	var rows []map[string]any
 	err := store.ScopedByOrg(db, orgA.ID).
@@ -347,7 +347,7 @@ func TestScopedByOrg_WithContextAfterScopeDropsTheScope(t *testing.T) {
 	org := model.Organization{Name: "org-a"}
 	require.NoError(t, db.Create(&org).Error)
 	require.NoError(t, db.Create(&model.Membership{
-		OrganizationID: org.ID, UserID: 1, Role: model.RoleOwner,
+		OrganizationID: org.ID, UserID: 1, RoleID: 1,
 	}).Error)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)

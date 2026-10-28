@@ -1,6 +1,6 @@
 # 运维指南（Operations Guide）
 
-> 适用版本：v0.9.0（M5：访问控制——用户组/设备组/组规则、compat peers 过滤与票据准入；上一基线 v0.8.0）。本文档随版本演进持续更新——每次发布前必须复核一遍。
+> 适用版本：v0.11.0（M6 波次 5b-1 Passkey、5b-2 OIDC、5b-3 LDAP；上一基线 v0.10.0）。本文档随版本演进持续更新——每次发布前必须复核一遍。
 > 配套文档：[部署指南](deployment.md) · [后端 API 规范](api-spec.md)
 
 ---
@@ -94,6 +94,90 @@
 
 **排查**：普通成员客户端设备列表为空 → 检查该成员所在用户组是否被规则覆盖、`everyone → 全部设备` 是否已被删除、设备是否处于停用状态；管理员看不到某设备 → 先查管理面设备列表（全量），规则只影响客户端可见性与票据准入。
 
+### 2.3.1 设备归属运维（v0.10.0）
+
+**归属是什么**：`devices.owner_user_id`，一台设备最多归一名本组织成员。它决定两件事：**归属人本人始终能在客户端看到并连接自己的设备**（无需任何规则，停用设备/停用会籍除外），以及 `用户组 → 用户组` 规则按目标组成员的归属展开设备集合。
+
+**三种归属来源**：
+1. **登录自动归属**（默认路径）：设备尚未归属时，首个登录成功的用户成为归属人——前提是本次登录**提交了 `uuid` 且与设备绑定一致**；**空 `uuid` 登录成功但不产生归属**（uuid 是客户端唯一的身份信号，归属不能靠"知道一个 rustdesk id"取得）。**已归属他人的设备不会被登录改写**（管理员改派过的归属保持不动，除非管理员再次改派）。
+2. **管理面改派**：`PATCH /api/v1/orgs/{orgId}/devices/{deviceId}`，`{"owner_user_id": <userId>}` 改派、`{"owner_user_id": null}` 清空；目标必须是本组织的有效成员（会籍未停用且角色可解析），否则 404。改派与清空各写一条 `device.assign` 审计（`Detail` 含 `from`/`to`）。
+3. **客户端 `--assign`**：`rustdesk --assign --user-name user@example.com --device-name ... --note ...` 按客户端配置的 API 服务器调用 `POST /api/devices/cli`，需要**个人令牌**（`device.write`）。字段白名单外的参数（`--strategy`、`--address-book-*`、`--device-username`）会被 `400` 明确拒绝——这是有意行为，不是兼容性缺陷。
+
+**常见运维与排查**：
+
+| 场景 | 处理 |
+|---|---|
+| 成员看不到自己的设备 | ① 管理面确认该设备的 `owner_user_id` 是不是本人（登录自动归属只在**设备无归属**且登录**带匹配 `uuid`** 时生效，设备可能已被改派给他人，或该成员登录时客户端没带 uuid）；② 设备是否被停用；③ 该成员的会籍是否被停用；④ 改派：`PATCH` 该设备 `owner_user_id` 为本人 |
+| 成员换机后仍看到旧设备 | 归属不变更：清空 `{"owner_user_id": null}` 或改派给新使用者；`rebind` 只换绑定不换归属 |
+| 一台共用机反复被不同人登录 | 归属保持第一次登录的用户（不会被后来者抢走）；需要改派时由管理员显式 `PATCH`，或先清空再由登录自动归属 |
+| 成员离职后设备归属仍在 | 归属**故意保留**（历史可追溯，管理面 `owner_email` 继续显示）：离职成员会籍停用后本人不可见，且其设备也不会通过 `用户组 → 用户组` 规则对他人可见；要交给接任者请显式改派 |
+| `--assign` 返回 404 | 设备/用户/组不在该令牌绑定的组织内，或名称/邮箱不匹配（组名大小写不敏感，邮箱精确匹配）；跨组织操作在契约上不存在 |
+| 改派后旧归属人仍在会话中 | 归属变更**不撤销已建立的连接**（与规则变更一致）；需要立即收权请停用设备（`disabled`，会撤销活跃 compat 会话） |
+
+**删除用户组时**：以该组为源/目标的规则与以该组为主体的地址簿授权同事务级联删除（响应报 `removed_rules` / `removed_grants`）；**设备归属不受影响**（归属是用户维度，删组不清归属）。
+
+### 2.4 验证码运维（v0.10.0）
+
+**启用前置**：选定 `captcha.provider`（默认 `altcha`），注入对应秘密（`PANEL_CAPTCHA_ALTCHA_KEY` / `PANEL_CAPTCHA_GEETEST_KEY` / `PANEL_CAPTCHA_CAP_SECRET`），并把 `captcha.enabled=true`。启用后 `POST /api/v1/auth/login`、`POST /api/v1/auth/2fa/verify`、`POST /api/v1/invitations/accept` 全部要求 `GET /api/v1/auth/captcha` 发放的挑战；compat `POST /api/login`（原生客户端，**不带 `/api/v1` 前缀**）不受影响。
+
+**提供商与运维归属**：
+- `altcha`：自带 proof-of-work，无外部依赖；`maxNumber` 越高越难爆破、客户端越费 CPU（默认 10 万次哈希，通常毫秒级）。
+- `geetest`：需要极验账号与 `captchaId`；依赖境外服务，部署前确认可达。
+- `cap`：需要单独部署并升级 Cap Standalone，面板只调用其 `/siteverify`；Cap 不可用时按 `failMode` 处理。
+
+**失败语义**：缺 `captcha` → `400 captcha_required`；挑战过期/已用/答案错/**提供商判定失败** → `400 captcha_invalid`（不区分账号是否存在）；提供商网络错误/超时/5xx/响应无可判定内容，且 `failMode=closed` → `503 captcha_unavailable`。**判定与故障按响应内容区分而不是状态码**：例如 Cap 对不存在或已消耗的 token 返回 `404 {"success":false}`，这是判定（400），不是故障。`failMode=open` 只放行“提供商不可达”，提供商判定失败永远不放行，且每次放行都打 error 日志——仅用于临时运维窗口，用完立即改回 `closed`。
+
+**状态与多副本**：挑战本身无状态，但「已消耗凭据」与登录限流都在进程内存（Altcha 5 分钟、GeeTest/Cap 10 分钟去重窗口）。两者约束不同：**消费键与 IP 无关**，按 IP 粘性路由**不能**保证跨实例单次消费（换源 IP 的同一凭据可能命中未记录它的实例），需要该保证时必须单副本或共享消费存储；登录限流按 IP 计费，粘性路由有效。进程重启同样会清空消费表。一个凭据只有一次尝试机会；错误答案也会消耗它。已通过校验的凭据在 TTL 内不会被容量淘汰——内存表满时优先淘汰未通过校验的占位，全是已通过条目时拒绝新挑战，而不是把已用凭据放回可用；校验进行中若占位被淘汰，成功结果仍会补记为**已通过**状态，且过期句柄不会覆盖或删除同 key 的新占位。
+
+**failMode 的边界**：`open` 只在**校验阶段**遇到提供商网络故障时放行；如果提供商连**挑战都发不出来**（`GET /api/v1/auth/captcha` 503），三个入口仍会被挡住——此时应临时停用验证码（`captcha.enabled=false`）或切换提供商，而不是长期依赖 `open`。
+
+**停用**：把 `captcha.enabled=false` 重启即可恢复原登录流程（无需数据库变更）；停用后 `GET /api/v1/auth/captcha` 返回 `enabled=false`，客户端可跳过验证码。
+
+**排查**：全员卡在登录 → 先看 `GET /api/v1/auth/captcha` 是否 5xx（提供商不可达或配置错误），再看 `captcha` 配置与秘密是否注入；个别用户反复 `captcha_invalid` → 检查客户端时钟与挑战 TTL；日志出现 `captcha provider unavailable; fail-mode open` → 说明正在放行，立即确认提供商状态并改回 `closed`。
+
+### 2.5 控制角色运维（v0.10.0）
+
+**它管什么、不管什么**：控制角色只描述「连上之后能做什么」（键盘鼠标、剪贴板、文件、音频、摄像头、终端、隧道、重启、录屏、阻断输入、远程改配置、隐私模式、USB、远程打印，共 14 项，每项三态）。它**不决定能否连接**（那是访问控制 §2.3），也**不改被控端设置**（那是 Strategy，波次 4）。
+
+**最重要的运维事实：原生客户端会话目前不受它约束。** 权限位图由 hbbs 在信令消息里注入，面板不在信令链路、provision 起的是 stock rustdesk-server（设计 D10）。当前版本你能得到的是：管理面可配、票据与服务端快照可查（`tickets.control_permissions` / `sessions.control_permissions`）、审计可追。**不要把它当作已生效的强制限制向业务方承诺。**
+
+- 每个成员最多一个角色；未分配即回到组织内置 `default`（每组织一行，不可删、不可改名、权限可改）。
+- `control_role.manage` 授予 owner 与 admin（不可委派给自定义角色）。删除自定义角色会把持有者的分配清空（回到 default），同事务写审计。
+- 排障：票据上的 `control_permissions` 与预期不符 → 先看签发时刻该成员的分配（角色后来被改不会回溯旧票据），再看 `control_role.assign` 审计；`control_permissions=0` 表示「没有任何显式 enable」，不是「未计算」。
+
+### 2.6 compat 登录 2FA 运维（v0.10.0）
+
+- 开启方式与面板一致：成员在面板里完成 TOTP 启用（`/auth/2fa/enable`）；开启后**原生客户端登录也必须过第二步**。
+- 现象：客户端先弹「2FA code」输入框（服务端返回 `tfa_type=totp`），输入 6 位码后才进入；密码错误/验证码错误都计入同一账号锁定计数（与面板共用）。
+- **同码两次登录会失败**：面板与客户端共用 `user_totps.last_step`，同一 30 秒窗口内先用面板登录、再用同一个码登录客户端会被判重放。等下一窗口即可，不是故障。
+- 用户丢失设备：管理员走 `POST /orgs/{orgId}/members/{userId}/2fa/reset`（与面板 2FA 同一入口，见 §3.1 的跨组织边界）。
+- 挑战记录存 `compat_login_challenges`（TTL 5 分钟、单次消费、失败 5 次作废）；表无需手工清理，过期行不影响登录，可按需在维护窗口删除。
+- 注意：**未配置 `auth.secret` 时 2FA 相关操作 fail closed**；轮换 `auth.secret` 会让既有 TOTP 秘密无法解密，必须先重置用户的 2FA。
+
+
+### 2.7 客户端策略与心跳断连运维（v0.10.0）
+
+**它管什么、不管什么**：策略改的是**被控端客户端的本地选项**（音频、剪贴板、文件传输、摄像头、终端、隧道、录屏、隐私模式等 20 项），由客户端每 30 秒拉取一次心跳时下发。它**不决定谁能连接**（访问控制 §2.3），也**不决定连上后能做什么**（控制角色 §2.5）。三者的排障入口不同，别混。
+
+- 生效链路：管理面改 `config_options` → `version` +1 → 客户端下次心跳（≤30 秒）带着旧 `modified_at` 来 → 响应回 `strategy` + `modified_at` → 客户端写入本地配置并把该键标记为「固定」（用户在本机改不回来）。**没有推送**，客户端离线就一直不生效。
+- 三层优先级固定：设备 > 设备组 > 成员（设备归属人的会籍）。排障顺序：先看 `GET devices` 的 `strategy_id`，再看 `GET device-groups`，最后看 `GET members`。停用的策略**不会**回落——这是有意设计，否则「临时关掉」会变成「换成另一套」。
+- 常见误解：客户端心跳里回传了版本号但没收到 `strategy` 是正常的（说明它已是最新）；反过来，服务端**绝不会**只发版本号不发选项——那会让客户端永久停在旧配置。
+- `config_options` 只接受 20 个白名单键。收到 `400 option key is not allowed: xxx` 说明键名拼错、大小写不对、或带空格；网络类键（`api-server`、`relay-server`、`key` 等）**永远**拒绝：客户端会照单全收，放行等于设备接管。
+- 空值（`""`）表示「清除该键、回到客户端内置默认」，不是「关闭」。要关闭请用 `N`。
+- **从 `config_options` 里删掉一个键等于「清除」**：服务端会把它以空值继续随下发回传（记在策略的 `cleared_keys` 里），确保客户端撤掉旧值；重新加回该键则自动移出。不要指望「删掉就没人管了」——那样客户端会一直保留旧值。
+- **改派策略看版本号**：`version` 是组织内单调序列，两个策略永远不会同号。若在抓包里看到客户端回传的 `modified_at` 与当前策略 `version` 相同，说明它已经是最新；不同就一定会下发一次。
+
+- **跨组织身份歧义（v0.10.0 安全边界）**：若同一 `(rustdesk id, uuid)` 被注册进多个组织（影子注册），该设备的心跳**收不到策略也不会消费断连**（服务端日志记 `heartbeat identity is ambiguous`）。这是有意的 fail closed：防止把 A 组织的策略推给 B 组织控制的客户端。**恢复需要两步，只删设备行不够**：心跳会话按全平台「最新」解析，若最新会话属于影子设备所在的组织，`touchDevice` 在该组织找不到设备行后直接结束心跳——此时必须 ① 撤销影子组织的 compat 会话（需要相应管理权限），**或** ② 让合法客户端重新登录（产生更新的会话重新赢得解析），然后确认心跳恢复。合法迁移设备（换组织）时，先删旧组织的设备行即可避免窗口。
+
+**断连（`POST .../devices/{deviceId}/disconnect`）**
+
+- 面板不在信令链路，**不能**直接掐断连接。它只记录请求，由客户端下次心跳按它自己上报的连接编号执行。
+- 现象：请求成功（201）后连接最多再存活 30 秒左右；客户端当时没有活跃连接时请求保持 `pending`，等它下次带连接上报才生效，15 分钟后作废（`expired`）。
+- 同一设备已有 pending 请求时返回 409——先看是不是上一次还没被消费（客户端离线），而不是重复点击。
+- 审计：`device.disconnect.request`（谁、为什么）、`device.disconnect.fulfilled`（断了几个）、`device.disconnect.expired`（系统动作，`ActorUserID=0`）。被拒绝的 409 只会留下一条 HTTP 回退审计（`POST .../disconnect` + status 409），这是预期。
+- `strategy_name` 可用：客户端 `rustdesk --assign strategy_name=<名字>` 现在会按本组织策略名分配（大小写不敏感，未知名字 404 且整单失败）。
+
+
 ---
 
 ## 3. 审计日志
@@ -113,6 +197,17 @@
 - **回收站（地址簿 v0.8.0）**：删除的 peer 软删除保留 30 天，每小时清扫永久删除过期行；恢复会 bump revision，永久删除不动 revision 与 live 内容。
 - **个人令牌（v0.8.0）**：只在组织路径生效；有效权限 = 申请集 ∩ 当前角色权限集，每请求实时重算。列表只显示 `token_prefix`，明文只在创建响应出现一次；遗失令牌请直接撤销后重建。**令牌权限是硬上限**：地址簿写入即使由所有权或 full 授权放行，仍要求令牌含 `addressbook.write`，否则 403。
 - **管理面 2FA（v0.8.0）**：启用后用户登录需要第二步（`/auth/2fa/verify`，与登录共用两轨限流）。用户丢失设备与恢复码时，由 owner/admin 用 `POST /orgs/{orgId}/members/{userId}/2fa/reset` 重置（写 `user.2fa.reset` 审计）。**边界**：2FA 是账号级而非组织级——管理员不能重置自己（409，自服务走 `/auth/2fa/disable`）；目标在本组织是 owner 时只有 owner（`org.admin`）能重置；目标只要**在本组织之外还存在任何会籍**（无论角色、含已停用）就一律拒绝（403）——账号级因素同时保护其在其他组织的登录，清除它会让任一组织的管理员越权削弱别租户；这类跨组织用户的账号恢复只能走平台级运维（系统外）。TOTP 密钥以 `auth.secret` 派生的密钥加密存储，**未配置 `auth.secret` 时 2FA 操作 fail closed**（500）；**轮换 `auth.secret` 会让既有 2FA 配置无法解密**，须先重置相关用户 2FA 再轮换。**启用流程原子化**：已启用的配置不会被再次 setup 覆盖（行锁 + `enabled_at IS NULL` 条件写），Enable 只激活它校验过的那个待启用秘密——并发的 setup 不能把已激活账号"降级"回待启用状态。
+
+### 3.2 客户端连接 / 文件传输日志（v0.10.0）
+
+- 来源：原生客户端上报 `POST /api/audit/{conn,file,alarm}`（无 Authorization，靠 `(id, uuid)` 与设备绑定比对；见 API 规范 §4.5）。**与 `sessions` 是两套记录**：`sessions` 是面板记账，这里是客户端侧证据。
+- 查询：`connection-logs` / `file-logs`（`audit.read` + `audit_scope`）。`individual` 只能看自己拥有设备（`owner_user_id`）的记录；想看全组织需要 `global` 审计范围。
+- 导出上限 1000 行，超出报 400 要求收窄；导出动作本身写 `connection_log.export` / `file_log.export` 审计。
+- 去重：客户端重试按 `nonce` 幂等 5 分钟；`audit_nonces` 由每 10 分钟的 worker 清理，正常运维无需干预。
+- 保留期：跟随组织 `audit_retention_days`（0 = 永久），`client-log-retention` 每小时删除过期行。**没有归档**：与审计日志不同，删了就没了；需要长期留存的证据请自行导出 CSV 到外部存储。
+- 可信度：知道 `(id, uuid)` 的人可以伪造上报，与免凭据心跳同一信任级。**不要把这两张表当作不可抵赖证据**；需要强证据时以 `sessions` + hbbs 日志采集交叉验证。
+- 常见现象：`close` 先于 `new` 到达会留下一条 `status=closed`、`started_at=ended_at` 的孤儿行（设计如此，用于保留证据）；备注只写进该会话最近一条 open 行，同一设备并发会话时可能落到相邻行。
+
 
 ---
 
@@ -218,3 +313,153 @@ Prometheus 指标端点属后续硬化项（见 #31 描述遗留清单）。
 | panel 启动即退出 | 启动序列某步 Fatal：看日志第一行（配置/DB/邮件校验，见部署指南 §4.1） |
 | 审计序列断号 | 先确认是否落在已归档清理区间（`audit.retention.archive`/`audit.retention.purge` + 归档 JSONL/`.sha256` 交叉核对，§3）；保留窗口内的非预期断号立即排查，确认 DB 访问权限是否受控（应用账号以外的写入途径、是否有直连改表） |
 | 普通成员客户端设备列表为空 | 访问控制（§2.3）：成员所在用户组是否有规则覆盖、`everyone → 全部设备` 是否已删除、设备是否停用；票据签发/兑换被拒 `404` 同因 |
+| 成员看不到**自己的**设备 | 设备归属（§2.3.1）：`owner_user_id` 是否指向本人（登录自动归属只在设备无归属时生效，可能已被改派）、设备是否停用、该成员会籍是否停用；改派用管理面 `PATCH` |
+| 管理面 `POST /api/v1/auth/login` / `POST /api/v1/auth/2fa/verify` / `POST /api/v1/invitations/accept` 报 400 `captcha_required`/`captcha_invalid` | 验证码（§2.4）：客户端需先 `GET /api/v1/auth/captcha`；挑战过期/已用/答案错都归为 invalid，重新取挑战再试。compat `POST /api/login` 不接验证码，无需取挑战 |
+| 上述三个管理面入口报 503 `captcha_unavailable` | 提供商不可达且 `failMode=closed`（§2.4）：检查网络/提供商状态/秘密配置；确认后可临时 `open` 或停用验证码 |
+| 策略改了但客户端没变 | 策略靠心跳拉取（§2.7）：确认客户端在线（`last_seen_at`）、分配落在正确层级（设备 > 组 > 成员）、策略 `enabled=true`。离线设备要等它上线后第一个心跳 |
+| 客户端心跳回传版本号但没收到 `strategy` | 正常：说明 `modified_at` 与 `strategies.version` 相同，服务端不重复下发（§2.7） |
+| 创建策略报 `option key is not allowed` | 键名不在 20 个白名单内（拼写/大小写/空格错，或用了 `api-server` 一类网络键）——见 API 规范 §3.14 的键表 |
+| 断连请求返回 409 | 该设备已有 pending 请求（§2.7）：多半是客户端离线没消费，等它上线或等 15 分钟过期 |
+| 断连后连接还在 | 面板不直接断连，最长等一个心跳周期（30 秒）+ 客户端处理；若 15 分钟后仍无 `fulfilled` 记录，说明客户端期间没有上报活跃连接 |
+| 策略/断连突然对某设备失效，日志有 `identity is ambiguous` | 同一 `(rustdesk id, uuid)` 被注册进多个组织（§2.7 安全边界）。只删设备行**不够**——心跳会话按全平台最新解析，影子会话会让 `touchDevice` 直接结束心跳。恢复两步：① 撤销影子组织的 compat 会话（需相应权限），**或** ② 合法客户端重新登录产生更新会话；之后确认心跳恢复（§2.7） |
+| 断连显示 `fulfilled` 但连接仍在 | 心跳端点无凭据（设计 C16）：知道 `(id, uuid)` 的人可以伪造一次带 `conns` 的心跳把请求消费掉。响应对攻击者无用（断的是他自己的连接），但管理员的请求会被作废。需要强断连时以 `sessions` 与 hbbs 日志交叉验证 |
+| 客户端登录弹出「2FA code」且输入后仍 401 | compat 2FA（§2.6）：码已过期/同窗口被面板用过（防重放）/挑战过期超 5 分钟；重新登录取新挑战。确认账号确实启用了 TOTP |
+| 票据/会话的 `control_permissions` 与预期不符 | 控制角色（§2.5）：快照取签发时刻、不回溯；`0` 表示无显式 enable。**原生客户端不受其约束** |
+| 连接/文件日志为空但客户端确实在跑 | 客户端需已登录（上报依赖登录态）且设备 `bound_uuid` 与应用一致；`uuid` 不符会被 403 丢弃（§3.2） |
+| 导出连接/文件日志报 400 | 结果超过 1000 行（§3.2）：加 `deviceId` / `from` / `to` 收窄 |
+| 全员登录被限流 429 | 挑战端点与登录各有一个独立的 5/min/IP 桶：排查是否有客户端在循环刷 `/api/v1/auth/captcha`；正常用户刷新一两次不会触发 |
+
+## 10. Passkey 运维（v0.11.0）
+
+**管理员重置成员凭据**：`POST /api/v1/orgs/{orgId}/members/{userId}/passkeys/reset`
+（`member.manage`）。守卫与 2FA 重置一致：不能重置自己；重置 owner 需要
+`org.admin`；目标同属其他组织时拒绝。审计 `user.passkey.reset` 记录删除条数。
+**目标没有密码时返回 409**：清空凭据会让账户彻底无法登录。
+
+**transports 列类型变更（v0.11.0，text → varchar(255)）**：MySQL 8/9 拒绝
+TEXT 列带默认值（error 1101），旧列定义在 MySQL 上无法完成启动迁移——本版本
+把列改为 `varchar(255)`。注册入口同时按集合语义去重 transports 并限制编码后
+长度 ≤255 字节。
+
+**PG 升级必须在启动新版本之前清理超长行**：gorm 的 postgres 驱动对
+`ALTER ... TYPE varchar(255)` 使用显式转换 `USING ...::varchar(255)`，该转换
+对超长值是**静默截断**而非报错——截断后的 JSON 不合法，凭据将无法使用。
+升级步骤：① 停旧版本；② 检查
+`SELECT id FROM user_passkeys WHERE char_length(transports) > 255;`，
+有行则先删除或手工修复；③ 再启动新版本执行 AutoMigrate。正常认证器的
+transports 远小于 255 字节，此检查绝大多数部署为空。MySQL 上不存在此类
+存量行（旧表建不出来）。
+
+**无密码账户丢失全部 passkey（唯一需要改库的场景）**：
+
+1. 先确认没有别的出路：该账户是否绑定了另一个 passkey；再看
+   `GET /auth/identity` 是否有可用的外部身份绑定——有则先走 SSO/目录登录，
+   重新绑定 passkey 即可，无需改库。都没有才继续。
+2. 生成一个新密码的哈希（与面板存储格式一致）：
+
+   ```bash
+   read -rs PW && printf '%s\n' "$PW" | go run ./tools/pwhash && unset PW
+   ```
+
+   `read -rs` 不回显、也不进 shell history；口令只经 stdin 传给工具，不出现在
+   进程列表里。
+
+3. 写入数据库（**先备份**，并把该值只交给账户本人）：
+
+   ```sql
+   UPDATE users SET password_hash = '<上一步输出>' WHERE id = <userId>;
+   ```
+
+4. 用户用该密码登录后，应立即在设置里重新绑定 passkey，并走
+   `POST /auth/password/remove` 恢复 passkey-only（或改密后保留密码）。
+5. 若不想给临时密码，也可以只删除该用户的 `user_passkeys` 行并保留 `users`
+   行——但那不会让账户变得可登录，仍需第 2–3 步。
+
+**`clone_warning` 处置**：`GET /auth/passkeys` 里 `clone_warning=true` 表示该
+凭据曾报告签名计数器回退（可能被复制）。处理：让用户删除该凭据并重新绑定；
+不要直接改库清标志。计数器恒为 0 的平台认证器不会触发该标记。
+
+**清扫任务**：`webauthn-ceremony-sweep` 每 10 分钟删除过期 ceremony。过期的
+ceremony 本来就无法被消费，任务只回收空间；它失败会按 worker 约定写审计。
+
+**自助事件在哪看**：passkey 注册/删除/登录、删除/恢复密码只写结构化日志
+（`user_id`、`passkey_id`、`mode`），**不进 `audit_logs`**——它们没有租户
+归属。管理员重置是唯一进入审计表的 passkey 事件。
+
+## 11. 外部身份运维（v0.11.0，OIDC）
+
+**绑定冲突处置**：`GET /auth/identity` 里 `conflict_at` 非空，或日志出现
+`oidc callback rejected`（`error_code=identity_conflict`），表示某 subject 的
+绑定与该账户邮箱不再对应（IdP 侧邮箱被回收/改名）。处置：管理员调用
+`POST /orgs/{orgId}/members/{userId}/identity/reset` 清空绑定；用户重新走一次
+SSO 即按当前邮箱重绑。reset 写审计 `user.identity.reset`。
+
+**换 IdP（issuer 变化）**：旧行不命中也不删除；启动日志出现
+`identities are bound to a different oidc issuer`（含条数）。批量步骤：
+
+1. 通知用户 SSO 需要重新绑定一次；
+2. 对每个受影响账户调用管理员 reset（脚本按 `SELECT user_id FROM
+   user_identities WHERE provider='oidc' AND issuer <> '<新 issuer>'` 圈出名单）；
+3. 保留旧行直到新绑定完成——它们是回滚路径，**不要手工 DELETE**。
+
+**discovery/JWKS 故障排查**：SSO 报 503 时按序检查——issuer 拼写（必须与
+IdP discovery 返回的完全一致）、`{web.baseURL}` 是否可达、IdP 证书是否过期、
+出站网络是否放行。discovery 失败不缓存，修复后无需重启。
+
+**`email_verified` 缺失**：部分自建 IdP 不返回该 claim，绑定会得到
+`email_unverified`。在 IdP 侧补 claim；面板侧无开关，这是有意的 fail-closed。
+
+**日志字段**：自服务绑定/登录/解绑只写结构化日志（`user_id`、`provider`、
+`identity_id`、`error_code`），不进 `audit_logs`；secret/code/id_token/ticket
+原文不出现在任何日志。管理员 reset 是唯一进审计表的外部身份事件。
+
+## 12. LDAP 目录运维（v0.11.0）
+
+**401 与 503 的分流**：401 有两种成因，先看涉及面——个别用户 401 = 无效凭据
+（或该用户的 `userFilter` 命中了多条目录条目，面板按 fail-closed 拒绝，日志
+`error_code=invalid_credentials` 不可区分是刻意设计）；**所有人** 401 且带
+`ErrAmbiguousResult` 症状（`userFilter` 写宽了）= 检查 filter 是否会匹配多个
+条目。503「目录服务不可用」= 面板到目录的链路或配置问题——按 `transport`
+分情况验证连通性：
+
+```bash
+# ldaps（默认端口 636）
+ldapsearch -H ldaps://HOST:PORT -x -s base -b ''
+# starttls
+ldapsearch -H ldap://HOST:PORT -ZZ -x -s base -b ''
+# none（仅隔离网络）
+ldapsearch -H ldap://HOST:PORT -x -s base -b ''
+# 验证服务账号本身可用（替换 bindDN；-W 交互输密码；在上方对应
+# transport 的命令中加上 -D/-W，starttls 用 ldap://HOST:PORT -ZZ）
+ldapsearch -H ldaps://HOST:PORT -x -D 'BINDDN' -W -s base -b ''
+```
+
+再查证书链（LDAPS）、`transport`/`allowInsecure` 组合、服务账号是否被锁。
+**绝不能**因为 503 被误报成密码错而让用户反复重试。
+
+**目录改名后重新绑定**：`subject` 是 `usernameAttribute` 的值（L7），目录侧
+改了它 = 旧绑定不命中。启动日志出现 `identities are bound to a different
+ldap host`（换主机）或用户报 401（改用户名）时：管理员调用
+`POST /orgs/{orgId}/members/{userId}/identity/reset` 清空绑定，用户重新登录
+一次即按新值绑定。reset 写审计 `user.identity.reset`。
+
+**目录账号复用（用户名重分配）**：LDAP 的 subject 是用户名——目录侧把
+`alice` 重新分配给另一个人时，新持有人能通过自己的口令 bind。面板的防线是
+**绑定邮箱漂移即冻结**：返回登录发现该 subject 的目录邮箱与绑定时记录的
+不一致 → 绑定标记 `conflict_at`，登录返回 409，直到管理员
+`identity/reset` 清掉旧绑定后新人重新绑定。注意残余风险：若目录管理员把
+用户名**和邮箱一起**让给新人（邮箱不变），面板无法区分——这属于目录侧
+账号管理责任，处置同「目录改名后重新绑定」。
+
+**`mail` 属性缺失**：登录返回 403「directory account has no mail attribute」。
+处置：在目录侧给该账号补 `mail`（必须与面板账户邮箱一致），无需面板侧操作。
+
+**bind 账号密码轮换**：服务账号密码只在 `PANEL_LDAP_BIND_PASSWORD`。轮换
+四步：目录侧设置新密码 → 更新环境变量 → 重启面板 → 删除旧密码。轮换窗口内
+登录返回 503（不是 401），不要在窗口内尝试排查用户凭据。
+
+**日志边界**：登录日志只含 `username`、结果与 `error_code`；503 分支额外带
+`zap.Error` 的链路原因（go-ldap 的结果码与错误消息，用于区分断连/证书/协议
+故障），其中不含任何口令。目录密码、bind 密码不落任何日志或审计。多次 401 会进入与密码登录同一失败窗口
+（同 IP + 同用户名），达到阈值后 429。
+

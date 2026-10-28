@@ -44,7 +44,7 @@ func seedOrgMember(t *testing.T, h *harness, orgID int64, email string) string {
 	t.Helper()
 	user := h.seedUser(t, email, "password123")
 	require.NoError(t, h.db.DB.Create(&model.Membership{
-		OrganizationID: uint(orgID), UserID: user.ID, RoleID: h.roleID(t, uint(orgID), model.RoleMember), Role: model.RoleMember,
+		OrganizationID: uint(orgID), UserID: user.ID, RoleID: h.roleID(t, uint(orgID), model.RoleMember),
 	}).Error)
 	return h.login(t, email, "password123")
 }
@@ -54,7 +54,7 @@ func seedOrgAdmin(t *testing.T, h *harness, orgID int64, email string) string {
 	t.Helper()
 	user := h.seedUser(t, email, "password123")
 	require.NoError(t, h.db.DB.Create(&model.Membership{
-		OrganizationID: uint(orgID), UserID: user.ID, RoleID: h.roleID(t, uint(orgID), model.RoleAdmin), Role: model.RoleAdmin,
+		OrganizationID: uint(orgID), UserID: user.ID, RoleID: h.roleID(t, uint(orgID), model.RoleAdmin),
 	}).Error)
 	return h.login(t, email, "password123")
 }
