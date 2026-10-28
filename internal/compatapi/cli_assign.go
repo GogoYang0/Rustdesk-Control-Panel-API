@@ -121,20 +121,16 @@ func (s *Server) cliAssign(c *gin.Context) {
 			compatError(c, http.StatusBadRequest, "user_name must be a string")
 			return
 		}
-		var user model.User
-		err := store.WithoutTenantScope(s.deps.DB).Where("email = ?", email).First(&user).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			// Same answer as a registered outsider below: the users table is
-			// platform-global, so a distinct message here would turn this
-			// endpoint into an account oracle for every deployment tenant
-			// (CWE-204).
+		var users []model.User
+		err := store.WithoutTenantScope(s.deps.DB).Where("LOWER(email) = ?", model.NormalizeEmail(email)).Find(&users).Error
+		if err != nil || len(users) != 1 {
+			// Not found and ambiguous get the same answer: the users table is
+			// platform-global, so a distinction here would turn this endpoint
+			// into an account oracle for every deployment tenant (CWE-204).
 			compatError(c, http.StatusNotFound, "target not found")
 			return
 		}
-		if err != nil {
-			compatError(c, http.StatusInternalServerError, "assign failed")
-			return
-		}
+		user := users[0]
 		ownerID := user.ID
 		in.OwnerUserID = &ownerID
 	}

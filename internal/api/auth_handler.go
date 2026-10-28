@@ -52,21 +52,28 @@ func (a *AdminAPI) Login(c *gin.Context) {
 	// whether the email exists (CWE-208).
 	dummyHash := dummyPasswordHash()
 
-	var user model.User
-	err := a.deps.DB.Where("email = ?", email).First(&user).Error
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+	// Mailbox lookup is case-insensitive and collect-all: legacy rows from
+	// before write-path normalization can differ only by case, and First would
+	// pick one of them arbitrarily. Ambiguity is answered like any other
+	// non-match (CWE-204: no account oracle).
+	var users []model.User
+	if err := a.deps.DB.Where("LOWER(email) = ?", model.NormalizeEmail(email)).Find(&users).Error; err != nil {
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "login failed")
 		return
 	}
+	var user model.User
+	if len(users) == 1 {
+		user = users[0]
+	}
 	hashToCheck := dummyHash
-	if err == nil {
+	if len(users) == 1 {
 		hashToCheck = passwordHashForVerification(user.PasswordHash)
 	}
 	matched := false
 	if ok, verr := auth.VerifyPassword(hashToCheck, req.Password); verr == nil && ok {
 		matched = true
 	}
-	if !passwordLoginAccepted(err == nil, auth.HasPassword(user), matched) {
+	if !passwordLoginAccepted(len(users) == 1, auth.HasPassword(user), matched) {
 		a.guard.RecordFailure(email, ip)
 		abortError(c, http.StatusUnauthorized, gen.ErrorCodeUnauthorized, "invalid credentials")
 		return

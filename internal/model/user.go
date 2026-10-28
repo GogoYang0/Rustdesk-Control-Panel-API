@@ -30,6 +30,13 @@ type User struct {
 // emails differ only by case are the CWE-178 confusion an external login must
 // never be allowed to guess across.
 func (u *User) BeforeSave(tx *gorm.DB) error {
-	u.Email = strings.ToLower(strings.TrimSpace(u.Email))
+	u.Email = NormalizeEmail(u.Email)
 	return nil
+}
+
+// NormalizeEmail canonicalizes a mailbox for both storage and lookup: query
+// sites MUST pass their input through this helper so the key matches what
+// BeforeSave stored.
+func NormalizeEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
 }

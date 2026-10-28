@@ -392,30 +392,42 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 	var joined model.User
 	needVerify := false
 	err = a.deps.DB.Transaction(func(tx *gorm.DB) error {
+		// Match on the normalized mailbox: an invite addressed to a case
+		// variant of an existing account must join THAT account, never create
+		// a shadow one. More than one match is a legacy data conflict — refuse
+		// the acceptance instead of picking a row.
+		var users []model.User
+		err := tx.Where("LOWER(email) = ?", model.NormalizeEmail(inv.Email)).Find(&users).Error
+		if err != nil {
+			return err
+		}
 		var user model.User
-		err := tx.Where("email = ?", inv.Email).First(&user).Error
 		switch {
-		case err == nil:
+		case len(users) == 1:
 			// The mailbox already has an account: the invitation must not be
 			// accepted without proving ownership of the account (CWE-287).
+			user = users[0]
 			ok, verr := auth.VerifyPassword(user.PasswordHash, req.Password)
 			if verr != nil || !ok {
 				return errInvitationCredentials
 			}
-		case errors.Is(err, gorm.ErrRecordNotFound):
+		case len(users) > 1:
+			// Legacy case-variant rows: refusing beats picking one of them.
+			return errInvitationCredentials
+		default:
 			hash, herr := auth.HashPassword(req.Password)
 			if herr != nil {
 				return herr
 			}
 			// A fresh account starts unverified; the verification mail goes
-			// out after the transaction commits.
-			user = model.User{Email: inv.Email, PasswordHash: hash, EmailVerified: false}
+			// out after the transaction commits. The hook normalizes the
+			// mailbox, so the stored value is canonical even when the invite
+			// spelled it differently.
+			user = model.User{Email: model.NormalizeEmail(inv.Email), PasswordHash: hash, EmailVerified: false}
 			if cerr := tx.Create(&user).Error; cerr != nil {
 				return cerr
 			}
 			needVerify = true
-		default:
-			return err
 		}
 
 		// Remember the account for the post-commit mail step.
