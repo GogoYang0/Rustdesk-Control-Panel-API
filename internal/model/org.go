@@ -44,7 +44,7 @@ const (
 type Membership struct {
 	ID             uint `gorm:"primaryKey" json:"id"`
 	OrganizationID uint `gorm:"uniqueIndex:idx_membership_org_user;not null" json:"organization_id"`
-	UserID         uint `gorm:"uniqueIndex:idx_membership_org_user;not null" json:"user_id"`
+	UserID         uint `gorm:"uniqueIndex:idx_membership_org_user;index;not null" json:"user_id"`
 	RoleID         uint `gorm:"not null;default:0;index" json:"role_id"`
 	// StrategyID is the member-level default for devices they own; nil falls
 	// through to no strategy when the device carries none (design D1).

@@ -60,9 +60,11 @@ type Me struct {
 //
 // Two kinds of membership are omitted rather than reported with an empty
 // permission set: a disabled one, and one whose role_id does not resolve. Both
-// authorize nothing on every request path, so listing them would tell the
-// console the user still belongs to the organization — the console would then
-// render pages that 403 on the first call.
+// grant nothing on every request path, so listing them would tell the console
+// the user still belongs to the organization — the console would then render
+// pages that 403 on the first call. (A disabled membership is still counted by
+// the cross-org 2FA reset guard, and GET /orgs still lists the organization;
+// the console navigates from this list, so omission is the safe projection.)
 func (s *Service) Me(ctx context.Context, userID uint) (Me, error) {
 	if userID == 0 {
 		return Me{}, fmt.Errorf("%w: user is required", ErrInvalidInput)
@@ -109,10 +111,11 @@ func (s *Service) Me(ctx context.Context, userID uint) (Me, error) {
 		return me, nil
 	}
 
-	// Organization names in one round trip. The role resolution below is still
-	// one query per organization, which the per-user organization quota keeps
-	// bounded; folding it into a join would mean duplicating the role-resolution
-	// rules that authz owns.
+	// Organization names in one round trip. Role resolution stays per
+	// membership: authz owns the resolution rules (zero or dangling role_id
+	// fails closed), and folding them into a join would fork that logic. The
+	// cost is one query per membership, paid once per console load; a batched
+	// resolver belongs in authz, not here.
 	ids := make([]uint, 0, len(memberships))
 	for _, m := range memberships {
 		ids = append(ids, m.OrganizationID)
@@ -130,7 +133,13 @@ func (s *Service) Me(ctx context.Context, userID uint) (Me, error) {
 	for _, m := range memberships {
 		role, err := s.roles.Resolve(m.OrganizationID, m)
 		if err != nil {
-			continue
+			// Only a missing role is a decision (the membership grants
+			// nothing). A transient failure must not silently shrink the
+			// console's permission snapshot.
+			if errors.Is(err, authz.ErrRoleNotFound) {
+				continue
+			}
+			return Me{}, fmt.Errorf("resolve role: %w", err)
 		}
 		name, ok := names[m.OrganizationID]
 		if !ok {

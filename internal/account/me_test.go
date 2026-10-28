@@ -40,6 +40,7 @@ func newFixture(t *testing.T) *fixture {
 
 func openDB(t *testing.T) *gorm.DB {
 	t.Helper()
+	seq++
 	var (
 		st  *store.Store
 		err error
@@ -50,7 +51,6 @@ func openDB(t *testing.T) *gorm.DB {
 	case os.Getenv("TEST_MYSQL_DSN") != "":
 		st, err = store.Open(config.DatabaseConfig{Driver: "mysql", DSN: os.Getenv("TEST_MYSQL_DSN")})
 	default:
-		seq++
 		st, err = store.Open(config.DatabaseConfig{
 			Driver: "sqlite",
 			DSN:    fmt.Sprintf("file:account_%d?mode=memory&cache=shared", seq),
@@ -157,7 +157,7 @@ func TestMe_OnlyReturnsOwnOrganizations(t *testing.T) {
 
 func TestMe_OrgsAreOrderedAndNeverNull(t *testing.T) {
 	f := newFixture(t)
-	user := model.User{Email: "multi@example.com", PasswordHash: "hash", EmailVerified: true}
+	user := model.User{Email: fmt.Sprintf("multi-%d@example.com", seq), PasswordHash: "hash", EmailVerified: true}
 	require.NoError(t, f.db.Create(&user).Error)
 	var first, second uint
 	for i, name := range []string{"zeta", "alpha"} {
@@ -187,7 +187,7 @@ func TestMe_OrgsAreOrderedAndNeverNull(t *testing.T) {
 	require.Contains(t, string(raw), `"orgs":[`, "an empty or single list is still an array")
 
 	// A user with no memberships at all serializes to [] rather than null.
-	lonely := model.User{Email: "lonely@example.com", PasswordHash: "hash", EmailVerified: true}
+	lonely := model.User{Email: fmt.Sprintf("lonely-%d@example.com", seq), PasswordHash: "hash", EmailVerified: true}
 	require.NoError(t, f.db.Create(&lonely).Error)
 	none, err := f.svc.Me(context.Background(), lonely.ID)
 	require.NoError(t, err)
@@ -206,6 +206,18 @@ func TestMe_PasskeyOnlyAccountHasNoPassword(t *testing.T) {
 	me, err := f.svc.Me(context.Background(), user.ID)
 	require.NoError(t, err)
 	require.False(t, me.User.HasPassword)
+
+	// Another user's TOTP row must not leak into this user's flags: the lookup
+	// is keyed by user id, and getting that wrong would be invisible otherwise.
+	stranger := model.User{Email: fmt.Sprintf("stranger-%d@example.com", seq), PasswordHash: "hash", EmailVerified: true}
+	require.NoError(t, f.db.Create(&stranger).Error)
+	otherTOTP := time.Now()
+	require.NoError(t, f.db.Create(&model.UserTOTP{
+		UserID: stranger.ID, SecretCiphertext: "y", RecoveryCodes: "[]", EnabledAt: &otherTOTP,
+	}).Error)
+	me, err = f.svc.Me(context.Background(), user.ID)
+	require.NoError(t, err)
+	require.False(t, me.User.TOTPEnabled, "another account's TOTP row must not leak")
 
 	now := time.Now()
 	require.NoError(t, f.db.Create(&model.UserTOTP{

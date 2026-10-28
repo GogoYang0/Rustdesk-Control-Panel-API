@@ -1,6 +1,6 @@
 # 后端 API 规范（Backend API Specification）
 
-> 适用版本：v0.11.0（M6 波次 5b-1 Passkey、5b-2 OIDC；上一基线 v0.10.0）。本文档是对 `openapi.yaml`（契约 v0.11.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
+> 适用版本：v0.12.0（M7 前置：`GET /api/v1/me`；上一基线 v0.11.0 = M6 波次 5a/5b）。本文档是对 `openapi.yaml`（契约 v0.12.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
 > 本文档随版本演进持续更新——契约变更的 PR 必须同步更新 §3/§4。
 > 配套文档：[部署指南](deployment.md) · [运维指南](operations.md)
 
@@ -88,7 +88,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `POST /api/v1/auth/login` | 邮箱+密码；启用验证码时先校验 `captcha`（v0.10.0）；未验证邮箱返回 `email_not_verified`；连续失败触发 LoginGuard 锁定（429，键含用户名规范化） |
 | `GET /api/v1/auth/captcha` | 公开：返回当前验证码提供商与挑战（v0.10.0）；未启用时 `enabled=false`（不耗限流桶）；**启用时**独立 IP 限流（429） |
 | `POST /api/v1/auth/refresh` | 刷新令牌轮换：旧 refresh 即刻撤销，重放旧令牌会**整族撤销**（重放检测） |
-| `GET /api/v1/me` | 当前用户与其组织（v0.12.0）：返回自身资料（邮箱、验证状态、2FA、是否设密码）与每个**有效**会籍的 `role_id`/`role_kind`/`permissions`。停用会籍、角色不可解析的会籍**不出现**（与逐请求鉴权同一 fail-closed 语义）；`permissions` 是控制台做交互闸门的只读快照，**不构成授权** |
+| `GET /api/v1/me` | 当前用户与其组织（v0.12.0）：返回自身资料（邮箱、验证状态、2FA、是否设密码）与每个**有效**会籍的 `role_id`/`role_kind`/`permissions`。停用会籍、角色不可解析的会籍**不出现**（与逐请求鉴权同一 fail-closed 语义）；注意 `GET /orgs` 仍会列出这类组织，**控制台的导航应以本端点为准**；`permissions` 是控制台做交互闸门的只读快照，**不构成授权** |
 | `POST /api/v1/auth/verify-email` | 邮箱验证（一次性令牌，邮件下发） |
 | `POST /api/v1/auth/resend-verification` | 重发验证邮件（结果不明时令牌保留，可重试） |
 | `GET /api/v1/auth/tokens` | 列出本人在某组织的个人令牌（v0.8.0，`organizationId` 查询参数必填；不返回明文） |
