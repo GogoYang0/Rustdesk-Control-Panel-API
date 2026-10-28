@@ -103,6 +103,9 @@ func newHarness(t *testing.T) *harness {
 		// Control role snapshots need a membership (the assignment) and the
 		// role row itself; the user row keeps the fixture realistic.
 		&model.User{}, &model.Membership{}, &model.ControlRole{},
+		// The access-domain lock premise is pinned with the production service,
+		// so its tables have to exist here too (ticket_access_test.go).
+		&model.UserGroup{}, &model.UserGroupMember{}, &model.DeviceGroup{}, &model.AccessRule{},
 	))
 
 	h := &harness{

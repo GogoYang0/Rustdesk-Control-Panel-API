@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/access"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/session"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
@@ -188,4 +189,41 @@ func TestRedeem_SerialisesWithRuleRevocation(t *testing.T) {
 	require.ErrorIs(t, <-done, session.ErrAccessDenied)
 	requireTicketUnused(t, h, ticket.ID)
 	requireNoSessions(t, h)
+}
+
+// TestRuleRevocationWaitsForTheOrganizationLock proves the premise the re-check
+// rests on with the production implementation instead of a stand-in: a rule
+// deletion blocks while a transaction holds the organization row, which is the
+// same lock Redeem takes before it re-decides access.
+func TestRuleRevocationWaitsForTheOrganizationLock(t *testing.T) {
+	if os.Getenv("TEST_POSTGRES_DSN") == "" && os.Getenv("TEST_MYSQL_DSN") == "" {
+		t.Skip("row-lock ordering needs PostgreSQL/MySQL; CI test-db runs this")
+	}
+	h := newHarness(t)
+	accessSvc := access.NewService(h.db, h.recorder, func() time.Time { return h.now })
+
+	group := model.UserGroup{OrganizationID: h.org.ID, Name: "grant-source", Kind: "custom"}
+	require.NoError(t, h.db.Create(&group).Error)
+	rule := model.AccessRule{
+		OrganizationID: h.org.ID, SourceGroupID: group.ID,
+		TargetKind: model.AccessTargetKindAllDevices,
+	}
+	require.NoError(t, h.db.Create(&rule).Error)
+
+	tx := h.db.Begin()
+	require.NoError(t, tx.Error)
+	defer func() { _ = tx.Rollback() }()
+	var org model.Organization
+	require.NoError(t, tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ?", h.org.ID).First(&org).Error)
+
+	done := make(chan error, 1)
+	go func() { done <- accessSvc.DeleteAccessRule(context.Background(), h.org.ID, 1, rule.ID) }()
+	select {
+	case err := <-done:
+		t.Fatalf("the revocation did not wait for the organization lock: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	require.NoError(t, tx.Commit().Error)
+	require.NoError(t, <-done)
 }

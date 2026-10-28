@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -321,6 +322,17 @@ func (s *Service) Redeem(ctx context.Context, orgID, actorID, ticketID uint, tok
 		// directly would roll back the alert the refusal just wrote.
 		outcome error
 	)
+	// MySQL's default REPEATABLE READ creates the read view at the first plain
+	// SELECT — the ticket read below — which happens before the device row is
+	// locked. The access re-check is a plain SELECT too, so it would judge a
+	// snapshot taken before any device-domain change that committed while this
+	// transaction waited for the lock. READ COMMITTED gives every statement a
+	// fresh view, which is what PostgreSQL already does by default; the
+	// organization row lock still serialises the access-domain writers.
+	var opts *sql.TxOptions
+	if s.db.Dialector.Name() == "mysql" {
+		opts = &sql.TxOptions{Isolation: sql.LevelReadCommitted}
+	}
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Serialise redemptions per organization. One transaction is not enough:
 		// under READ COMMITTED two redemptions each read the old count, each
@@ -412,11 +424,16 @@ func (s *Service) Redeem(ctx context.Context, orgID, actorID, ticketID uint, tok
 		}
 
 		// Re-take the admission decision here, inside the transaction and after
-		// the device state. Every access mutation (rule, group, membership)
-		// takes this same organization row lock, so a revocation either
-		// committed before the lock was granted — and is therefore visible to
-		// this evaluation — or waits until this transaction ends. The window the
-		// handler's pre-check leaves open is closed, not merely narrowed.
+		// the device state. Two kinds of writer are serialised with it: the
+		// access domain (rules, user groups, device groups and their member and
+		// device assignments) takes this same organization row lock, and the
+		// target device's own access-relevant columns (owner, group, disabled)
+		// are behind the row lock taken above. A revocation of either kind is
+		// therefore committed before this decision sees it, or it waits for this
+		// transaction: the window the handler's pre-check leaves open is closed,
+		// not merely narrowed. Organizational membership changes are the
+		// exception — they lock membership rows and keep relying on the
+		// per-request membership check.
 		allowed, err := s.access.CanAccessTx(tx, orgID, actorID, ticket.DeviceID)
 		if err != nil {
 			return fmt.Errorf("re-evaluate access: %w", err)
@@ -429,7 +446,10 @@ func (s *Service) Redeem(ctx context.Context, orgID, actorID, ticketID uint, tok
 		}
 
 		// Atomic claim: this conditional update is what makes the ticket
-		// one-shot even when two requests arrive together.
+		// one-shot even when two requests arrive together. The clock is read
+		// again because acquiring the device lock above can wait on a writer,
+		// and a ticket that expired during that wait must not be accepted.
+		now = s.now().UTC()
 		claim := store.ScopedByOrg(tx, orgID).Model(&model.Ticket{}).
 			Where("id = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?", ticketID, now).
 			Update("used_at", now)
@@ -488,7 +508,7 @@ func (s *Service) Redeem(ctx context.Context, orgID, actorID, ticketID uint, tok
 		}
 		sess = &row
 		return nil
-	})
+	}, opts)
 	if err != nil {
 		return nil, err
 	}

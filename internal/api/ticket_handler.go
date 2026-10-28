@@ -251,9 +251,17 @@ func (a *AdminAPI) writeTicketError(c *gin.Context, err error) {
 		})
 	case errors.Is(err, session.ErrInvalidInput):
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
+	case errors.Is(err, session.ErrAccessDenied):
+		// Redeem normally turns this into the audited denial; a future caller
+		// that maps it here still gets the opaque not-found instead of a 500.
+		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, session.ErrDeviceNotFound.Error())
 	case errors.Is(err, session.ErrDeviceNotFound), errors.Is(err, session.ErrTicketNotFound):
 		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, err.Error())
-	case errors.Is(err, session.ErrOutsideWindow), errors.Is(err, session.ErrConflict), errors.Is(err, session.ErrDeviceDisabled):
+	case errors.Is(err, session.ErrDeviceDisabled):
+		// The opaque conflict text: the pre-check path answers this state the
+		// same way, and the message must not echo the device state (CWE-203).
+		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, session.ErrConflict.Error())
+	case errors.Is(err, session.ErrOutsideWindow), errors.Is(err, session.ErrConflict):
 		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, err.Error())
 	default:
 		// Unexpected failures stay opaque to the client but not to operators.

@@ -210,6 +210,9 @@ func (s *Service) CanAccess(ctx context.Context, orgID, userID, deviceID uint) (
 // that committed before that lock was granted is visible here, instead of
 // landing after a decision already taken outside the transaction.
 func (s *Service) CanAccessTx(tx *gorm.DB, orgID, userID, deviceID uint) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, fmt.Errorf("access: service is not configured")
+	}
 	if tx == nil {
 		return false, fmt.Errorf("access: a transaction is required")
 	}
