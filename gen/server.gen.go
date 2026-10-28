@@ -667,6 +667,30 @@ func (e LogEventSource) Valid() bool {
 	}
 }
 
+// Defines values for MeOrgRoleKind.
+const (
+	MeOrgRoleKindAdmin  MeOrgRoleKind = "admin"
+	MeOrgRoleKindCustom MeOrgRoleKind = "custom"
+	MeOrgRoleKindMember MeOrgRoleKind = "member"
+	MeOrgRoleKindOwner  MeOrgRoleKind = "owner"
+)
+
+// Valid indicates whether the value is a known member of the MeOrgRoleKind enum.
+func (e MeOrgRoleKind) Valid() bool {
+	switch e {
+	case MeOrgRoleKindAdmin:
+		return true
+	case MeOrgRoleKindCustom:
+		return true
+	case MeOrgRoleKindMember:
+		return true
+	case MeOrgRoleKindOwner:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ProvisioningStatusState.
 const (
 	ProvisioningStatusStateDeployed     ProvisioningStatusState = "deployed"
@@ -2613,6 +2637,59 @@ type LoginRequest struct {
 	Password string              `json:"password"`
 }
 
+// Me defines model for Me.
+type Me struct {
+	// Orgs 按组织 id 升序；无有效会籍时为空数组
+	Orgs []MeOrg `json:"orgs"`
+	User MeUser  `json:"user"`
+}
+
+// MeOrg defines model for MeOrg.
+type MeOrg struct {
+	Id   int64  `json:"id"`
+	Name string `json:"name"`
+
+	// Permissions 该角色的权限码集合（只读快照，不构成授权）
+	Permissions []string      `json:"permissions"`
+	RoleId      int64         `json:"role_id"`
+	RoleKind    MeOrgRoleKind `json:"role_kind"`
+}
+
+// MeOrgRoleKind defines model for MeOrg.RoleKind.
+type MeOrgRoleKind string
+
+// MeResponse defines model for MeResponse.
+type MeResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode `json:"code"`
+	Data    Me        `json:"data"`
+	Message string    `json:"message"`
+}
+
+// MeUser defines model for MeUser.
+type MeUser struct {
+	Email         openapi_types.Email `json:"email"`
+	EmailVerified bool                `json:"email_verified"`
+
+	// HasPassword passkey-only 账户为 false（密码哈希为空哨兵）
+	HasPassword bool  `json:"has_password"`
+	Id          int64 `json:"id"`
+	TotpEnabled bool  `json:"totp_enabled"`
+}
+
 // Member defines model for Member.
 type Member struct {
 	// ControlRoleId 成员的控制角色 id（v0.10.0）；`null` 表示未分配、回退组织内置 `default`。
@@ -4553,6 +4630,9 @@ type ServerInterface interface {
 	// AcceptInvitation 接受邀请
 	// (POST /api/v1/invitations/accept)
 	AcceptInvitation(c *gin.Context)
+	// GetMe 当前用户与所属组织
+	// (GET /api/v1/me)
+	GetMe(c *gin.Context)
 	// ListOrgs 列出当前用户所属组织
 	// (GET /api/v1/orgs)
 	ListOrgs(c *gin.Context)
@@ -5397,6 +5477,19 @@ func (siw *ServerInterfaceWrapper) AcceptInvitation(c *gin.Context) {
 	}
 
 	siw.Handler.AcceptInvitation(c)
+}
+
+// GetMe operation middleware
+func (siw *ServerInterfaceWrapper) GetMe(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetMe(c)
 }
 
 // ListOrgs operation middleware
@@ -9034,6 +9127,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/auth/passkey/login/finish", wrapper.FinishPasskeyLogin)
 	router.POST(options.BaseURL+"/api/v1/auth/passkey/register/begin", wrapper.BeginPasskeyRegistration)
 	router.POST(options.BaseURL+"/api/v1/auth/passkey/register/finish", wrapper.FinishPasskeyRegistration)
+	router.GET(options.BaseURL+"/api/v1/me", wrapper.GetMe)
 	router.GET(options.BaseURL+"/api/v1/orgs", wrapper.ListOrgs)
 	router.POST(options.BaseURL+"/api/v1/orgs", wrapper.CreateOrg)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/members", wrapper.ListMembers)

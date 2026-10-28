@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/access"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/account"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/addressbook"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
@@ -68,6 +69,8 @@ type Deps struct {
 	// Roles resolves and seeds organization roles. NewAdminAPI derives it from
 	// DB when nil.
 	Roles *authz.RoleService
+	// Me resolves the caller's own profile and organization roles.
+	Me *account.Service
 
 	// Access owns user groups, device groups and access rules. NewAdminAPI
 	// derives it from DB and the transactional auditor when nil.
@@ -213,6 +216,11 @@ func NewAdminAPI(d Deps) *AdminAPI {
 	}
 	if d.Roles == nil {
 		d.Roles = authz.NewRoleService(d.DB)
+	}
+	if d.Me == nil {
+		// Shares the role resolver the per-request guard uses, so /me and
+		// membershipFor can never disagree about what a role means.
+		d.Me = account.NewService(d.DB, d.Roles)
 	}
 	if d.Access == nil {
 		// The service refuses every write without a transactional recorder; a
