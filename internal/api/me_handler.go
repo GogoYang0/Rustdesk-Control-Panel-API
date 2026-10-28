@@ -40,6 +40,9 @@ func (a *AdminAPI) GetMe(c *gin.Context) {
 	})
 }
 
+// meToAPI projects the domain result onto the wire type. Response arrays are
+// materialised even when empty, because the console maps over them directly and
+// a JSON null would force a null check on every call site.
 func meToAPI(me account.Me) gen.Me {
 	out := gen.Me{
 		User: gen.MeUser{

@@ -26,6 +26,9 @@ type Service struct {
 	roles *authz.RoleService
 }
 
+// NewService wires the read-only account projection. The role service must be
+// the same instance the per-request guard uses, so /me and the guard cannot
+// disagree about what a role means.
 func NewService(db *gorm.DB, roles *authz.RoleService) *Service {
 	return &Service{db: db, roles: roles}
 }
