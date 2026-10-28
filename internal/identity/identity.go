@@ -98,16 +98,20 @@ func (s *Service) loginExisting(ctx context.Context, identity *model.UserIdentit
 	}
 
 	if email := strings.ToLower(strings.TrimSpace(c.Email)); email != "" {
-		var other model.User
-		err := s.DB.WithContext(ctx).Where("LOWER(email) = ?", email).First(&other).Error
-		switch {
-		case err == nil && other.ID != identity.UserID:
-			if markErr := s.markConflict(ctx, identity.ID, now); markErr != nil {
-				return model.User{}, markErr
-			}
-			return model.User{}, ErrIdentityConflict
-		case err != nil && !errors.Is(err, gorm.ErrRecordNotFound):
+		// Same collect-all discipline as bindNew: with legacy case-variant
+		// rows, First could land on the owner's own row and hide a second
+		// account holding the same mailbox.
+		var holders []model.User
+		if err := s.DB.WithContext(ctx).Where("LOWER(email) = ?", email).Find(&holders).Error; err != nil {
 			return model.User{}, err
+		}
+		for _, other := range holders {
+			if other.ID != identity.UserID {
+				if markErr := s.markConflict(ctx, identity.ID, now); markErr != nil {
+					return model.User{}, markErr
+				}
+				return model.User{}, ErrIdentityConflict
+			}
 		}
 	}
 
@@ -132,13 +136,21 @@ func (s *Service) bindNew(ctx context.Context, c Claims, now time.Time) (model.U
 		return model.User{}, ErrEmailUnverified
 	}
 
-	var user model.User
-	if err := s.DB.WithContext(ctx).Where("LOWER(email) = ?", email).First(&user).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return model.User{}, ErrNoAccount
-		}
+	// Collect every account matching the mailbox instead of taking the first
+	// row: on case-sensitive collations a pre-normalization deployment can
+	// hold two accounts differing only by case, and picking one of them would
+	// bind a stranger's identity to an arbitrary account (CWE-178).
+	var matches []model.User
+	if err := s.DB.WithContext(ctx).Where("LOWER(email) = ?", email).Find(&matches).Error; err != nil {
 		return model.User{}, err
 	}
+	if len(matches) == 0 {
+		return model.User{}, ErrNoAccount
+	}
+	if len(matches) > 1 {
+		return model.User{}, ErrIdentityConflict
+	}
+	user := matches[0]
 	if !user.EmailVerified {
 		return model.User{}, ErrEmailUnverified
 	}
