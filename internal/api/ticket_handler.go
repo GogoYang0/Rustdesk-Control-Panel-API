@@ -154,6 +154,15 @@ func (a *AdminAPI) RedeemTicket(c *gin.Context, orgId int64, ticketId int64) {
 				map[string]any{"ticket_id": ticketId})
 			return
 		}
+		// A device disabled between the pre-check and the transaction reaches
+		// the same documented 409, so it must also leave the same denial row:
+		// the generic mapping below would fall back to the HTTP audit entry.
+		if errors.Is(err, session.ErrDeviceDisabled) {
+			a.recordTicketAccessDenied(c, uint(orgId), uid, ticket.DeviceID, "device_disabled",
+				"redeem", map[string]any{"ticket_id": ticketId})
+			abortError(c, http.StatusConflict, gen.ErrorCodeConflict, session.ErrConflict.Error())
+			return
+		}
 		a.writeTicketError(c, err)
 		return
 	}
