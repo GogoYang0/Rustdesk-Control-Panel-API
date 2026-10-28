@@ -31,6 +31,13 @@ var (
 	ErrTicketNotFound = errors.New("ticket not found")
 	ErrOutsideWindow  = errors.New("outside the allowed connection window")
 	ErrConflict       = errors.New("ticket cannot be redeemed")
+	// ErrAccessDenied is the in-transaction refusal: the redeemer no longer
+	// reaches the device. It maps to the same opaque 404 as the handler's
+	// pre-check, so the two decisions are indistinguishable to a client.
+	ErrAccessDenied = errors.New("access to the device was revoked")
+	// ErrAccessUnconfigured is a wiring failure, not a decision: a service
+	// without an evaluator would redeem on the handler's word alone.
+	ErrAccessUnconfigured = errors.New("access evaluator is not configured")
 )
 
 // Ticket lifetime bounds from the contract.
@@ -73,6 +80,25 @@ type Service struct {
 	// Nil means "not wired": tickets then carry a zero mask rather than a
 	// guessed one.
 	controlRoles *controlrole.Service
+	// access re-decides reachability inside the redemption transaction. Nil
+	// fails redemption closed: the handler's earlier decision is exactly what
+	// this re-check exists to verify.
+	access AccessEvaluator
+}
+
+// AccessEvaluator re-decides reachability inside the redemption transaction.
+// It is an interface so this package does not depend on the access domain; the
+// API layer wires the same service the handler's pre-check uses, which keeps
+// both decisions on one implementation.
+type AccessEvaluator interface {
+	CanAccessTx(tx *gorm.DB, orgID, userID, deviceID uint) (bool, error)
+}
+
+// WithAccess injects the evaluator. Without it Redeem refuses rather than
+// trusting the caller's pre-check.
+func (s *Service) WithAccess(evaluator AccessEvaluator) *Service {
+	s.access = evaluator
+	return s
 }
 
 // WithControlRoles injects the control role resolver. Issuance snapshots the
@@ -285,6 +311,9 @@ func (s *Service) Redeem(ctx context.Context, orgID, actorID, ticketID uint, tok
 	if orgID == 0 || actorID == 0 || ticketID == 0 || token == "" {
 		return nil, fmt.Errorf("%w: organization, actor, ticket and token are required", ErrInvalidInput)
 	}
+	if s.access == nil {
+		return nil, ErrAccessUnconfigured
+	}
 
 	var (
 		sess *model.Session
@@ -365,6 +394,40 @@ func (s *Service) Redeem(ctx context.Context, orgID, actorID, ticketID uint, tok
 			}
 		}
 
+		// Read the device under a row lock so a concurrent disable cannot land
+		// between the check below and the session insert: SetDisabled takes the
+		// same device row lock, so the two writers serialise and either the
+		// session is refused or it is created before the disable commits.
+		dev, err := s.loadDeviceForUpdate(tx, orgID, ticket.DeviceID)
+		if err != nil {
+			return err
+		}
+		// The device must still be usable at redemption time: a ticket issued
+		// before an administrator disabled it must not open a session. This is
+		// decided before the access re-check so the documented 409 for a stopped
+		// device survives: CanAccess also refuses a disabled device, and letting
+		// it answer first would turn that 409 into the opaque 404.
+		if dev.Disabled {
+			return ErrDeviceDisabled
+		}
+
+		// Re-take the admission decision here, inside the transaction and after
+		// the device state. Every access mutation (rule, group, membership)
+		// takes this same organization row lock, so a revocation either
+		// committed before the lock was granted — and is therefore visible to
+		// this evaluation — or waits until this transaction ends. The window the
+		// handler's pre-check leaves open is closed, not merely narrowed.
+		allowed, err := s.access.CanAccessTx(tx, orgID, actorID, ticket.DeviceID)
+		if err != nil {
+			return fmt.Errorf("re-evaluate access: %w", err)
+		}
+		if !allowed {
+			// Nothing is written yet, so the ticket stays unused and no session
+			// exists. The handler writes the denial row: it already owns the
+			// audit entry and the opaque 404 shape.
+			return ErrAccessDenied
+		}
+
 		// Atomic claim: this conditional update is what makes the ticket
 		// one-shot even when two requests arrive together.
 		claim := store.ScopedByOrg(tx, orgID).Model(&model.Ticket{}).
@@ -375,21 +438,6 @@ func (s *Service) Redeem(ctx context.Context, orgID, actorID, ticketID uint, tok
 		}
 		if claim.RowsAffected != 1 {
 			return ErrConflict
-		}
-
-		// Read the device under a row lock so a concurrent disable cannot land
-		// between the check below and the session insert: SetDisabled takes the
-		// same device row lock, so the two writers serialise and either the
-		// session is refused or it is created before the disable commits.
-		dev, err := s.loadDeviceForUpdate(tx, orgID, ticket.DeviceID)
-		if err != nil {
-			return err
-		}
-		// The device must still be usable at redemption time: a ticket issued
-		// before an administrator disabled it must not open a session. The
-		// error rolls back the claim above, so the ticket stays unused.
-		if dev.Disabled {
-			return ErrDeviceDisabled
 		}
 		policyID, err := s.attributedPolicyID(tx, orgID)
 		if err != nil {

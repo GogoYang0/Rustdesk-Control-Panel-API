@@ -116,7 +116,12 @@ func newHarness(t *testing.T) *harness {
 	h.device = model.Device{OrganizationID: h.org.ID, RustdeskID: "123456789", Name: "workstation"}
 	require.NoError(t, s.DB.Create(&h.device).Error)
 
-	h.svc = session.NewService(s.DB, h.recorder, func() time.Time { return h.now })
+	// Redemption re-checks access inside its transaction and fails closed
+	// without an evaluator; these tests exercise everything else about the
+	// service, so the fixture wires a permissive stand-in. The re-check itself
+	// is pinned in ticket_access_test.go.
+	h.svc = session.NewService(s.DB, h.recorder, func() time.Time { return h.now }).
+		WithAccess(&fakeAccess{allow: true})
 	return h
 }
 

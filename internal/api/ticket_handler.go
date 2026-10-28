@@ -146,6 +146,14 @@ func (a *AdminAPI) RedeemTicket(c *gin.Context, orgId int64, ticketId int64) {
 
 	sess, err := a.tickets.Redeem(c.Request.Context(), uint(orgId), uid, uint(ticketId), req.Token)
 	if err != nil {
+		// The in-transaction re-check refused. The ticket is untouched and no
+		// session exists, so this is the same opaque 404 — and the same denial
+		// row — as the pre-check above.
+		if errors.Is(err, session.ErrAccessDenied) {
+			a.denyTicketAccess(c, uint(orgId), uid, ticket.DeviceID, "redeem",
+				map[string]any{"ticket_id": ticketId})
+			return
+		}
 		a.writeTicketError(c, err)
 		return
 	}

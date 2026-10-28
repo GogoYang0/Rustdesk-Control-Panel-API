@@ -3,6 +3,7 @@ package access
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"gorm.io/gorm"
 
@@ -34,7 +35,10 @@ import (
 // treated as a group id. Disabled devices are filtered here, and an inactive
 // (missing, disabled or role-less) membership resolves to the empty set.
 func (s *Service) AllowedDeviceIDs(ctx context.Context, orgID, userID uint) (bool, []uint, error) {
-	db := s.db.WithContext(ctx)
+	return s.allowedDeviceIDs(s.db.WithContext(ctx), orgID, userID)
+}
+
+func (s *Service) allowedDeviceIDs(db *gorm.DB, orgID, userID uint) (bool, []uint, error) {
 	bypass, active, err := s.bypassMembership(db, orgID, userID)
 	if err != nil || !active {
 		return false, nil, err
@@ -197,10 +201,25 @@ func (s *Service) devicesOwnedByGroups(db *gorm.DB, orgID uint, groupIDs []uint)
 // device and an inactive membership all resolve to false; the caller maps that
 // onto 404 so the device's existence does not leak.
 func (s *Service) CanAccess(ctx context.Context, orgID, userID, deviceID uint) (bool, error) {
+	return s.canAccess(s.db.WithContext(ctx), orgID, userID, deviceID)
+}
+
+// CanAccessTx runs the same evaluation on a transaction the caller owns, for
+// decisions that must be taken while holding a lock. Ticket redemption uses it
+// because every access mutation takes the organization row lock: a revocation
+// that committed before that lock was granted is visible here, instead of
+// landing after a decision already taken outside the transaction.
+func (s *Service) CanAccessTx(tx *gorm.DB, orgID, userID, deviceID uint) (bool, error) {
+	if tx == nil {
+		return false, fmt.Errorf("access: a transaction is required")
+	}
+	return s.canAccess(tx, orgID, userID, deviceID)
+}
+
+func (s *Service) canAccess(db *gorm.DB, orgID, userID, deviceID uint) (bool, error) {
 	if orgID == 0 || userID == 0 || deviceID == 0 {
 		return false, nil
 	}
-	db := s.db.WithContext(ctx)
 
 	var device model.Device
 	err := store.ScopedByOrg(db, orgID).Select("id", "disabled").First(&device, deviceID).Error
@@ -216,7 +235,7 @@ func (s *Service) CanAccess(ctx context.Context, orgID, userID, deviceID uint) (
 		return false, nil
 	}
 
-	all, ids, err := s.AllowedDeviceIDs(ctx, orgID, userID)
+	all, ids, err := s.allowedDeviceIDs(db, orgID, userID)
 	if err != nil {
 		return false, err
 	}
