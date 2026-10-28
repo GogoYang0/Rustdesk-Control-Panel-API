@@ -330,7 +330,7 @@ func (s *Service) Redeem(ctx context.Context, orgID, actorID, ticketID uint, tok
 	// fresh view, which is what PostgreSQL already does by default; the
 	// organization row lock still serialises the access-domain writers.
 	var opts *sql.TxOptions
-	if s.db.Dialector.Name() == "mysql" {
+	if s.db.Name() == "mysql" {
 		opts = &sql.TxOptions{Isolation: sql.LevelReadCommitted}
 	}
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
