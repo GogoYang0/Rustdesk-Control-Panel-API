@@ -266,7 +266,9 @@ func NewAdminAPI(d Deps) *AdminAPI {
 		// Wire the control role resolver: issuance snapshots the actor's
 		// permissions onto the ticket, and the API tests exercise the real path
 		// instead of a service without role awareness.
-		tickets = session.NewService(d.DB, recorder, d.Now).WithControlRoles(d.ControlRoles)
+		tickets = session.NewService(d.DB, recorder, d.Now).
+			WithControlRoles(d.ControlRoles).
+			WithAccess(d.Access)
 	}
 
 	return &AdminAPI{

@@ -146,6 +146,23 @@ func (a *AdminAPI) RedeemTicket(c *gin.Context, orgId int64, ticketId int64) {
 
 	sess, err := a.tickets.Redeem(c.Request.Context(), uint(orgId), uid, uint(ticketId), req.Token)
 	if err != nil {
+		// The in-transaction re-check refused. The ticket is untouched and no
+		// session exists, so this is the same opaque 404 — and the same denial
+		// row — as the pre-check above.
+		if errors.Is(err, session.ErrAccessDenied) {
+			a.denyTicketAccess(c, uint(orgId), uid, ticket.DeviceID, "redeem",
+				map[string]any{"ticket_id": ticketId})
+			return
+		}
+		// A device disabled between the pre-check and the transaction reaches
+		// the same documented 409, so it must also leave the same denial row:
+		// the generic mapping below would fall back to the HTTP audit entry.
+		if errors.Is(err, session.ErrDeviceDisabled) {
+			a.recordTicketAccessDenied(c, uint(orgId), uid, ticket.DeviceID, "device_disabled",
+				"redeem", map[string]any{"ticket_id": ticketId})
+			abortError(c, http.StatusConflict, gen.ErrorCodeConflict, session.ErrConflict.Error())
+			return
+		}
 		a.writeTicketError(c, err)
 		return
 	}
@@ -243,9 +260,17 @@ func (a *AdminAPI) writeTicketError(c *gin.Context, err error) {
 		})
 	case errors.Is(err, session.ErrInvalidInput):
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
+	case errors.Is(err, session.ErrAccessDenied):
+		// Redeem normally turns this into the audited denial; a future caller
+		// that maps it here still gets the opaque not-found instead of a 500.
+		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, session.ErrDeviceNotFound.Error())
 	case errors.Is(err, session.ErrDeviceNotFound), errors.Is(err, session.ErrTicketNotFound):
 		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, err.Error())
-	case errors.Is(err, session.ErrOutsideWindow), errors.Is(err, session.ErrConflict), errors.Is(err, session.ErrDeviceDisabled):
+	case errors.Is(err, session.ErrDeviceDisabled):
+		// The opaque conflict text: the pre-check path answers this state the
+		// same way, and the message must not echo the device state (CWE-203).
+		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, session.ErrConflict.Error())
+	case errors.Is(err, session.ErrOutsideWindow), errors.Is(err, session.ErrConflict):
 		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, err.Error())
 	default:
 		// Unexpected failures stay opaque to the client but not to operators.
