@@ -1,6 +1,8 @@
 package passkey
 
 import (
+	"unicode/utf8"
+
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -148,6 +150,13 @@ func (s *Service) FinishRegistration(ctx context.Context, u model.User, token st
 		return nil, fmt.Errorf("%w: %v", ErrAssertionFailed, err)
 	}
 
+	// Validate the display name before the ceremony is consumed: the user has
+	// already completed the authenticator gesture at this point, and rejecting
+	// afterwards would force a full re-enrollment over a cosmetic field.
+	if _, err := normalizePasskeyName(name); err != nil {
+		return nil, err
+	}
+
 	ceremony, session, err := s.consumeCeremony(ctx, token, model.CeremonyRegister)
 	if err != nil {
 		return nil, err
@@ -177,6 +186,10 @@ func (s *Service) FinishRegistration(ctx context.Context, u model.User, token st
 }
 
 func (s *Service) insertPasskey(ctx context.Context, userID uint, name string, cred *webauthn.Credential) (*model.UserPasskey, error) {
+	transports, terr := encodeTransports(cred.Transport)
+	if terr != nil {
+		return nil, terr
+	}
 	row := model.UserPasskey{
 		UserID:           userID,
 		CredentialID:     encodeCredentialID(cred.ID),
@@ -184,7 +197,7 @@ func (s *Service) insertPasskey(ctx context.Context, userID uint, name string, c
 		PublicKey:        base64.StdEncoding.EncodeToString(cred.PublicKey),
 		SignCount:        cred.Authenticator.SignCount,
 		AAGUID:           formatAAGUID(cred.Authenticator.AAGUID),
-		Transports:       encodeTransports(cred.Transport),
+		Transports:       transports,
 		Name:             name,
 		BackupEligible:   cred.Flags.BackupEligible,
 		BackupState:      cred.Flags.BackupState,
@@ -215,7 +228,9 @@ func normalizePasskeyName(name string) (string, error) {
 	if name == "" {
 		return defaultPasskeyName, nil
 	}
-	if len(name) > maxPasskeyNameLen {
+	// Count runes, not bytes: the limit is about display width, and 64 bytes
+	// is roughly 21 Chinese characters.
+	if utf8.RuneCountInString(name) > maxPasskeyNameLen {
 		return "", ErrInvalidName
 	}
 	return name, nil
@@ -245,16 +260,37 @@ func formatAAGUID(raw []byte) string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", raw[0:4], raw[4:6], raw[6:8], raw[8:10], raw[10:16])
 }
 
-func encodeTransports(transports []protocol.AuthenticatorTransport) string {
+// maxTransportsJSON is the storage width of user_passkeys.transports
+// (varchar(255)). Standard authenticators send a handful of well-known
+// transport names; the guard turns a malicious client sending hundreds of
+// duplicates into a clean registration error instead of a database failure.
+const maxTransportsJSON = 255
+
+func encodeTransports(transports []protocol.AuthenticatorTransport) (string, error) {
+	// Set semantics: duplicates and empty names change nothing about the
+	// credential, so they are dropped before encoding instead of being counted
+	// against the storage limit.
+	seen := make(map[string]struct{}, len(transports))
 	values := make([]string, 0, len(transports))
 	for _, t := range transports {
-		values = append(values, string(t))
+		name := strings.TrimSpace(string(t))
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		values = append(values, name)
 	}
 	encoded, err := json.Marshal(values)
 	if err != nil {
-		return "[]"
+		return "[]", nil
 	}
-	return string(encoded)
+	if len(encoded) > maxTransportsJSON {
+		return "", fmt.Errorf("%w: transports exceed %d bytes", ErrInvalidName, maxTransportsJSON)
+	}
+	return string(encoded), nil
 }
 
 func encodeCredentialID(id []byte) string { return base64.RawURLEncoding.EncodeToString(id) }

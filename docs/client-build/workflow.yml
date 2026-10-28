@@ -44,6 +44,8 @@ jobs:
   prepare:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - name: Checkout build repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -76,11 +78,37 @@ jobs:
               assert (width, height) == (m["logo"]["width"], m["logo"]["height"]), "logo dimensions"
           PY
 
+      # The platform filter must happen HERE: a job-level `if` cannot
+      # reference `matrix` (it is evaluated before expansion), so the matrix is
+      # computed against the selected platforms and handed to `build` verbatim.
+      - name: Compute platform matrix
+        id: matrix
+        env:
+          PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          full = {
+              "windows-x64":   {"platform": "windows-x64",   "os": "windows-2022",  "rust": "1.75", "python": "python"},
+              "linux-x64":     {"platform": "linux-x64",     "os": "ubuntu-24.04",  "rust": "1.75", "python": "python3"},
+              "macos-arm64":   {"platform": "macos-arm64",   "os": "macos-15",      "rust": "1.81", "python": "python3"},
+              "macos-x64":     {"platform": "macos-x64",     "os": "macos-15-intel","rust": "1.81", "python": "python3"},
+              "android-arm64": {"platform": "android-arm64", "os": "ubuntu-24.04",  "rust": "1.75", "python": "python3"},
+          }
+          selected = list(dict.fromkeys(p.strip() for p in os.environ["PLATFORMS"].split(",") if p.strip()))
+          unknown = [p for p in selected if p not in full]
+          if unknown or not selected:
+              raise SystemExit(f"unknown or empty platforms: {unknown or selected}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write("matrix=" + json.dumps({"include": [full[p] for p in selected]}) + "\n")
+          PY
+
       - name: Share bundle with platform jobs
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .panel-bundle
-          key: panel-client-${{ inputs.build_id }}-bundle
+          key: panel-client-${{ inputs.build_id }}-${{ github.run_id }}-bundle
           enableCrossOsArchive: true
 
   build:
@@ -88,30 +116,8 @@ jobs:
     timeout-minutes: 120
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - platform: windows-x64
-            os: windows-2022
-            rust: "1.75"
-            python: python
-          - platform: linux-x64
-            os: ubuntu-24.04
-            rust: "1.75"
-            python: python3
-          - platform: macos-arm64
-            os: macos-15
-            rust: "1.81"
-            python: python3
-          - platform: macos-x64
-            os: macos-15-intel
-            rust: "1.81"
-            python: python3
-          - platform: android-arm64
-            os: ubuntu-24.04
-            rust: "1.75"
-            python: python3
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
-    if: needs.prepare.result == 'success' && contains(format(',{0},', inputs.platforms), format(',{0},', matrix.platform))
     steps:
       - name: Checkout build repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -120,7 +126,7 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .panel-bundle
-          key: panel-client-${{ inputs.build_id }}-bundle
+          key: panel-client-${{ inputs.build_id }}-${{ github.run_id }}-bundle
           fail-on-cache-miss: true
           enableCrossOsArchive: true
 
@@ -186,14 +192,16 @@ jobs:
           test -n "$deb"
           mkdir -p ../out appimage
           cp "$deb" appimage/rustdesk.deb
-          sudo pip3 install "setuptools_scm==8.1.0"
-          sudo pip3 install "git+https://github.com/rustdesk-org/appimage-builder.git@4ea36c95c6f3e29ff3c35807c1651ba353302f21"
+          # ubuntu-24.04 marks the system Python EXTERNALLY-MANAGED; without
+          # --break-system-packages pip aborts and set -e kills the build.
+          sudo pip3 install --break-system-packages "setuptools_scm==8.1.0"
+          sudo pip3 install --break-system-packages "git+https://github.com/rustdesk-org/appimage-builder.git@4ea36c95c6f3e29ff3c35807c1651ba353302f21"
           pushd appimage
           ./build-apprun.sh x86_64
           sudo appimage-builder --skip-tests --recipe ./AppImageBuilder-x86_64.yml
           appimage=$(find appimage-build -name '*.AppImage' | head -1)
           test -n "$appimage"
-          cp "$appimage" "../out/panel-client-${{ inputs.build_id }}-linux-x64.AppImage"
+          cp "$appimage" "../../out/panel-client-${{ inputs.build_id }}-linux-x64.AppImage"
         working-directory: src
 
       # ----- macOS dmg -----
