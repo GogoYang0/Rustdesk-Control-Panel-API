@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Rustdesk-Control-Panel API
-  version: 0.11.0
+  version: 0.12.0
   contact:
     name: Rustdesk-Control-Panel
     url: https://github.com/GogoYang0/Rustdesk-Control-Panel-API
@@ -1203,6 +1203,31 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/me:
+    get:
+      operationId: getMe
+      summary: 当前用户与所属组织
+      description: |
+        一次返回调用者自身的资料，以及在每个**有效**组织会籍下的角色与权限码。
+        停用会籍、以及 `role_id` 指向不存在角色的会籍**不出现**在 `orgs` 中（fail closed，
+        与逐请求鉴权一致）。`permissions` 是只读快照，供前端做交互闸门，不构成授权；
+        后端仍在每次请求上独立鉴权。
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 当前用户与其组织
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /api/v1/orgs:
     get:
@@ -6632,6 +6657,83 @@ components:
         captcha:
           $ref: "#/components/schemas/CaptchaProof"
 
+    MeResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/Me"
+    Me:
+      type: object
+      required:
+        - user
+        - orgs
+      properties:
+        user:
+          $ref: "#/components/schemas/MeUser"
+        orgs:
+          type: array
+          description: 按组织 id 升序；无有效会籍时为空数组
+          items:
+            $ref: "#/components/schemas/MeOrg"
+    MeUser:
+      type: object
+      required:
+        - id
+        - email
+        - email_verified
+        - totp_enabled
+        - has_password
+      properties:
+        id:
+          type: integer
+          format: int64
+        email:
+          type: string
+          format: email
+        email_verified:
+          type: boolean
+        totp_enabled:
+          type: boolean
+        has_password:
+          type: boolean
+          description: passkey-only 账户为 false（密码哈希为空哨兵）
+    MeOrg:
+      type: object
+      required:
+        - id
+        - name
+        - role_id
+        - role_kind
+        - permissions
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        role_id:
+          type: integer
+          format: int64
+        role_kind:
+          type: string
+          enum:
+            - owner
+            - admin
+            - member
+            - custom
+        permissions:
+          type: array
+          description: 该角色的权限码集合（只读快照，不构成授权）
+          items:
+            type: string
     Org:
       type: object
       required:
