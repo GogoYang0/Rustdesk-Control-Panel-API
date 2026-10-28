@@ -347,11 +347,19 @@ func main() {
 		})
 	}
 
+	// One access service serves both the handler's pre-check and the
+	// redemption's in-transaction re-check: one implementation, so the two
+	// decisions cannot drift apart.
+	accessSvc := access.NewService(st.DB, auditor, nil)
+
 	// One session service shared by the API handlers, the log collector's
 	// session hook and the background tasks: all three mutate the same rows,
-	// so they must see one clock and one audit recorder.
+	// so they must see one clock and one audit recorder. The evaluator is
+	// required: Redeem refuses without it, so forgetting it here would turn
+	// every redemption into an error rather than silently weakening the check.
 	sessionSvc := session.NewService(st.DB, auditor, time.Now).
-		WithControlRoles(controlrole.NewService(st.DB, auditor, time.Now))
+		WithControlRoles(controlrole.NewService(st.DB, auditor, time.Now)).
+		WithAccess(accessSvc)
 
 	// Client audit ingest: the same service the compat endpoints use, exposed
 	// here for its nonce sweep.
@@ -647,7 +655,7 @@ func main() {
 			OrgsPerUser:              cfg.Provision.MaxOrgsPerUser,
 			Issuer:                   issuer,
 			Auditor:                  auditor,
-			Access:                   access.NewService(st.DB, auditor, nil),
+			Access:                   accessSvc,
 			Logger:                   lg,
 			Mailer:                   mailer,
 			Tickets:                  sessionSvc,
