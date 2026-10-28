@@ -48,6 +48,17 @@ func (a *AdminAPI) ListAlerts(c *gin.Context, orgId int64, params gen.ListAlerts
 	if params.Since != nil {
 		filter.Since = params.Since
 	}
+	if params.SessionId != nil {
+		// The binding does not enforce `minimum: 1`: a non-positive id would
+		// quietly match nothing, which reads as "no alerts" instead of a bad
+		// parameter.
+		if *params.SessionId <= 0 {
+			abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid session id")
+			return
+		}
+		id := uint(*params.SessionId)
+		filter.SessionID = &id
+	}
 	if params.Page != nil {
 		filter.Page = *params.Page
 	}

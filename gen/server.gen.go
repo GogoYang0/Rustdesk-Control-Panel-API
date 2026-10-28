@@ -4202,10 +4202,16 @@ type ListAlertsParams struct {
 	Severity *AlertSeverity `form:"severity,omitempty" json:"severity,omitempty"`
 
 	// Kind 告警类型（自由字符串，见 Alert.kind 的已知取值）
-	Kind     *string    `form:"kind,omitempty" json:"kind,omitempty"`
-	Since    *time.Time `form:"since,omitempty" json:"since,omitempty"`
-	Page     *int       `form:"page,omitempty" json:"page,omitempty"`
-	PageSize *int       `form:"pageSize,omitempty" json:"pageSize,omitempty"`
+	Kind  *string    `form:"kind,omitempty" json:"kind,omitempty"`
+	Since *time.Time `form:"since,omitempty" json:"since,omitempty"`
+
+	// SessionId 只返回该会话引起的告警（`Alert.session_id`）。会话详情页据此展示
+	// 「关联告警」：告警列表按时间倒序分页，客户端自行按 `session_id` 过滤
+	// 会漏掉不在当前页的告警。未知 id 返回空页，不报错；跨组织的 id 同样
+	// 返回空页（租户作用域优先于过滤条件）。
+	SessionId *int64 `form:"sessionId,omitempty" json:"sessionId,omitempty"`
+	Page      *int   `form:"page,omitempty" json:"page,omitempty"`
+	PageSize  *int   `form:"pageSize,omitempty" json:"pageSize,omitempty"`
 }
 
 // ListApprovalsParams defines parameters for ListApprovals.
@@ -6135,6 +6141,14 @@ func (siw *ServerInterfaceWrapper) ListAlerts(c *gin.Context) {
 	err = runtime.BindQueryParameterWithOptions("form", true, false, "since", c.Request.URL.Query(), &params.Since, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
 	if err != nil {
 		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter since: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "sessionId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "sessionId", c.Request.URL.Query(), &params.SessionId, runtime.BindQueryParameterOptions{Type: "integer", Format: "int64"})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter sessionId: %w", err), http.StatusBadRequest)
 		return
 	}
 

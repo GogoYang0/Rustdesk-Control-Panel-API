@@ -59,8 +59,11 @@ type AlertFilter struct {
 	Severity *string
 	Kind     *string
 	Since    *time.Time
-	Page     int
-	PageSize int
+	// SessionID narrows the inbox to the alerts a single session caused; the
+	// session detail view needs it because a time-ordered page can miss rows.
+	SessionID *uint
+	Page      int
+	PageSize  int
 }
 
 // NormalisedPagination applies the shared clamping rules.
@@ -664,6 +667,9 @@ func (s *Service) ListAlerts(ctx context.Context, orgID uint, f AlertFilter) ([]
 	}
 	if f.Since != nil {
 		query = query.Where("created_at >= ?", f.Since.UTC())
+	}
+	if f.SessionID != nil {
+		query = query.Where("session_id = ?", *f.SessionID)
 	}
 
 	var total int64
