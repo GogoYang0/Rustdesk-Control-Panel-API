@@ -128,10 +128,20 @@ func (s *Server) login(c *gin.Context) {
 
 	// Always run one Argon2id verification so the response time does not
 	// reveal whether the email exists (CWE-208).
+	// Mailbox lookup is case-insensitive and collect-all; ambiguity is
+	// answered like any other non-match (CWE-204).
+	var users []model.User
+	err := store.WithoutTenantScope(s.deps.DB).Where("LOWER(email) = ?", model.NormalizeEmail(email)).Find(&users).Error
+	if err != nil {
+		compatError(c, http.StatusInternalServerError, "login failed")
+		return
+	}
 	var user model.User
-	err := store.WithoutTenantScope(s.deps.DB).Where("email = ?", email).First(&user).Error
+	if len(users) == 1 {
+		user = users[0]
+	}
 	hashToCheck := dummyCompatHash()
-	if err == nil && user.PasswordHash != "" {
+	if len(users) == 1 && user.PasswordHash != "" {
 		hashToCheck = user.PasswordHash
 	}
 	matched := false

@@ -640,3 +640,17 @@ func TestVerifyEmailRoutes_AnonymousReachHandler(t *testing.T) {
 		map[string]string{"email": "someone@example.com"}, "")
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 }
+
+// TestLogin_EmailCaseInsensitive pins the normalized-mailbox lookup: the
+// BeforeSave hook stores mailboxes lowercased, so a login spelling the
+// address with different case must still find the account. With legacy
+// case-variant rows this used to be a guaranteed not-found.
+func TestLogin_EmailCaseInsensitive(t *testing.T) {
+	h := newHarness(t)
+	h.seedUser(t, "Mixed.Case@Example.com", "password123")
+
+	w := h.do(t, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"email": "mixed.case@example.com", "password": "password123",
+	}, "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+}

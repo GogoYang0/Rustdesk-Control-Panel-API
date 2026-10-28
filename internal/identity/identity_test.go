@@ -11,6 +11,8 @@ import (
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/config"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
+	"github.com/stretchr/testify/require"
+
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
 
@@ -344,4 +346,67 @@ func TestStaleCount(t *testing.T) {
 	if got != 1 {
 		t.Fatalf("stale oidc rows = %d, want 1", got)
 	}
+}
+
+// TestResolve_LegacyCaseVariantMailboxFailsClosed pins the reviewer's CWE-178
+// finding: databases with a case-sensitive collation can hold two accounts
+// whose emails differ only by case (legacy rows created before write-path
+// normalization, e.g. via an invite). A first external login for that mailbox
+// must refuse to guess between them — conflict, never First-row binding.
+func TestResolve_LegacyCaseVariantMailboxFailsClosed(t *testing.T) {
+	s, _ := newService(t)
+	ctx := context.Background()
+
+	// Two accounts whose mailbox differs only by case. The rows are planted
+	// with a raw UPDATE so they exist even with write-path normalization in
+	// place: they model the pre-normalization data a deployment can carry.
+	alice := seedUser(t, s, "recycled@example.com", true)
+	bob := seedUser(t, s, "filler@example.com", true)
+	require.NoError(t, s.DB.Exec("UPDATE users SET email = 'Recycled@example.com' WHERE id = ?", bob.ID).Error)
+	_ = alice
+
+	claims := Claims{
+		Provider:      providerOIDC,
+		Issuer:        "https://legacy.example.com",
+		Subject:       "subject-case-variant",
+		Email:         "recycled@example.com",
+		EmailVerified: true,
+	}
+	_, err := s.Resolve(ctx, claims)
+	require.ErrorIs(t, err, ErrIdentityConflict,
+		"an ambiguous legacy mailbox must fail closed, not bind to whichever row comes first")
+}
+
+// TestLoginExisting_LegacyCaseVariantOtherAccountFailsConflict pins the
+// returning-login side: a bound user whose mailbox now collides with a
+// case-variant legacy row of a different account must be conflicted too.
+func TestLoginExisting_LegacyCaseVariantOtherAccountFailsConflict(t *testing.T) {
+	s, _ := newService(t)
+	ctx := context.Background()
+
+	alice := seedUser(t, s, "alice@example.com", true)
+	legacy := seedUser(t, s, "filler2@example.com", true)
+	require.NoError(t, s.DB.Exec("UPDATE users SET email = 'Alice@example.com' WHERE id = ?", legacy.ID).Error)
+
+	require.NoError(t, s.DB.Create(&model.UserIdentity{
+		UserID:   alice.ID,
+		Provider: providerOIDC,
+		Issuer:   "https://legacy.example.com",
+		Subject:  "subject-returning",
+		Email:    "alice@example.com",
+		LinkedAt: time.Now(),
+	}).Error)
+
+	// The IdP now reports the mailbox with different case: the legacy
+	// case-variant row of another account matches it.
+	claims := Claims{
+		Provider:      providerOIDC,
+		Issuer:        "https://legacy.example.com",
+		Subject:       "subject-returning",
+		Email:         "Alice@example.com",
+		EmailVerified: true,
+	}
+	_, err := s.Resolve(ctx, claims)
+	require.ErrorIs(t, err, ErrIdentityConflict,
+		"a mailbox collision with another account must conflict even when only case differs")
 }
