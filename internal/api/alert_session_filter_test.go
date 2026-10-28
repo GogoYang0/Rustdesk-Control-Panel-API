@@ -25,6 +25,17 @@ func seedSessionAlert(t *testing.T, h *harness, orgID int64, sessionID *uint, cr
 	require.NoError(t, store.WithoutTenantScope(h.db.DB).Create(&row).Error)
 }
 
+// Decodes into a fresh value: reusing one struct across responses keeps stale
+// values for fields the next JSON body omits (`session_id` is omitempty).
+func getAlertList(t *testing.T, h *harness, token, path string) alertListBody {
+	t.Helper()
+	w := h.do(t, http.MethodGet, path, nil, token)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var list alertListBody
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &list))
+	return list
+}
+
 // The session side sheet asks for the alerts of one session. Filtering the
 // time-ordered page in the client would silently miss rows in a busy inbox.
 func TestAlert_ListFiltersBySession(t *testing.T) {
@@ -37,10 +48,7 @@ func TestAlert_ListFiltersBySession(t *testing.T) {
 	seedSessionAlert(t, h, orgID, &second, fixedNow.Add(2*time.Minute))
 	seedSessionAlert(t, h, orgID, nil, fixedNow.Add(3*time.Minute))
 
-	w := h.do(t, http.MethodGet, alertsPath(orgID)+"?sessionId=11", nil, owner)
-	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	var list alertListBody
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &list))
+	list := getAlertList(t, h, owner, alertsPath(orgID)+"?sessionId=11")
 	require.Equal(t, int64(2), list.Data.Total)
 	require.Len(t, list.Data.Items, 2)
 	for _, item := range list.Data.Items {
@@ -50,12 +58,29 @@ func TestAlert_ListFiltersBySession(t *testing.T) {
 
 	// Non-positive ids are a bad parameter, not an empty page: an empty page
 	// would read as "this session caused no alerts".
-	w = h.do(t, http.MethodGet, alertsPath(orgID)+"?sessionId=0", nil, owner)
-	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+	for _, query := range []string{"?sessionId=0", "?sessionId=-1"} {
+		w := h.do(t, http.MethodGet, alertsPath(orgID)+query, nil, owner)
+		require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+	}
+
+	// Pagination counts every matching row; the page only carries its slice.
+	list = getAlertList(t, h, owner, alertsPath(orgID)+"?sessionId=11&page=2&pageSize=1")
+	require.Equal(t, int64(2), list.Data.Total)
+	require.Len(t, list.Data.Items, 1)
 
 	// Unknown ids are a legitimate empty page.
-	w = h.do(t, http.MethodGet, alertsPath(orgID)+"?sessionId=999", nil, owner)
-	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &list))
+	list = getAlertList(t, h, owner, alertsPath(orgID)+"?sessionId=999")
 	require.Equal(t, int64(0), list.Data.Total)
+
+	// Without the filter the organization-level alert (session_id = NULL) is
+	// still part of the inbox; only the session filter hides it.
+	list = getAlertList(t, h, owner, alertsPath(orgID))
+	require.Equal(t, int64(4), list.Data.Total)
+	var orphan int
+	for _, item := range list.Data.Items {
+		if item.SessionId == nil {
+			orphan++
+		}
+	}
+	require.Equal(t, 1, orphan)
 }
