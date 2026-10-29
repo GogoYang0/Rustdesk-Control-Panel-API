@@ -128,8 +128,8 @@ func (s *RetentionService) RunOnce(ctx context.Context) (archived, purged int64,
 func (s *RetentionService) runOrg(ctx context.Context, org model.Organization) (archived, purged int64, err error) {
 	cutoff := s.now().UTC().AddDate(0, 0, -org.AuditRetentionDays)
 	var rows []model.AuditLog
-	if err := store.ScopedByOrg(s.db.WithContext(ctx), org.ID).
-		Where("created_at < ?", cutoff).
+	query := timeCondition(store.ScopedByOrg(s.db.WithContext(ctx), org.ID), "created_at", "<", cutoff)
+	if err := query.
 		Order("created_at").
 		Order("id").
 		Limit(retentionBatchSize).
