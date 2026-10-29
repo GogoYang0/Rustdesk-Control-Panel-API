@@ -80,11 +80,11 @@ func Seed(db *gorm.DB, opts Options) (Result, error) {
 }
 
 // seedLogEvents gives e2e/read-only log pages a deterministic set of parsed
-// hbbs/hbbr events. The marker lives in detail_json; reruns replace only their
-// own rows and never touch real collected evidence.
+// hbbs/hbbr events. The marker lives in detail_json under a reserved key, so
+// reruns replace only their own rows and never touch collected evidence.
 func seedLogEvents(db *gorm.DB, orgID uint) error {
 	if err := store.ScopedByOrg(db, orgID).
-		Where("detail_json LIKE ?", `%"seed":"e2e"%`).
+		Where("detail_json LIKE ?", `%"devseed":"e2e"%`).
 		Delete(&model.LogEvent{}).Error; err != nil {
 		return fmt.Errorf("devseed: clear sample log events: %w", err)
 	}
@@ -95,7 +95,7 @@ func seedLogEvents(db *gorm.DB, orgID uint) error {
 			Source:         source,
 			Level:          level,
 			Kind:           kind,
-			DetailJSON:     fmt.Sprintf(`{"seed":"e2e","raw":%q}`, raw),
+			DetailJSON:     fmt.Sprintf(`{"devseed":"e2e","raw":%q}`, raw),
 			OccurredAt:     now.Add(-time.Duration(minutes) * time.Minute),
 		}
 	}
