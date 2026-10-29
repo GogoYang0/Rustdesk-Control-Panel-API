@@ -72,15 +72,24 @@ func seedClientBuilds(db *gorm.DB, orgID, adminID uint, assetDir string) error {
 		content := []byte(fmt.Sprintf("E2E artifact %s\n", platform))
 		fileName := seedArtifactFileName(succeeded.ID, platform)
 		if err := writeSeedArtifact(db, root, orgID, succeeded, platform, fileName, content, now); err != nil {
+			cleanupSeedBuild(db, root, orgID, succeeded.ID)
 			return err
 		}
 	}
 	if _, err := createSeedBuild(db, orgID, adminID, profile, model.ClientBuildStatusFailed,
 		[]string{model.ClientBuildPlatformAndroidARM64},
 		now.Add(-3*time.Hour), now.Add(-2*time.Hour), "E2E sample build failed", 0); err != nil {
+		cleanupSeedBuild(db, root, orgID, succeeded.ID)
 		return err
 	}
 	return nil
+}
+
+func cleanupSeedBuild(db *gorm.DB, root string, orgID, buildID uint) {
+	scoped := store.ScopedByOrg(db, orgID)
+	_ = scoped.Where("build_id = ?", buildID).Delete(&model.ClientBuildArtifact{}).Error
+	_ = scoped.Where("id = ?", buildID).Delete(&model.ClientBuild{}).Error
+	_ = removeSeedBuildFiles(root, orgID, buildID)
 }
 
 func ensureSeedBuildProfile(db *gorm.DB, orgID, adminID uint) (*model.ClientBuildProfile, error) {
