@@ -39,6 +39,7 @@ func main() {
 		AdminPassword: envOr("PANEL_SEED_PASSWORD", "admin12345"),
 		OpsEmail:      envOr("PANEL_SEED_OPS_EMAIL", "ops@acme.local"),
 		OpsPassword:   envOr("PANEL_SEED_OPS_PASSWORD", "ops12345"),
+		AssetDir:      cfg.ClientBuild.AssetDir,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "devseed:", err)
