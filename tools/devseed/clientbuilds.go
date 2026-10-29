@@ -27,12 +27,6 @@ const (
 	seedBuildServerKey   = "dGVzdC1rZXktMDEyMzQ1Njc4OWFiY2RlZmdoaWo="
 )
 
-type seedArtifact struct {
-	platform string
-	fileName string
-	content  []byte
-}
-
 // seedClientBuilds gives the generator e2e a deterministic profile and two
 // terminal builds. Reruns only replace rows/files owned by this seed profile.
 func seedClientBuilds(db *gorm.DB, orgID, adminID uint, assetDir string) error {
