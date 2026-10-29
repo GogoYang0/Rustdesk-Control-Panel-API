@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Rustdesk-Control-Panel API
-  version: 0.12.1
+  version: 0.12.2
   contact:
     name: Rustdesk-Control-Panel
     url: https://github.com/GogoYang0/Rustdesk-Control-Panel-API
@@ -82,7 +82,7 @@ tags:
   - name: addressbooks
     description: 地址簿（个人/共享）
   - name: logs
-    description: 采集日志查询
+    description: 采集日志查询（audit.read + audit_scope）
   - name: sessions
     description: 会话记录（面板签发与日志推断）与连接票据
   - name: policies
@@ -4041,7 +4041,11 @@ paths:
     get:
       operationId: listLogEvents
       summary: 查询采集日志事件
-      description: 返回本组织采集的 hbbs/hbbr 日志事件，按发生时间倒序，limit 上限 200。
+      description: |
+        返回本组织采集的 hbbs/hbbr 日志事件，按发生时间倒序，limit 上限 200（v0.12.2）。
+        需要 `audit.read`；可见范围由角色 `audit_scope` 决定：`global` 查全组织，
+        `individual` 只返回自己拥有设备（`devices.owner_user_id`）的事件；无法关联设备
+        （`device_id` 为 null）的事件对 `individual` 不可见。列表轮询不写审计。
       tags:
         - logs
       security:
