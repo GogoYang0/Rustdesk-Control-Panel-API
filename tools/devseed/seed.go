@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"gorm.io/gorm"
@@ -44,6 +45,13 @@ func Seed(db *gorm.DB, opts Options) (Result, error) {
 	if _, err := clientbuild.NewStorage(opts.AssetDir); err != nil {
 		return Result{}, fmt.Errorf("devseed: prepare asset dir: %w", err)
 	}
+	probe, err := os.CreateTemp(opts.AssetDir, ".devseed-write-probe-*")
+	if err != nil {
+		return Result{}, fmt.Errorf("devseed: asset dir is not writable: %w", err)
+	}
+	probeName := probe.Name()
+	_ = probe.Close()
+	_ = os.Remove(probeName)
 	if err := db.AutoMigrate(model.PersistentModels()...); err != nil {
 		return Result{}, fmt.Errorf("devseed: migrate: %w", err)
 	}
