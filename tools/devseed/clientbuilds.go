@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -20,6 +19,8 @@ import (
 
 const (
 	seedBuildProfileName = "E2E 品牌"
+	seedBuildProfileKey  = "__devseed_e2e_brand"
+	seedBuildMarker      = `"devseed":"e2e"`
 	seedBuildProfileApp  = "E2E Remote"
 	seedBuildVersion     = "1.5.0"
 	seedBuildServer      = "relay.example.com:21117"
@@ -40,13 +41,16 @@ func seedClientBuilds(db *gorm.DB, orgID, adminID uint, assetDir string) error {
 	}
 	scoped := store.ScopedByOrg(db, orgID)
 	var oldBuilds []model.ClientBuild
-	if err := scoped.Where("profile_id = ?", profile.ID).Find(&oldBuilds).Error; err != nil {
+	if err := scoped.Where("profile_id = ? AND manifest_json LIKE ?", profile.ID, "%"+seedBuildMarker+"%").
+		Find(&oldBuilds).Error; err != nil {
 		return fmt.Errorf("devseed: load sample builds: %w", err)
 	}
 	oldIDs := make([]uint, 0, len(oldBuilds))
 	for _, build := range oldBuilds {
+		if err := removeSeedBuildFiles(root, orgID, build.ID); err != nil {
+			return err
+		}
 		oldIDs = append(oldIDs, build.ID)
-		removeSeedBuildFiles(root, orgID, build.ID)
 	}
 	if len(oldIDs) > 0 {
 		if err := scoped.Where("build_id IN ?", oldIDs).Delete(&model.ClientBuildArtifact{}).Error; err != nil {
@@ -80,7 +84,7 @@ func seedClientBuilds(db *gorm.DB, orgID, adminID uint, assetDir string) error {
 }
 
 func ensureSeedBuildProfile(db *gorm.DB, orgID, adminID uint) (*model.ClientBuildProfile, error) {
-	key := strings.ToLower(seedBuildProfileName)
+	key := seedBuildProfileKey
 	var row model.ClientBuildProfile
 	err := store.ScopedByOrg(db, orgID).Where("name_key = ?", key).First(&row).Error
 	now := time.Now().UTC()
@@ -158,6 +162,7 @@ func createSeedBuild(
 		"api_server":       seedBuildAPI,
 		"upstream_version": seedBuildVersion,
 		"platforms":        platforms,
+		"devseed":          "e2e",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("devseed: encode sample manifest: %w", err)
@@ -205,9 +210,28 @@ func writeSeedArtifact(
 	return nil
 }
 
-func removeSeedBuildFiles(root string, orgID, buildID uint) {
-	_ = os.RemoveAll(filepath.Join(root, "artifacts",
+func seedArtifactFileName(buildID uint, platform string) string {
+	ext := ".zip"
+	switch platform {
+	case model.ClientBuildPlatformLinuxX64:
+		ext = ".AppImage"
+	case model.ClientBuildPlatformMacOSARM64, model.ClientBuildPlatformMacOSX64:
+		ext = ".dmg"
+	case model.ClientBuildPlatformAndroidARM64:
+		ext = ".apk"
+	}
+	return fmt.Sprintf("panel-client-%d-%s%s", buildID, platform, ext)
+}
+
+func removeSeedBuildFiles(root string, orgID, buildID uint) error {
+	if err := os.RemoveAll(filepath.Join(root, "artifacts",
 		strconv.FormatUint(uint64(orgID), 10),
-		strconv.FormatUint(uint64(buildID), 10)))
-	_ = os.Remove(filepath.Join(root, "bundles", fmt.Sprintf("%d.tar.gz", buildID)))
+		strconv.FormatUint(uint64(buildID), 10))); err != nil {
+		return fmt.Errorf("devseed: clear sample artifact files: %w", err)
+	}
+	bundle := filepath.Join(root, "bundles", fmt.Sprintf("%d.tar.gz", buildID))
+	if err := os.Remove(bundle); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("devseed: clear sample bundle: %w", err)
+	}
+	return nil
 }
