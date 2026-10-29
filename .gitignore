@@ -20,6 +20,9 @@ coverage.*
 *.swp
 .DS_Store
 
+# local runtime data (SQLite DB, server private keys, build assets)
+/data/
+
 # local config overrides
 configs/config.local.yaml
 .env

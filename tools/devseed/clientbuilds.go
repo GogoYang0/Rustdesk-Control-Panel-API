@@ -106,6 +106,9 @@ func ensureSeedBuildProfile(db *gorm.DB, orgID, adminID uint) (*model.ClientBuil
 	if err != nil {
 		return nil, fmt.Errorf("devseed: load sample build profile: %w", err)
 	}
+	if row.Name != seedBuildProfileName {
+		return nil, fmt.Errorf("devseed: reserved profile key belongs to %q", row.Name)
+	}
 	if row.AppName != seedBuildProfileApp {
 		if err := store.ScopedByOrg(db, orgID).Model(&model.ClientBuildProfile{}).
 			Where("id = ?", row.ID).Updates(map[string]any{
@@ -134,43 +137,48 @@ func createSeedBuild(
 	if err != nil {
 		return nil, fmt.Errorf("devseed: encode sample platforms: %w", err)
 	}
-	row := model.ClientBuild{
-		OrganizationID:  orgID,
-		ProfileID:       profile.ID,
-		ProfileName:     profile.Name,
-		AppName:         profile.AppName,
-		UpstreamVersion: seedBuildVersion,
-		ManifestJSON:    "{}",
-		PlatformsJSON:   string(platformsJSON),
-		Status:          status,
-		ErrorMessage:    errorMessage,
-		ArtifactCount:   artifactCount,
-		CreatedBy:       adminID,
-		CreatedAt:       createdAt,
-		DispatchedAt:    &createdAt,
-		FinishedAt:      &finishedAt,
-	}
-	if err := store.ScopedByOrg(db, orgID).Create(&row).Error; err != nil {
-		return nil, fmt.Errorf("devseed: create sample build: %w", err)
-	}
-	manifest, err := json.Marshal(map[string]any{
-		"schema_version":   1,
-		"build_id":         row.ID,
-		"app_name":         row.AppName,
-		"server":           seedBuildServer,
-		"server_key":       seedBuildServerKey,
-		"api_server":       seedBuildAPI,
-		"upstream_version": seedBuildVersion,
-		"platforms":        platforms,
-		"devseed":          "e2e",
+	var row model.ClientBuild
+	err = db.Transaction(func(tx *gorm.DB) error {
+		scoped := store.ScopedByOrg(tx, orgID)
+		row = model.ClientBuild{
+			OrganizationID:  orgID,
+			ProfileID:       profile.ID,
+			ProfileName:     profile.Name,
+			AppName:         profile.AppName,
+			UpstreamVersion: seedBuildVersion,
+			ManifestJSON:    "{}",
+			PlatformsJSON:   string(platformsJSON),
+			Status:          status,
+			ErrorMessage:    errorMessage,
+			ArtifactCount:   artifactCount,
+			CreatedBy:       adminID,
+			CreatedAt:       createdAt,
+			DispatchedAt:    &createdAt,
+			FinishedAt:      &finishedAt,
+		}
+		if err := scoped.Create(&row).Error; err != nil {
+			return fmt.Errorf("devseed: create sample build: %w", err)
+		}
+		manifest, err := json.Marshal(map[string]any{
+			"schema_version":   1,
+			"build_id":         row.ID,
+			"app_name":         row.AppName,
+			"server":           seedBuildServer,
+			"server_key":       seedBuildServerKey,
+			"api_server":       seedBuildAPI,
+			"upstream_version": seedBuildVersion,
+			"platforms":        platforms,
+			"devseed":          "e2e",
+		})
+		if err != nil {
+			return fmt.Errorf("devseed: encode sample manifest: %w", err)
+		}
+		row.ManifestJSON = string(manifest)
+		return scoped.Model(&model.ClientBuild{}).
+			Where("id = ?", row.ID).Update("manifest_json", row.ManifestJSON).Error
 	})
 	if err != nil {
-		return nil, fmt.Errorf("devseed: encode sample manifest: %w", err)
-	}
-	row.ManifestJSON = string(manifest)
-	if err := store.ScopedByOrg(db, orgID).Model(&model.ClientBuild{}).
-		Where("id = ?", row.ID).Update("manifest_json", row.ManifestJSON).Error; err != nil {
-		return nil, fmt.Errorf("devseed: store sample manifest: %w", err)
+		return nil, fmt.Errorf("devseed: store sample build: %w", err)
 	}
 	return &row, nil
 }
