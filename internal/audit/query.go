@@ -117,10 +117,10 @@ func scopedQuery(ctx context.Context, db *gorm.DB, orgID uint, f Filter, viewer 
 		query = query.Where("target_id = ?", f.TargetID)
 	}
 	if f.From != nil {
-		query = query.Where("created_at >= ?", f.From.UTC())
+		query = timeCondition(query, "created_at", ">=", *f.From)
 	}
 	if f.To != nil {
-		query = query.Where("created_at < ?", f.To.UTC())
+		query = timeCondition(query, "created_at", "<", *f.To)
 	}
 	if viewer.Scope != model.AuditScopeGlobal {
 		if viewer.UserID == 0 {
