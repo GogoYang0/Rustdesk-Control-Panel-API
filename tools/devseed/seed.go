@@ -83,32 +83,34 @@ func Seed(db *gorm.DB, opts Options) (Result, error) {
 // hbbs/hbbr events. The marker lives in detail_json under a reserved key, so
 // reruns replace only their own rows and never touch collected evidence.
 func seedLogEvents(db *gorm.DB, orgID uint) error {
-	if err := store.ScopedByOrg(db, orgID).
-		Where("detail_json LIKE ?", `%"devseed":"e2e"%`).
-		Delete(&model.LogEvent{}).Error; err != nil {
-		return fmt.Errorf("devseed: clear sample log events: %w", err)
-	}
-	now := time.Now().UTC()
-	mk := func(minutes int, source, level, kind, raw string) model.LogEvent {
-		return model.LogEvent{
-			OrganizationID: orgID,
-			Source:         source,
-			Level:          level,
-			Kind:           kind,
-			DetailJSON:     fmt.Sprintf(`{"devseed":"e2e","raw":%q}`, raw),
-			OccurredAt:     now.Add(-time.Duration(minutes) * time.Minute),
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := store.ScopedByOrg(tx, orgID).
+			Where("detail_json LIKE ?", `%"devseed":"e2e"%`).
+			Delete(&model.LogEvent{}).Error; err != nil {
+			return fmt.Errorf("devseed: clear sample log events: %w", err)
 		}
-	}
-	events := []model.LogEvent{
-		mk(4, model.LogSourceHbbs, model.LogLevelInfo, model.LogKindConn, "INFO connection from 10.0.0.5"),
-		mk(3, model.LogSourceHbbr, model.LogLevelWarn, model.LogKindFile, "WARN file transfer path=/tmp/report.csv"),
-		mk(2, model.LogSourceHbbs, model.LogLevelError, model.LogKindError, "ERROR relay unreachable"),
-		mk(1, model.LogSourceHbbr, model.LogLevelInfo, model.LogKindDisconnected, "INFO connection closed"),
-	}
-	if err := store.ScopedByOrg(db, orgID).Create(&events).Error; err != nil {
-		return fmt.Errorf("devseed: insert sample log events: %w", err)
-	}
-	return nil
+		now := time.Now().UTC()
+		mk := func(minutes int, source, level, kind, raw string) model.LogEvent {
+			return model.LogEvent{
+				OrganizationID: orgID,
+				Source:         source,
+				Level:          level,
+				Kind:           kind,
+				DetailJSON:     fmt.Sprintf(`{"devseed":"e2e","raw":%q}`, raw),
+				OccurredAt:     now.Add(-time.Duration(minutes) * time.Minute),
+			}
+		}
+		events := []model.LogEvent{
+			mk(4, model.LogSourceHbbs, model.LogLevelInfo, model.LogKindConn, "INFO connection from 10.0.0.5"),
+			mk(3, model.LogSourceHbbr, model.LogLevelWarn, model.LogKindFile, "WARN file transfer path=/tmp/report.csv"),
+			mk(2, model.LogSourceHbbs, model.LogLevelError, model.LogKindError, "ERROR relay unreachable"),
+			mk(1, model.LogSourceHbbr, model.LogLevelInfo, model.LogKindDisconnected, "INFO connection closed"),
+		}
+		if err := store.ScopedByOrg(tx, orgID).Create(&events).Error; err != nil {
+			return fmt.Errorf("devseed: insert sample log events: %w", err)
+		}
+		return nil
+	})
 }
 
 func ensureOrg(db *gorm.DB, name string) (model.Organization, error) {
