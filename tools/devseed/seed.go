@@ -10,6 +10,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/access"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/clientbuild"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/controlrole"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
@@ -39,6 +40,9 @@ func Seed(db *gorm.DB, opts Options) (Result, error) {
 	if opts.OrgName == "" || opts.AdminEmail == "" || opts.AdminPassword == "" ||
 		opts.OpsEmail == "" || opts.OpsPassword == "" || opts.AssetDir == "" {
 		return Result{}, errors.New("devseed: all names, emails, passwords and asset dir are required")
+	}
+	if _, err := clientbuild.NewStorage(opts.AssetDir); err != nil {
+		return Result{}, fmt.Errorf("devseed: prepare asset dir: %w", err)
 	}
 	if err := db.AutoMigrate(model.PersistentModels()...); err != nil {
 		return Result{}, fmt.Errorf("devseed: migrate: %w", err)
