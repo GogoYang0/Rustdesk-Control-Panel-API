@@ -70,7 +70,7 @@ func seedClientBuilds(db *gorm.DB, orgID, adminID uint, assetDir string) error {
 	}
 	for _, platform := range []string{model.ClientBuildPlatformWindowsX64, model.ClientBuildPlatformLinuxX64} {
 		content := []byte(fmt.Sprintf("E2E artifact %s\n", platform))
-		fileName := fmt.Sprintf("panel-client-%d-%s.zip", succeeded.ID, platform)
+		fileName := seedArtifactFileName(succeeded.ID, platform)
 		if err := writeSeedArtifact(db, root, orgID, succeeded, platform, fileName, content, now); err != nil {
 			return err
 		}
