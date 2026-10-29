@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/gen"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
@@ -29,7 +30,7 @@ func (a *AdminAPI) ListLogEvents(c *gin.Context, orgId int64, params gen.ListLog
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid organization id")
 		return
 	}
-	if _, member := a.membershipFor(c, uid, uint(orgId)); !member {
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermAuditRead) {
 		return
 	}
 
@@ -63,6 +64,15 @@ func (a *AdminAPI) ListLogEvents(c *gin.Context, orgId int64, params gen.ListLog
 	// Every query goes through the scoped handle: the tenant plugin fails
 	// closed, so a bug cannot leak another organization's events.
 	q := store.ScopedByOrg(a.deps.DB, uint(orgId)).Model(&model.LogEvent{})
+	// Individual audit scope sees events from devices it owns. Events without
+	// a resolved device (device_id NULL) cannot be attributed, so they are
+	// hidden rather than guessed. A missing scope falls closed to individual.
+	scope, _ := authz.OrgAuditScope(c)
+	if scope != model.AuditScopeGlobal {
+		owned := store.ScopedByOrg(a.deps.DB, uint(orgId)).Model(&model.Device{}).
+			Select("id").Where("owner_user_id = ?", uid)
+		q = q.Where("device_id IN (?)", owned)
+	}
 	if params.DeviceId != nil {
 		q = q.Where("device_id = ?", *params.DeviceId)
 	}

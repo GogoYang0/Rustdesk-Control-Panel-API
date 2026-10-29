@@ -21,7 +21,7 @@
 | 停用/恢复设备 | `PATCH /api/v1/orgs/{orgId}/devices/{deviceId}`（字段 `disabled`；停用在同一事务撤销该设备的 compat 会话；重复设置当前状态不产生审计） | `device.write` |
 | 重置设备绑定（换机/重装） | `POST /api/v1/orgs/{orgId}/devices/{deviceId}/rebind`（v0.5.0；`reason` 必填） | owner/admin |
 | 查看/切换供应开关 | `GET/PUT /api/v1/orgs/{orgId}/provisioning`（v0.7.0；关闭同步下线；开启仅在无部署行即 `pending` 时异步入队，`deployed`/`failed` 不入队、`failed` 需人工恢复；`cleanup_pending` 表示清理未完成） | owner |
-| 查询日志事件 | `GET /api/v1/orgs/{orgId}/log-events` | member |
+| 查询日志事件 | `GET /api/v1/orgs/{orgId}/log-events` | `audit.read`（`audit_scope=individual` 仅自己拥有设备的事件） |
 | 管理访问控制 | `GET/POST/PATCH/DELETE /api/v1/orgs/{orgId}/user-groups`、`/device-groups`、`/access-rules`（v0.9.0；含成员/设备全量替换，语义见 §2.3） | `access.manage`（内置 owner/admin；不可委派） |
 
 **设备解绑**是 compat 层最高频的管理操作：客户端重装/换机后 uuid 变化，登录报 403「设备已绑定」→ 管理员在设备列表找到该设备（同名多组织时先确认组织）→ 调 `rebind` 填理由 → 客户端重新登录即重新认领。`rebind` 会清绑定并让代数 +1，旧客户端随后的心跳/系统信息被丢弃；重复调用安全。

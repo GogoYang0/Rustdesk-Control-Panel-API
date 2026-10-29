@@ -39,6 +39,10 @@ func TestSeed_CreatesLoginAndIsIdempotent(t *testing.T) {
 	require.EqualValues(t, 2, users)
 	require.EqualValues(t, 2, memberships)
 
+	var events int64
+	require.NoError(t, store.WithoutTenantScope(st.DB).Model(&model.LogEvent{}).Count(&events).Error)
+	require.EqualValues(t, 4, events, "sample events are replaced, not duplicated")
+
 	var admin model.User
 	require.NoError(t, st.DB.Where("email = ?", opts.AdminEmail).First(&admin).Error)
 	ok, err := auth.VerifyPassword(admin.PasswordHash, opts.AdminPassword)

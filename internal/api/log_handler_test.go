@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/store"
 )
@@ -156,4 +158,100 @@ func TestListLogEvents_SinceComparesInstantsNotOffsets(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	require.Empty(t, resp.Data)
+}
+
+// The endpoint used to require only membership. Raw hbbs/hbbr lines can carry
+// IPs, client ids and paths, so it now requires audit.read and applies the
+// role's audit scope; an individual viewer sees only its own devices and never
+// unattributable (device_id NULL) rows.
+func TestListLogEvents_RequiresAuditReadAndScopesIndividual(t *testing.T) {
+	h := newHarness(t)
+	owner := h.seedUser(t, "logs-owner@example.com", "password123")
+	ownerToken := h.login(t, "logs-owner@example.com", "password123")
+	member := h.seedUser(t, "logs-member@example.com", "password123")
+	memberToken := h.login(t, "logs-member@example.com", "password123")
+
+	w := h.do(t, http.MethodPost, "/api/v1/orgs", map[string]string{"name": "logs-scope-org"}, ownerToken)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	var orgResp struct {
+		Data struct {
+			Id int64 `json:"id"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &orgResp))
+	orgID := uint(orgResp.Data.Id)
+
+	roles, err := authz.NewRoleService(h.db.DB).List(orgID)
+	require.NoError(t, err)
+	var memberRole model.Role
+	for _, role := range roles {
+		if role.Kind == model.RoleKindMember {
+			memberRole = role
+		}
+	}
+	require.NotZero(t, memberRole.ID)
+	require.NoError(t, store.ScopedByOrg(h.db.DB, orgID).Create(&model.Membership{
+		OrganizationID: orgID,
+		UserID:         member.ID,
+		RoleID:         memberRole.ID,
+	}).Error)
+
+	ownerID, memberID := owner.ID, member.ID
+	ownerDevice := model.Device{OrganizationID: orgID, RustdeskID: "111000111", Name: "owner-pc", OwnerUserID: &ownerID}
+	memberDevice := model.Device{OrganizationID: orgID, RustdeskID: "222000222", Name: "member-pc", OwnerUserID: &memberID}
+	require.NoError(t, store.ScopedByOrg(h.db.DB, orgID).Create(&ownerDevice).Error)
+	require.NoError(t, store.ScopedByOrg(h.db.DB, orgID).Create(&memberDevice).Error)
+
+	base := time.Now().UTC().Add(-time.Hour)
+	mk := func(deviceID *uint, level string) {
+		require.NoError(t, store.ScopedByOrg(h.db.DB, orgID).Create(&model.LogEvent{
+			OrganizationID: orgID,
+			DeviceID:       deviceID,
+			Source:         model.LogSourceHbbs,
+			Level:          level,
+			Kind:           model.LogKindConn,
+			DetailJSON:     `{"raw":"line"}`,
+			OccurredAt:     base,
+		}).Error)
+	}
+	mk(&ownerDevice.ID, model.LogLevelInfo)
+	mk(&memberDevice.ID, model.LogLevelWarn)
+	mk(nil, model.LogLevelError)
+
+	// Plain member: membership alone is no longer enough.
+	w = h.do(t, http.MethodGet, "/api/v1/orgs/"+itoa(int64(orgID))+"/log-events", nil, memberToken)
+	require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
+
+	// Delegated auditor with individual scope sees only its own device and not
+	// the unattributable row.
+	var auditor model.Role
+	require.NoError(t, h.db.DB.Transaction(func(tx *gorm.DB) error {
+		role, err := authz.NewRoleService(h.db.DB).CreateCustomTx(
+			tx, orgID, "auditor", []string{authz.PermAuditRead}, model.AuditScopeIndividual)
+		if err != nil {
+			return err
+		}
+		auditor = *role
+		return nil
+	}))
+	require.NoError(t, store.ScopedByOrg(h.db.DB, orgID).Model(&model.Membership{}).
+		Where("user_id = ?", member.ID).Update("role_id", auditor.ID).Error)
+
+	w = h.do(t, http.MethodGet, "/api/v1/orgs/"+itoa(int64(orgID))+"/log-events", nil, memberToken)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var scoped struct {
+		Data []map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &scoped))
+	require.Len(t, scoped.Data, 1)
+	require.EqualValues(t, memberDevice.ID, scoped.Data[0]["device_id"])
+
+	// The owner keeps global visibility.
+	w = h.do(t, http.MethodGet, "/api/v1/orgs/"+itoa(int64(orgID))+"/log-events", nil, ownerToken)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var all struct {
+		Data []map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &all))
+	require.Len(t, all.Data, 3)
 }
