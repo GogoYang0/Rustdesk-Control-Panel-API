@@ -187,7 +187,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `DELETE .../address-books/{bookId}/grants/{grantId}` | 撤销授权（v0.8.0，需 `full`） |
 | `DELETE .../address-books/{bookId}/peers/{peerId}` | 删除条目（v0.8.0，`write`+）：**软删除进回收站**，不硬删除 |
 | `GET .../address-books/{bookId}/recycle-bin` | 回收站列表（v0.8.0，`write`+），按删除时间倒序 |
-| `POST .../address-books/{bookId}/recycle-bin/{peerId}/restore` | 恢复条目（v0.8.0，`write`+），bump revision；恢复后超过单簿 2000 peer 上限返回 `400 invalid_request` |
+| `POST .../address-books/{bookId}/recycle-bin/{peerId}/restore` | 恢复条目（v0.8.0，`write`+），bump revision；恢复后超过单簿 2000 个 live peer（不含回收站）上限返回 `400 invalid_request` |
 | `DELETE .../address-books/{bookId}/recycle-bin/{peerId}` | 永久删除（v0.8.0，`full`），不可恢复 |
 
 语义要点：
