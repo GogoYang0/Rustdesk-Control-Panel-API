@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -89,10 +91,45 @@ func Seed(db *gorm.DB, opts Options) (Result, error) {
 	if err := seedLogEvents(db, org.ID); err != nil {
 		return Result{}, err
 	}
+	if err := seedInvitation(db, org.ID); err != nil {
+		return Result{}, err
+	}
 	if err := seedClientBuilds(db, org.ID, admin.ID, opts.AssetDir); err != nil {
 		return Result{}, err
 	}
 	return Result{OrgID: org.ID, AdminEmail: admin.Email, OpsEmail: ops.Email}, nil
+}
+
+// SeedInvitationEmail is the disposable pending invitation the e2e suite
+// lists and revokes. It never leaves the CI/dev database.
+const SeedInvitationEmail = "e2e-invite@example.com"
+
+// seedInvitation keeps one pending invitation for e2e. The plaintext token is
+// never generated or stored: only a hash of discarded random bytes exists, so
+// the fixture is unusable outside the UI and cannot leak through the dev mailer.
+func seedInvitation(db *gorm.DB, orgID uint) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := store.ScopedByOrg(tx, orgID).
+			Where("email = ?", SeedInvitationEmail).
+			Delete(&model.Invitation{}).Error; err != nil {
+			return fmt.Errorf("devseed: clear sample invitation: %w", err)
+		}
+		raw := make([]byte, 32)
+		if _, err := rand.Read(raw); err != nil {
+			return fmt.Errorf("devseed: invitation token: %w", err)
+		}
+		inv := model.Invitation{
+			OrganizationID: orgID,
+			Email:          SeedInvitationEmail,
+			Role:           model.RoleMember,
+			TokenHash:      fmt.Sprintf("%x", sha256.Sum256(raw)),
+			ExpiresAt:      time.Now().UTC().Add(24 * time.Hour),
+		}
+		if err := store.ScopedByOrg(tx, orgID).Create(&inv).Error; err != nil {
+			return fmt.Errorf("devseed: insert sample invitation: %w", err)
+		}
+		return nil
+	})
 }
 
 // seedLogEvents gives e2e/read-only log pages a deterministic set of parsed

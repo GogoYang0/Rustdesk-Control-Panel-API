@@ -49,6 +49,12 @@ func TestSeed_CreatesLoginAndIsIdempotent(t *testing.T) {
 	require.NoError(t, store.WithoutTenantScope(st.DB).Model(&model.LogEvent{}).Count(&events).Error)
 	require.EqualValues(t, 4, events, "sample events are replaced, not duplicated")
 
+	var invitations int64
+	require.NoError(t, store.WithoutTenantScope(st.DB).Model(&model.Invitation{}).
+		Where("organization_id = ? AND email = ?", first.OrgID, SeedInvitationEmail).
+		Count(&invitations).Error)
+	require.EqualValues(t, 1, invitations, "sample invitation is replaced, not duplicated")
+
 	var profiles, builds, artifacts int64
 	require.NoError(t, store.WithoutTenantScope(st.DB).Model(&model.ClientBuildProfile{}).
 		Where("organization_id = ?", first.OrgID).Count(&profiles).Error)
