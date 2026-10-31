@@ -390,6 +390,168 @@ func (a *AdminAPI) ListMembers(c *gin.Context, orgId int64) {
 	c.JSON(http.StatusOK, gen.MemberListResponse{Code: gen.ErrorCodeOk, Message: "ok", Data: out})
 }
 
+// ListInvitations returns the organization's pending invitations. Tokens are
+// never stored in plaintext, so only the public invitation fields are mapped.
+func (a *AdminAPI) ListInvitations(c *gin.Context, orgId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid organization id")
+		return
+	}
+	if !a.loadOrgForManagement(c, uint(orgId)) {
+		return
+	}
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermMemberManage) {
+		return
+	}
+
+	var rows []model.Invitation
+	if err := store.ScopedByOrg(a.deps.DB, uint(orgId)).
+		Where("accepted_at IS NULL AND revoked_at IS NULL").
+		Order("id DESC").
+		Find(&rows).Error; err != nil {
+		a.deps.Logger.Error("list invitations failed", zap.Error(err))
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not list invitations")
+		return
+	}
+	now := a.deps.Now()
+	out := make([]gen.Invitation, 0, len(rows))
+	for _, inv := range rows {
+		// Expiry is filtered in Go: SQLite stores timestamps as text, and a SQL
+		// comparison would be sensitive to the stored offset.
+		if !now.Before(inv.ExpiresAt) {
+			continue
+		}
+		out = append(out, gen.Invitation{
+			Id:        int64(inv.ID),
+			Email:     openapi_types.Email(inv.Email),
+			Role:      gen.InvitationRole(inv.Role),
+			ExpiresAt: inv.ExpiresAt,
+		})
+	}
+	c.JSON(http.StatusOK, gen.InvitationListResponse{
+		Code:    gen.ErrorCodeOk,
+		Message: "ok",
+		Data:    out,
+	})
+}
+
+// RevokeInvitation closes a pending invitation. Repeated calls are idempotent
+// and do not append a second domain audit entry; an accepted invitation is a
+// conflict because the membership already exists.
+func (a *AdminAPI) RevokeInvitation(c *gin.Context, orgId int64, invitationId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 || invitationId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid invitation id")
+		return
+	}
+	if !a.loadOrgForManagement(c, uint(orgId)) {
+		return
+	}
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermMemberManage) {
+		return
+	}
+
+	audited := false
+	err := a.deps.DB.Transaction(func(tx *gorm.DB) error {
+		// The request guard runs before the transaction; another owner can
+		// revoke this membership in between. Re-read and lock the actor row so
+		// a stale permission cannot revoke an invitation.
+		if _, err := lockActor(tx, uint(orgId), uid, false, authz.PermMemberManage); err != nil {
+			return err
+		}
+		query := store.ScopedByOrg(tx, uint(orgId))
+		if tx.Name() != "sqlite" {
+			query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		var inv model.Invitation
+		if err := query.First(&inv, uint(invitationId)).Error; err != nil {
+			return err
+		}
+		if inv.AcceptedAt != nil {
+			return errInvitationAccepted
+		}
+		if inv.RevokedAt != nil {
+			return nil
+		}
+		now := a.deps.Now()
+		res := store.ScopedByOrg(tx, uint(orgId)).Model(&model.Invitation{}).
+			Where("id = ? AND revoked_at IS NULL", inv.ID).
+			Update("revoked_at", now)
+		if res.Error != nil {
+			return fmt.Errorf("revoke invitation: %w", res.Error)
+		}
+		if res.RowsAffected != 1 {
+			// A concurrent revoke won the row; the invitation is already closed.
+			return nil
+		}
+		tr, ok := a.deps.Auditor.(audit.TxRecorder)
+		if !ok {
+			return errAuditUnavailable
+		}
+		if err := tr.RecordTx(tx, audit.Entry{
+			OrganizationID: uint(orgId),
+			ActorUserID:    uid,
+			Action:         "organization.invitation.revoke",
+			TargetType:     "invitation",
+			TargetID:       fmt.Sprint(inv.ID),
+			Detail:         map[string]any{"email": inv.Email, "role": inv.Role},
+		}); err != nil {
+			return err
+		}
+		audited = true
+		return nil
+	})
+	switch {
+	case errors.Is(err, errActorNoLongerAuthorized):
+		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "insufficient permissions")
+		return
+	case errors.Is(err, errInvitationAccepted):
+		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "invitation already accepted")
+		return
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "invitation not found")
+		return
+	case errors.Is(err, errAuditUnavailable):
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "audit unavailable")
+		return
+	case err != nil:
+		a.deps.Logger.Error("revoke invitation failed", zap.Error(err))
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not revoke invitation")
+		return
+	}
+	if audited {
+		c.Set(contextAuditRecorded, true)
+	}
+	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
+}
+
+// loadOrgForManagement resolves the tenant root before authorization, so a
+// missing organization is 404 rather than the membership lookup's 403.
+func (a *AdminAPI) loadOrgForManagement(c *gin.Context, orgID uint) bool {
+	var org model.Organization
+	if err := a.deps.DB.Select("id").First(&org, orgID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "organization not found")
+			return false
+		}
+		a.deps.Logger.Error("load organization failed", zap.Error(err))
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not load organization")
+		return false
+	}
+	return true
+}
+
+// errInvitationAccepted marks a revoke attempt against an invitation whose
+// membership already exists.
+var errInvitationAccepted = errors.New("invitation already accepted")
+
 // CreateInvitation issues an invitation token for an email address.
 func (a *AdminAPI) CreateInvitation(c *gin.Context, orgId int64) {
 	uid, ok := requireUserID(c)
@@ -517,6 +679,21 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 	var joined model.User
 	needVerify := false
 	err = a.deps.DB.Transaction(func(tx *gorm.DB) error {
+		// The invitation was read before the transaction so the organization is
+		// known. Re-read it under a row lock: a concurrent revoke must either
+		// commit first (this accept then fails) or wait for this transaction.
+		lockedQuery := store.ScopedByOrg(tx, inv.OrganizationID)
+		if tx.Name() != "sqlite" {
+			lockedQuery = lockedQuery.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		var locked model.Invitation
+		if err := lockedQuery.First(&locked, inv.ID).Error; err != nil {
+			return err
+		}
+		if err := locked.Acceptable(a.deps.Now()); err != nil {
+			return err
+		}
+		inv = locked
 		// Match on the normalized mailbox: an invite addressed to a case
 		// variant of an existing account must join THAT account, never create
 		// a shadow one. More than one match is a legacy data conflict — refuse
@@ -591,10 +768,17 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 		}
 
 		now := a.deps.Now()
-		return store.ScopedByOrg(tx, inv.OrganizationID).
+		res := store.ScopedByOrg(tx, inv.OrganizationID).
 			Model(&model.Invitation{}).
-			Where("id = ? AND accepted_at IS NULL", inv.ID).
-			Updates(map[string]any{"accepted_at": now, "accepted_by": user.ID}).Error
+			Where("id = ? AND accepted_at IS NULL AND revoked_at IS NULL", inv.ID).
+			Updates(map[string]any{"accepted_at": now, "accepted_by": user.ID})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected != 1 {
+			return model.ErrInvitationUsed
+		}
+		return nil
 	})
 	if errors.Is(err, errInvitationCredentials) {
 		a.guard.RecordFailure(inv.Email, ip)
@@ -605,8 +789,23 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "audit unavailable")
 		return
 	}
+	if errors.Is(err, gorm.ErrRecordNotFound) ||
+		errors.Is(err, model.ErrInvitationUsed) ||
+		errors.Is(err, model.ErrInvitationExpired) ||
+		errors.Is(err, model.ErrInvitationRevoked) {
+		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "invitation is expired or already used")
+		return
+	}
+	// A valid invitation for someone who already belongs to the organization
+	// still hits the (organization_id, user_id) unique index; that is a state
+	// conflict, not a server failure.
+	if store.IsDuplicateKeyError(err) {
+		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "user is already a member")
+		return
+	}
 	if err != nil {
-		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "could not accept invitation")
+		a.deps.Logger.Error("accept invitation failed", zap.Error(err))
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not accept invitation")
 		return
 	}
 	a.guard.Reset(inv.Email, ip)

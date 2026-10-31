@@ -2498,6 +2498,27 @@ type InvitationCreateRequest struct {
 // InvitationCreateRequestRole defines model for InvitationCreateRequest.Role.
 type InvitationCreateRequestRole string
 
+// InvitationListResponse defines model for InvitationListResponse.
+type InvitationListResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode    `json:"code"`
+	Data    []Invitation `json:"data"`
+	Message string       `json:"message"`
+}
+
 // InvitationResponse defines model for InvitationResponse.
 type InvitationResponse struct {
 	// Code 机器可读错误码：
@@ -4839,9 +4860,15 @@ type ServerInterface interface {
 	// ExportFileLogs 导出文件传输日志 CSV
 	// (GET /api/v1/orgs/{orgId}/file-logs/export)
 	ExportFileLogs(c *gin.Context, orgId int64, params ExportFileLogsParams)
+	// ListInvitations 待接受的邀请列表
+	// (GET /api/v1/orgs/{orgId}/invitations)
+	ListInvitations(c *gin.Context, orgId int64)
 	// CreateInvitation 邀请成员加入组织
 	// (POST /api/v1/orgs/{orgId}/invitations)
 	CreateInvitation(c *gin.Context, orgId int64)
+	// RevokeInvitation 撤销待接受的邀请
+	// (DELETE /api/v1/orgs/{orgId}/invitations/{invitationId})
+	RevokeInvitation(c *gin.Context, orgId int64, invitationId int64)
 	// ListLogEvents 查询采集日志事件
 	// (GET /api/v1/orgs/{orgId}/log-events)
 	ListLogEvents(c *gin.Context, orgId int64, params ListLogEventsParams)
@@ -7910,6 +7937,31 @@ func (siw *ServerInterfaceWrapper) ExportFileLogs(c *gin.Context) {
 	siw.Handler.ExportFileLogs(c, orgId, params)
 }
 
+// ListInvitations operation middleware
+func (siw *ServerInterfaceWrapper) ListInvitations(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListInvitations(c, orgId)
+}
+
 // CreateInvitation operation middleware
 func (siw *ServerInterfaceWrapper) CreateInvitation(c *gin.Context) {
 
@@ -7933,6 +7985,40 @@ func (siw *ServerInterfaceWrapper) CreateInvitation(c *gin.Context) {
 	}
 
 	siw.Handler.CreateInvitation(c, orgId)
+}
+
+// RevokeInvitation operation middleware
+func (siw *ServerInterfaceWrapper) RevokeInvitation(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "invitationId" -------------
+	var invitationId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "invitationId", c.Param("invitationId"), &invitationId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter invitationId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RevokeInvitation(c, orgId, invitationId)
 }
 
 // ListLogEvents operation middleware
@@ -9227,7 +9313,9 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/audit-retention", wrapper.SetAuditRetention)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/provisioning", wrapper.GetProvisioning)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/provisioning", wrapper.UpdateProvisioning)
+	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/invitations", wrapper.ListInvitations)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/invitations", wrapper.CreateInvitation)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/invitations/:invitationId", wrapper.RevokeInvitation)
 	router.POST(options.BaseURL+"/api/v1/invitations/accept", wrapper.AcceptInvitation)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/devices", wrapper.ListDevices)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices", wrapper.CreateDevice)

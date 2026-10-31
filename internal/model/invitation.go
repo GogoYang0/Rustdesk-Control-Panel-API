@@ -10,6 +10,7 @@ import (
 var (
 	ErrInvitationExpired = errors.New("invitation expired")
 	ErrInvitationUsed    = errors.New("invitation already accepted")
+	ErrInvitationRevoked = errors.New("invitation revoked")
 )
 
 // Invitation grants a role in an organization to an email address.
@@ -23,6 +24,7 @@ type Invitation struct {
 	ExpiresAt      time.Time  `gorm:"not null" json:"expires_at"`
 	AcceptedBy     *uint      `json:"accepted_by"`
 	AcceptedAt     *time.Time `json:"accepted_at"`
+	RevokedAt      *time.Time `json:"revoked_at"`
 	CreatedAt      time.Time  `json:"created_at"`
 }
 
@@ -30,6 +32,9 @@ type Invitation struct {
 func (i *Invitation) Acceptable(now time.Time) error {
 	if i.AcceptedAt != nil {
 		return fmt.Errorf("%w", ErrInvitationUsed)
+	}
+	if i.RevokedAt != nil {
+		return fmt.Errorf("%w", ErrInvitationRevoked)
 	}
 	if !now.Before(i.ExpiresAt) {
 		return fmt.Errorf("%w", ErrInvitationExpired)

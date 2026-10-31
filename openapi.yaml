@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Rustdesk-Control-Panel API
-  version: 0.13.0
+  version: 0.14.0
   contact:
     name: Rustdesk-Control-Panel
     url: https://github.com/GogoYang0/Rustdesk-Control-Panel-API
@@ -3344,6 +3344,38 @@ paths:
           $ref: "#/components/responses/Internal"
 
   /api/v1/orgs/{orgId}/invitations:
+    get:
+      operationId: listInvitations
+      summary: 待接受的邀请列表
+      description: 返回该组织尚未接受、未撤销且未过期的邀请（v0.14.0），按 id 倒序；只含邮箱/角色/有效期，绝不返回令牌或哈希。需要 member.manage 权限。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 待接受邀请
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvitationListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/Internal"
     post:
       operationId: createInvitation
       summary: 邀请成员加入组织
@@ -3380,6 +3412,48 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/Internal"
+
+  /api/v1/orgs/{orgId}/invitations/{invitationId}:
+    delete:
+      operationId: revokeInvitation
+      summary: 撤销待接受的邀请
+      description: 撤销一条尚未接受的邀请（v0.14.0）；已撤销重复调用返回 200 且不再写领域审计，已接受返回 409，跨组织或不存在的 id 返回 404。需要 member.manage 权限。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: invitationId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已撤销或已处于撤销状态
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/Internal"
 
@@ -8272,6 +8346,22 @@ components:
           type: string
         data:
           $ref: "#/components/schemas/Invitation"
+
+    InvitationListResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Invitation"
 
     InvitationAcceptRequest:
       type: object
