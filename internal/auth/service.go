@@ -126,6 +126,18 @@ func (s *Service) RotateRefresh(oldRefresh string) (access, newRefresh string, e
 	return access, newRefresh, nil
 }
 
+// RevokeUserRefreshTokens revokes every active refresh token of one user. It
+// accepts a transaction so credential changes can commit the revoke together
+// with the password/MFA update.
+func RevokeUserRefreshTokens(tx *gorm.DB, userID uint, now time.Time) error {
+	if userID == 0 {
+		return nil
+	}
+	return tx.Model(&model.RefreshToken{}).
+		Where("user_id = ? AND revoked_at IS NULL", userID).
+		Update("revoked_at", now).Error
+}
+
 // revokeFamily revokes every non-revoked refresh token of the user.
 func revokeFamily(tx *gorm.DB, userID uint, now time.Time) error {
 	if err := tx.Model(&model.RefreshToken{}).

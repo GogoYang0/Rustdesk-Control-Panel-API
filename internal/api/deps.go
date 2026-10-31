@@ -55,6 +55,8 @@ type Deps struct {
 	WebBaseURL string
 	// VerificationTTL bounds the verification token lifetime (default 24h).
 	VerificationTTL time.Duration
+	// PasswordResetTTL bounds the admin-issued password reset link (default 1h).
+	PasswordResetTTL time.Duration
 	// ResendCooldown throttles repeated verification mails per account.
 	ResendCooldown time.Duration
 
@@ -208,6 +210,9 @@ func NewAdminAPI(d Deps) *AdminAPI {
 	}
 	if d.ResendCooldown == 0 {
 		d.ResendCooldown = 15 * time.Minute
+	}
+	if d.PasswordResetTTL == 0 {
+		d.PasswordResetTTL = time.Hour
 	}
 	if d.Mailer == nil {
 		// main.go always injects a real mailer; the discard default keeps
