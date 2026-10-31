@@ -2914,6 +2914,11 @@ type OrgResponse struct {
 	Message string    `json:"message"`
 }
 
+// OrgUpdateRequest defines model for OrgUpdateRequest.
+type OrgUpdateRequest struct {
+	Name string `json:"name"`
+}
+
 // Passkey defines model for Passkey.
 type Passkey struct {
 	// Aaguid 认证器型号标识；空串表示认证器未提供
@@ -4415,6 +4420,9 @@ type AcceptInvitationJSONRequestBody = InvitationAcceptRequest
 // CreateOrgJSONRequestBody defines body for CreateOrg for application/json ContentType.
 type CreateOrgJSONRequestBody = OrgCreateRequest
 
+// UpdateOrgJSONRequestBody defines body for UpdateOrg for application/json ContentType.
+type UpdateOrgJSONRequestBody = OrgUpdateRequest
+
 // CreateAccessRuleJSONRequestBody defines body for CreateAccessRule for application/json ContentType.
 type CreateAccessRuleJSONRequestBody = AccessRuleCreateRequest
 
@@ -4645,6 +4653,9 @@ type ServerInterface interface {
 	// CreateOrg 创建组织
 	// (POST /api/v1/orgs)
 	CreateOrg(c *gin.Context)
+	// UpdateOrg 重命名组织
+	// (PATCH /api/v1/orgs/{orgId})
+	UpdateOrg(c *gin.Context, orgId int64)
 	// ListAccessRules 列出访问规则
 	// (GET /api/v1/orgs/{orgId}/access-rules)
 	ListAccessRules(c *gin.Context, orgId int64)
@@ -5522,6 +5533,31 @@ func (siw *ServerInterfaceWrapper) CreateOrg(c *gin.Context) {
 	}
 
 	siw.Handler.CreateOrg(c)
+}
+
+// UpdateOrg operation middleware
+func (siw *ServerInterfaceWrapper) UpdateOrg(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UpdateOrg(c, orgId)
 }
 
 // ListAccessRules operation middleware
@@ -9144,6 +9180,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/v1/me", wrapper.GetMe)
 	router.GET(options.BaseURL+"/api/v1/orgs", wrapper.ListOrgs)
 	router.POST(options.BaseURL+"/api/v1/orgs", wrapper.CreateOrg)
+	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId", wrapper.UpdateOrg)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/members", wrapper.ListMembers)
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId", wrapper.RemoveMember)
 	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId", wrapper.UpdateMemberRole)
