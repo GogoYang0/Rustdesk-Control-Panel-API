@@ -1,6 +1,6 @@
 # 后端 API 规范（Backend API Specification）
 
-> 适用版本：v0.12.3（地址簿恢复容量 400 文档化；上一基线 v0.12.2 = 日志事件权限收紧，v0.12.1 = M7-2 `alerts?sessionId`）。本文档是对 `openapi.yaml`（契约 v0.12.3）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
+> 适用版本：v0.13.0（组织重命名；上一基线 v0.12.3 = 地址簿恢复容量 400 文档化，v0.12.2 = 日志事件权限收紧）。本文档是对 `openapi.yaml`（契约 v0.13.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
 > 本文档随版本演进持续更新——契约变更的 PR 必须同步更新 §3/§4。
 > 配套文档：[部署指南](deployment.md) · [运维指南](operations.md)
 
@@ -118,7 +118,8 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 
 | 端点 | 说明 |
 |---|---|
-| `POST /api/v1/orgs` | 创建组织（受 `maxOrgsPerUser` 限制，超出 409/400） |
+| `POST /api/v1/orgs` | 创建组织（受 `maxOrgsPerUser` 限制，超出 409/400；原始名称 ≤128，trim 后非空，允许重名） |
+| `PATCH /api/v1/orgs/{orgId}` | 重命名组织（v0.13.0，仅 owner `org.admin`）：原始名称 ≤128，trim 后非空，允许重名；名称变化时写 `organization.rename` 审计；同名 200 no-op，不写审计 |
 | `GET /api/v1/orgs/{orgId}/members` | 成员列表及其组织内角色（**组织成员即可访问**，不限 admin） |
 | `DELETE /api/v1/orgs/{orgId}/members/{userId}` | 移除成员（v0.6.0，`member.manage`）：同一事务内撤销该用户在本组织的活跃 compat 会话；admin 不能移除 owner、不能移除自己、不能移除最后一个 owner |
 | `PATCH /api/v1/orgs/{orgId}/members/{userId}` | 按字段更新会籍（v0.8.0，`MemberUpdateRequest`）：`role_id` 授予内置 admin/member 或自定义角色（**仅 owner**，`org.admin`），不能授予 owner；任何丢失既有权限的变更（降级或收窄）在同一事务撤销该用户在本组织的 compat 会话，提升不撤销；不能改自己或 owner。`disabled`（`member.manage`）停用或恢复会籍：停用在同一事务撤销该用户在本组织的活跃 compat 会话并写 `organization.member.disable` 审计，恢复写 `organization.member.enable`；不能停用自己或末位 owner，admin 不能停用 owner。重复设置同一状态为 200 no-op，不产生重复审计。两个字段可同时出现，各自校验权限 |
@@ -620,11 +621,12 @@ compat 地址簿**只服务个人地址簿**（`EnsurePersonalBook`），共享�
 
 ## 6. 版本与变更管理
 
-- 契约版本随 release 演进：v0.1.0（M0）→ v0.2.0（M1）→ v0.3.0（M2）→ v0.4.0（M3，会话治理域）→ v0.5.0（设备管理增量）→ v0.6.0（成员离场）→ v0.7.0（按组织 provisioning 开关）→ v0.8.0（M4：角色模型、审计查询/导出、停用、地址簿授权与回收站、令牌、2FA）→ v0.9.0（M5：访问控制——用户组/设备组/组规则、peers 过滤与票据准入）→ v0.10.0（M6 波次 1–4）→ v0.11.0（M6 波次 5a 客户端生成器、5b Passkey/OIDC/LDAP）→ v0.12.0（M7 前置：`GET /api/v1/me`）→ v0.12.1（M7-2：`alerts?sessionId`）→ v0.12.2（日志事件权限收紧）→ **v0.12.3（地址簿恢复容量 400 文档化）**
+- 契约版本随 release 演进：v0.1.0（M0）→ v0.2.0（M1）→ v0.3.0（M2）→ v0.4.0（M3，会话治理域）→ v0.5.0（设备管理增量）→ v0.6.0（成员离场）→ v0.7.0（按组织 provisioning 开关）→ v0.8.0（M4：角色模型、审计查询/导出、停用、地址簿授权与回收站、令牌、2FA）→ v0.9.0（M5：访问控制——用户组/设备组/组规则、peers 过滤与票据准入）→ v0.10.0（M6 波次 1–4）→ v0.11.0（M6 波次 5a 客户端生成器、5b Passkey/OIDC/LDAP）→ v0.12.0（M7 前置：`GET /api/v1/me`）→ v0.12.1（M7-2：`alerts?sessionId`）→ v0.12.2（日志事件权限收紧）→ v0.12.3（地址簿恢复容量 400 文档化）→ **v0.13.0（组织重命名）**
 - v0.6.0 为**加性变更**：新增 `DELETE/PATCH /orgs/{orgId}/members/{userId}`（#39 撤销接线）。v0.5.0 的新增设备列表与 rebind 保持不变；仍不提供 `DELETE` 设备
 - v0.7.0 为**加性变更**：新增 `GET/PUT /orgs/{orgId}/provisioning` 与 `ProvisioningStatus.cleanup_pending`；既有端点请求/响应形状与字段不变
 - v0.12.2 为**权限收紧**：`GET /orgs/{orgId}/log-events` 由“组织会籍即可读”改为要求 `audit.read`，并应用 `audit_scope`（`individual` 仅自己拥有设备的事件；`device_id` 为 null 的事件不可见）。响应形状不变；旧客户端若默认成员直接调用该端点会收到 403
 - v0.12.3 为**文档补全**：`POST .../recycle-bin/{peerId}/restore` 在地址簿已有 2000 个 live peer 时实际返回 `400 invalid_request`，openapi 补列该响应；服务端行为不变
+- v0.13.0 为**加性端点**：`PATCH /orgs/{orgId}` 重命名组织（owner-only），原始名称 ≤128、trim 后非空、允许重名、同名 no-op；`organization.create` 同步收紧名称 trim/长度。供应与 server group label 按组织 id，不受影响
 - v0.12.1 为**加性变更**：`GET /orgs/{orgId}/alerts` 新增可选 `sessionId` 过滤（会话详情展示关联告警；告警列表按时间倒序分页，客户端自行过滤会漏行）。非正值 `400 invalid_request`；未知 id 与跨组织 id 均返回空页（租户作用域优先）。既有形状不变
 - v0.12.0 为**加性变更**：新增 `GET /api/v1/me`（当前用户 + 各有效会籍的角色与权限码）；既有端点形状不变
 - v0.9.0 为**加性变更**（新增 user-groups/device-groups/access-rules 端点、`access.manage` 权限目录项与 `Device.device_group_id` 字段），但**票据访问语义有变化**：签发/兑换新增访问控制判定（拒绝 `404 not_found`），停用设备的签发由成功变为 `404`（兑换仍为 `409`）；客户端需处理该分支

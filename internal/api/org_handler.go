@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	openapi_types "github.com/oapi-codegen/runtime/types"
@@ -45,6 +46,25 @@ func (a *AdminAPI) lockUserRow(tx *gorm.DB, uid uint) error {
 	return query.Select("id").First(&user, uid).Error
 }
 
+// maxOrgNameLen mirrors the contract's 1–128 code-point bound.
+const maxOrgNameLen = 128
+
+// normaliseOrgName trims surrounding whitespace and enforces the contract bound.
+// Create and rename share it so a name that fits one endpoint fits the other.
+func normaliseOrgName(name string) (string, error) {
+	// The contract's maxLength applies to the raw string; trim only decides
+	// whether the name is empty. Keeping both checks on the raw value makes a
+	// schema validator and this server agree on the same input.
+	if utf8.RuneCountInString(name) > maxOrgNameLen {
+		return "", fmt.Errorf("name must be between 1 and %d characters", maxOrgNameLen)
+	}
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return "", fmt.Errorf("name must be between 1 and %d characters", maxOrgNameLen)
+	}
+	return trimmed, nil
+}
+
 // CreateOrg creates an organization and makes the caller its owner.
 func (a *AdminAPI) CreateOrg(c *gin.Context) {
 	uid, ok := requireUserID(c)
@@ -52,16 +72,21 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 		return
 	}
 	var req gen.OrgCreateRequest
-	if err := c.ShouldBindJSON(&req); err != nil || req.Name == "" {
+	if err := c.ShouldBindJSON(&req); err != nil {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "name is required")
 		return
 	}
+	name, err := normaliseOrgName(req.Name)
+	if err != nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
+		return
+	}
 
-	org := model.Organization{Name: req.Name}
+	org := model.Organization{Name: name}
 	// The quota is checked inside the transaction with the user row locked.
 	// Reading the count outside would let two concurrent requests both pass the
 	// check and create an organization each (CWE-770, TOCTOU).
-	err := a.deps.DB.Transaction(func(tx *gorm.DB) error {
+	err = a.deps.DB.Transaction(func(tx *gorm.DB) error {
 		if a.deps.OrgsPerUser > 0 {
 			if err := a.lockUserRow(tx, uid); err != nil {
 				return err
@@ -159,6 +184,106 @@ func (a *AdminAPI) CreateOrg(c *gin.Context) {
 		Code:    gen.ErrorCodeOk,
 		Message: "ok",
 		Data:    gen.Org{Id: int64(org.ID), Name: org.Name, CreatedAt: org.CreatedAt},
+	})
+}
+
+// UpdateOrg renames an organization. Only the owner holds org.admin; members
+// are rejected before the name is touched. Names are not unique by contract.
+func (a *AdminAPI) UpdateOrg(c *gin.Context, orgId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid organization id")
+		return
+	}
+
+	// Organization is the tenant root, not an org-scoped row: load it directly.
+	// A missing id is 404; an existing id the caller cannot administer is 403.
+	var existing model.Organization
+	if err := a.deps.DB.First(&existing, uint(orgId)).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "organization not found")
+			return
+		}
+		a.deps.Logger.Error("load organization for rename failed", zap.Error(err))
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not rename organization")
+		return
+	}
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermOrgAdmin) {
+		return
+	}
+
+	var req gen.OrgUpdateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "name is required")
+		return
+	}
+	name, err := normaliseOrgName(req.Name)
+	if err != nil {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
+		return
+	}
+
+	var updated model.Organization
+	err = a.deps.DB.Transaction(func(tx *gorm.DB) error {
+		// The request guard runs before the transaction; another owner can revoke
+		// this membership in between. Re-read and lock the actor row so a stale
+		// permission cannot rename the organization, matching member mutations.
+		if _, err := lockActor(tx, uint(orgId), uid, false, authz.PermOrgAdmin); err != nil {
+			return err
+		}
+		query := tx
+		if tx.Name() != "sqlite" {
+			query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		if err := query.First(&updated, uint(orgId)).Error; err != nil {
+			return err
+		}
+		if updated.Name == name {
+			return nil
+		}
+		oldName := updated.Name
+		if err := tx.Model(&model.Organization{}).
+			Where("id = ?", orgId).
+			Update("name", name).Error; err != nil {
+			return fmt.Errorf("update organization name: %w", err)
+		}
+		updated.Name = name
+		tr, ok := a.deps.Auditor.(audit.TxRecorder)
+		if !ok {
+			return errAuditUnavailable
+		}
+		return tr.RecordTx(tx, audit.Entry{
+			OrganizationID: uint(orgId),
+			ActorUserID:    uid,
+			Action:         "organization.rename",
+			TargetType:     "organization",
+			TargetID:       fmt.Sprint(orgId),
+			Detail:         map[string]any{"old_name": oldName, "new_name": name},
+		})
+	})
+	switch {
+	case errors.Is(err, errActorNoLongerAuthorized):
+		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "insufficient permissions")
+		return
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "organization not found")
+		return
+	case errors.Is(err, errAuditUnavailable):
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "audit unavailable")
+		return
+	case err != nil:
+		a.deps.Logger.Error("rename organization failed", zap.Error(err))
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not rename organization")
+		return
+	}
+	c.Set(contextAuditRecorded, true)
+	c.JSON(http.StatusOK, gen.OrgResponse{
+		Code:    gen.ErrorCodeOk,
+		Message: "ok",
+		Data:    gen.Org{Id: int64(updated.ID), Name: updated.Name, CreatedAt: updated.CreatedAt},
 	})
 }
 

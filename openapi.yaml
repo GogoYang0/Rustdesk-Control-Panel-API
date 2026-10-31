@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Rustdesk-Control-Panel API
-  version: 0.12.3
+  version: 0.13.0
   contact:
     name: Rustdesk-Control-Panel
     url: https://github.com/GogoYang0/Rustdesk-Control-Panel-API
@@ -1274,6 +1274,48 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "409":
           $ref: "#/components/responses/Conflict"
+
+  /api/v1/orgs/{orgId}:
+    patch:
+      operationId: updateOrg
+      summary: 重命名组织
+      description: |
+        仅 owner（`org.admin`）可重命名；原始名称按码点 ≤128，trim 后不得为空。
+        组织名称允许重复；同名请求为 200 no-op，不写审计。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgUpdateRequest"
+      responses:
+        "200":
+          description: 已重命名（同名时为 no-op）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/Internal"
 
   /api/v1/orgs/{orgId}/members:
     get:
@@ -6776,6 +6818,16 @@ components:
           format: date-time
 
     OrgCreateRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+
+    OrgUpdateRequest:
       type: object
       required:
         - name
