@@ -7,6 +7,9 @@ const (
 	// VerificationPurposeEmail proves control of the account mailbox before
 	// login is allowed.
 	VerificationPurposeEmail = "email_verify"
+	// VerificationPurposePasswordReset authorizes setting a new local password
+	// through the admin-initiated reset link.
+	VerificationPurposePasswordReset = "password_reset"
 )
 
 // VerificationToken is a single-use, time-limited token that proves control

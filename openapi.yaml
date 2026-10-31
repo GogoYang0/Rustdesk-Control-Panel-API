@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Rustdesk-Control-Panel API
-  version: 0.14.0
+  version: 0.15.0
   contact:
     name: Rustdesk-Control-Panel
     url: https://github.com/GogoYang0/Rustdesk-Control-Panel-API
@@ -885,6 +885,36 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/v1/auth/password/reset:
+    post:
+      operationId: resetPassword
+      summary: 使用重置令牌设置新密码
+      description: |
+        凭管理员发送的一次性令牌设置新本地密码（v0.15.0）。令牌 1 小时内有效且只能使用一次；
+        成功后撤销该用户全部 refresh token 与 compat 会话，不自动登录。
+      tags:
+        - auth
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordResetRequest"
+      responses:
+        "200":
+          description: 密码已重置
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/Internal"
+
   /api/v1/auth/password/set:
     post:
       operationId: setPassword
@@ -1490,6 +1520,53 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/orgs/{orgId}/members/{userId}/password/reset:
+    post:
+      operationId: requestMemberPasswordReset
+      summary: 发送成员密码重置邮件
+      description: |
+        管理员为成员生成一次性密码重置链接并发送邮件（v0.15.0）。需要 member.manage；
+        不能重置自己、不能由非 owner 重置 owner、目标必须只属于本组织、目标必须有本地密码且会籍未停用。
+        链接 1 小时内有效，失败重发会取代旧链接；响应与审计均不含令牌。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 重置邮件已发送
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/Internal"
 
   /api/v1/orgs/{orgId}/members/{userId}/2fa/reset:
     post:
@@ -6328,6 +6405,20 @@ components:
           type: string
         data:
           $ref: "#/components/schemas/PasswordRemoveResult"
+
+    PasswordResetRequest:
+      type: object
+      required:
+        - token
+        - new_password
+      properties:
+        token:
+          type: string
+          minLength: 16
+        new_password:
+          type: string
+          minLength: 8
+          maxLength: 128
 
     PasswordSetRequest:
       type: object

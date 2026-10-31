@@ -28,6 +28,7 @@ var publicPaths = map[string]bool{
 	"/api/v1/auth/2fa/verify":               true,
 	"/api/v1/auth/verify-email":             true,
 	"/api/v1/auth/resend-verification":      true,
+	"/api/v1/auth/password/reset":           true,
 	"/api/v1/invitations/accept":            true,
 	"/api/v1/client-builds/:buildId/bundle": true,
 }

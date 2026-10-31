@@ -3134,6 +3134,12 @@ type PasswordRemoveResult struct {
 	Warnings []string `json:"warnings"`
 }
 
+// PasswordResetRequest defines model for PasswordResetRequest.
+type PasswordResetRequest struct {
+	NewPassword string `json:"new_password"`
+	Token       string `json:"token"`
+}
+
 // PasswordSetRequest defines model for PasswordSetRequest.
 type PasswordSetRequest struct {
 	NewPassword string `json:"new_password"`
@@ -4420,6 +4426,9 @@ type RenamePasskeyJSONRequestBody = PasskeyNameRequest
 // RemovePasswordJSONRequestBody defines body for RemovePassword for application/json ContentType.
 type RemovePasswordJSONRequestBody = PasswordRemoveRequest
 
+// ResetPasswordJSONRequestBody defines body for ResetPassword for application/json ContentType.
+type ResetPasswordJSONRequestBody = PasswordResetRequest
+
 // SetPasswordJSONRequestBody defines body for SetPassword for application/json ContentType.
 type SetPasswordJSONRequestBody = PasswordSetRequest
 
@@ -4635,6 +4644,9 @@ type ServerInterface interface {
 	// RemovePassword 删除本地密码（转为 passkey-only）
 	// (POST /api/v1/auth/password/remove)
 	RemovePassword(c *gin.Context)
+	// ResetPassword 使用重置令牌设置新密码
+	// (POST /api/v1/auth/password/reset)
+	ResetPassword(c *gin.Context)
 	// SetPassword 恢复本地密码
 	// (POST /api/v1/auth/password/set)
 	SetPassword(c *gin.Context)
@@ -4893,6 +4905,9 @@ type ServerInterface interface {
 	// ResetMemberPasskeys 重置成员的 passkey
 	// (POST /api/v1/orgs/{orgId}/members/{userId}/passkeys/reset)
 	ResetMemberPasskeys(c *gin.Context, orgId int64, userId int64)
+	// RequestMemberPasswordReset 发送成员密码重置邮件
+	// (POST /api/v1/orgs/{orgId}/members/{userId}/password/reset)
+	RequestMemberPasswordReset(c *gin.Context, orgId int64, userId int64)
 	// AssignMemberStrategy 分配成员的默认客户端策略
 	// (PUT /api/v1/orgs/{orgId}/members/{userId}/strategy)
 	AssignMemberStrategy(c *gin.Context, orgId int64, userId int64)
@@ -5342,6 +5357,19 @@ func (siw *ServerInterfaceWrapper) RemovePassword(c *gin.Context) {
 	}
 
 	siw.Handler.RemovePassword(c)
+}
+
+// ResetPassword operation middleware
+func (siw *ServerInterfaceWrapper) ResetPassword(c *gin.Context) {
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ResetPassword(c)
 }
 
 // SetPassword operation middleware
@@ -8310,6 +8338,40 @@ func (siw *ServerInterfaceWrapper) ResetMemberPasskeys(c *gin.Context) {
 	siw.Handler.ResetMemberPasskeys(c, orgId, userId)
 }
 
+// RequestMemberPasswordReset operation middleware
+func (siw *ServerInterfaceWrapper) RequestMemberPasswordReset(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "userId" -------------
+	var userId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", c.Param("userId"), &userId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter userId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.RequestMemberPasswordReset(c, orgId, userId)
+}
+
 // AssignMemberStrategy operation middleware
 func (siw *ServerInterfaceWrapper) AssignMemberStrategy(c *gin.Context) {
 
@@ -9255,6 +9317,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/auth/passkey/stepup/begin", wrapper.BeginPasskeyStepup)
 	router.POST(options.BaseURL+"/api/v1/auth/passkey/stepup/finish", wrapper.FinishPasskeyStepup)
 	router.POST(options.BaseURL+"/api/v1/auth/password/remove", wrapper.RemovePassword)
+	router.POST(options.BaseURL+"/api/v1/auth/password/reset", wrapper.ResetPassword)
 	router.POST(options.BaseURL+"/api/v1/auth/password/set", wrapper.SetPassword)
 	router.GET(options.BaseURL+"/api/v1/auth/passkeys", wrapper.ListPasskeys)
 	router.DELETE(options.BaseURL+"/api/v1/auth/passkeys/:passkeyId", wrapper.DeletePasskey)
@@ -9271,6 +9334,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId", wrapper.RemoveMember)
 	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId", wrapper.UpdateMemberRole)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId/passkeys/reset", wrapper.ResetMemberPasskeys)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId/password/reset", wrapper.RequestMemberPasswordReset)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId/2fa/reset", wrapper.ResetMemberTOTP)
 	router.GET(options.BaseURL+"/api/v1/permissions", wrapper.ListPermissions)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/roles", wrapper.ListRoles)
