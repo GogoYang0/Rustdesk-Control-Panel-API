@@ -1,6 +1,6 @@
 # 后端 API 规范（Backend API Specification）
 
-> 适用版本：v0.12.2（日志事件权限收紧：`audit.read` + `audit_scope`；上一基线 v0.12.1 = M7-2 `alerts?sessionId`）。本文档是对 `openapi.yaml`（契约 v0.12.2）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
+> 适用版本：v0.12.3（地址簿恢复容量 400 文档化；上一基线 v0.12.2 = 日志事件权限收紧，v0.12.1 = M7-2 `alerts?sessionId`）。本文档是对 `openapi.yaml`（契约 v0.12.3）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
 > 本文档随版本演进持续更新——契约变更的 PR 必须同步更新 §3/§4。
 > 配套文档：[部署指南](deployment.md) · [运维指南](operations.md)
 
@@ -187,7 +187,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `DELETE .../address-books/{bookId}/grants/{grantId}` | 撤销授权（v0.8.0，需 `full`） |
 | `DELETE .../address-books/{bookId}/peers/{peerId}` | 删除条目（v0.8.0，`write`+）：**软删除进回收站**，不硬删除 |
 | `GET .../address-books/{bookId}/recycle-bin` | 回收站列表（v0.8.0，`write`+），按删除时间倒序 |
-| `POST .../address-books/{bookId}/recycle-bin/{peerId}/restore` | 恢复条目（v0.8.0，`write`+），bump revision |
+| `POST .../address-books/{bookId}/recycle-bin/{peerId}/restore` | 恢复条目（v0.8.0，`write`+），bump revision；恢复后超过单簿 2000 个 live peer（不含回收站）上限返回 `400 invalid_request` |
 | `DELETE .../address-books/{bookId}/recycle-bin/{peerId}` | 永久删除（v0.8.0，`full`），不可恢复 |
 
 语义要点：
@@ -620,10 +620,11 @@ compat 地址簿**只服务个人地址簿**（`EnsurePersonalBook`），共享�
 
 ## 6. 版本与变更管理
 
-- 契约版本随 release 演进：v0.1.0（M0）→ v0.2.0（M1）→ v0.3.0（M2）→ v0.4.0（M3，会话治理域）→ v0.5.0（设备管理增量）→ v0.6.0（成员离场）→ v0.7.0（按组织 provisioning 开关）→ v0.8.0（M4：角色模型、审计查询/导出、停用、地址簿授权与回收站、令牌、2FA）→ v0.9.0（M5：访问控制——用户组/设备组/组规则、peers 过滤与票据准入）→ v0.10.0（M6 波次 1–4）→ v0.11.0（M6 波次 5a 客户端生成器、5b Passkey/OIDC/LDAP）→ v0.12.0（M7 前置：`GET /api/v1/me`）→ **v0.12.1（M7-2：`alerts?sessionId`）→ v0.12.2（日志事件权限收紧）**
+- 契约版本随 release 演进：v0.1.0（M0）→ v0.2.0（M1）→ v0.3.0（M2）→ v0.4.0（M3，会话治理域）→ v0.5.0（设备管理增量）→ v0.6.0（成员离场）→ v0.7.0（按组织 provisioning 开关）→ v0.8.0（M4：角色模型、审计查询/导出、停用、地址簿授权与回收站、令牌、2FA）→ v0.9.0（M5：访问控制——用户组/设备组/组规则、peers 过滤与票据准入）→ v0.10.0（M6 波次 1–4）→ v0.11.0（M6 波次 5a 客户端生成器、5b Passkey/OIDC/LDAP）→ v0.12.0（M7 前置：`GET /api/v1/me`）→ v0.12.1（M7-2：`alerts?sessionId`）→ v0.12.2（日志事件权限收紧）→ **v0.12.3（地址簿恢复容量 400 文档化）**
 - v0.6.0 为**加性变更**：新增 `DELETE/PATCH /orgs/{orgId}/members/{userId}`（#39 撤销接线）。v0.5.0 的新增设备列表与 rebind 保持不变；仍不提供 `DELETE` 设备
 - v0.7.0 为**加性变更**：新增 `GET/PUT /orgs/{orgId}/provisioning` 与 `ProvisioningStatus.cleanup_pending`；既有端点请求/响应形状与字段不变
 - v0.12.2 为**权限收紧**：`GET /orgs/{orgId}/log-events` 由“组织会籍即可读”改为要求 `audit.read`，并应用 `audit_scope`（`individual` 仅自己拥有设备的事件；`device_id` 为 null 的事件不可见）。响应形状不变；旧客户端若默认成员直接调用该端点会收到 403
+- v0.12.3 为**文档补全**：`POST .../recycle-bin/{peerId}/restore` 在地址簿已有 2000 个 live peer 时实际返回 `400 invalid_request`，openapi 补列该响应；服务端行为不变
 - v0.12.1 为**加性变更**：`GET /orgs/{orgId}/alerts` 新增可选 `sessionId` 过滤（会话详情展示关联告警；告警列表按时间倒序分页，客户端自行过滤会漏行）。非正值 `400 invalid_request`；未知 id 与跨组织 id 均返回空页（租户作用域优先）。既有形状不变
 - v0.12.0 为**加性变更**：新增 `GET /api/v1/me`（当前用户 + 各有效会籍的角色与权限码）；既有端点形状不变
 - v0.9.0 为**加性变更**（新增 user-groups/device-groups/access-rules 端点、`access.manage` 权限目录项与 `Device.device_group_id` 字段），但**票据访问语义有变化**：签发/兑换新增访问控制判定（拒绝 `404 not_found`），停用设备的签发由成功变为 `404`（兑换仍为 `409`）；客户端需处理该分支

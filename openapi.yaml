@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Rustdesk-Control-Panel API
-  version: 0.12.2
+  version: 0.12.3
   contact:
     name: Rustdesk-Control-Panel
     url: https://github.com/GogoYang0/Rustdesk-Control-Panel-API
@@ -3915,7 +3915,9 @@ paths:
     post:
       operationId: restoreAddressBookPeer
       summary: 从回收站恢复条目
-      description: 恢复一个软删除的 peer（v0.8.0，需 `write` 及以上），并 bump revision。
+      description: |
+        恢复一个软删除的 peer（v0.8.0，需 `write` 及以上），并 bump revision。
+        恢复会增长 live 列表；若该簿已有 2000 个 live peer（不含回收站中的软删除条目），返回 `400 invalid_request`。
       tags:
         - addressbooks
       security:
@@ -3945,6 +3947,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: 地址簿已达单簿 2000 个 live peer 上限，无法恢复
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
