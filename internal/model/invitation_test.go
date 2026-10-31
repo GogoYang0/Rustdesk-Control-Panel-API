@@ -34,6 +34,20 @@ func TestInvitation_AcceptTwice_Fails(t *testing.T) {
 	require.ErrorIs(t, inv.Acceptable(now), model.ErrInvitationUsed)
 }
 
+func TestInvitation_AcceptRevoked_Fails(t *testing.T) {
+	now := time.Now()
+	revoked := now.Add(-time.Minute)
+	inv := model.Invitation{
+		OrganizationID: 1,
+		Email:          "dev@example.com",
+		Role:           model.RoleMember,
+		TokenHash:      "hash",
+		ExpiresAt:      now.Add(time.Hour),
+		RevokedAt:      &revoked,
+	}
+	require.ErrorIs(t, inv.Acceptable(now), model.ErrInvitationRevoked)
+}
+
 func TestInvitation_AcceptValid(t *testing.T) {
 	inv := model.Invitation{
 		OrganizationID: 1,
