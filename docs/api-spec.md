@@ -119,7 +119,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | 端点 | 说明 |
 |---|---|
 | `POST /api/v1/orgs` | 创建组织（受 `maxOrgsPerUser` 限制，超出 409/400；原始名称 ≤128，trim 后非空，允许重名） |
-| `PATCH /api/v1/orgs/{orgId}` | 重命名组织（v0.13.0，仅 owner `org.admin`）：原始名称 ≤128，trim 后非空，允许重名；同名 200 no-op；写 `organization.rename` 审计 |
+| `PATCH /api/v1/orgs/{orgId}` | 重命名组织（v0.13.0，仅 owner `org.admin`）：原始名称 ≤128，trim 后非空，允许重名；名称变化时写 `organization.rename` 审计；同名 200 no-op，不写审计 |
 | `GET /api/v1/orgs/{orgId}/members` | 成员列表及其组织内角色（**组织成员即可访问**，不限 admin） |
 | `DELETE /api/v1/orgs/{orgId}/members/{userId}` | 移除成员（v0.6.0，`member.manage`）：同一事务内撤销该用户在本组织的活跃 compat 会话；admin 不能移除 owner、不能移除自己、不能移除最后一个 owner |
 | `PATCH /api/v1/orgs/{orgId}/members/{userId}` | 按字段更新会籍（v0.8.0，`MemberUpdateRequest`）：`role_id` 授予内置 admin/member 或自定义角色（**仅 owner**，`org.admin`），不能授予 owner；任何丢失既有权限的变更（降级或收窄）在同一事务撤销该用户在本组织的 compat 会话，提升不撤销；不能改自己或 owner。`disabled`（`member.manage`）停用或恢复会籍：停用在同一事务撤销该用户在本组织的活跃 compat 会话并写 `organization.member.disable` 审计，恢复写 `organization.member.enable`；不能停用自己或末位 owner，admin 不能停用 owner。重复设置同一状态为 200 no-op，不产生重复审计。两个字段可同时出现，各自校验权限 |
