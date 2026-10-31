@@ -228,6 +228,12 @@ func (a *AdminAPI) UpdateOrg(c *gin.Context, orgId int64) {
 
 	var updated model.Organization
 	err = a.deps.DB.Transaction(func(tx *gorm.DB) error {
+		// The request guard runs before the transaction; another owner can revoke
+		// this membership in between. Re-read and lock the actor row so a stale
+		// permission cannot rename the organization, matching member mutations.
+		if _, err := lockActor(tx, uint(orgId), uid, false, authz.PermOrgAdmin); err != nil {
+			return err
+		}
 		query := tx
 		if tx.Name() != "sqlite" {
 			query = query.Clauses(clause.Locking{Strength: "UPDATE"})
@@ -259,6 +265,9 @@ func (a *AdminAPI) UpdateOrg(c *gin.Context, orgId int64) {
 		})
 	})
 	switch {
+	case errors.Is(err, errActorNoLongerAuthorized):
+		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "insufficient permissions")
+		return
 	case errors.Is(err, gorm.ErrRecordNotFound):
 		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "organization not found")
 		return

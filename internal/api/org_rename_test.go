@@ -108,6 +108,11 @@ func TestUpdateOrg_AllowsDuplicateAndSameNameNoop(t *testing.T) {
 		Count(&before).Error)
 	require.Equal(t, http.StatusOK, h.do(t, http.MethodPatch, "/api/v1/orgs/"+itoa(first), map[string]string{"name": "second"}, token).Code)
 	require.Equal(t, "second", orgNameForTest(t, h, first))
+	var afterRename int64
+	require.NoError(t, store.WithoutTenantScope(h.db.DB).Model(&model.AuditLog{}).
+		Where("organization_id = ? AND action = ?", first, "organization.rename").
+		Count(&afterRename).Error)
+	require.Equal(t, before+1, afterRename)
 
 	// Renaming to the same name is a no-op and does not append another audit row.
 	require.Equal(t, http.StatusOK, h.do(t, http.MethodPatch, "/api/v1/orgs/"+itoa(second), map[string]string{"name": "second"}, token).Code)
