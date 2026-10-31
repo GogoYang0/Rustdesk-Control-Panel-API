@@ -1,11 +1,14 @@
 package api_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -237,6 +240,68 @@ func TestResetPassword_ValidationAndExpiry(t *testing.T) {
 	require.Equal(t, http.StatusConflict, h.do(t, http.MethodPost, "/api/v1/auth/password/reset", map[string]string{
 		"token": token, "new_password": "new-password",
 	}, "").Code)
+}
+
+func TestResetPassword_ConcurrentRedemptionConsumesOnce(t *testing.T) {
+	h := newHarness(t)
+	h.seedUser(t, "member@example.com", "password123")
+	var member model.User
+	require.NoError(t, h.db.DB.Where("email = ?", "member@example.com").First(&member).Error)
+	token := "concurrent-reset-token-0123456789"
+	require.NoError(t, store.WithoutTenantScope(h.db.DB).Create(&model.VerificationToken{
+		UserID:    member.ID,
+		TokenHash: hashForTest(token),
+		Purpose:   model.VerificationPurposePasswordReset,
+		ExpiresAt: time.Now().Add(time.Hour),
+	}).Error)
+
+	type outcome struct {
+		code     int
+		password string
+	}
+	start := make(chan struct{})
+	results := make(chan outcome, 2)
+	for _, password := range []string{"concurrent-one", "concurrent-two"} {
+		go func(password string) {
+			<-start
+			body, _ := json.Marshal(map[string]string{"token": token, "new_password": password})
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/password/reset", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.RemoteAddr = "192.0.2.10:1234"
+			w := httptest.NewRecorder()
+			h.router.ServeHTTP(w, req)
+			results <- outcome{code: w.Code, password: password}
+		}(password)
+	}
+	close(start)
+	first, second := <-results, <-results
+
+	successes := 0
+	var winner string
+	for _, result := range []outcome{first, second} {
+		if result.code == http.StatusOK {
+			successes++
+			winner = result.password
+		} else {
+			require.Contains(t, []int{http.StatusConflict, http.StatusInternalServerError}, result.code)
+		}
+	}
+	require.Equal(t, 1, successes, "exactly one redemption may commit")
+	require.Equal(t, http.StatusOK, h.do(t, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"email": "member@example.com", "password": winner,
+	}, "").Code)
+	loser := "concurrent-one"
+	if winner == loser {
+		loser = "concurrent-two"
+	}
+	require.Equal(t, http.StatusUnauthorized, h.do(t, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"email": "member@example.com", "password": loser,
+	}, "").Code)
+
+	var used int64
+	require.NoError(t, store.WithoutTenantScope(h.db.DB).Model(&model.VerificationToken{}).
+		Where("token_hash = ? AND used_at IS NOT NULL", hashForTest(token)).Count(&used).Error)
+	require.EqualValues(t, 1, used)
 }
 
 // hashForTest mirrors the server's SHA-256 storage rule without exporting it.

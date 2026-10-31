@@ -213,6 +213,13 @@ func (a *AdminAPI) ResetPassword(c *gin.Context) {
 	}
 
 	err = a.deps.DB.Transaction(func(tx *gorm.DB) error {
+		// Lock the user before touching the token: the admin request locks the
+		// same user and then deletes its reset tokens, so the opposite order
+		// could deadlock on databases with row locks.
+		target, err := lockUserForCredentialChange(tx, vt.UserID)
+		if err != nil {
+			return err
+		}
 		res := store.WithoutTenantScope(tx).
 			Model(&model.VerificationToken{}).
 			Where("id = ? AND used_at IS NULL AND expires_at > ?", vt.ID, now).
@@ -222,10 +229,6 @@ func (a *AdminAPI) ResetPassword(c *gin.Context) {
 		}
 		if res.RowsAffected != 1 {
 			return errPasswordResetUsed
-		}
-		target, err := lockUserForCredentialChange(tx, vt.UserID)
-		if err != nil {
-			return err
 		}
 		// The account may have become passkey-only since the mail was sent;
 		// adding a password back requires the step-up flow, not this link.
