@@ -240,6 +240,28 @@ func TestRevokeInvitation_AuditFailureRollsBack(t *testing.T) {
 	require.Nil(t, stored.RevokedAt)
 }
 
+func TestAcceptInvitation_ExistingMemberIsConflict(t *testing.T) {
+	h := newHarness(t)
+	h.seedUser(t, "owner@example.com", "password123")
+	h.seedUser(t, "member@example.com", "password123")
+	ownerToken := h.login(t, "owner@example.com", "password123")
+	orgID := createOrgForTest(t, h, ownerToken, "team")
+	org := uint(orgID)
+
+	var memberUser model.User
+	require.NoError(t, h.db.DB.Where("email = ?", "member@example.com").First(&memberUser).Error)
+	require.NoError(t, h.db.DB.Create(&model.Membership{
+		OrganizationID: org, UserID: memberUser.ID,
+		RoleID: h.roleID(t, org, model.RoleKindMember),
+	}).Error)
+	token := h.newInvitationForTest(t, orgID, "member@example.com", model.RoleMember)
+
+	w := h.do(t, http.MethodPost, "/api/v1/invitations/accept", map[string]string{
+		"token": token, "password": "password123",
+	}, "")
+	require.Equal(t, http.StatusConflict, w.Code, w.Body.String())
+}
+
 func TestAcceptInvitation_RejectsRevokedToken(t *testing.T) {
 	h := newHarness(t)
 	h.seedUser(t, "owner@example.com", "password123")

@@ -796,6 +796,13 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "invitation is expired or already used")
 		return
 	}
+	// A valid invitation for someone who already belongs to the organization
+	// still hits the (organization_id, user_id) unique index; that is a state
+	// conflict, not a server failure.
+	if store.IsDuplicateKeyError(err) {
+		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "user is already a member")
+		return
+	}
 	if err != nil {
 		a.deps.Logger.Error("accept invitation failed", zap.Error(err))
 		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not accept invitation")
