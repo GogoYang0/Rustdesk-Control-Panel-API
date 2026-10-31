@@ -52,8 +52,14 @@ const maxOrgNameLen = 128
 // normaliseOrgName trims surrounding whitespace and enforces the contract bound.
 // Create and rename share it so a name that fits one endpoint fits the other.
 func normaliseOrgName(name string) (string, error) {
+	// The contract's maxLength applies to the raw string; trim only decides
+	// whether the name is empty. Keeping both checks on the raw value makes a
+	// schema validator and this server agree on the same input.
+	if utf8.RuneCountInString(name) > maxOrgNameLen {
+		return "", fmt.Errorf("name must be between 1 and %d characters", maxOrgNameLen)
+	}
 	trimmed := strings.TrimSpace(name)
-	if trimmed == "" || utf8.RuneCountInString(trimmed) > maxOrgNameLen {
+	if trimmed == "" {
 		return "", fmt.Errorf("name must be between 1 and %d characters", maxOrgNameLen)
 	}
 	return trimmed, nil

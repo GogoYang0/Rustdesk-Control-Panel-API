@@ -87,6 +87,8 @@ func TestUpdateOrg_PermissionsAndValidation(t *testing.T) {
 	require.Equal(t, http.StatusForbidden, h.do(t, http.MethodPatch, path, map[string]string{"name": "x"}, memberToken).Code)
 	require.Equal(t, http.StatusBadRequest, h.do(t, http.MethodPatch, path, map[string]string{"name": "   "}, ownerToken).Code)
 	require.Equal(t, http.StatusBadRequest, h.do(t, http.MethodPatch, path, map[string]string{"name": strings.Repeat("维", 129)}, ownerToken).Code)
+	// maxLength is on the raw string: a 128-char name with one leading space is 129.
+	require.Equal(t, http.StatusBadRequest, h.do(t, http.MethodPatch, path, map[string]string{"name": " " + strings.Repeat("维", 128)}, ownerToken).Code)
 	require.Equal(t, http.StatusNotFound, h.do(t, http.MethodPatch, "/api/v1/orgs/9999999", map[string]string{"name": "x"}, ownerToken).Code)
 	require.Equal(t, http.StatusUnauthorized, h.do(t, http.MethodPatch, path, map[string]string{"name": "x"}, "").Code)
 	require.Equal(t, http.StatusForbidden, h.do(t, http.MethodPatch, path, map[string]string{"name": "x"}, outsiderToken).Code)

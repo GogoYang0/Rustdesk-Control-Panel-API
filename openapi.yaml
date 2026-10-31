@@ -1280,7 +1280,7 @@ paths:
       operationId: updateOrg
       summary: 重命名组织
       description: |
-        仅 owner（`org.admin`）可重命名；名称先 trim，再按码点校验 1–128。
+        仅 owner（`org.admin`）可重命名；原始名称按码点 ≤128，trim 后不得为空。
         组织名称允许重复；同名请求为 200 no-op，不写审计。
       tags:
         - orgs
