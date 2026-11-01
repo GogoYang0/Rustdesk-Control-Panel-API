@@ -97,10 +97,53 @@ func Seed(db *gorm.DB, opts Options) (Result, error) {
 	if err := seedSessionFixture(db, org.ID); err != nil {
 		return Result{}, err
 	}
+	if err := seedDeleteOrg(db, admin); err != nil {
+		return Result{}, err
+	}
 	if err := seedClientBuilds(db, org.ID, admin.ID, opts.AssetDir); err != nil {
 		return Result{}, err
 	}
 	return Result{OrgID: org.ID, AdminEmail: admin.Email, OpsEmail: ops.Email}, nil
+}
+
+// SeedDeleteOrgName is the disposable organization the org-delete e2e removes.
+// It is seeded with provisioning_disabled=true so the reconciler never tries
+// to start containers in the Docker-less e2e environment; deletion therefore
+// has no server group to tear down.
+const SeedDeleteOrgName = "E2E 删除组织"
+
+func seedDeleteOrg(db *gorm.DB, admin model.User) error {
+	var org model.Organization
+	err := db.Where("name = ?", SeedDeleteOrgName).First(&org).Error
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		org = model.Organization{Name: SeedDeleteOrgName, ProvisioningDisabled: true}
+		if err := db.Create(&org).Error; err != nil {
+			return fmt.Errorf("devseed: create delete fixture org: %w", err)
+		}
+	case err != nil:
+		return fmt.Errorf("devseed: load delete fixture org: %w", err)
+	default:
+		if err := db.Model(&model.Organization{}).Where("id = ?", org.ID).
+			Update("provisioning_disabled", true).Error; err != nil {
+			return fmt.Errorf("devseed: disable delete fixture provisioning: %w", err)
+		}
+	}
+	if err := authz.NewRoleService(db).EnsureBuiltins(org.ID); err != nil {
+		return fmt.Errorf("devseed: delete fixture roles: %w", err)
+	}
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := access.EnsureDefaultsTx(tx, org.ID); err != nil {
+			return err
+		}
+		return controlrole.EnsureDefaultsTx(tx, org.ID)
+	}); err != nil {
+		return fmt.Errorf("devseed: delete fixture defaults: %w", err)
+	}
+	if err := ensureMembership(db, org.ID, admin.ID, model.RoleKindOwner); err != nil {
+		return err
+	}
+	return nil
 }
 
 // SeedSessionDeviceID is the RustDesk id of the disposable device that owns
