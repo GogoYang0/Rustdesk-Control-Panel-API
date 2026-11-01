@@ -138,7 +138,9 @@ func applyViewer(query *gorm.DB, db *gorm.DB, orgID uint, viewer audit.Viewer) *
 	if viewer.UserID == 0 {
 		return nil
 	}
-	owned := store.ScopedByOrg(db, orgID).Model(&model.Device{}).
+	// Unscoped keeps historical logs attributable after the device is
+	// soft-deleted; the owner at deletion time still sees its evidence.
+	owned := store.ScopedByOrg(db, orgID).Unscoped().Model(&model.Device{}).
 		Select("id").Where("owner_user_id = ?", viewer.UserID)
 	return query.Where("device_id IN (?)", owned)
 }

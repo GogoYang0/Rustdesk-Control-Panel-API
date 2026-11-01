@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Rustdesk-Control-Panel API
-  version: 0.15.0
+  version: 0.16.0
   contact:
     name: Rustdesk-Control-Panel
     url: https://github.com/GogoYang0/Rustdesk-Control-Panel-API
@@ -4552,6 +4552,49 @@ paths:
           $ref: "#/components/responses/NotFound"
 
   /api/v1/orgs/{orgId}/devices/{deviceId}:
+    delete:
+      operationId: deleteDevice
+      summary: 删除设备（软删除）
+      description: |
+        软删除设备（v0.16.0，`device.write`），保留会话、日志与票据历史。存在任意进行中
+        会话时返回 409；删除会撤销该设备的活跃 compat 会话、过期待处理断连并撤销未兑换票据。
+        管理员重新登记同一 RustDesk ID 可恢复该行；客户端自动认领不能恢复已删除设备。
+      tags:
+        - devices
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: deviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/Internal"
     patch:
       operationId: updateDevice
       summary: 更新设备（停用/恢复、归属、备注）
@@ -4734,6 +4777,52 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+
+  /api/v1/orgs/{orgId}/sessions/{sessionId}/end:
+    post:
+      operationId: endSession
+      summary: 结束进行中的会话
+      description: |
+        结束一条 `open` 会话（v0.16.0，`device.disconnect`）：立即关闭会话记录、写
+        `end_reason=admin_ended` 与时间线事件，并尽力为该设备排队断连请求。面板不在
+        RustDesk 信令路径，实际传输断线依赖客户端下一次心跳消费；响应
+        `disconnect_requested` 表示是否已有断连请求在队列中。已结束/已拒绝会话返回 409。
+      tags:
+        - sessions
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: 会话已结束
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionEndResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/Internal"
 
   /api/v1/orgs/{orgId}/policies:
     get:
@@ -9264,6 +9353,29 @@ components:
           type: string
         data:
           $ref: "#/components/schemas/SessionDetail"
+
+    SessionEndResult:
+      type: object
+      required:
+        - disconnect_requested
+      properties:
+        disconnect_requested:
+          type: boolean
+          description: 是否已有断连请求在队列中（false 表示会话记录已结束但请求未排队）
+
+    SessionEndResponse:
+      type: object
+      required:
+        - code
+        - message
+        - data
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        data:
+          $ref: "#/components/schemas/SessionEndResult"
 
     SessionListResponse:
       type: object

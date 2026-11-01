@@ -9,8 +9,10 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/gen"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/session"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/strategy"
 )
 
 // ListSessions returns one page of the organization's session records.
@@ -124,6 +126,52 @@ func (a *AdminAPI) GetSession(c *gin.Context, orgId int64, sessionId int64) {
 			Events:    a.sessionEventsToAPI(events),
 			Truncated: truncated,
 		},
+	})
+}
+
+// EndSession closes an open session record and queues a best-effort device
+// disconnect. The panel is not in the signalling path, so the transport ends
+// when the client consumes the request on its next heartbeat.
+func (a *AdminAPI) EndSession(c *gin.Context, orgId int64, sessionId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 || sessionId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid id")
+		return
+	}
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermDeviceDisconnect) {
+		return
+	}
+	sess, err := a.tickets.EndByAdmin(c.Request.Context(), uint(orgId), uint(sessionId), uid)
+	switch {
+	case errors.Is(err, session.ErrSessionNotFound):
+		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "session not found")
+		return
+	case errors.Is(err, session.ErrSessionNotOpen):
+		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "session is not open")
+		return
+	case err != nil:
+		a.deps.Logger.Error("end session failed", zap.Error(err))
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not end session")
+		return
+	}
+	requested := false
+	_, derr := a.deps.Strategies.RequestDisconnect(c.Request.Context(), uint(orgId), uid,
+		sess.DeviceID, "session ended by administrator")
+	switch {
+	case derr == nil, errors.Is(derr, strategy.ErrDisconnectPending):
+		requested = true
+	default:
+		a.deps.Logger.Warn("session ended without a queued disconnect",
+			zap.Uint("session_id", sess.ID), zap.Error(derr))
+	}
+	c.Set(contextAuditRecorded, true)
+	c.JSON(http.StatusOK, gen.SessionEndResponse{
+		Code:    gen.ErrorCodeOk,
+		Message: "ok",
+		Data:    gen.SessionEndResult{DisconnectRequested: requested},
 	})
 }
 

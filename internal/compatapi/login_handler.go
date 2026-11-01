@@ -320,6 +320,11 @@ func (s *Server) finishLogin(c *gin.Context, user model.User, orgID uint, req lo
 					"device is disabled; ask your administrator to re-enable it")
 				return
 			}
+			if errors.Is(err, device.ErrDeviceDeleted) {
+				compatError(c, http.StatusForbidden,
+					"device was deleted; ask your administrator to register it again")
+				return
+			}
 			compatError(c, http.StatusInternalServerError, "login failed")
 			return
 		}
@@ -383,7 +388,7 @@ func (s *Server) claimDeviceTx(tx *gorm.DB, orgID, userID uint, rustdeskID, uuid
 			RustdeskID:     rustdeskID,
 			Name:           rustdeskID,
 			BoundUUID:      uuid,
-		})
+		}, false)
 		if rerr != nil {
 			return 0, rerr
 		}

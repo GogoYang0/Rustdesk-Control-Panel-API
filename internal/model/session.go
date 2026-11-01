@@ -28,6 +28,10 @@ const (
 	SessionEndPolicyExceeded = "policy_exceeded"
 	// SessionEndPolicyDenied marks the recording row for a denied issuance.
 	SessionEndPolicyDenied = "policy_denied"
+	// SessionEndAdminEnded marks an operator ending the session record. The
+	// panel is not in the signalling path, so the transport drops when the
+	// client consumes the queued disconnect on its next heartbeat.
+	SessionEndAdminEnded = "admin_ended"
 )
 
 // Session is one remote-control session.

@@ -1,6 +1,10 @@
 package model
 
-import "time"
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
 
 // Device is a RustDesk endpoint registered inside one organization.
 //
@@ -57,6 +61,11 @@ type Device struct {
 	Note      string    `gorm:"size:255;not null;default:''" json:"note"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// DeletedAt soft-deletes the device so session/log/ticket history keeps a
+	// valid device row. GORM filters deleted rows from ordinary queries; an
+	// administrator re-registering the same RustDesk id restores the row.
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+	DeletedBy uint           `gorm:"not null;default:0" json:"-"`
 }
 
 // OnlineWindow is how fresh a heartbeat must be for the device to count as

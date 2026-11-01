@@ -55,6 +55,16 @@ func TestSeed_CreatesLoginAndIsIdempotent(t *testing.T) {
 		Count(&invitations).Error)
 	require.EqualValues(t, 1, invitations, "sample invitation is replaced, not duplicated")
 
+	var sessionDevice model.Device
+	require.NoError(t, store.ScopedByOrg(st.DB, first.OrgID).Unscoped().
+		Where("rustdesk_id = ?", SeedSessionDeviceID).First(&sessionDevice).Error)
+	require.False(t, sessionDevice.DeletedAt.Valid)
+	var openSessions int64
+	require.NoError(t, store.ScopedByOrg(st.DB, first.OrgID).Model(&model.Session{}).
+		Where("device_id = ? AND status = ?", sessionDevice.ID, model.SessionStatusOpen).
+		Count(&openSessions).Error)
+	require.EqualValues(t, 1, openSessions, "session fixture is reset to one open row")
+
 	var profiles, builds, artifacts int64
 	require.NoError(t, store.WithoutTenantScope(st.DB).Model(&model.ClientBuildProfile{}).
 		Where("organization_id = ?", first.OrgID).Count(&profiles).Error)

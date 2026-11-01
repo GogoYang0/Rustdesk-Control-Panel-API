@@ -3607,6 +3607,33 @@ type SessionDetailResponse struct {
 	Message string        `json:"message"`
 }
 
+// SessionEndResponse defines model for SessionEndResponse.
+type SessionEndResponse struct {
+	// Code 机器可读错误码：
+	// - ok：成功
+	// - invalid_request：参数校验失败
+	// - unauthorized：未认证或令牌无效
+	// - forbidden：权限不足
+	// - not_found：资源不存在
+	// - conflict：状态冲突（重复创建、邀请过期或已使用、验证令牌无效）
+	// - rate_limited：触发限流
+	// - internal：服务端错误
+	// - email_not_verified：邮箱未验证（登录被拒）
+	// - captcha_required：已启用验证码但请求未携带（400）
+	// - captcha_invalid：验证码挑战缺失、过期、已使用或答案错误（400）
+	// - captcha_unavailable：验证码提供商不可达且配置为 fail closed（503）
+	// - approval_required：票据签发被策略的事前审批要求阻断（409，`data.approval_id` 为待审批请求）
+	Code    ErrorCode        `json:"code"`
+	Data    SessionEndResult `json:"data"`
+	Message string           `json:"message"`
+}
+
+// SessionEndResult defines model for SessionEndResult.
+type SessionEndResult struct {
+	// DisconnectRequested 是否已有断连请求在队列中（false 表示会话记录已结束但请求未排队）
+	DisconnectRequested bool `json:"disconnect_requested"`
+}
+
 // SessionEvent defines model for SessionEvent.
 type SessionEvent struct {
 	At     time.Time               `json:"at"`
@@ -4851,6 +4878,9 @@ type ServerInterface interface {
 	// CreateDevice 注册设备
 	// (POST /api/v1/orgs/{orgId}/devices)
 	CreateDevice(c *gin.Context, orgId int64)
+	// DeleteDevice 删除设备（软删除）
+	// (DELETE /api/v1/orgs/{orgId}/devices/{deviceId})
+	DeleteDevice(c *gin.Context, orgId int64, deviceId int64)
 	// UpdateDevice 更新设备（停用/恢复、归属、备注）
 	// (PATCH /api/v1/orgs/{orgId}/devices/{deviceId})
 	UpdateDevice(c *gin.Context, orgId int64, deviceId int64)
@@ -4950,6 +4980,9 @@ type ServerInterface interface {
 	// GetSession 会话详情（含事件序列）
 	// (GET /api/v1/orgs/{orgId}/sessions/{sessionId})
 	GetSession(c *gin.Context, orgId int64, sessionId int64)
+	// EndSession 结束进行中的会话
+	// (POST /api/v1/orgs/{orgId}/sessions/{sessionId}/end)
+	EndSession(c *gin.Context, orgId int64, sessionId int64)
 	// ListStrategies 列出客户端策略
 	// (GET /api/v1/orgs/{orgId}/strategies)
 	ListStrategies(c *gin.Context, orgId int64)
@@ -7659,6 +7692,40 @@ func (siw *ServerInterfaceWrapper) CreateDevice(c *gin.Context) {
 	siw.Handler.CreateDevice(c, orgId)
 }
 
+// DeleteDevice operation middleware
+func (siw *ServerInterfaceWrapper) DeleteDevice(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "deviceId" -------------
+	var deviceId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "deviceId", c.Param("deviceId"), &deviceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter deviceId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteDevice(c, orgId, deviceId)
+}
+
 // UpdateDevice operation middleware
 func (siw *ServerInterfaceWrapper) UpdateDevice(c *gin.Context) {
 
@@ -8844,6 +8911,40 @@ func (siw *ServerInterfaceWrapper) GetSession(c *gin.Context) {
 	siw.Handler.GetSession(c, orgId, sessionId)
 }
 
+// EndSession operation middleware
+func (siw *ServerInterfaceWrapper) EndSession(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Path parameter "sessionId" -------------
+	var sessionId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "sessionId", c.Param("sessionId"), &sessionId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter sessionId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.EndSession(c, orgId, sessionId)
+}
+
 // ListStrategies operation middleware
 func (siw *ServerInterfaceWrapper) ListStrategies(c *gin.Context) {
 
@@ -9404,9 +9505,11 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/rebind", wrapper.ResetDeviceBinding)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/disconnect", wrapper.RequestDeviceDisconnect)
 	router.PUT(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId/strategy", wrapper.AssignDeviceStrategy)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId", wrapper.DeleteDevice)
 	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId/devices/:deviceId", wrapper.UpdateDevice)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/sessions", wrapper.ListSessions)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/sessions/:sessionId", wrapper.GetSession)
+	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/sessions/:sessionId/end", wrapper.EndSession)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/policies", wrapper.ListPolicies)
 	router.POST(options.BaseURL+"/api/v1/orgs/:orgId/policies", wrapper.CreatePolicy)
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/policies/:policyId", wrapper.DeletePolicy)
