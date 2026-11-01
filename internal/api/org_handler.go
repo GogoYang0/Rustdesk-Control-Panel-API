@@ -23,6 +23,7 @@ import (
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/audit"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/auth"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/authz"
+	"github.com/GogoYang0/rustdesk-control-panel-api/internal/compatapi"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/controlrole"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/mail"
 	"github.com/GogoYang0/rustdesk-control-panel-api/internal/model"
@@ -532,6 +533,116 @@ func (a *AdminAPI) RevokeInvitation(c *gin.Context, orgId int64, invitationId in
 	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
 }
 
+// DeleteOrg soft-deletes one organization. Containers are removed first; only
+// then does a transaction revoke memberships, invitations, tickets and compat
+// sessions and mark the tenant root deleted. Business history is retained for
+// the offline purge.
+func (a *AdminAPI) DeleteOrg(c *gin.Context, orgId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid organization id")
+		return
+	}
+	var org model.Organization
+	if err := a.deps.DB.First(&org, uint(orgId)).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "organization not found")
+			return
+		}
+		a.deps.Logger.Error("load organization for delete failed", zap.Error(err))
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not delete organization")
+		return
+	}
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermOrgAdmin) {
+		return
+	}
+	var req gen.OrgDeleteRequest
+	if err := c.ShouldBindJSON(&req); err != nil ||
+		strings.TrimSpace(req.ConfirmName) != org.Name {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "confirm_name must match the organization name")
+		return
+	}
+	provisioner, ok := a.deps.Provisioning.(OrgProvisioner)
+	if !ok || provisioner == nil {
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "provisioning is not available")
+		return
+	}
+	if err := provisioner.Deprovision(c.Request.Context(), uint(orgId)); err != nil {
+		a.deps.Logger.Error("deprovision for organization delete failed", zap.Uint("org_id", uint(orgId)), zap.Error(err))
+		abortError(c, http.StatusConflict, gen.ErrorCodeConflict,
+			"could not remove provisioned containers; retry after checking the deployment")
+		return
+	}
+
+	now := a.deps.Now().UTC()
+	err := a.deps.DB.Transaction(func(tx *gorm.DB) error {
+		if _, err := lockActor(tx, uint(orgId), uid, false, authz.PermOrgAdmin); err != nil {
+			return err
+		}
+		read := tx
+		if tx.Name() != "sqlite" {
+			read = read.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		if err := read.First(&org, uint(orgId)).Error; err != nil {
+			return err
+		}
+		tr, ok := a.deps.Auditor.(audit.TxRecorder)
+		if !ok {
+			return errAuditUnavailable
+		}
+		// Audit before the soft delete: the GORM auditor re-reads the
+		// organization row while building the entry.
+		if err := tr.RecordTx(tx, audit.Entry{
+			OrganizationID: uint(orgId),
+			ActorUserID:    uid,
+			Action:         "organization.delete",
+			TargetType:     "organization",
+			TargetID:       fmt.Sprint(orgId),
+			Detail:         map[string]any{"name": org.Name},
+		}); err != nil {
+			return err
+		}
+		scoped := store.ScopedByOrg(tx, uint(orgId))
+		if err := scoped.Where("organization_id = ?", orgId).Delete(&model.Membership{}).Error; err != nil {
+			return fmt.Errorf("delete memberships: %w", err)
+		}
+		if err := scoped.Where("organization_id = ?", orgId).Delete(&model.Invitation{}).Error; err != nil {
+			return fmt.Errorf("delete invitations: %w", err)
+		}
+		if err := scoped.Model(&model.Ticket{}).
+			Where("used_at IS NULL AND revoked_at IS NULL").
+			Update("revoked_at", now).Error; err != nil {
+			return fmt.Errorf("revoke tickets: %w", err)
+		}
+		if _, err := compatapi.RevokeAllOrgSessions(c.Request.Context(), tx, uint(orgId), now); err != nil {
+			return fmt.Errorf("revoke compat sessions: %w", err)
+		}
+		return tx.Model(&model.Organization{}).
+			Where("id = ?", orgId).
+			Updates(map[string]any{"deleted_at": now, "deleted_by": uid}).Error
+	})
+	switch {
+	case errors.Is(err, errActorNoLongerAuthorized):
+		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "insufficient permissions")
+		return
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "organization not found")
+		return
+	case errors.Is(err, errAuditUnavailable):
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "audit unavailable")
+		return
+	case err != nil:
+		a.deps.Logger.Error("delete organization failed", zap.Uint("org_id", uint(orgId)), zap.Error(err))
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not delete organization")
+		return
+	}
+	c.Set(contextAuditRecorded, true)
+	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
+}
+
 // loadOrgForManagement resolves the tenant root before authorization, so a
 // missing organization is 404 rather than the membership lookup's 403.
 func (a *AdminAPI) loadOrgForManagement(c *gin.Context, orgID uint) bool {
@@ -691,6 +802,12 @@ func (a *AdminAPI) AcceptInvitation(c *gin.Context) {
 			return err
 		}
 		if err := locked.Acceptable(a.deps.Now()); err != nil {
+			return err
+		}
+		// A deleted tenant must not be re-entered through an invitation that
+		// was already loaded when the organization was removed.
+		var org model.Organization
+		if err := store.WithoutTenantScope(tx).Select("id").First(&org, inv.OrganizationID).Error; err != nil {
 			return err
 		}
 		inv = locked

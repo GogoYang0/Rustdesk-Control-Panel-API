@@ -23,6 +23,11 @@ const contextOrgID = "api.orgID"
 // goes through store.WithoutTenantScope; every later query uses the tenant
 // scoped handle.
 func (a *AdminAPI) membershipFor(c *gin.Context, userID, orgID uint) (*model.Membership, bool) {
+	var org model.Organization
+	if err := store.WithoutTenantScope(a.deps.DB).Select("id").First(&org, orgID).Error; err != nil {
+		abortError(c, http.StatusForbidden, gen.ErrorCodeForbidden, "organization is not available")
+		return nil, false
+	}
 	var m model.Membership
 	err := store.WithoutTenantScope(a.deps.DB).
 		Where("organization_id = ? AND user_id = ?", orgID, userID).

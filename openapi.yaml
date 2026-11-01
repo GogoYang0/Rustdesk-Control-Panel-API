@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Rustdesk-Control-Panel API
-  version: 0.16.0
+  version: 0.17.0
   contact:
     name: Rustdesk-Control-Panel
     url: https://github.com/GogoYang0/Rustdesk-Control-Panel-API
@@ -1306,6 +1306,50 @@ paths:
           $ref: "#/components/responses/Conflict"
 
   /api/v1/orgs/{orgId}:
+    delete:
+      operationId: deleteOrg
+      summary: 删除组织（软删除）
+      description: |
+        仅 owner（`org.admin`）可删除；body.confirm_name 必须与当前组织名一致。
+        先清理该组织的 hbbs/hbbr 容器；失败返回 409，组织保留。成功后软删除组织、
+        删除全部会籍与待接受邀请、撤销未兑换票据与 compat 会话。设备/会话/日志/审计等
+        历史行保留，供后续离线清理；旧访问令牌与会籍立即失效。
+      tags:
+        - orgs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrgDeleteRequest"
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/Internal"
     patch:
       operationId: updateOrg
       summary: 重命名组织
@@ -7080,6 +7124,17 @@ components:
           type: string
           minLength: 1
           maxLength: 128
+
+    OrgDeleteRequest:
+      type: object
+      required:
+        - confirm_name
+      properties:
+        confirm_name:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: 必须与当前组织名完全一致（trim 后），用于防误删
 
     OrgUpdateRequest:
       type: object
