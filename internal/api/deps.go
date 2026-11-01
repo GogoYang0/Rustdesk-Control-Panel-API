@@ -156,6 +156,13 @@ type ProvisioningManager interface {
 	SetEnabled(ctx context.Context, orgID, actorID uint, enabled bool) (provision.State, bool, error)
 }
 
+// OrgProvisioner tears down the organization's containers before the tenant is
+// soft-deleted. It is separate from ProvisioningManager so existing test fakes
+// and read-only wirings do not have to implement container removal.
+type OrgProvisioner interface {
+	Deprovision(ctx context.Context, orgID uint) error
+}
+
 // AdminAPI implements the generated gen.ServerInterface.
 type AdminAPI struct {
 	deps      Deps

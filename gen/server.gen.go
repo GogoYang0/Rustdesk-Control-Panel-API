@@ -2893,6 +2893,12 @@ type OrgCreateRequest struct {
 	Name string `json:"name"`
 }
 
+// OrgDeleteRequest defines model for OrgDeleteRequest.
+type OrgDeleteRequest struct {
+	// ConfirmName 必须与当前组织名完全一致（trim 后），用于防误删
+	ConfirmName string `json:"confirm_name"`
+}
+
 // OrgListResponse defines model for OrgListResponse.
 type OrgListResponse struct {
 	// Code 机器可读错误码：
@@ -4478,6 +4484,9 @@ type AcceptInvitationJSONRequestBody = InvitationAcceptRequest
 // CreateOrgJSONRequestBody defines body for CreateOrg for application/json ContentType.
 type CreateOrgJSONRequestBody = OrgCreateRequest
 
+// DeleteOrgJSONRequestBody defines body for DeleteOrg for application/json ContentType.
+type DeleteOrgJSONRequestBody = OrgDeleteRequest
+
 // UpdateOrgJSONRequestBody defines body for UpdateOrg for application/json ContentType.
 type UpdateOrgJSONRequestBody = OrgUpdateRequest
 
@@ -4714,6 +4723,9 @@ type ServerInterface interface {
 	// CreateOrg 创建组织
 	// (POST /api/v1/orgs)
 	CreateOrg(c *gin.Context)
+	// DeleteOrg 删除组织（软删除）
+	// (DELETE /api/v1/orgs/{orgId})
+	DeleteOrg(c *gin.Context, orgId int64)
 	// UpdateOrg 重命名组织
 	// (PATCH /api/v1/orgs/{orgId})
 	UpdateOrg(c *gin.Context, orgId int64)
@@ -5622,6 +5634,31 @@ func (siw *ServerInterfaceWrapper) CreateOrg(c *gin.Context) {
 	}
 
 	siw.Handler.CreateOrg(c)
+}
+
+// DeleteOrg operation middleware
+func (siw *ServerInterfaceWrapper) DeleteOrg(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "orgId" -------------
+	var orgId int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "orgId", c.Param("orgId"), &orgId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter orgId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.DeleteOrg(c, orgId)
 }
 
 // UpdateOrg operation middleware
@@ -9431,6 +9468,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.GET(options.BaseURL+"/api/v1/me", wrapper.GetMe)
 	router.GET(options.BaseURL+"/api/v1/orgs", wrapper.ListOrgs)
 	router.POST(options.BaseURL+"/api/v1/orgs", wrapper.CreateOrg)
+	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId", wrapper.DeleteOrg)
 	router.PATCH(options.BaseURL+"/api/v1/orgs/:orgId", wrapper.UpdateOrg)
 	router.GET(options.BaseURL+"/api/v1/orgs/:orgId/members", wrapper.ListMembers)
 	router.DELETE(options.BaseURL+"/api/v1/orgs/:orgId/members/:userId", wrapper.RemoveMember)

@@ -1,6 +1,10 @@
 package model
 
-import "time"
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
 
 // Organization is the tenant root. Every business row carries its ID.
 type Organization struct {
@@ -22,6 +26,12 @@ type Organization struct {
 	// forever; any positive value archives older rows to local files and then
 	// purges them (see audit.RetentionService).
 	AuditRetentionDays int `gorm:"not null;default:0" json:"audit_retention_days"`
+
+	// DeletedAt soft-deletes the tenant root. Memberships, invitations, tickets
+	// and compat sessions are revoked on deletion; business/audit history stays
+	// attributable until an offline purge.
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+	DeletedBy uint           `gorm:"not null;default:0" json:"-"`
 }
 
 // Role values inside an organization.

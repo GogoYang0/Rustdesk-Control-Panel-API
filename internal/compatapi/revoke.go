@@ -24,6 +24,20 @@ import (
 // no longer match, and expired rows are left alone (Active() refuses them
 // anyway, and the returned count stays the honest "sessions that died
 // here" number).
+func RevokeAllOrgSessions(ctx context.Context, db *gorm.DB, orgID uint, now time.Time) (int64, error) {
+	if orgID == 0 {
+		return 0, nil
+	}
+	res := store.WithoutTenantScope(db.WithContext(ctx)).
+		Model(&model.CompatSession{}).
+		Where("organization_id = ? AND revoked_at IS NULL AND expires_at > ?", orgID, now).
+		Update("revoked_at", now)
+	if res.Error != nil {
+		return 0, res.Error
+	}
+	return res.RowsAffected, nil
+}
+
 func RevokeOrgSessions(ctx context.Context, db *gorm.DB, orgID, userID uint, now time.Time) (int64, error) {
 	if orgID == 0 || userID == 0 {
 		return 0, nil
