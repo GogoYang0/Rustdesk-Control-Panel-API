@@ -200,9 +200,11 @@ func TestScopedByOrg_TableAliasAndExplicitTable(t *testing.T) {
 	require.NoError(t, store.ScopedByOrg(db, orgA.ID).Table("memberships AS m").Find(&aliased).Error)
 	require.Len(t, aliased, 1, "aliased table must stay inside the tenant")
 
-	// Explicit .Table must win over the model schema.
+	// Explicit .Table must win over the model schema. Use a model without a
+	// soft-delete field so GORM does not append `memberships.deleted_at` (a
+	// column that belongs to the overridden model, not the table).
 	var overModel []map[string]any
-	require.NoError(t, store.ScopedByOrg(db, orgA.ID).Model(&model.Organization{}).Table("memberships").Find(&overModel).Error)
+	require.NoError(t, store.ScopedByOrg(db, orgA.ID).Model(&model.Invitation{}).Table("memberships").Find(&overModel).Error)
 	require.Len(t, overModel, 1, "explicit .Table must override the model schema")
 
 	// A model-only query on a non-scoped table is untouched.
