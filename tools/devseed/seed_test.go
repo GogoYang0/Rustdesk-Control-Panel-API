@@ -43,7 +43,7 @@ func TestSeed_CreatesLoginAndIsIdempotent(t *testing.T) {
 	require.NoError(t, store.WithoutTenantScope(st.DB).Model(&model.User{}).Count(&users).Error)
 	require.NoError(t, store.WithoutTenantScope(st.DB).Model(&model.Membership{}).Count(&memberships).Error)
 	require.EqualValues(t, 2, users)
-	require.EqualValues(t, 2, memberships)
+	require.EqualValues(t, 3, memberships, "seed org owner/member plus the delete fixture owner")
 
 	var events int64
 	require.NoError(t, store.WithoutTenantScope(st.DB).Model(&model.LogEvent{}).Count(&events).Error)
@@ -64,6 +64,16 @@ func TestSeed_CreatesLoginAndIsIdempotent(t *testing.T) {
 		Where("device_id = ? AND status = ?", sessionDevice.ID, model.SessionStatusOpen).
 		Count(&openSessions).Error)
 	require.EqualValues(t, 1, openSessions, "session fixture is reset to one open row")
+
+	var deleteOrg model.Organization
+	require.NoError(t, st.DB.Where("name = ?", SeedDeleteOrgName).First(&deleteOrg).Error)
+	require.True(t, deleteOrg.ProvisioningDisabled)
+	var seededAdmin model.User
+	require.NoError(t, st.DB.Where("email = ?", opts.AdminEmail).First(&seededAdmin).Error)
+	var ownerMemberships int64
+	require.NoError(t, store.ScopedByOrg(st.DB, deleteOrg.ID).Model(&model.Membership{}).
+		Where("user_id = ?", seededAdmin.ID).Count(&ownerMemberships).Error)
+	require.EqualValues(t, 1, ownerMemberships, "delete fixture has the owner membership")
 
 	var profiles, builds, artifacts int64
 	require.NoError(t, store.WithoutTenantScope(st.DB).Model(&model.ClientBuildProfile{}).
