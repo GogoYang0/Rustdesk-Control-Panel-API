@@ -67,7 +67,8 @@ func (s *Service) RequestDisconnect(ctx context.Context, orgID, actorID, deviceI
 
 		var pending int64
 		if err := scoped.Model(&model.DeviceDisconnect{}).
-			Where("device_id = ? AND status = ?", dev.ID, model.DisconnectStatusPending).
+			Where("device_id = ? AND status = ? AND expires_at > ?",
+				dev.ID, model.DisconnectStatusPending, s.now()).
 			Count(&pending).Error; err != nil {
 			return err
 		}

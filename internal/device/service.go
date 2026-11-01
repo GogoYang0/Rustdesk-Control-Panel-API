@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -36,6 +37,13 @@ var ErrOwnerNotMember = errors.New("owner is not an active member")
 // in the organization.
 var ErrDeviceGroupNotFound = errors.New("device group not found")
 
+// ErrDeviceDeleted reports a soft-deleted device. Compat logins may not
+// resurrect it; only an administrator registration restores the row.
+var ErrDeviceDeleted = errors.New("device is deleted")
+
+// ErrDeviceHasOpenSessions blocks deletion while a session is still open.
+var ErrDeviceHasOpenSessions = errors.New("device has open sessions")
+
 // Field limits mirror the contract and the column sizes.
 const (
 	maxNameLen       = 128
@@ -51,6 +59,10 @@ type RegisterInput struct {
 	// only written on first registration — the upsert never overwrites an
 	// existing binding (compat layer ownership anchor, CWE-863).
 	BoundUUID string
+	// AllowRestore lets the management API resurrect a soft-deleted device.
+	// Compat claims leave it false: a deleted device must not be revived by
+	// whoever presents its RustDesk id.
+	AllowRestore bool
 }
 
 // Service owns device persistence.
@@ -99,7 +111,7 @@ func (s *Service) Register(ctx context.Context, orgID uint, in RegisterInput) (*
 		// (no binding yet).
 		BindingGeneration: firstBindingGeneration(in.BoundUUID),
 	}
-	return RegisterTx(s.db.WithContext(ctx), orgID, row)
+	return RegisterTx(s.db.WithContext(ctx), orgID, row, in.AllowRestore)
 }
 
 // firstBindingGeneration maps a registration binding to its generation: a
@@ -115,11 +127,37 @@ func firstBindingGeneration(boundUUID string) uint64 {
 // login can claim a device and persist its session atomically. The upsert
 // never touches bound_uuid or binding_generation on conflict: the stored
 // binding belongs to whoever claimed first.
-func RegisterTx(db *gorm.DB, orgID uint, row model.Device) (*model.Device, error) {
+func RegisterTx(db *gorm.DB, orgID uint, row model.Device, allowRestore bool) (*model.Device, error) {
 	// The binding generation is normalized here so every caller agrees on
 	// it: a row that arrives with a binding starts at 1, an unbound row at
 	// 0 — no session can ever match the unbound generation.
 	row.BindingGeneration = firstBindingGeneration(row.BoundUUID)
+
+	// A soft-deleted row still occupies the unique (org, rustdesk_id) index.
+	// Check it before the upsert: the conflict path only updates the name,
+	// and the soft-delete-filtered re-read would turn that into a 500 after a
+	// partial write.
+	priorQuery := store.ScopedByOrg(db, orgID).Unscoped().Where("rustdesk_id = ?", row.RustdeskID)
+	var prior model.Device
+	priorErr := priorQuery.First(&prior).Error
+	// Lock an existing row by primary key; locking a missing secondary-key
+	// range would take a gap lock on MySQL and deadlock against the upsert.
+	if priorErr == nil && db.Name() != "sqlite" {
+		priorErr = store.ScopedByOrg(db, orgID).Unscoped().
+			Where("id = ?", prior.ID).
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&prior).Error
+	}
+	switch {
+	case priorErr == nil && prior.DeletedAt.Valid:
+		if !allowRestore {
+			return nil, ErrDeviceDeleted
+		}
+		return restoreDeleted(db, orgID, prior, row)
+	case priorErr != nil && !errors.Is(priorErr, gorm.ErrRecordNotFound):
+		return nil, fmt.Errorf("check deleted device: %w", priorErr)
+	}
+
 	err := store.ScopedByOrg(db, orgID).
 		Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "organization_id"}, {Name: "rustdesk_id"}},
@@ -144,6 +182,51 @@ func RegisterTx(db *gorm.DB, orgID uint, row model.Device) (*model.Device, error
 		return nil, fmt.Errorf("load device: %w", err)
 	}
 	return &stored, nil
+}
+
+// restoreDeleted revives a soft-deleted device for an administrator. The
+// binding generation only moves forward: reusing an older generation would let
+// a session issued before the deletion drive the restored device.
+func restoreDeleted(db *gorm.DB, orgID uint, prior, incoming model.Device) (*model.Device, error) {
+	now := time.Now().UTC()
+	generation := prior.BindingGeneration + 1
+	updates := map[string]any{
+		"name":               incoming.Name,
+		"bound_uuid":         incoming.BoundUUID,
+		"binding_generation": generation,
+		"disabled":           false,
+		"disabled_at":        nil,
+		"disabled_by":        uint(0),
+		"device_group_id":    nil,
+		"owner_user_id":      nil,
+		"strategy_id":        nil,
+		"note":               "",
+		"last_seen_at":       nil,
+		"deleted_at":         nil,
+		"deleted_by":         uint(0),
+		"updated_at":         now,
+	}
+	if err := store.ScopedByOrg(db, orgID).Unscoped().
+		Model(&model.Device{}).
+		Where("id = ?", prior.ID).
+		Updates(updates).Error; err != nil {
+		return nil, fmt.Errorf("restore device: %w", err)
+	}
+	prior.Name = incoming.Name
+	prior.BoundUUID = incoming.BoundUUID
+	prior.BindingGeneration = generation
+	prior.Disabled = false
+	prior.DisabledAt = nil
+	prior.DisabledBy = 0
+	prior.DeviceGroupID = nil
+	prior.OwnerUserID = nil
+	prior.StrategyID = nil
+	prior.Note = ""
+	prior.LastSeenAt = nil
+	prior.DeletedAt = gorm.DeletedAt{}
+	prior.DeletedBy = 0
+	prior.UpdatedAt = now
+	return &prior, nil
 }
 
 // heartbeatSourceLog marks heartbeats derived from collected server logs, so
@@ -792,6 +875,83 @@ func revokeDeviceSessions(tx *gorm.DB, orgID uint, rustdeskID string, now time.T
 		return 0, res.Error
 	}
 	return res.RowsAffected, nil
+}
+
+// Delete soft-deletes one device, keeping sessions, logs and tickets
+// attributable. It refuses while any session is open: ending records is a
+// separate, explicit action. The same transaction revokes the device's compat
+// sessions, expires pending disconnect intents, revokes unredeemed tickets and
+// records the operator action.
+func (s *Service) Delete(ctx context.Context, orgID, deviceID, actorID uint) error {
+	if orgID == 0 || deviceID == 0 {
+		return fmt.Errorf("%w: organization and device are required", ErrInvalidInput)
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		read := store.ScopedByOrg(tx, orgID)
+		if tx.Name() != "sqlite" {
+			read = read.Clauses(clause.Locking{Strength: "UPDATE"})
+		}
+		var dev model.Device
+		if err := read.First(&dev, deviceID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrDeviceNotFound
+			}
+			return err
+		}
+		var open int64
+		if err := store.ScopedByOrg(tx, orgID).Model(&model.Session{}).
+			Where("device_id = ? AND status = ?", dev.ID, model.SessionStatusOpen).
+			Count(&open).Error; err != nil {
+			return err
+		}
+		if open > 0 {
+			return ErrDeviceHasOpenSessions
+		}
+		now := s.now().UTC()
+		revokedSessions, err := revokeDeviceSessions(tx, orgID, dev.RustdeskID, now)
+		if err != nil {
+			return fmt.Errorf("revoke compat sessions: %w", err)
+		}
+		expireRes := store.ScopedByOrg(tx, orgID).Model(&model.DeviceDisconnect{}).
+			Where("device_id = ? AND status = ?", dev.ID, model.DisconnectStatusPending).
+			Update("status", model.DisconnectStatusExpired)
+		if expireRes.Error != nil {
+			return expireRes.Error
+		}
+		ticketRes := store.ScopedByOrg(tx, orgID).Model(&model.Ticket{}).
+			Where("device_id = ? AND used_at IS NULL AND revoked_at IS NULL", dev.ID).
+			Update("revoked_at", now)
+		if ticketRes.Error != nil {
+			return ticketRes.Error
+		}
+		if err := store.ScopedByOrg(tx, orgID).Unscoped().Model(&model.Device{}).
+			Where("id = ?", dev.ID).
+			Updates(map[string]any{
+				"deleted_at":         now,
+				"deleted_by":         actorID,
+				"bound_uuid":         "",
+				"binding_generation": gorm.Expr("binding_generation + 1"),
+				"last_seen_at":       nil,
+				"device_group_id":    nil,
+				"updated_at":         now,
+			}).Error; err != nil {
+			return fmt.Errorf("soft delete device: %w", err)
+		}
+		return s.record(tx, audit.Entry{
+			OrganizationID: orgID,
+			ActorUserID:    actorID,
+			Action:         "device.delete",
+			TargetType:     "device",
+			TargetID:       strconv.FormatUint(uint64(dev.ID), 10),
+			Detail: map[string]any{
+				"rustdesk_id":         dev.RustdeskID,
+				"name":                dev.Name,
+				"revoked_sessions":    revokedSessions,
+				"revoked_tickets":     ticketRes.RowsAffected,
+				"expired_disconnects": expireRes.RowsAffected,
+			},
+		})
+	})
 }
 
 // record writes the audit entry on the caller's transaction. A service without

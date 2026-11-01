@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 
 	"github.com/GogoYang0/rustdesk-control-panel-api/gen"
@@ -41,8 +42,9 @@ func (a *AdminAPI) CreateDevice(c *gin.Context, orgId int64) {
 	}
 
 	dev, err := a.deps.Devices.Register(c.Request.Context(), uint(orgId), device.RegisterInput{
-		Name:       req.Name,
-		RustdeskID: req.RustdeskId,
+		Name:         req.Name,
+		RustdeskID:   req.RustdeskId,
+		AllowRestore: true,
 	})
 	if errors.Is(err, device.ErrInvalidInput) {
 		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
@@ -59,6 +61,40 @@ func (a *AdminAPI) CreateDevice(c *gin.Context, orgId int64) {
 		Message: "ok",
 		Data:    a.deviceToAPI(dev, a.ownerEmailsFor(dev)),
 	})
+}
+
+// DeleteDevice soft-deletes a device while keeping its history. An open
+// session blocks deletion; the operator must end it first.
+func (a *AdminAPI) DeleteDevice(c *gin.Context, orgId int64, deviceId int64) {
+	uid, ok := requireUserID(c)
+	if !ok {
+		return
+	}
+	if orgId <= 0 || deviceId <= 0 {
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, "invalid id")
+		return
+	}
+	if !a.requirePerm(c, uid, uint(orgId), authz.PermDeviceWrite) {
+		return
+	}
+	err := a.deps.Devices.Delete(c.Request.Context(), uint(orgId), uint(deviceId), uid)
+	switch {
+	case errors.Is(err, device.ErrDeviceNotFound):
+		abortError(c, http.StatusNotFound, gen.ErrorCodeNotFound, "device not found")
+		return
+	case errors.Is(err, device.ErrDeviceHasOpenSessions):
+		abortError(c, http.StatusConflict, gen.ErrorCodeConflict, "end open sessions before deleting the device")
+		return
+	case errors.Is(err, device.ErrInvalidInput):
+		abortError(c, http.StatusBadRequest, gen.ErrorCodeInvalidRequest, err.Error())
+		return
+	case err != nil:
+		a.deps.Logger.Error("delete device failed", zap.Error(err))
+		abortError(c, http.StatusInternalServerError, gen.ErrorCodeInternal, "could not delete device")
+		return
+	}
+	c.Set(contextAuditRecorded, true)
+	c.JSON(http.StatusOK, gen.OkResponse{Code: gen.ErrorCodeOk, Message: "ok"})
 }
 
 // DeviceHeartbeat records a heartbeat for a device in the org.

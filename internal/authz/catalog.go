@@ -64,7 +64,7 @@ var catalog = []Permission{
 	{PermDeviceDisconnect, "Disconnect a device's live connections", false},
 	{PermMemberManage, "Invite and remove members, disable memberships", true},
 	{PermDeviceRead, "Read devices", true},
-	{PermDeviceWrite, "Register devices, heartbeat, rebind, disable", true},
+	{PermDeviceWrite, "Register, heartbeat, rebind, disable and delete devices", true},
 	{PermAuditRead, "Read and export audit logs", true},
 	{PermAddressBook, "Write shared address books", true},
 	{PermPolicyWrite, "Manage connection policies", true},

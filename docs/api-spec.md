@@ -1,6 +1,6 @@
 # 后端 API 规范（Backend API Specification）
 
-> 适用版本：v0.15.0（管理员密码重置；v0.14.0 = 邀请列表/撤销，v0.13.0 = 组织重命名）。本文档是对 `openapi.yaml`（契约 v0.15.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
+> 适用版本：v0.16.0（设备删除与会话结束；v0.15.0 = 管理员密码重置，v0.14.0 = 邀请列表/撤销）。本文档是对 `openapi.yaml`（契约 v0.16.0）与 compat 层协议的人类可读摘要与语义说明；**字段与请求/响应形状以 `openapi.yaml` 为契约权威**，本文负责解释语义、边界与易错点。
 > 本文档随版本演进持续更新——契约变更的 PR 必须同步更新 §3/§4。
 > 配套文档：[部署指南](deployment.md) · [运维指南](operations.md)
 
@@ -153,11 +153,12 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | `POST /api/v1/orgs/{orgId}/devices` | 注册设备（`device.write` 权限） |
 | `POST .../devices/{deviceId}/heartbeat` | 管理端手动心跳（`source=api`，30s 窗口合并） |
 | `POST .../devices/{deviceId}/rebind` | 重置绑定（`device.write`；`reason` 必填 1..500） |
+| `DELETE .../devices/{deviceId}` | 软删除设备（v0.16.0，`device.write`）：存在 open 会话 409；撤销 compat/过期断连/未用票；管理员重登记恢复，compat 不可 |
 | `PATCH .../devices/{deviceId}` | 更新设备（v0.8.0 起支持 `disabled`；v0.10.0 扩展为 `DeviceUpdateRequest`，`device.write`）：请求体至少一个字段，**同一请求要么全部生效、要么全部不生效**（单事务）。`disabled`：停用在同一事务撤销该设备的活跃 compat 会话并写 `device.disable` 审计（恢复写 `device.enable`）；停用期间该设备拒绝客户端认领、compat 登录、心跳与系统信息（后者静默丢弃），票据兑换返回 409；v0.9.0 起签发停用设备的票据返回 404，且 compat `GET /api/peers` 不返回停用设备（见 §3.10）。`owner_user_id`：设置/清空归属（`null` 清空、`0` 非法，目标必须是本组织有效成员否则 404）。`note`：运维备注，`null` 或空串清空，≤255 字符。每个实际变化的字段各写一条审计（`device.assign`/`device.note`），重复设置同值为 200 no-op 不写审计 |
 
 > **v0.5.0 起设备换机/重装的恢复流程有管理面入口**：管理员列出设备 → 调 `rebind` 填理由 →
-> 客户端重新登录自动重新认领。**仍不提供 `DELETE` 设备**（硬删除会留下心跳/会话/审计悬空引用；
-> 恢复用 rebind 即可，见增量设计文档）。`Device.bound` 表示当前是否绑定某个客户端实例。
+> 客户端重新登录自动重新认领。v0.16.0 起提供 `DELETE` 设备，但为**软删除**：保留心跳/会话/
+> 审计历史，存在进行中会话时拒绝；管理员重新登记同一 RustDesk ID 可恢复，客户端登录不能复活已删设备。
 > compat 侧的认领与绑定语义见 §4。
 >
 > **v0.8.0 设备停用（`disabled`）与 `rebind` 正交**：停用只阻断访问、不解除绑定，恢复后同一客户端
@@ -228,6 +229,7 @@ fail-closed 的适用范围必须分清（以 `internal/store` 的租户插件�
 | 端点 | 权限 | 说明 |
 |---|---|---|
 | `GET .../sessions` | 成员 | 会话记录（按 `started_at` 倒序）：`origin`、`status`、`deviceId`、`since`/`until` 过滤 + 分页 |
+| `POST .../sessions/{sessionId}/end` | owner/admin（`device.disconnect`） | 结束 open 会话（v0.16.0）：记录立即关闭、`end_reason=admin_ended`，尽力排队设备断连；响应 `disconnect_requested` |
 | `GET .../sessions/{sessionId}` | 成员 | 会话详情 + 事件序列（最早 200 条，超出置 `truncated=true`） |
 | `GET .../policies` | 成员 | 策略列表（单次返回全部，不分页） |
 | `POST .../policies` | owner/admin | 创建策略（同组织 `name` 唯一，重复 409） |
@@ -626,12 +628,13 @@ compat 地址簿**只服务个人地址簿**（`EnsurePersonalBook`），共享�
 
 ## 6. 版本与变更管理
 
-- 契约版本随 release 演进：v0.1.0（M0）→ v0.2.0（M1）→ v0.3.0（M2）→ v0.4.0（M3，会话治理域）→ v0.5.0（设备管理增量）→ v0.6.0（成员离场）→ v0.7.0（按组织 provisioning 开关）→ v0.8.0（M4：角色模型、审计查询/导出、停用、地址簿授权与回收站、令牌、2FA）→ v0.9.0（M5：访问控制——用户组/设备组/组规则、peers 过滤与票据准入）→ v0.10.0（M6 波次 1–4）→ v0.11.0（M6 波次 5a 客户端生成器、5b Passkey/OIDC/LDAP）→ v0.12.0（M7 前置：`GET /api/v1/me`）→ v0.12.1（M7-2：`alerts?sessionId`）→ v0.12.2（日志事件权限收紧）→ v0.12.3（地址簿恢复容量 400 文档化）→ v0.13.0（组织重命名）→ v0.14.0（待接受邀请列表与撤销）→ **v0.15.0（管理员密码重置）**
-- v0.6.0 为**加性变更**：新增 `DELETE/PATCH /orgs/{orgId}/members/{userId}`（#39 撤销接线）。v0.5.0 的新增设备列表与 rebind 保持不变；仍不提供 `DELETE` 设备
+- 契约版本随 release 演进：v0.1.0（M0）→ v0.2.0（M1）→ v0.3.0（M2）→ v0.4.0（M3，会话治理域）→ v0.5.0（设备管理增量）→ v0.6.0（成员离场）→ v0.7.0（按组织 provisioning 开关）→ v0.8.0（M4：角色模型、审计查询/导出、停用、地址簿授权与回收站、令牌、2FA）→ v0.9.0（M5：访问控制——用户组/设备组/组规则、peers 过滤与票据准入）→ v0.10.0（M6 波次 1–4）→ v0.11.0（M6 波次 5a 客户端生成器、5b Passkey/OIDC/LDAP）→ v0.12.0（M7 前置：`GET /api/v1/me`）→ v0.12.1（M7-2：`alerts?sessionId`）→ v0.12.2（日志事件权限收紧）→ v0.12.3（地址簿恢复容量 400 文档化）→ v0.13.0（组织重命名）→ v0.14.0（待接受邀请列表与撤销）→ v0.15.0（管理员密码重置）→ **v0.16.0（设备删除、会话结束）**
+- v0.6.0 为**加性变更**：新增 `DELETE/PATCH /orgs/{orgId}/members/{userId}`（#39 撤销接线）。v0.5.0 的新增设备列表与 rebind 保持不变；v0.16.0 新增软删除 `DELETE` 设备
 - v0.7.0 为**加性变更**：新增 `GET/PUT /orgs/{orgId}/provisioning` 与 `ProvisioningStatus.cleanup_pending`；既有端点请求/响应形状与字段不变
 - v0.12.2 为**权限收紧**：`GET /orgs/{orgId}/log-events` 由“组织会籍即可读”改为要求 `audit.read`，并应用 `audit_scope`（`individual` 仅自己拥有设备的事件；`device_id` 为 null 的事件不可见）。响应形状不变；旧客户端若默认成员直接调用该端点会收到 403
 - v0.12.3 为**文档补全**：`POST .../recycle-bin/{peerId}/restore` 在地址簿已有 2000 个 live peer 时实际返回 `400 invalid_request`，openapi 补列该响应；服务端行为不变
 - v0.13.0 为**加性端点**：`PATCH /orgs/{orgId}` 重命名组织（owner-only），原始名称 ≤128、trim 后非空、允许重名、同名 no-op；`organization.create` 同步收紧名称 trim/长度。供应与 server group label 按组织 id，不受影响
+- v0.16.0 为**加性端点**：`DELETE /orgs/{orgId}/devices/{deviceId}` 软删除设备（保留历史；open 会话阻止删除；管理员重新登记可恢复，compat 不可）与 `POST /orgs/{orgId}/sessions/{sessionId}/end`（关闭 open 会话并尽力排队断连）。`Device` 新增内部 `deleted_at/deleted_by`；既有端点形状不变
 - v0.15.0 为**加性端点**：`POST /orgs/{orgId}/members/{userId}/password/reset`（管理员发送一次性重置邮件，响应/审计不含令牌）与 `POST /auth/password/reset`（凭令牌设置新密码并撤销 refresh/compat 会话）。复用 `VerificationToken` 的 `password_reset` 用途；既有端点形状不变
 - v0.14.0 为**加性端点 + 竞态加固**：新增 `GET /orgs/{orgId}/invitations`（待接受列表，`member.manage`）与 `DELETE /orgs/{orgId}/invitations/{invitationId}`（撤销，幂等；已接受 409）。`Invitation` 模型新增内部 `revoked_at`，列表/撤销不返回令牌或哈希；接受邀请改为事务内锁定并复核邀请状态，撤销后令牌立即失效。既有端点形状不变
 - v0.12.1 为**加性变更**：`GET /orgs/{orgId}/alerts` 新增可选 `sessionId` 过滤（会话详情展示关联告警；告警列表按时间倒序分页，客户端自行过滤会漏行）。非正值 `400 invalid_request`；未知 id 与跨组织 id 均返回空页（租户作用域优先）。既有形状不变

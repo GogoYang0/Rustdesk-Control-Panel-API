@@ -598,7 +598,9 @@ func TestLogin_ReclaimsAfterAdminDelete(t *testing.T) {
 	h.seedMembership(t, u.ID, org.ID)
 
 	h.login(t, "reclaim@example.com", "password123", "555555555", "owner-uuid")
-	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).
+	// An out-of-band hard delete frees the unique key; this is distinct from
+	// the management soft delete, which compat logins may not resurrect.
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).Unscoped().
 		Where("rustdesk_id = ?", "555555555").Delete(&model.Device{}).Error)
 
 	// A fresh login recreates and re-claims the row.
@@ -608,6 +610,25 @@ func TestLogin_ReclaimsAfterAdminDelete(t *testing.T) {
 	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).
 		Where("rustdesk_id = ?", "555555555").First(&dev).Error)
 	require.Equal(t, "owner-uuid", dev.BoundUUID)
+}
+
+// A management soft delete keeps the row for history but cannot be revived by
+// a client login; only an administrator registration restores it.
+func TestLogin_CannotReviveSoftDeletedDevice(t *testing.T) {
+	h := newHarness(t)
+	u := h.seedUser(t, "soft@example.com", "password123", true)
+	org := h.seedOrg(t, "acme")
+	h.seedMembership(t, u.ID, org.ID)
+
+	h.login(t, "soft@example.com", "password123", "666666666", "owner-uuid")
+	require.NoError(t, store.ScopedByOrg(h.db.DB, org.ID).
+		Where("rustdesk_id = ?", "666666666").Delete(&model.Device{}).Error)
+
+	w := h.do(t, http.MethodPost, "/api/login", map[string]string{
+		"username": "soft@example.com", "password": "password123",
+		"id": "666666666", "uuid": "owner-uuid",
+	}, "")
+	require.Equal(t, http.StatusForbidden, w.Code, w.Body.String())
 }
 
 // Concurrent first claims of one rustdesk id with different uuids must let

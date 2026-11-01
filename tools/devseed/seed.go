@@ -94,10 +94,91 @@ func Seed(db *gorm.DB, opts Options) (Result, error) {
 	if err := seedInvitation(db, org.ID); err != nil {
 		return Result{}, err
 	}
+	if err := seedSessionFixture(db, org.ID); err != nil {
+		return Result{}, err
+	}
 	if err := seedClientBuilds(db, org.ID, admin.ID, opts.AssetDir); err != nil {
 		return Result{}, err
 	}
 	return Result{OrgID: org.ID, AdminEmail: admin.Email, OpsEmail: ops.Email}, nil
+}
+
+// SeedSessionDeviceID is the RustDesk id of the disposable device that owns
+// the open session fixture used by the session-end e2e.
+const SeedSessionDeviceID = "E2E-SESSION-1"
+
+// seedSessionFixture keeps one deleted-safe device and one open panel session
+// so the session-end e2e has a deterministic target. Reruns reset the device,
+// drop its session history and recreate exactly one open session.
+func seedSessionFixture(db *gorm.DB, orgID uint) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		scoped := store.ScopedByOrg(tx, orgID)
+		var device model.Device
+		err := scoped.Unscoped().Where("rustdesk_id = ?", SeedSessionDeviceID).First(&device).Error
+		switch {
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			device = model.Device{
+				OrganizationID: orgID,
+				RustdeskID:     SeedSessionDeviceID,
+				Name:           "E2E 会话设备",
+			}
+			if err := scoped.Create(&device).Error; err != nil {
+				return fmt.Errorf("devseed: create session device: %w", err)
+			}
+		case err != nil:
+			return fmt.Errorf("devseed: load session device: %w", err)
+		default:
+			if err := scoped.Unscoped().Model(&model.Device{}).Where("id = ?", device.ID).
+				Updates(map[string]any{
+					"deleted_at":      nil,
+					"deleted_by":      uint(0),
+					"disabled":        false,
+					"disabled_at":     nil,
+					"disabled_by":     uint(0),
+					"bound_uuid":      "",
+					"device_group_id": nil,
+					"owner_user_id":   nil,
+					"strategy_id":     nil,
+					"last_seen_at":    nil,
+				}).Error; err != nil {
+				return fmt.Errorf("devseed: reset session device: %w", err)
+			}
+		}
+
+		var sessionIDs []uint
+		if err := scoped.Model(&model.Session{}).Where("device_id = ?", device.ID).
+			Pluck("id", &sessionIDs).Error; err != nil {
+			return fmt.Errorf("devseed: list session fixture rows: %w", err)
+		}
+		if len(sessionIDs) > 0 {
+			if err := scoped.Where("session_id IN ?", sessionIDs).Delete(&model.SessionEvent{}).Error; err != nil {
+				return fmt.Errorf("devseed: clear session events: %w", err)
+			}
+			if err := scoped.Where("id IN ?", sessionIDs).Delete(&model.Session{}).Error; err != nil {
+				return fmt.Errorf("devseed: clear session fixture rows: %w", err)
+			}
+		}
+		if err := scoped.Model(&model.DeviceDisconnect{}).
+			Where("device_id = ? AND status = ?", device.ID, model.DisconnectStatusPending).
+			Update("status", model.DisconnectStatusExpired).Error; err != nil {
+			return fmt.Errorf("devseed: expire session disconnects: %w", err)
+		}
+
+		now := time.Now().UTC()
+		session := model.Session{
+			OrganizationID: orgID,
+			DeviceID:       device.ID,
+			RustdeskID:     SeedSessionDeviceID,
+			Origin:         model.SessionOriginPanel,
+			Status:         model.SessionStatusOpen,
+			StartedAt:      now,
+			LastActivityAt: &now,
+		}
+		if err := scoped.Create(&session).Error; err != nil {
+			return fmt.Errorf("devseed: insert session fixture: %w", err)
+		}
+		return nil
+	})
 }
 
 // SeedInvitationEmail is the disposable pending invitation the e2e suite
