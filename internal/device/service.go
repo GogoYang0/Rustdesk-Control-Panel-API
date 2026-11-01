@@ -138,11 +138,16 @@ func RegisterTx(db *gorm.DB, orgID uint, row model.Device, allowRestore bool) (*
 	// and the soft-delete-filtered re-read would turn that into a 500 after a
 	// partial write.
 	priorQuery := store.ScopedByOrg(db, orgID).Unscoped().Where("rustdesk_id = ?", row.RustdeskID)
-	if db.Name() != "sqlite" {
-		priorQuery = priorQuery.Clauses(clause.Locking{Strength: "UPDATE"})
-	}
 	var prior model.Device
 	priorErr := priorQuery.First(&prior).Error
+	// Lock an existing row by primary key; locking a missing secondary-key
+	// range would take a gap lock on MySQL and deadlock against the upsert.
+	if priorErr == nil && db.Name() != "sqlite" {
+		priorErr = store.ScopedByOrg(db, orgID).Unscoped().
+			Where("id = ?", prior.ID).
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&prior).Error
+	}
 	switch {
 	case priorErr == nil && prior.DeletedAt.Valid:
 		if !allowRestore {
