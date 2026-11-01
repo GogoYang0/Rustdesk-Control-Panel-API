@@ -3490,6 +3490,7 @@ type Session struct {
 	// - `idle_timeout`：空闲超时（默认 10 分钟无关联事件）
 	// - `policy_exceeded`：超过 `max_session_minutes`（后置关闭，不断连）
 	// - `policy_denied`：签发阶段被策略拒绝（仅 `denied` 会话）
+	// - `admin_ended`：管理员主动结束会话记录
 	EndReason *string    `json:"end_reason,omitempty"`
 	EndedAt   *time.Time `json:"ended_at,omitempty"`
 	Id        int64      `json:"id"`
@@ -3641,7 +3642,7 @@ type SessionEvent struct {
 	Id     int64                   `json:"id"`
 
 	// Kind 事件类型（自由字符串）。已知取值：`started`、`ticket_issued`、`approved`、
-	// `denied`、`disconnected`（日志中识别的连接结束）、`closed`。
+	// `denied`、`disconnected`（日志中识别的连接结束）、`closed`、`admin_ended`。
 	Kind string `json:"kind"`
 }
 
